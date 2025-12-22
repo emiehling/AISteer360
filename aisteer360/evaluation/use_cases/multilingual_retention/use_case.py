@@ -25,8 +25,6 @@ class MultilingualRetention(UseCase):
     def validate_evaluation_data(self, evaluation_data: dict[str, Any]):
         """Validates that evaluation data contains required fields for multilingual evaluation.
 
-        Ensures each data instance has the necessary keys and non-null values for the evaluation.
-
         Args:
             evaluation_data: Dictionary containing a single evaluation instance with prompt/text and language information.
 
@@ -48,7 +46,8 @@ class MultilingualRetention(UseCase):
         if lang_val is None:
             raise ValueError(f"Field 'language' is null for example id={evaluation_data.get('id')}.")
 
-    def _get_prompt(self, instance: dict[str, Any]) -> str:
+    @staticmethod
+    def _get_prompt(instance: dict[str, Any]) -> str:
         """Resolves prompt text from an evaluation instance.
 
         Args:
@@ -69,8 +68,6 @@ class MultilingualRetention(UseCase):
         runtime_overrides: dict[tuple[str, str], str] | None = None,
     ) -> list[dict[str, Any]]:
         """Generates model responses for multilingual prompts.
-
-        Processes evaluation data to create prompts and generates model responses for each language instance.
 
         Args:
             model_or_pipeline: Either a HuggingFace model or SteeringPipeline instance to use for generation.
@@ -132,9 +129,6 @@ class MultilingualRetention(UseCase):
 
     def evaluate(self, generations: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """Evaluates generated responses using configured metrics.
-
-        Extracts responses, prompts, languages, and references from generations and computes scores using all
-        evaluation metrics specified during initialization.
 
         Args:
             generations: List of generation dictionaries returned by the `generate()` method, each containing

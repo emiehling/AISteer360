@@ -4,7 +4,7 @@ Show how each variant is instantiated in the toolkit implementation
 
 Describe the multilingual retention use case (instantiate it from evaluate/use_cases/multilingual_retention/use_case.py)
 
-For the benchmark class, specify a base model (already pretrained on something like mostly English web)
+For the benchmark class, specify a base model
 
 Define training dataset; and formats for LoRA and MER
 

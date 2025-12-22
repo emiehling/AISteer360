@@ -17,7 +17,6 @@ class ReplayBuffer(ABC):
     - Adding examples (potentially with reservoir sampling)
     - Random sampling for batch construction
     - Persistence across training interruptions (optional)
-
     """
 
     @abstractmethod
@@ -127,7 +126,7 @@ class DiskReplayBuffer(ReplayBuffer):
     Stores tokenized examples on disk to support large buffer sizes without using up RAM. Uses a background thread to
     prefetch samples into a cache queue.
 
-    This is a simplified implementation suitable for single-node HuggingFace training. For multi-node Megatron/NeoX
+    This is a simplified implementation suitable for (single-node) HuggingFace training. For multi-node Megatron/NeoX
     training, use the paper's implementation: https://github.com/chandar-lab/continual-pretraining
 
     Args:
@@ -216,8 +215,7 @@ class DiskReplayBuffer(ReplayBuffer):
                     return  # don't add this example
                 slot = slot_candidate
             else:
-                # FIFO: overwrite oldest (slot 0)
-                # For simplicity, overwrite slot (total_seen % capacity)
+                # FIFO: overwrite oldest (slot 0); for simplicity, overwrite slot (total_seen % capacity)
                 slot = (self._total_seen - 1) % self.capacity
 
             # write
@@ -272,7 +270,7 @@ class DiskReplayBuffer(ReplayBuffer):
                     example = self._read_example(idx)
                 self._cache_queue.put(example, timeout=0.1)
             except Exception:
-                pass  # Queue full or other error, retry
+                pass  # queue full or other error, retry
 
     def sample_from_cache(self, num_samples: int) -> list[dict[str, Any]]:
         """Sample from prefetch cache (faster but may have duplicates)."""

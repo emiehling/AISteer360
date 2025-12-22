@@ -1,5 +1,4 @@
 import math
-import random
 import warnings
 from collections.abc import Sequence
 from pathlib import Path
@@ -39,12 +38,11 @@ class MER(StructuralControl):
     - In-memory (default): for small experiments (<100K examples)
     - Disk-backed: Larger capacity with async prefetching (for bigger buffers)
 
-    Args:
+    Args: # todo: augment with full list of args from MERArgs
         train_dataset: Pre-tokenized dataset with 'input_ids' keys.
         enable_replay: Whether to use experience replay.
         enable_kl: Whether to add KL regularization.
         enable_reptile: Whether to apply Reptile meta-updates.
-        See MERArgs for full parameter documentation.
 
     Reference:
 
@@ -59,6 +57,7 @@ class MER(StructuralControl):
     model: PreTrainedModel | None = None
     tokenizer: PreTrainedTokenizerBase | None = None
     device: torch.device | str | None = None
+
     _teacher: PreTrainedModel | None = None  # for KL reg
 
     def steer(
@@ -142,12 +141,12 @@ class MER(StructuralControl):
         anchor_params: list[torch.Tensor] | None = None
         steps_since_anchor = 0
         optimizer_step_count = 0
-        global_step = 0  # Micro-steps (forward passes)
+        global_step = 0  # micro-steps (forward passes)
 
         self.model.train()
 
         for epoch in range(self.num_train_epochs):
-            # Optional: reset anchor at epoch boundary
+            # reset anchor at epoch boundary
             if self.enable_reptile and self.reptile_reset_per_epoch and epoch > 0:
                 anchor_params = self._snapshot_model()
                 steps_since_anchor = 0
@@ -181,7 +180,7 @@ class MER(StructuralControl):
                 outputs = self.model(**batch)
                 if outputs.loss is None:
                     raise RuntimeError(
-                        "Model did not return loss. Ensure DataCollator provides 'labels'."
+                        "Model did not return loss; ensure DataCollator provides 'labels'."
                     )
                 loss = outputs.loss
                 kl_loss: torch.Tensor | None = None
@@ -200,7 +199,7 @@ class MER(StructuralControl):
                 scaled_loss.backward()
 
                 if (global_step + 1) % self.gradient_accumulation_steps == 0:
-                    # Gradient clipping
+                    # gradient clipping
                     if self.max_grad_norm > 0:
                         torch.nn.utils.clip_grad_norm_(
                             self.model.parameters(),
@@ -212,7 +211,7 @@ class MER(StructuralControl):
                     optimizer.zero_grad()
                     optimizer_step_count += 1
 
-                    # Reptile meta-update
+                    # reptile meta-update
                     if self.enable_reptile:
                         if anchor_params is None:
                             anchor_params = self._snapshot_model()
@@ -311,8 +310,8 @@ class MER(StructuralControl):
     ) -> list[dict[str, Any]]:
         """Mix new examples with replay samples.
 
-        Returns list with new examples first, then replay samples.
-        This ordering is assumed by _compute_kl_loss for masking.
+        Returns list with new examples first, then replay samples; this ordering is assumed by _compute_kl_loss for
+        masking.
         """
         batch: list[dict[str, Any]] = list(new_examples)
 
@@ -329,7 +328,7 @@ class MER(StructuralControl):
         # fill remaining batch slots with replay
         num_replay = max(self.per_device_train_batch_size - len(new_examples), 0)
         if num_replay > 0:
-            # Use cache-aware sampling for disk buffers
+            # use cache-aware sampling for disk buffers
             if isinstance(replay_buffer, DiskReplayBuffer):
                 replay_samples = replay_buffer.sample_from_cache(num_replay)
             else:
@@ -429,7 +428,7 @@ class MER(StructuralControl):
 
     # reptile helpers
     def _snapshot_model(self) -> list[torch.Tensor]:
-        """Clone trainable parameters, optionally to CPU."""
+        """Clone trainable parameters (optionally to CPU)."""
         params = []
         for param in self.model.parameters():
             if param.requires_grad:
@@ -440,7 +439,7 @@ class MER(StructuralControl):
         return params
 
     def _apply_reptile_update(self, anchor_params: list[torch.Tensor]) -> None:
-        """Apply Reptile interpolation: θ ← θ_anchor + ε * (θ - θ_anchor)."""
+        """Apply Reptile interpolation: theta ← theta_anchor + eps * (theta - theta_anchor)."""
         with torch.no_grad():
             idx = 0
             for param in self.model.parameters():
@@ -451,8 +450,7 @@ class MER(StructuralControl):
                 if self.reptile_offload_anchor:
                     anchor = anchor.to(param.device)
 
-                # theta_new = theta_anchor + eps * (theta_current - theta_anchor) = (1 - eps) * theta_anchor + eps * theta_current
-                param.data.mul_(self.reptile_meta_lr).add_(
-                    anchor, alpha=(1.0 - self.reptile_meta_lr)
-                )
+                # theta_new = theta_anchor + eps * (theta_current - theta_anchor)
+                #           = (1 - eps) * theta_anchor + eps * theta_current
+                param.data.mul_(self.reptile_meta_lr).add_(anchor, alpha=(1.0 - self.reptile_meta_lr))
                 idx += 1
