@@ -1,6 +1,8 @@
 import math
 import random
+import warnings
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -16,60 +18,39 @@ from transformers import (
 
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.algorithms.structural_control.mer.args import MERArgs
-
-
-class _ReplayBuffer:
-    """Simple in‑memory replay buffer with reservoir or FIFO replacement."""
-
-    def __init__(self, capacity: int, reservoir: bool = True) -> None:
-        self.capacity = int(capacity)
-        self.reservoir = reservoir
-        self._examples: list[dict[str, Any]] = []
-        self._total_seen: int = 0
-
-    def __len__(self) -> int:
-        return len(self._examples)
-
-    def add_many(self, examples: Sequence[dict[str, Any]]) -> None:
-        for example in examples:
-            self.add(example)
-
-    def add(self, example: dict[str, Any]) -> None:
-        if self.capacity == 0:
-            return
-
-        self._total_seen += 1
-        if len(self._examples) < self.capacity:
-            # still filling
-            self._examples.append(example)
-            return
-
-        if self.reservoir:
-            # reservoir sampling
-            replacement_idx = random.randint(0, self._total_seen - 1)
-            if replacement_idx < self.capacity:
-                self._examples[replacement_idx] = example
-        else:
-            # FIFO
-            self._examples.pop(0)
-            self._examples.append(example)
-
-    def sample(self, num_samples: int) -> list[dict[str, Any]]:
-        if not self._examples or num_samples <= 0:
-            return []
-        num_samples = min(int(num_samples), len(self._examples))
-        return random.sample(self._examples, num_samples)
+from aisteer360.algorithms.structural_control.mer.utils.buffers import (
+    DiskReplayBuffer,
+    InMemoryReplayBuffer,
+    ReplayBuffer,
+)
 
 
 class MER(StructuralControl):
-    """Meta‑Experience Replay (MER).
+    """Meta-Experience Replay (MER) structural control method.
 
-    todo (@Matt): refine/add details here and reference(s) (see other docstrings in the toolkit for inspiration)
+    # todo: refine
 
-    - Experience replay: maintain a buffer of past examples and mix them into each batch at a specified ratio alpha
-    - KL regularization: optional KL(p_teacher || p_student) term to stabilize updates against a frozen teacher
-    - Reptile meta-updates: every k optimizer steps, interpolate parameters between a snapshot theta_0 and current theta
+    MER combines three techniques for continual learning:
+    - Experience replay: Mix past examples into training batches
+    - KL regularization: Preserve base model behavior via distillation
+    - Reptile meta-updates: Interpolate toward task-agnostic parameters
 
+    Two buffer implementations are available:
+    - In-memory (default): for small experiments (<100K examples)
+    - Disk-backed: Larger capacity with async prefetching (for bigger buffers)
+
+    Args:
+        train_dataset: Pre-tokenized dataset with 'input_ids' keys.
+        enable_replay: Whether to use experience replay.
+        enable_kl: Whether to add KL regularization.
+        enable_reptile: Whether to apply Reptile meta-updates.
+        See MERArgs for full parameter documentation.
+
+    Reference:
+
+    - "Revisiting Replay and Gradient Alignment for Continual Pre-Training of Large Language Models"
+    Istabrak Abbes, Gopeshh Subbaraj, Matthew Riemer, Nizar Islah, Benjamin Therien, Tsuguchika Tabaru, Hiroaki Kingetsu, Sarath Chandar, Irina Rish
+    https://arxiv.org/abs/2508.01908
     """
 
     Args = MERArgs
@@ -78,44 +59,57 @@ class MER(StructuralControl):
     model: PreTrainedModel | None = None
     tokenizer: PreTrainedTokenizerBase | None = None
     device: torch.device | str | None = None
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._teacher: PreTrainedModel | None = None  # for KL
+    _teacher: PreTrainedModel | None = None  # for KL reg
 
     def steer(
-        self,
-        model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizerBase | None = None,
-        **__,
+            self,
+            model: PreTrainedModel,
+            tokenizer: PreTrainedTokenizerBase | None = None,
+            **__,
     ) -> PreTrainedModel:
-        """Run MER training and return the updated model instance."""
+        """Run MER training and return the updated model.
 
+        Args:
+            model: The model to train.
+            tokenizer: Tokenizer for the model. Required for data collation.
+
+        Returns:
+            The trained model (same instance, modified in-place).
+
+        Raises:
+            ValueError: If tokenizer is not provided or discoverable.
+            RuntimeError: If model does not return loss during training.
+        """
         self.model = model
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
         if self.tokenizer is None:
             raise ValueError(
-                "MER requires a tokenizer (either passed explicitly or attached to the model as `model.tokenizer`)."
+                "MER requires a tokenizer. Pass it explicitly or attach as model.tokenizer."
             )
         self.device = next(model.parameters()).device
 
-        # # seeding for replay sampling etc.
+        # ensure pad token exists
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
+        # # seed
         # random.seed(self.seed)
         # torch.manual_seed(self.seed)
         # if torch.cuda.is_available():
         #     torch.cuda.manual_seed_all(self.seed)
 
-        # optional teacher for KL regularization
+        # initialize teacher for KL regularization
         if self.enable_kl:
             self._init_teacher()
 
-        # data loader over new data (replay is mixed in inside the loop)
+        # data loader (replay mixed in during iteration)
         new_batch_size = self._compute_new_batch_size()
         data_loader = DataLoader(
             self.train_dataset,
             batch_size=new_batch_size,
             shuffle=True,
-            collate_fn=lambda batch: batch,  # list[dict]; let LM collator do tensorization
+            collate_fn=lambda batch: batch,  # keep as list[dict] for replay mixing
         )
 
         collator = DataCollatorForLanguageModeling(
@@ -123,80 +117,91 @@ class MER(StructuralControl):
             mlm=False,
         )
 
-        # optimizer & LR scheduler
+        # optimizer and scheduler
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
         )
 
-        total_steps_estimate = self._estimate_total_steps(len(data_loader))
+        total_steps = self._estimate_total_steps(len(data_loader))
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=self.warmup_steps,
-            num_training_steps=total_steps_estimate,
+            num_training_steps=total_steps,
         )
 
-        # replay buffer (todo: disk-backed version later?)
-        replay_buffer = _ReplayBuffer(
-            capacity=self.replay_buffer_size,
-            reservoir=self.reservoir_sampling,
-        )
+        # initialize replay buffer based on configuration
+        replay_buffer: ReplayBuffer | None = None
+        if self.enable_replay:
+            replay_buffer = self._create_replay_buffer()
+            if isinstance(replay_buffer, DiskReplayBuffer):
+                replay_buffer.start_prefetch()
 
-        # Reptile meta-state
+        # reptile state
         anchor_params: list[torch.Tensor] | None = None
         steps_since_anchor = 0
-        global_step = 0  # micro-steps (batches)
+        optimizer_step_count = 0
+        global_step = 0  # Micro-steps (forward passes)
 
         self.model.train()
 
         for epoch in range(self.num_train_epochs):
+            # Optional: reset anchor at epoch boundary
+            if self.enable_reptile and self.reptile_reset_per_epoch and epoch > 0:
+                anchor_params = self._snapshot_model()
+                steps_since_anchor = 0
+
             for batch_examples in data_loader:
-                # batch_examples is list[dict] from collate_fn=lambda batch: batch
+                # normalize to list
                 if isinstance(batch_examples, dict):
                     new_examples = [batch_examples]
                 else:
                     new_examples = list(batch_examples)
 
-                # update replay buffer with new data
-                if self.enable_replay:
+                # add new examples to replay buffer
+                if replay_buffer is not None:
                     replay_buffer.add_many(new_examples)
 
-                # build mixed batch (new + replay)
+                # build mixed batch
                 mixed_examples = self._build_mixed_batch(
                     new_examples=new_examples,
                     replay_buffer=replay_buffer,
                     current_step=global_step,
                 )
                 if not mixed_examples:
+                    global_step += 1
                     continue
 
                 # collate and move to device
                 batch = collator(mixed_examples)
-                batch = {key: tensor.to(self.device) for key, tensor in batch.items()}
+                batch = {k: v.to(self.device) for k, v in batch.items()}
 
-                # forward pass (LM loss)
+                # forward pass
                 outputs = self.model(**batch)
                 if outputs.loss is None:
-                    raise RuntimeError("Model did not return a loss; ensure the collator provides `labels`.")
+                    raise RuntimeError(
+                        "Model did not return loss. Ensure DataCollator provides 'labels'."
+                    )
                 loss = outputs.loss
+                kl_loss: torch.Tensor | None = None
 
-                # optional KL regularization
+                # KL reg
                 if self.enable_kl:
                     kl_loss = self._compute_kl_loss(
                         batch=batch,
                         student_logits=outputs.logits,
-                        new_examples=new_examples,
+                        num_new=len(new_examples),
                     )
                     loss = loss + self.kl_weight * kl_loss
 
                 # gradient accumulation
-                loss = loss / self.gradient_accumulation_steps
-                loss.backward()
+                scaled_loss = loss / self.gradient_accumulation_steps
+                scaled_loss.backward()
 
                 if (global_step + 1) % self.gradient_accumulation_steps == 0:
-                    # gradient clipping
-                    if self.max_grad_norm and self.max_grad_norm > 0:
+                    # Gradient clipping
+                    if self.max_grad_norm > 0:
                         torch.nn.utils.clip_grad_norm_(
                             self.model.parameters(),
                             self.max_grad_norm,
@@ -205,6 +210,7 @@ class MER(StructuralControl):
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
+                    optimizer_step_count += 1
 
                     # Reptile meta-update
                     if self.enable_reptile:
@@ -220,92 +226,133 @@ class MER(StructuralControl):
 
                 global_step += 1
 
-                # logging
-                if self.logging_steps and global_step % self.logging_steps == 0:
-                    suffix = " + KL" if self.enable_kl else ""
-                    print(
-                        f"[MER] step={global_step} epoch={epoch} loss={loss.item():.4f}{suffix}",
-                        flush=True,
-                    )
+                # # logging
+                # if self.logging_steps > 0 and global_step % self.logging_steps == 0:
+                #     lr = scheduler.get_last_lr()[0]
+                #     msg = (
+                #         f"[MER] step={global_step} epoch={epoch} "
+                #         f"loss={loss.item():.4f} lr={lr:.2e}"
+                #     )
+                #     if kl_loss is not None:
+                #         msg += f" kl={kl_loss.item():.4f}"
+                #     print(msg, flush=True)
 
-                # max_steps micro-step limit
+                # check max_steps limit
                 if 0 < self.max_steps <= global_step:
                     break
 
             if 0 < self.max_steps <= global_step:
                 break
 
+        # cleanup
         self.model.eval()
+
+        if self._teacher is not None:
+            del self._teacher
+            self._teacher = None
+
+        # save and clean up disk buffer if used
+        if replay_buffer is not None and isinstance(replay_buffer, DiskReplayBuffer):
+            if self.buffer_storage_dir is not None:
+                replay_buffer.save_state(Path(self.buffer_storage_dir) / "buffer_state.json")
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return self.model
 
-    # data / batching helpers
-    def _compute_new_batch_size(self) -> int:
-        """Number of new examples per micro-step.
+    # buffer creation
+    def _create_replay_buffer(self) -> ReplayBuffer:
+        """Create replay buffer based on configuration."""
+        if self.buffer_type == "disk":
+            return DiskReplayBuffer(
+                capacity=self.replay_buffer_size,
+                storage_dir=self.buffer_storage_dir,
+                cache_size=self.buffer_cache_size,
+                reservoir=self.reservoir_sampling,
+            )
+        else:
+            return InMemoryReplayBuffer(
+                capacity=self.replay_buffer_size,
+                reservoir=self.reservoir_sampling,
+            )
 
-        Total effective batch size is `per_device_train_batch_size`; alpha fraction `replay_ratio` of that is allocated to replay (if enabled).
+    # batch construction helpers
+    def _compute_new_batch_size(self) -> int:
+        """Compute number of new examples per micro-step.
+
+        Total batch = per_device_train_batch_size.
+        New examples = (1 - replay_ratio) * batch_size.
         """
         if not self.enable_replay or self.replay_ratio <= 0.0:
             return self.per_device_train_batch_size
 
-        new_batch_size = int(round(self.per_device_train_batch_size * (1.0 - self.replay_ratio)))
-        return max(new_batch_size, 1)
+        new_size = int(round(self.per_device_train_batch_size * (1.0 - self.replay_ratio)))
+        return max(new_size, 1)
 
     def _estimate_total_steps(self, batches_per_epoch: int) -> int:
-        """Rough step count for scheduler construction."""
+        """Estimate total optimizer steps for scheduler."""
         if batches_per_epoch == 0:
             return 1
-        total_steps = batches_per_epoch * self.num_train_epochs
+
+        total_micro = batches_per_epoch * self.num_train_epochs
         if self.max_steps > 0:
-            total_steps = min(total_steps, self.max_steps)
+            total_micro = min(total_micro, self.max_steps)
 
         # convert micro-steps to optimizer steps
-        total_steps = math.ceil(total_steps / max(1, self.gradient_accumulation_steps))
-        return max(total_steps, 1)
+        total_opt = math.ceil(total_micro / max(1, self.gradient_accumulation_steps))
+        return max(total_opt, 1)
 
     def _build_mixed_batch(
-        self,
-        new_examples: Sequence[dict[str, Any]],
-        replay_buffer: _ReplayBuffer,
-        current_step: int,
+            self,
+            new_examples: Sequence[dict[str, Any]],
+            replay_buffer: ReplayBuffer | None,
+            current_step: int,
     ) -> list[dict[str, Any]]:
-        """Return a list of examples mixing new data and replay samples."""
+        """Mix new examples with replay samples.
+
+        Returns list with new examples first, then replay samples.
+        This ordering is assumed by _compute_kl_loss for masking.
+        """
         batch: list[dict[str, Any]] = list(new_examples)
 
-        if not self.enable_replay:
+        if not self.enable_replay or replay_buffer is None:
             return batch
 
-        # warmup period (new data)
+        # warmup period: new data
         if current_step < self.replay_start_step:
             return batch
 
         if self.replay_ratio <= 0.0 or len(replay_buffer) == 0:
             return batch
 
-        target_batch_size = self.per_device_train_batch_size
-        num_new = len(new_examples)
-        num_replay = max(target_batch_size - num_new, 0)
-        if num_replay == 0:
-            return batch
-
-        replay_samples = replay_buffer.sample(num_replay)
-        if replay_samples:
+        # fill remaining batch slots with replay
+        num_replay = max(self.per_device_train_batch_size - len(new_examples), 0)
+        if num_replay > 0:
+            # Use cache-aware sampling for disk buffers
+            if isinstance(replay_buffer, DiskReplayBuffer):
+                replay_samples = replay_buffer.sample_from_cache(num_replay)
+            else:
+                replay_samples = replay_buffer.sample(num_replay)
             batch.extend(replay_samples)
 
         return batch
 
-    # teacher / KL helpers
+    # KL regularization helpers
     def _init_teacher(self) -> None:
-        """Instantiate frozen teacher model for KL regularization.
-
-        If `kl_teacher_model_name_or_path` is provided, load a separate teacher; otherwise clone initial model weights.
-        """
+        """Initialize frozen teacher model for KL regularization."""
         if self.kl_teacher_model_name_or_path:
             teacher = AutoModelForCausalLM.from_pretrained(
                 self.kl_teacher_model_name_or_path,
-                trust_remote_code=getattr(self.model.config, "trust_remote_code", False),
+                torch_dtype=self.model.dtype if hasattr(self.model, "dtype") else None,
             )
         else:
-            # todo: for large models pass a separate teacher path instead of cloning
+            # clone current model as teacher
+            warnings.warn(
+                "Cloning model as KL teacher doubles GPU memory. "
+                "For models >2B parameters, provide kl_teacher_model_name_or_path or disable KL regularization.",
+                UserWarning,
+            )
             teacher = AutoModelForCausalLM.from_config(self.model.config)
             teacher.load_state_dict(self.model.state_dict())
 
@@ -316,19 +363,17 @@ class MER(StructuralControl):
         self._teacher = teacher
 
     def _compute_kl_loss(
-        self,
-        batch: dict[str, torch.Tensor],
-        student_logits: torch.Tensor,
-        new_examples: Sequence[dict[str, Any]],
+            self,
+            batch: dict[str, torch.Tensor],
+            student_logits: torch.Tensor,
+            num_new: int,
     ) -> torch.Tensor:
-        """KL(p_teacher || p_student) over token distributions.
+        """Compute KL(teacher || student).
 
-        `kl_apply_on` controls whether we apply KL over all tokens, only those from replay examples, or only those from
-        new examples.
-
-        # todo: this is approximated by assuming new examples appear first in the batch (as constructed in `_build_mixed_batch`).
+        KL is computed only over tokens selected by kl_apply_on, and normalized by the number of selected tokens for
+        consistent scaling across modes.
         """
-        assert self._teacher is not None, "Teacher must be initialized when KL is enabled."
+        assert self._teacher is not None
 
         with torch.no_grad():
             teacher_out = self._teacher(
@@ -338,49 +383,76 @@ class MER(StructuralControl):
             teacher_logits = teacher_out.logits
 
         temperature = float(self.kl_temperature)
+        batch_size = student_logits.size(0)
 
-        # [B, L, V]
+        # compute log probs / probs
         student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
         teacher_probs = F.softmax(teacher_logits / temperature, dim=-1)
 
-        if self.kl_apply_on != "all":
-            num_new = len(new_examples)
-            batch_size = student_logits.size(0)
-            row_mask = torch.zeros(batch_size, dtype=torch.bool, device=student_logits.device)
-
-            if self.kl_apply_on == "new":
-                row_mask[:num_new] = True
-            else:  # replay
-                if num_new < batch_size:
-                    row_mask[num_new:] = True
-
-            # broadcast to [B, L, V]
-            row_mask = row_mask.view(batch_size, 1, 1)
-            student_log_probs = student_log_probs * row_mask
-            teacher_probs = teacher_probs * row_mask
-
-        # forward KL (sum p_teacher * (log p_teacher - log p_student))
-        kl_divergence = F.kl_div(
+        # per-token KL: [B, L, V]
+        kl_per_token = F.kl_div(
             student_log_probs,
             teacher_probs,
-            reduction="batchmean",
+            reduction="none",
             log_target=False,
-        ) * (temperature * temperature)
+        )
+        # sum over vocab dimension: [B, L]
+        kl_per_position = kl_per_token.sum(dim=-1)
 
-        return kl_divergence
+        # build mask based on kl_apply_on
+        if self.kl_apply_on == "all":
+            row_mask = torch.ones(batch_size, dtype=torch.bool, device=self.device)
+        elif self.kl_apply_on == "new":
+            row_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+            row_mask[:num_new] = True
+        else:  # "replay"
+            row_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+            if num_new < batch_size:
+                row_mask[num_new:] = True
 
-    # Reptile helpers
+        # apply mask and normalize; expand row_mask to [B, L]
+        attention_mask = batch.get("attention_mask")
+        if attention_mask is not None:
+            token_mask = row_mask.unsqueeze(1) & (attention_mask == 1)
+        else:
+            token_mask = row_mask.unsqueeze(1).expand_as(kl_per_position)
+
+        num_selected = token_mask.sum()
+        if num_selected == 0:
+            return torch.tensor(0.0, device=self.device)
+
+        kl_masked = (kl_per_position * token_mask).sum()
+        kl_normalized = kl_masked / num_selected
+
+        # temperature scaling
+        return kl_normalized * (temperature ** 2)
+
+    # reptile helpers
     def _snapshot_model(self) -> list[torch.Tensor]:
-        """Clone current trainable parameters."""
-        return [param.detach().clone() for param in self.model.parameters() if param.requires_grad]
+        """Clone trainable parameters, optionally to CPU."""
+        params = []
+        for param in self.model.parameters():
+            if param.requires_grad:
+                cloned = param.detach().clone()
+                if self.reptile_offload_anchor:
+                    cloned = cloned.to("cpu")
+                params.append(cloned)
+        return params
 
     def _apply_reptile_update(self, anchor_params: list[torch.Tensor]) -> None:
-        """Reptile meta-update"""
+        """Apply Reptile interpolation: θ ← θ_anchor + ε * (θ - θ_anchor)."""
         with torch.no_grad():
-            param_idx = 0
+            idx = 0
             for param in self.model.parameters():
                 if not param.requires_grad:
                     continue
-                anchor_param = anchor_params[param_idx]
-                param.data = anchor_param + self.reptile_meta_lr * (param.data - anchor_param)
-                param_idx += 1
+
+                anchor = anchor_params[idx]
+                if self.reptile_offload_anchor:
+                    anchor = anchor.to(param.device)
+
+                # theta_new = theta_anchor + eps * (theta_current - theta_anchor) = (1 - eps) * theta_anchor + eps * theta_current
+                param.data.mul_(self.reptile_meta_lr).add_(
+                    anchor, alpha=(1.0 - self.reptile_meta_lr)
+                )
+                idx += 1
