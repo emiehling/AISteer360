@@ -11,9 +11,9 @@ _EVALUATION_REQ_KEYS = ["language"]
 class MultilingualRetention(UseCase):
     """Multilingual retention evaluation use case using the OSCAR dataset.
 
-    Evaluates a (potentially continually pre-trained) model on a union of prompts drawn from multiple languages. Typical
-    workflow involves generating responses across base and additional languages, then passing prompts, responses,
-    languages, and ids to evaluation metrics.
+    Evaluates a model on a union of prompts drawn from multiple languages. Typical workflow involves generating
+    responses across base and additional languages, then passing prompts, responses, languages, and ids to evaluation
+    metrics.
 
     The evaluation data should contain prompts with language labels where models respond to multilingual inputs. Each
     instance must include either a 'prompt' field (fully-formed prompt) or a 'text' field (raw text used as prompt).

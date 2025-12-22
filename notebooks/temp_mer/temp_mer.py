@@ -36,7 +36,7 @@ def build_fr_de_cpt_datasets(
     fr = fr.map(lambda ex: {**ex, "language": "fr"})
     de = de.map(lambda ex: {**ex, "language": "de"})
 
-    # Sequential stream: Task B (FR) then Task C (DE), like MER-LLM
+    # sequential stream: Task B (FR) then Task C (DE), like MER-LLM
     multilingual_cpt = concatenate_datasets([fr, de])
 
     ds_lora: Dataset = multilingual_cpt
@@ -46,8 +46,6 @@ def build_fr_de_cpt_datasets(
 
 
 train_ds_lora, train_ds_mer_stream = build_fr_de_cpt_datasets()
-
-
 
 
 lora_cpt = SFT(
@@ -71,7 +69,7 @@ lora_cpt = SFT(
     lora_alpha=16,
     target_modules=["q_proj", "v_proj"],
     adapter_name="cpt_lora",
-    merge_lora_after_train=True,  # merge into base weights for fair comparison
+    merge_lora_after_train=True,
 )
 
 
