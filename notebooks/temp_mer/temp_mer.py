@@ -9,11 +9,6 @@ from aisteer360.evaluation.use_cases.multilingual_retention.use_case import (
     MultilingualRetention,
 )
 
-# from aisteer360.evaluation.metrics.generic.relevance import Relevance
-# from aisteer360.evaluation.metrics.custom.some_metric import SomeCustomMetric
-
-
-
 
 def build_fr_de_cpt_datasets(
     fr_slice: str = "train[:1%]",
@@ -80,8 +75,6 @@ lora_cpt = SFT(
 )
 
 
-from aisteer360.algorithms.structural_control.mer.control import MER
-
 # replay-only baseline
 mer_replay = MER(
     train_dataset=train_ds_mer_stream,
@@ -94,7 +87,7 @@ mer_replay = MER(
     learning_rate=5e-5,
 )
 
-# Replay + Reptile
+# replay + reptile
 mer_replay_reptile = MER(
     train_dataset=train_ds_mer_stream,
     enable_replay=True,
@@ -108,7 +101,7 @@ mer_replay_reptile = MER(
     learning_rate=5e-5,
 )
 
-# KL-only
+# KL
 mer_kl_only = MER(
     train_dataset=train_ds_mer_stream,
     enable_replay=False,
@@ -121,7 +114,7 @@ mer_kl_only = MER(
     learning_rate=5e-5,
 )
 
-# replay + KL + Reptile
+# replay + KL + reptile
 mer_full = MER(
     train_dataset=train_ds_mer_stream,
     enable_replay=True,
@@ -139,29 +132,25 @@ mer_full = MER(
 )
 
 
-
-
-
-multilingual_lm = MultilingualRetention(
+# use case
+multilingual_retention = MultilingualRetention(
     evaluation_data="data/multilingual_eval.jsonl",
     evaluation_metrics=[
         Perplexity(
-            model_or_id="meta-llama/Llama-2-7b-hf",  # or a smaller judge model
+            model_or_id="meta-llama/Llama-2-7b-hf",
             batch_size=8,
             add_bos=True,
             max_length=512,
             device="cuda",
         ),
-        # Relevance(...),
-        # LanguageSpecificMetric(...),
     ],
-    num_samples=-1,  # or cap for speed
+    # num_samples=-1,
 )
 
 
-
+# benchmark
 benchmark = Benchmark(
-    use_case=commonsense_mcqa,
+    use_case=multilingual_retention,
     base_model_name_or_path="Qwen/Qwen2.5-1.5B-Instruct",
     steering_pipelines={
         "baseline": [],

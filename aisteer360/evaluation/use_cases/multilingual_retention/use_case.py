@@ -5,54 +5,58 @@ from typing import Any
 from aisteer360.evaluation.use_cases.base import UseCase
 from aisteer360.evaluation.utils.generation_utils import batch_retry_generate
 
-_EVAL_REQ_KEYS = ["language"]  # plus one of "prompt" or "text"
+_EVALUATION_REQ_KEYS = ["language"]
 
 
 class MultilingualRetention(UseCase):
-    """Multilingual retention evaluation use case.
+    """Multilingual retention evaluation use case using the OSCAR dataset.
 
-    This use case evaluates a (potentially continually pre-trained) model on a union of prompts drawn from multiple
-    languages.
+    Evaluates a (potentially continually pre-trained) model on a union of prompts drawn from multiple languages. Typical
+    workflow involves generating responses across base and additional languages, then passing prompts, responses,
+    languages, and ids to evaluation metrics.
 
-    Typical workflow for catastrophic forgetting:
-        - evaluation_data contains prompts in languages the base model already knows (e.g., English) plus new ones
-          (e.g., French, German).
-        - For each steering pipeline (baseline, LoRA, MER, ...), `generate()` asks the model to respond to these prompts.
-        - `evaluate()` passes prompts, responses, languages, and ids to metrics
+    The evaluation data should contain prompts with language labels where models respond to multilingual inputs. Each
+    instance must include either a 'prompt' field (fully-formed prompt) or a 'text' field (raw text used as prompt).
 
-    Required evaluation data fields:
-        - "id": unique identifier for each instance
-        - "language": language/task label (e.g. "en", "fr", "de")
-        - one of:
-            * "prompt": fully-formed prompt to send to the model, OR
-            * "text": raw text, which will be used as the prompt
-
-    Optional fields:
-        - "reference": reference text (for tasks like translation, QA, etc.)
+    Attributes:
+        evaluation_data: List of instances containing prompts and language metadata.
     """
 
     def validate_evaluation_data(self, evaluation_data: dict[str, Any]):
-        """Validate that each instance has the required fields."""
+        """Validates that evaluation data contains required fields for multilingual evaluation.
+
+        Ensures each data instance has the necessary keys and non-null values for the evaluation.
+
+        Args:
+            evaluation_data: Dictionary containing a single evaluation instance with prompt/text and language information.
+
+        Raises:
+            ValueError: If required keys ('id', 'language') are missing, if neither 'prompt' nor 'text' is present,
+                or if any required fields contain null values.
+        """
         if "id" not in evaluation_data:
             raise ValueError("The evaluation data must include an 'id' key.")
 
-        missing = [k for k in _EVAL_REQ_KEYS if k not in evaluation_data]
-        if missing:
-            raise ValueError(f"Missing required keys: {missing}")
+        missing_keys = [k for k in _EVALUATION_REQ_KEYS if k not in evaluation_data]
+        if missing_keys:
+            raise ValueError(f"Missing required keys: {missing_keys}")
 
         if "prompt" not in evaluation_data and "text" not in evaluation_data:
-            raise ValueError(
-                "Each evaluation instance must have either a 'prompt' or 'text' field."
-            )
+            raise ValueError("Each evaluation instance must have either a 'prompt' or 'text' field.")
 
         lang_val = evaluation_data["language"]
         if lang_val is None:
-            raise ValueError(
-                f"Field 'language' is null for example id={evaluation_data.get('id')}."
-            )
+            raise ValueError(f"Field 'language' is null for example id={evaluation_data.get('id')}.")
 
     def _get_prompt(self, instance: dict[str, Any]) -> str:
-        """Resolve prompt text from an evaluation instance."""
+        """Resolves prompt text from an evaluation instance.
+
+        Args:
+            instance: Dictionary containing either a 'prompt' or 'text' field.
+
+        Returns:
+            The prompt string to send to the model.
+        """
         if "prompt" in instance and instance["prompt"] is not None:
             return str(instance["prompt"])
         return str(instance["text"])
@@ -64,21 +68,24 @@ class MultilingualRetention(UseCase):
         gen_kwargs: dict | None = None,
         runtime_overrides: dict[tuple[str, str], str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Generate model responses for multilingual prompts.
+        """Generates model responses for multilingual prompts.
+
+        Processes evaluation data to create prompts and generates model responses for each language instance.
 
         Args:
-            model_or_pipeline: Either a HuggingFace model or SteeringPipeline.
+            model_or_pipeline: Either a HuggingFace model or SteeringPipeline instance to use for generation.
             tokenizer: Tokenizer for encoding/decoding text.
-            gen_kwargs: Optional generation params
-            runtime_overrides: Optional mapping for steering-time kwargs
+            gen_kwargs: Optional generation parameters passed to the model's generate method.
+            runtime_overrides: Optional runtime parameter overrides for steering controls, structured as {(pipeline_name, param_name): value}.
 
         Returns:
-            List of generation dicts, each containing:
-                - "id": original evaluation id
-                - "language": language/tag from evaluation_data
-                - "prompt": text actually sent to the model
-                - "response": raw decoded model output
-                - "reference": optional reference text (if present in eval data)
+            List of generation dictionaries, each containing:
+
+                - "id": Original evaluation id
+                - "language": Language/tag from evaluation_data
+                - "prompt": Model input text
+                - "response": Raw decoded model output
+                - "reference": Optional reference text (if present in eval data)
         """
         if not self.evaluation_data:
             print("No evaluation data provided.")
@@ -103,7 +110,7 @@ class MultilingualRetention(UseCase):
             prompt_data=prompt_data,
             model_or_pipeline=model_or_pipeline,
             tokenizer=tokenizer,
-            parse_fn=None,  # use string directly
+            parse_fn=None,
             gen_kwargs=gen_kwargs,
             runtime_overrides=runtime_overrides,
             evaluation_data=self.evaluation_data,
@@ -124,15 +131,17 @@ class MultilingualRetention(UseCase):
         return generations
 
     def evaluate(self, generations: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        """Evaluate model generations using configured metrics.
+        """Evaluates generated responses using configured metrics.
 
-        Builds a flat eval_data dict and passes it to each Metric in `self.evaluation_metrics`.
+        Extracts responses, prompts, languages, and references from generations and computes scores using all
+        evaluation metrics specified during initialization.
 
         Args:
-            generations: Output of `generate()`, one dict per evaluation instance.
+            generations: List of generation dictionaries returned by the `generate()` method, each containing
+                response, prompt, language, id, and optional reference fields.
 
         Returns:
-            Dictionary mapping metric_name -> metric_result (arbitrary dicts).
+            Dictionary of scores keyed by `metric_name`.
         """
         if not generations:
             return {}
@@ -151,8 +160,8 @@ class MultilingualRetention(UseCase):
 
         return scores
 
-    def export(self, profiles: dict[str, Any], save_dir) -> None:
-        """Export evaluation profiles to (tabbed) JSON format."""
+    def export(self, profiles: dict[str, Any], save_dir: str) -> None:
+        """Exports evaluation profiles to (tabbed) JSON format."""
         save_path = Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
 
