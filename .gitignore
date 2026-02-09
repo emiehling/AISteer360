@@ -9,7 +9,7 @@
 *.lock
 /notes
 /scripts
-/examples/notebooks/controls/mergekit_models/*
-/examples/notebooks/benchmarks/commonsense_mcqa/profiles/profiles.json
+/examples/notebooks/wrapper_mergekit/mergekit_models/*
+/examples/notebooks/benchmark_commonsense_mcqa/profiles/profiles.json
 .claude/
 CLAUDE.md
