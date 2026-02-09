@@ -35,25 +35,25 @@ nav:
     - Add a new state control: "tutorials/add_method_by_category/add_new_state_control.md"
     - Add a new structural control: "tutorials/add_method_by_category/add_new_structural_control.md"
   - Notebooks:
-    - Notebooks: notebooks/index.md
+    - Notebooks: examples/notebooks/index.md
     - Controls:
       - Input control:
-        - FewShot: "notebooks/controls/few_shot.ipynb"
+        - FewShot: "examples/notebooks/controls/few_shot.ipynb"
       - Structural control:
-        - MergeKit wrapper: "notebooks/controls/mergekit_wrapper.ipynb"
-        - TRL wrapper: "notebooks/controls/trl_wrapper.ipynb"
+        - MergeKit wrapper: "examples/notebooks/controls/mergekit_wrapper.ipynb"
+        - TRL wrapper: "examples/notebooks/controls/trl_wrapper.ipynb"
       - State control:
-        - CAST: "notebooks/controls/cast.ipynb"
-        - PASTA: "notebooks/controls/pasta.ipynb"
+        - CAST: "examples/notebooks/controls/cast.ipynb"
+        - PASTA: "examples/notebooks/controls/pasta.ipynb"
       - Output control:
-        - DeAL: "notebooks/controls/deal.ipynb"
-        - RAD: "notebooks/controls/rad.ipynb"
-        - SASA: "notebooks/controls/sasa.ipynb"
-        - ThinkingIntervention: "notebooks/controls/thinking_intervention.ipynb"
+        - DeAL: "examples/notebooks/controls/deal.ipynb"
+        - RAD: "examples/notebooks/controls/rad.ipynb"
+        - SASA: "examples/notebooks/controls/sasa.ipynb"
+        - ThinkingIntervention: "examples/notebooks/controls/thinking_intervention.ipynb"
     - Benchmarks:
-      - Commonsense MCQA: "notebooks/benchmarks/commonsense_mcqa.ipynb"
-      - Instruction following: "notebooks/benchmarks/instruction_following.ipynb"
-    - "notebooks/images/"
+      - Commonsense MCQA: "examples/notebooks/benchmarks/commonsense_mcqa.ipynb"
+      - Instruction following: "examples/notebooks/benchmarks/instruction_following.ipynb"
+    - "examples/notebooks/images/"
 #  - Developer notes:
 #      - Developer notes: dev_notes/index.md
 #      - "dev_notes/steering_lifecycle.md"
