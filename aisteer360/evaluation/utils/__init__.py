@@ -23,21 +23,23 @@ __all__ = [
 # Viz utils are optional (require matplotlib)
 try:
     from aisteer360.evaluation.utils.viz_utils import (
-        create_tradeoff_figure,
         plot_comparison_bars,
         plot_metric_by_config,
         plot_metric_heatmap,
         plot_pareto_frontier,
+        plot_sensitivity,
         plot_tradeoff_scatter,
+        plot_tradeoff_with_pareto,
     )
 
     __all__.extend([
-        "create_tradeoff_figure",
         "plot_comparison_bars",
         "plot_metric_by_config",
         "plot_metric_heatmap",
         "plot_pareto_frontier",
+        "plot_sensitivity",
         "plot_tradeoff_scatter",
+        "plot_tradeoff_with_pareto",
     ])
 except ImportError:
     pass  # matplotlib not installed

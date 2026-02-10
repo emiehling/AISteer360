@@ -77,7 +77,7 @@ def flatten_profiles(
         for run in runs:
             params = run.get("params", {}) or {}
 
-            # Create a stable config identifier from params
+            # create a stable config identifier from params
             config_id = _hash_params(params) if params else "baseline"
 
             row = {
@@ -88,7 +88,7 @@ def flatten_profiles(
                 "_run": run,
             }
 
-            # Extract requested metrics
+            # extract requested metrics
             if metric_accessors:
                 evals = run.get("evaluations", {}) or {}
                 for col_name, (metric_name, key) in metric_accessors.items():
@@ -105,7 +105,7 @@ def _hash_params(params: dict[str, Any]) -> str:
     import hashlib
     import json
 
-    # Sort keys for stability
+    # sort keys for stability
     serialized = json.dumps(params, sort_keys=True, default=str)
     return hashlib.md5(serialized.encode()).hexdigest()[:8]
 
@@ -259,7 +259,7 @@ def build_per_example_df(
     generations = run.get("generations", [])
     evals = run.get("evaluations", {}) or {}
 
-    # Pre-extract metric lists
+    # pre-extract metric lists
     metric_data: dict[str, list] = {}
     if metric_lists:
         for col_name, (metric_name, list_key) in metric_lists.items():

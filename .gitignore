@@ -4,6 +4,7 @@
 **/__pycache__/
 .ipynb_checkpoints/
 .env
+.venv
 /.venv/
 /backend/venv
 *.lock
@@ -12,4 +13,4 @@
 /examples/notebooks/wrapper_mergekit/mergekit_models/*
 /examples/notebooks/benchmark_commonsense_mcqa/profiles/profiles.json
 .claude/
-CLAUDE.md
+**/CLAUDE.md

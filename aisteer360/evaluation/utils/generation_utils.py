@@ -1,3 +1,5 @@
+"""Generation utilities for use cases."""
+
 from typing import Any, Callable, Sequence
 
 import torch
