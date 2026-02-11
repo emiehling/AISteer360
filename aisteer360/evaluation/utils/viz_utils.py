@@ -2,7 +2,6 @@
 
 from typing import Any, Sequence
 
-import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -406,7 +405,7 @@ def plot_sensitivity(
         swept[sweep_col],
         swept[f"{metric}_mean"],
         linestyle="-",
-        linewidth=2.5,
+        linewidth=3.5,
         color=color,
         alpha=0.4,
         zorder=2,
@@ -479,7 +478,7 @@ def plot_tradeoff_with_pareto(
         The matplotlib axes with the plot.
     """
     if ax is None:
-        _, ax = plt.subplots(figsize=(6, 5))
+        _, ax = plt.subplots(figsize=(5, 5))
 
     _clean_axes(ax)
 
@@ -543,11 +542,12 @@ def plot_tradeoff_with_pareto(
     cbar.outline.set_visible(False)
     cbar.ax.tick_params(size=0)
 
-    # Pareto frontier
+    # Pareto frontier (include baseline if provided)
     if show_pareto:
+        pareto_data = pd.concat([swept, baseline], ignore_index=True) if baseline is not None and not baseline.empty else swept
         _overlay_pareto_frontier(
             ax,
-            swept,
+            pareto_data,
             x_metric,
             y_metric,
             maximize_x=maximize_x,

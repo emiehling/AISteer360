@@ -12,5 +12,6 @@
 /scripts
 /examples/notebooks/wrapper_mergekit/mergekit_models/*
 /examples/notebooks/benchmark_commonsense_mcqa/profiles/profiles.json
+/examples/notebooks/**/figures/*.png
 .claude/
 **/CLAUDE.md
