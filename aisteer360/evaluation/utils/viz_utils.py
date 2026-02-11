@@ -401,17 +401,28 @@ def plot_sensitivity(
     sweep_label = sweep_label or sweep_col
     title = title or f"{metric_label} sensitivity"
 
+    # plot line with transparency
+    ax.plot(
+        swept[sweep_col],
+        swept[f"{metric}_mean"],
+        linestyle="-",
+        linewidth=2.5,
+        color=color,
+        alpha=0.4,
+        zorder=2,
+    )
+
+    # plot markers with error bars
     ax.errorbar(
         swept[sweep_col],
         swept[f"{metric}_mean"],
         yerr=swept[f"{metric}_std"],
-        fmt=f"{marker}-",
+        fmt=marker,
         capsize=0,
-        linewidth=1.5,
         markersize=6,
         color=color,
         markeredgecolor="white",
-        zorder=3
+        zorder=3,
     )
 
     if baseline is not None and not baseline.empty:
@@ -423,7 +434,7 @@ def plot_sensitivity(
     ax.set_xlabel(sweep_label)
     ax.set_ylabel(metric_label)
     ax.set_title(title, loc="left", fontweight="bold")
-    ax.grid(True, axis="y", zorder=-1)
+    ax.grid(True, axis="both", zorder=-1)
 
     return ax
 
@@ -434,6 +445,7 @@ def plot_tradeoff_with_pareto(
     y_metric: str,
     sweep_col: str,
     baseline: pd.DataFrame | None = None,
+    baseline_label: str = "baseline",
     ax: plt.Axes | None = None,
     x_label: str | None = None,
     y_label: str | None = None,
@@ -452,6 +464,7 @@ def plot_tradeoff_with_pareto(
         y_metric: Metric for y-axis (uses {y_metric}_mean and {y_metric}_std).
         sweep_col: Column for color-coding points.
         baseline: Optional DataFrame with baseline row(s) for reference marker.
+        baseline_label: Label to display next to baseline marker.
         ax: Matplotlib axes to plot on. If None, a new figure is created.
         x_label: Label for x-axis. Defaults to x_metric.
         y_label: Label for y-axis. Defaults to y_metric.
@@ -498,18 +511,26 @@ def plot_tradeoff_with_pareto(
             zorder=2
         )
 
-    # baseline marker
+    # baseline marker with text annotation
     if baseline is not None and not baseline.empty:
         brow = baseline.iloc[0]
+        bx, by = brow[f"{x_metric}_mean"], brow[f"{y_metric}_mean"]
         ax.scatter(
-            brow[f"{x_metric}_mean"],
-            brow[f"{y_metric}_mean"],
+            bx,
+            by,
             marker="X",
             s=120,
             c="#444444",
             edgecolors="white",
             zorder=4,
-            label="baseline",
+        )
+        ax.annotate(
+            baseline_label,
+            (bx, by),
+            xytext=(5, 5),
+            textcoords="offset points",
+            fontsize=8,
+            color="#444444",
         )
 
     ax.set_xlabel(x_label)
@@ -532,10 +553,6 @@ def plot_tradeoff_with_pareto(
             maximize_x=maximize_x,
             maximize_y=maximize_y,
         )
-
-    # legend if baseline was added
-    if baseline is not None and not baseline.empty:
-        ax.legend(frameon=False, loc="best")
 
     return ax
 
@@ -587,7 +604,6 @@ def _overlay_pareto_frontier(
             linewidth=1.5,
             alpha=0.4,
             zorder=2,
-            label="pareto frontier",
         )
 
     return pareto_points
