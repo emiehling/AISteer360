@@ -1,5 +1,6 @@
 """Visualization utilities for benchmark profiles."""
 
+from pathlib import Path
 from typing import Any, Sequence
 
 import matplotlib.pyplot as plt
@@ -50,12 +51,21 @@ def apply_plot_style() -> None:
     })
 
 
+# consistent grey color for axis labels, ticks, and secondary text
+AXIS_GREY = "#555555"
+
+
 def _clean_axes(ax: plt.Axes) -> None:
-    """Helper to ensure all four axis spines are visible."""
+    """Helper to ensure all four axis spines are visible and apply grey styling."""
     ax.spines["right"].set_visible(True)
     ax.spines["top"].set_visible(True)
     ax.spines["left"].set_visible(True)
     ax.spines["bottom"].set_visible(True)
+
+    # apply grey color to axis labels and tick labels
+    ax.xaxis.label.set_color(AXIS_GREY)
+    ax.yaxis.label.set_color(AXIS_GREY)
+    ax.tick_params(axis="both", colors=AXIS_GREY)
 
 
 def plot_metric_by_config(
@@ -68,6 +78,7 @@ def plot_metric_by_config(
     title: str | None = None,
     xlabel: str | None = None,
     ylabel: str | None = None,
+    save_path: str | Path | None = None,
     **errorbar_kwargs: Any,
 ) -> plt.Axes:
     """Plot a metric with error bars across configurations."""
@@ -114,15 +125,19 @@ def plot_metric_by_config(
     ax.set_xlabel(xlabel or x_col)
     ax.set_ylabel(ylabel or metric)
 
-    # left-aligned title is easier to read
+    # left-aligned title
     if title:
-        ax.set_title(title, loc="left", fontweight="bold")
+        ax.set_title(title, loc="left", fontweight="medium", fontsize=10)
 
     # grid behind data
     ax.grid(True, axis="y", zorder=-1)
 
     # minimal legend
     ax.legend(frameon=False, loc="best")
+
+    if save_path is not None:
+        fig = ax.get_figure()
+        fig.savefig(save_path, bbox_inches="tight", dpi=150)
 
     return ax
 
@@ -139,6 +154,7 @@ def plot_tradeoff_scatter(
     xlabel: str | None = None,
     ylabel: str | None = None,
     cmap: str = "viridis",
+    save_path: str | Path | None = None,
     **scatter_kwargs: Any,
 ) -> plt.Axes:
     """Plot a scatter of two metrics showing their tradeoff."""
@@ -184,8 +200,9 @@ def plot_tradeoff_scatter(
         scatter = ax.scatter(summary[x_mean], summary[y_mean], **defaults)
         # cleaner colorbar
         cbar = plt.colorbar(scatter, ax=ax, label=color_col)
-        cbar.outline.set_visible(False) # remove box around colorbar
-        cbar.ax.tick_params(size=0)     # clean ticks
+        cbar.outline.set_visible(False)
+        cbar.ax.tick_params(size=0, colors=AXIS_GREY)
+        cbar.ax.yaxis.label.set_color(AXIS_GREY)
     else:
         ax.scatter(summary[x_mean], summary[y_mean], **defaults)
 
@@ -218,11 +235,15 @@ def plot_tradeoff_scatter(
 
     ax.set_xlabel(xlabel or x_metric)
     ax.set_ylabel(ylabel or y_metric)
-    ax.set_title(title, loc="left", fontweight="bold")
+    ax.set_title(title, loc="left", fontweight="medium", fontsize=10)
     ax.grid(True, linestyle=":", alpha=0.5, zorder=-1)
 
     if baseline_row is not None:
         ax.legend(frameon=False)
+
+    if save_path is not None:
+        fig = ax.get_figure()
+        fig.savefig(save_path, bbox_inches="tight", dpi=150)
 
     return ax
 
@@ -241,6 +262,7 @@ def plot_metric_heatmap(
     cbar_label: str | None = None,
     square: bool = False,
     col_label_decimals: int | None = 2,
+    save_path: str | Path | None = None,
 ) -> plt.Axes:
     """Plot a heatmap from a pivoted DataFrame.
 
@@ -259,6 +281,7 @@ def plot_metric_heatmap(
         square: Whether to enforce square cells.
         col_label_decimals: Number of decimal places to round column labels to.
             Set to None to disable rounding.
+        save_path: Optional path to save the figure. If provided, saves at 150 dpi.
 
     Returns:
         The matplotlib axes with the heatmap.
@@ -294,16 +317,24 @@ def plot_metric_heatmap(
     )
 
     if title:
-        ax.set_title(title, loc="left", fontweight="bold")
+        ax.set_title(title, loc="left", fontweight="medium", fontsize=10)
     if xlabel:
-        ax.set_xlabel(xlabel)
+        ax.set_xlabel(xlabel, color=AXIS_GREY)
     if ylabel:
-        ax.set_ylabel(ylabel)
+        ax.set_ylabel(ylabel, color=AXIS_GREY)
+
+    # apply grey to tick labels
+    ax.tick_params(axis="both", colors=AXIS_GREY)
 
     # clean up the colorbar axes if accessible
     if ax.collections:
         cbar = ax.collections[0].colorbar
-        cbar.ax.tick_params(size=0)
+        cbar.ax.tick_params(size=0, colors=AXIS_GREY)
+        cbar.ax.yaxis.label.set_color(AXIS_GREY)
+
+    if save_path is not None:
+        fig = ax.get_figure()
+        fig.savefig(save_path, bbox_inches="tight", dpi=150)
 
     return ax
 
@@ -317,6 +348,7 @@ def plot_comparison_bars(
     ylabel: str = "Value",
     colors: Sequence[str] | None = None,
     bar_width: float = 0.35,
+    save_path: str | Path | None = None,
 ) -> plt.Axes:
     """Plot grouped bar chart comparing metrics across groups."""
     if ax is None:
@@ -354,10 +386,14 @@ def plot_comparison_bars(
     ax.set_xticklabels(comparison_df[group_col], rotation=0, ha="center")
 
     if title:
-        ax.set_title(title, loc="left", fontweight="bold")
+        ax.set_title(title, loc="left", fontweight="medium", fontsize=10)
 
     ax.grid(True, axis="y", zorder=0)
     ax.legend(frameon=False, loc="upper right", bbox_to_anchor=(1, 1.1), ncol=n_metrics)
+
+    if save_path is not None:
+        fig = ax.get_figure()
+        fig.savefig(save_path, bbox_inches="tight", dpi=150)
 
     return ax
 
@@ -367,12 +403,12 @@ def plot_sensitivity(
     metric: str,
     sweep_col: str,
     baseline: pd.DataFrame | None = None,
+    per_trial_data: pd.DataFrame | None = None,
     ax: plt.Axes | None = None,
     metric_label: str | None = None,
     sweep_label: str | None = None,
     title: str | None = None,
-    color: str = "#348ABD",
-    marker: str = "o",
+    save_path: str | Path | None = None,
 ) -> plt.Axes:
     """Plot a single metric's sensitivity to a swept parameter.
 
@@ -381,12 +417,13 @@ def plot_sensitivity(
         metric: Name of the metric (used to find {metric}_mean and {metric}_std columns).
         sweep_col: Column name for the swept parameter (x-axis).
         baseline: Optional DataFrame with baseline row(s) for reference line.
+        per_trial_data: Optional DataFrame with per-trial values for scatter overlay. Should have
+            columns for sweep_col and metric (the raw metric name, not _mean/_std).
         ax: Matplotlib axes to plot on. If None, a new figure is created.
         metric_label: Label for the y-axis. Defaults to metric name.
         sweep_label: Label for the x-axis. Defaults to sweep_col.
         title: Plot title. Defaults to "{metric_label} sensitivity".
-        color: Color for the line and markers.
-        marker: Marker style.
+        save_path: Optional path to save the figure. If provided, saves at 150 dpi.
 
     Returns:
         The matplotlib axes with the plot.
@@ -400,28 +437,65 @@ def plot_sensitivity(
     sweep_label = sweep_label or sweep_col
     title = title or f"{metric_label} sensitivity"
 
-    # plot line with transparency
+    x_vals = swept[sweep_col].values
+    y_vals = swept[f"{metric}_mean"].values
+    y_err = swept[f"{metric}_std"].values
+
+    # thin black dashed line connecting points
     ax.plot(
-        swept[sweep_col],
-        swept[f"{metric}_mean"],
-        linestyle="-",
-        linewidth=3.5,
-        color=color,
-        alpha=0.4,
+        x_vals,
+        y_vals,
+        linestyle="--",
+        linewidth=0.5,
+        color="black",
         zorder=2,
     )
 
-    # plot markers with error bars
+    # individual sample points as small black dots (no jitter, 50% opacity for overlap visibility)
+    if per_trial_data is not None and metric in per_trial_data.columns:
+        for x_val in x_vals:
+            trial_vals = per_trial_data.loc[per_trial_data[sweep_col] == x_val, metric].values
+            ax.scatter(
+                np.full(len(trial_vals), x_val),
+                trial_vals,
+                s=12,
+                color="black",
+                zorder=2,
+                alpha=0.5,
+            )
+
+    # thin black error bars with small tails
     ax.errorbar(
-        swept[sweep_col],
-        swept[f"{metric}_mean"],
-        yerr=swept[f"{metric}_std"],
-        fmt=marker,
-        capsize=0,
-        markersize=6,
-        color=color,
-        markeredgecolor="white",
+        x_vals,
+        y_vals,
+        yerr=y_err,
+        fmt="none",
+        ecolor="black",
+        elinewidth=0.5,
+        capsize=2,
+        capthick=0.5,
         zorder=3,
+    )
+
+    # medium-large white circle markers with double black ring
+    ax.scatter(
+        x_vals,
+        y_vals,
+        s=120,
+        facecolor="white",
+        edgecolor="black",
+        linewidth=1,
+        zorder=4,
+    )
+    # inner ring for double-ring effect
+    ax.scatter(
+        x_vals,
+        y_vals,
+        s=60,
+        facecolor="white",
+        edgecolor="black",
+        linewidth=0.5,
+        zorder=5,
     )
 
     if baseline is not None and not baseline.empty:
@@ -432,28 +506,33 @@ def plot_sensitivity(
 
     ax.set_xlabel(sweep_label)
     ax.set_ylabel(metric_label)
-    ax.set_title(title, loc="left", fontweight="bold")
+    ax.set_title(title, loc="left", fontweight="medium", fontsize=10)
     ax.grid(True, axis="both", zorder=-1)
+
+    if save_path is not None:
+        fig = ax.get_figure()
+        fig.savefig(save_path, bbox_inches="tight", dpi=150)
 
     return ax
 
 
-def plot_tradeoff_with_pareto(
+def plot_tradeoff(
     swept: pd.DataFrame,
     x_metric: str,
     y_metric: str,
     sweep_col: str,
     baseline: pd.DataFrame | None = None,
-    baseline_label: str = "baseline",
+    per_trial_data: pd.DataFrame | None = None,
     ax: plt.Axes | None = None,
     x_label: str | None = None,
     y_label: str | None = None,
     sweep_label: str | None = None,
-    title: str = "tradeoff analysis",
-    cmap: str = "viridis",
+    title: str = "tradeoff",
+    cmap: str = "magma",
     show_pareto: bool = True,
     maximize_x: bool = True,
     maximize_y: bool = True,
+    save_path: str | Path | None = None,
 ) -> plt.Axes:
     """Plot a tradeoff scatter with optional Pareto frontier overlay.
 
@@ -462,8 +541,9 @@ def plot_tradeoff_with_pareto(
         x_metric: Metric for x-axis (uses {x_metric}_mean and {x_metric}_std).
         y_metric: Metric for y-axis (uses {y_metric}_mean and {y_metric}_std).
         sweep_col: Column for color-coding points.
-        baseline: Optional DataFrame with baseline row(s) for reference marker.
-        baseline_label: Label to display next to baseline marker.
+        baseline: Optional DataFrame with baseline row(s) for reference marker (shown as X).
+        per_trial_data: Optional DataFrame with per-trial values for scatter overlay. Should have
+            columns for sweep_col, x_metric, and y_metric (raw metric names, not _mean/_std).
         ax: Matplotlib axes to plot on. If None, a new figure is created.
         x_label: Label for x-axis. Defaults to x_metric.
         y_label: Label for y-axis. Defaults to y_metric.
@@ -473,6 +553,7 @@ def plot_tradeoff_with_pareto(
         show_pareto: Whether to overlay the Pareto frontier.
         maximize_x: Whether higher x values are better (for Pareto).
         maximize_y: Whether higher y values are better (for Pareto).
+        save_path: Optional path to save the figure. If provided, saves at 150 dpi.
 
     Returns:
         The matplotlib axes with the plot.
@@ -486,18 +567,11 @@ def plot_tradeoff_with_pareto(
     y_label = y_label or y_metric
     sweep_label = sweep_label or sweep_col
 
-    # scatter plot with color-coded sweep parameter
-    scatter = ax.scatter(
-        swept[f"{x_metric}_mean"],
-        swept[f"{y_metric}_mean"],
-        c=swept[sweep_col],
-        cmap=cmap,
-        s=100,
-        edgecolors="white",
-        zorder=3,
-    )
+    x_vals = swept[f"{x_metric}_mean"].values
+    y_vals = swept[f"{y_metric}_mean"].values
+    c_vals = swept[sweep_col].values
 
-    # background error bars
+    # thin black error bars with small tails (behind everything)
     for _, row in swept.iterrows():
         ax.errorbar(
             row[f"{x_metric}_mean"],
@@ -505,42 +579,97 @@ def plot_tradeoff_with_pareto(
             xerr=row[f"{x_metric}_std"],
             yerr=row[f"{y_metric}_std"],
             fmt="none",
-            color="#cccccc",
-            alpha=0.5,
-            zorder=2
+            ecolor="black",
+            elinewidth=0.5,
+            capsize=2,
+            capthick=0.5,
+            zorder=2,
         )
 
-    # baseline marker with text annotation
+    # per-trial scatter overlay (50% opacity for overlap visibility)
+    if per_trial_data is not None and x_metric in per_trial_data.columns and y_metric in per_trial_data.columns:
+        # get colormap for mapping sweep_col values to colors
+        cmap_obj = plt.get_cmap(cmap)
+        c_min, c_max = c_vals.min(), c_vals.max()
+        norm = plt.Normalize(vmin=c_min, vmax=c_max)
+
+        for sweep_val in c_vals:
+            trial_mask = per_trial_data[sweep_col] == sweep_val
+            trial_x = per_trial_data.loc[trial_mask, x_metric].values
+            trial_y = per_trial_data.loc[trial_mask, y_metric].values
+            color = cmap_obj(norm(sweep_val))
+            ax.scatter(
+                trial_x,
+                trial_y,
+                s=12,
+                color=color,
+                zorder=2,
+                alpha=0.5,
+            )
+
+    # outer ring (larger black circle)
+    ax.scatter(
+        x_vals,
+        y_vals,
+        s=120,
+        facecolor="none",
+        edgecolor="black",
+        linewidth=1,
+        zorder=3,
+    )
+
+    # inner ring (smaller black circle)
+    ax.scatter(
+        x_vals,
+        y_vals,
+        s=60,
+        facecolor="none",
+        edgecolor="black",
+        linewidth=0.5,
+        zorder=4,
+    )
+
+    # color-filled center
+    scatter = ax.scatter(
+        x_vals,
+        y_vals,
+        c=c_vals,
+        cmap=cmap,
+        s=50,
+        edgecolors="none",
+        zorder=5,
+    )
+
+    # baseline marker as X with error bars
     if baseline is not None and not baseline.empty:
         brow = baseline.iloc[0]
         bx, by = brow[f"{x_metric}_mean"], brow[f"{y_metric}_mean"]
-        ax.scatter(
-            bx,
-            by,
-            marker="X",
-            s=120,
-            c="#444444",
-            edgecolors="white",
-            zorder=4,
+        bx_err, by_err = brow[f"{x_metric}_std"], brow[f"{y_metric}_std"]
+        # error bars for baseline
+        ax.errorbar(
+            bx, by,
+            xerr=bx_err,
+            yerr=by_err,
+            fmt="none",
+            ecolor="black",
+            elinewidth=0.5,
+            capsize=2,
+            capthick=0.5,
+            zorder=6,
         )
-        ax.annotate(
-            baseline_label,
-            (bx, by),
-            xytext=(5, 5),
-            textcoords="offset points",
-            fontsize=8,
-            color="#444444",
-        )
+        # X marker for baseline
+        ax.scatter(bx, by, marker="X", s=100, c="black", linewidths=1.0, zorder=7)
 
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
-    ax.set_title(title, loc="left", fontweight="bold")
+    ax.set_title(title, loc="left", fontweight="medium", fontsize=10)
     ax.grid(True, zorder=-1)
 
     # colorbar
     cbar = plt.colorbar(scatter, ax=ax, label=sweep_label)
     cbar.outline.set_visible(False)
-    cbar.ax.tick_params(size=0)
+    cbar.ax.tick_params(size=0, colors=AXIS_GREY)
+    cbar.ax.yaxis.label.set_color(AXIS_GREY)
 
     # Pareto frontier (include baseline if provided)
     if show_pareto:
@@ -554,7 +683,64 @@ def plot_tradeoff_with_pareto(
             maximize_y=maximize_y,
         )
 
+    if save_path is not None:
+        fig = ax.get_figure()
+        fig.savefig(save_path, bbox_inches="tight", dpi=150)
+
     return ax
+
+
+# alias for backward compatibility
+plot_tradeoff_with_pareto = plot_tradeoff
+
+
+def _compute_pareto_points(
+    summary: pd.DataFrame,
+    x_metric: str,
+    y_metric: str,
+    maximize_x: bool = True,
+    maximize_y: bool = True,
+) -> list[tuple[float, float]]:
+    """Compute Pareto-optimal points from summary data.
+
+    A point is Pareto-optimal if no other point dominates it (i.e., no other point
+    is at least as good in both dimensions and strictly better in at least one).
+
+    Args:
+        summary: DataFrame with {x_metric}_mean and {y_metric}_mean columns.
+        x_metric: Metric for x-axis.
+        y_metric: Metric for y-axis.
+        maximize_x: Whether higher x values are better.
+        maximize_y: Whether higher y values are better.
+
+    Returns:
+        List of (x, y) tuples representing the Pareto frontier points, sorted by x.
+    """
+    x_mean = f"{x_metric}_mean"
+    y_mean = f"{y_metric}_mean"
+
+    points = [(row[x_mean], row[y_mean]) for _, row in summary.iterrows()]
+
+    pareto_points = []
+    for px, py in points:
+        dominated = False
+        for qx, qy in points:
+            # check if (qx, qy) dominates (px, py)
+            qx_better = (qx > px) if maximize_x else (qx < px)
+            qy_better = (qy > py) if maximize_y else (qy < py)
+            qx_equal_or_better = (qx >= px) if maximize_x else (qx <= px)
+            qy_equal_or_better = (qy >= py) if maximize_y else (qy <= py)
+
+            if qx_equal_or_better and qy_equal_or_better and (qx_better or qy_better):
+                dominated = True
+                break
+
+        if not dominated:
+            pareto_points.append((px, py))
+
+    # sort by x for plotting
+    pareto_points.sort(key=lambda p: p[0])
+    return pareto_points
 
 
 def _overlay_pareto_frontier(
@@ -578,32 +764,29 @@ def _overlay_pareto_frontier(
     Returns:
         List of (x, y) tuples representing the Pareto frontier points.
     """
-    x_mean = f"{x_metric}_mean"
-    y_mean = f"{y_metric}_mean"
-
-    # sort by x (descending if maximize, ascending otherwise)
-    sorted_df = summary.sort_values(x_mean, ascending=not maximize_x)
-
-    pareto_points = []
-    best_y = float("-inf") if maximize_y else float("inf")
-
-    for _, row in sorted_df.iterrows():
-        y_val = row[y_mean]
-        is_better = (y_val > best_y) if maximize_y else (y_val < best_y)
-        if is_better:
-            pareto_points.append((row[x_mean], y_val))
-            best_y = y_val
+    pareto_points = _compute_pareto_points(summary, x_metric, y_metric, maximize_x, maximize_y)
 
     if pareto_points:
-        pareto_x, pareto_y = zip(*sorted(pareto_points))
+        pareto_x, pareto_y = zip(*pareto_points)
         ax.plot(
             pareto_x,
             pareto_y,
-            color="#E24A33",
+            color="black",
             linestyle="-",
-            linewidth=1.5,
-            alpha=0.4,
+            linewidth=3,
+            alpha=0.3,
             zorder=2,
+        )
+        # add "frontier" label near the midpoint of the line
+        mid_idx = len(pareto_x) // 2
+        ax.annotate(
+            "frontier",
+            (pareto_x[mid_idx], pareto_y[mid_idx]),
+            xytext=(8, -8),
+            textcoords="offset points",
+            fontsize=8,
+            color=AXIS_GREY,
+            alpha=0.8,
         )
 
     return pareto_points
@@ -617,6 +800,7 @@ def plot_pareto_frontier(
     maximize_x: bool = True,
     maximize_y: bool = True,
     frontier_style: dict[str, Any] | None = None,
+    save_path: str | Path | None = None,
 ) -> tuple[plt.Axes, list[tuple[float, float]]]:
     """Overlay Pareto frontier on an existing or new scatter plot.
 
@@ -628,6 +812,7 @@ def plot_pareto_frontier(
         maximize_x: Whether higher x values are better.
         maximize_y: Whether higher y values are better.
         frontier_style: Dict of style kwargs for the frontier line.
+        save_path: Optional path to save the figure. If provided, saves at 150 dpi.
 
     Returns:
         Tuple of (axes, list of Pareto frontier points as (x, y) tuples).
@@ -638,31 +823,22 @@ def plot_pareto_frontier(
 
     if frontier_style is None:
         frontier_style = {
-            "color": "#E24A33",
+            "color": "black",
             "linestyle": "-",
-            "linewidth": 1.5,
-            "alpha": 0.4,
+            "linewidth": 3,
+            "alpha": 0.3,
             "zorder": 2,
         }
 
-    x_mean = f"{x_metric}_mean"
-    y_mean = f"{y_metric}_mean"
-
-    sorted_df = summary.sort_values(x_mean, ascending=not maximize_x)
-
-    pareto_points = []
-    best_y = float("-inf") if maximize_y else float("inf")
-
-    for _, row in sorted_df.iterrows():
-        y_val = row[y_mean]
-        is_better = (y_val > best_y) if maximize_y else (y_val < best_y)
-        if is_better:
-            pareto_points.append((row[x_mean], y_val))
-            best_y = y_val
+    pareto_points = _compute_pareto_points(summary, x_metric, y_metric, maximize_x, maximize_y)
 
     if pareto_points:
-        pareto_x, pareto_y = zip(*sorted(pareto_points))
+        pareto_x, pareto_y = zip(*pareto_points)
         ax.plot(pareto_x, pareto_y, label="pareto frontier", **frontier_style)
         ax.legend(frameon=False, loc="best")
+
+    if save_path is not None:
+        fig = ax.get_figure()
+        fig.savefig(save_path, bbox_inches="tight", dpi=150)
 
     return ax, pareto_points

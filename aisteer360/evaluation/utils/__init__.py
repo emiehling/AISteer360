@@ -28,6 +28,7 @@ try:
         plot_metric_heatmap,
         plot_pareto_frontier,
         plot_sensitivity,
+        plot_tradeoff,
         plot_tradeoff_scatter,
         plot_tradeoff_with_pareto,
     )
@@ -38,6 +39,7 @@ try:
         "plot_metric_heatmap",
         "plot_pareto_frontier",
         "plot_sensitivity",
+        "plot_tradeoff",
         "plot_tradeoff_scatter",
         "plot_tradeoff_with_pareto",
     ])
