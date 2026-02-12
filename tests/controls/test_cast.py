@@ -1,12 +1,9 @@
-import numpy as np
 import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control.cast.control import CAST
-from aisteer360.algorithms.state_control.cast.utils.steering_vector import (
-    SteeringVector,
-)
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = (
@@ -23,9 +20,8 @@ CAST_GRID = {
 
 
 def create_dummy_steering_vector(model_type, hidden_size, num_layer):
-    '''Creates a dummy steering vector for a given model_type, hidden_size and num_layer.'''
-
-    directions = {k: np.zeros((hidden_size,), dtype=float) for k in range(num_layer)}
+    """Creates a dummy steering vector for a given model_type, hidden_size and num_layer."""
+    directions = {k: torch.zeros(hidden_size) for k in range(num_layer)}
     explained_variances = {k: 0.5 for k in range(num_layer)}
     vec = SteeringVector(model_type=model_type, directions=directions, explained_variances=explained_variances)
     return vec
