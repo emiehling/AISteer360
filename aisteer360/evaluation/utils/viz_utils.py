@@ -408,6 +408,8 @@ def plot_sensitivity(
     metric_label: str | None = None,
     sweep_label: str | None = None,
     title: str | None = None,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
     save_path: str | Path | None = None,
 ) -> plt.Axes:
     """Plot a single metric's sensitivity to a swept parameter.
@@ -423,6 +425,8 @@ def plot_sensitivity(
         metric_label: Label for the y-axis. Defaults to metric name.
         sweep_label: Label for the x-axis. Defaults to sweep_col.
         title: Plot title. Defaults to "{metric_label} sensitivity".
+        xlim: Optional tuple of (min, max) for x-axis limits.
+        ylim: Optional tuple of (min, max) for y-axis limits.
         save_path: Optional path to save the figure. If provided, saves at 150 dpi.
 
     Returns:
@@ -509,6 +513,11 @@ def plot_sensitivity(
     ax.set_title(title, loc="left", fontweight="medium", fontsize=10)
     ax.grid(True, axis="both", zorder=-1)
 
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+
     if save_path is not None:
         fig = ax.get_figure()
         fig.savefig(save_path, bbox_inches="tight", dpi=150)
@@ -532,6 +541,8 @@ def plot_tradeoff(
     show_pareto: bool = True,
     maximize_x: bool = True,
     maximize_y: bool = True,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
     save_path: str | Path | None = None,
 ) -> plt.Axes:
     """Plot a tradeoff scatter with optional Pareto frontier overlay.
@@ -553,6 +564,8 @@ def plot_tradeoff(
         show_pareto: Whether to overlay the Pareto frontier.
         maximize_x: Whether higher x values are better (for Pareto).
         maximize_y: Whether higher y values are better (for Pareto).
+        xlim: Optional tuple of (min, max) for x-axis limits.
+        ylim: Optional tuple of (min, max) for y-axis limits.
         save_path: Optional path to save the figure. If provided, saves at 150 dpi.
 
     Returns:
@@ -665,11 +678,23 @@ def plot_tradeoff(
     ax.set_title(title, loc="left", fontweight="medium", fontsize=10)
     ax.grid(True, zorder=-1)
 
-    # colorbar
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+
+    # colorbar - use discrete ticks if sweep values are all integers
     cbar = plt.colorbar(scatter, ax=ax, label=sweep_label)
     cbar.outline.set_visible(False)
     cbar.ax.tick_params(size=0, colors=AXIS_GREY)
     cbar.ax.yaxis.label.set_color(AXIS_GREY)
+
+    # check if sweep values are discrete (all integers or integer-like floats)
+    unique_vals = np.unique(c_vals)
+    is_discrete = all(float(v).is_integer() for v in unique_vals)
+    if is_discrete and len(unique_vals) <= 10:
+        cbar.set_ticks(unique_vals)
+        cbar.set_ticklabels([str(int(v)) for v in unique_vals])
 
     # Pareto frontier (include baseline if provided)
     if show_pareto:
