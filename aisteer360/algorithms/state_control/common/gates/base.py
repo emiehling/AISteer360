@@ -1,4 +1,6 @@
 """Base class for runtime gates that control transform application."""
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 
 

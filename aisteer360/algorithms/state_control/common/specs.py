@@ -1,4 +1,6 @@
 """Shared specification dataclasses for state control components."""
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Literal, Sequence
 

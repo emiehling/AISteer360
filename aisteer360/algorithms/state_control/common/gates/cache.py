@@ -1,4 +1,6 @@
 """Wrapper gate that freezes the decision once ready."""
+from __future__ import annotations
+
 from .base import GateBase
 
 

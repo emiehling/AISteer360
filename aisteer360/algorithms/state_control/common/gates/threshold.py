@@ -1,4 +1,6 @@
 """Threshold gate that aggregates scores from multiple condition layers."""
+from __future__ import annotations
+
 from typing import Literal
 
 from ..specs import Comparator

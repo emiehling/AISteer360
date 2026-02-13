@@ -1,4 +1,6 @@
 """Token scope utilities for computing position masks."""
+from __future__ import annotations
+
 from typing import Literal
 
 import torch

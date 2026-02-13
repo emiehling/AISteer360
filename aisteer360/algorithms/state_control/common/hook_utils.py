@@ -1,4 +1,6 @@
 """Utilities for hook registration and model inspection."""
+from __future__ import annotations
+
 import torch
 from transformers import PreTrainedModel
 

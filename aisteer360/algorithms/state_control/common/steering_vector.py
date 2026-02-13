@@ -1,4 +1,6 @@
 """Steering vector: per-layer direction vectors learned by an estimator."""
+from __future__ import annotations
+
 import json
 import logging
 import os

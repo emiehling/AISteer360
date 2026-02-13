@@ -267,10 +267,11 @@ class SteeringPipeline:
             runtime_kwargs: Per-call parameters for state control
             **kwargs: Additional arguments passed to get_hooks()
         """
+        # reset state from previous generation before setting up new hooks
+        self.state_control.reset()
         hooks = self.state_control.get_hooks(steered_input_ids, runtime_kwargs, **kwargs)
         self.state_control.set_hooks(hooks)
         self.state_control._model_ref = self.model
-        self.state_control.reset()
 
     def generate(
             self,

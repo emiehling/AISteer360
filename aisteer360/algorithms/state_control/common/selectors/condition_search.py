@@ -1,4 +1,6 @@
 """Condition point search: find optimal (layer, threshold, comparator)."""
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
 
@@ -130,29 +132,25 @@ class ConditionPointSearcher(SelectorBase[ConditionPoint]):
             Hn = _pool_over_spans(hs_neg[lid], spans_neg)
             c = condition_directions[lid].to(Hp.dtype)
 
-            # compute similarities
+            # compute similarities: positives should have higher similarity to the condition direction
             sims_p = torch.tensor([_proj_sim(h, c) for h in Hp], dtype=torch.float32)
             sims_n = torch.tensor([_proj_sim(h, c) for h in Hn], dtype=torch.float32)
 
-            for cmp in ("larger", "smaller"):
-                for thr in grid:
-                    if cmp == "larger":
-                        yhat_p = sims_p >= thr
-                        yhat_n = sims_n >= thr
-                    else:
-                        yhat_p = sims_p <= thr
-                        yhat_n = sims_n <= thr
+            # gate opens when similarity >= threshold
+            for thr in grid:
+                yhat_p = sims_p >= thr
+                yhat_n = sims_n >= thr
 
-                    tp = int(yhat_p.sum().item())
-                    fp = int(yhat_n.sum().item())
-                    fn = len(sims_p) - tp
+                tp = int(yhat_p.sum().item())
+                fp = int(yhat_n.sum().item())
+                fn = len(sims_p) - tp
 
-                    prec = tp / (tp + fp + 1e-8)
-                    rec = tp / (tp + fn + 1e-8)
-                    f1 = 0.0 if prec + rec < 1e-8 else 2 * prec * rec / (prec + rec)
+                prec = tp / (tp + fp + 1e-8)
+                rec = tp / (tp + fn + 1e-8)
+                f1 = 0.0 if prec + rec < 1e-8 else 2 * prec * rec / (prec + rec)
 
-                    if f1 > best["f1"]:
-                        best.update(f1=f1, layer=lid, thr=float(thr), direction=cmp)
+                if f1 > best["f1"]:
+                    best.update(f1=f1, layer=lid, thr=float(thr), direction="larger")
 
         logger.debug(
             "Best condition point: layer=%d, threshold=%.3f, comparator=%s, f1=%.3f",
