@@ -35,25 +35,24 @@ nav:
     - Add a new state control: "tutorials/add_method_by_category/add_new_state_control.md"
     - Add a new structural control: "tutorials/add_method_by_category/add_new_structural_control.md"
   - Notebooks:
-    - Notebooks: notebooks/index.md
+    - Notebooks: examples/index.md
     - Controls:
       - Input control:
-        - FewShot: "notebooks/controls/few_shot.ipynb"
+        - FewShot: "examples/notebooks/control_few_shot/few_shot.ipynb"
       - Structural control:
-        - MergeKit wrapper: "notebooks/controls/mergekit_wrapper.ipynb"
-        - TRL wrapper: "notebooks/controls/trl_wrapper.ipynb"
+        - MergeKit wrapper: "examples/notebooks/wrapper_mergekit/mergekit_wrapper.ipynb"
+        - TRL wrapper: "examples/notebooks/wrapper_trl/trl_wrapper.ipynb"
       - State control:
-        - CAST: "notebooks/controls/cast.ipynb"
-        - PASTA: "notebooks/controls/pasta.ipynb"
+        - CAST: "examples/notebooks/control_cast/cast.ipynb"
+        - PASTA: "examples/notebooks/control_pasta/pasta.ipynb"
       - Output control:
-        - DeAL: "notebooks/controls/deal.ipynb"
-        - RAD: "notebooks/controls/rad.ipynb"
-        - SASA: "notebooks/controls/sasa.ipynb"
-        - ThinkingIntervention: "notebooks/controls/thinking_intervention.ipynb"
+        - DeAL: "examples/notebooks/control_deal/deal.ipynb"
+        - RAD: "examples/notebooks/control_rad/rad.ipynb"
+        - SASA: "examples/notebooks/control_sasa/sasa.ipynb"
+        - ThinkingIntervention: "examples/notebooks/control_thinking_intervention/thinking_intervention.ipynb"
     - Benchmarks:
-      - Commonsense MCQA: "notebooks/benchmarks/commonsense_mcqa.ipynb"
-      - Instruction following: "notebooks/benchmarks/instruction_following.ipynb"
-    - "notebooks/images/"
+      - Commonsense MCQA: "examples/notebooks/benchmark_commonsense_mcqa/commonsense_mcqa.ipynb"
+      - Instruction following: "examples/notebooks/benchmark_instruction_following/instruction_following.ipynb"
 #  - Developer notes:
 #      - Developer notes: dev_notes/index.md
 #      - "dev_notes/steering_lifecycle.md"

@@ -12,7 +12,7 @@ interventions.
 
 Steering pipelines are created using the `SteeringPipeline` class. The most common pattern is to specify a Hugging Face
 model name via `base_model_or_path` along with instantiated controls, e.g.,
-[`few_shot`](../notebooks/controls/few_shot.ipynb) and [`dpo`](../notebooks/controls/trl_wrapper.ipynb), as follows:
+[`few_shot`](../examples/notebooks/control_few_shot/few_shot.ipynb) and [`dpo`](../examples/notebooks/wrapper_trl/trl_wrapper.ipynb), as follows:
 
 ```python
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
