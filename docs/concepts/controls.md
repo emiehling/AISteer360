@@ -39,7 +39,7 @@ For a control method to be deemed an input control method, it must satisfy the f
 Some examples of input control methods include: few-shot prompting, reasoning guidance (like CoT, ToT, GoT,
 self-consistency), automatic prompting methods, and prompt routing. Few-shot prompting is implemented in our toolkit
 under the control name `FewShot` (source code: `algorithms/input_control/few_shot/control.py`). See the notebook
-here: [FewShot](../notebooks/controls/few_shot.ipynb).
+here: [FewShot](../examples/notebooks/control_few_shot/few_shot.ipynb).
 
 
 
@@ -65,8 +65,8 @@ Structural control methods satisfy the following requirements:
 Examples of structural control methods include: fine-tuning methods (full, parameter efficient), soft prompting (prefix
 tuning, p-tuning), and model merging. Many of the structural control methods in the toolkit are implemented using
 wrappers around existing libraries, e.g., Hugging Face's PEFT library. Some implementations of structural control
-methods can be found in the notebooks: [MergeKit](../notebooks/controls/mergekit_wrapper.ipynb)[@goddard-etal-2024-arcees],
-[TRL](../notebooks/controls/trl_wrapper.ipynb)[@vonwerra2022trl].
+methods can be found in the notebooks: [MergeKit](../examples/notebooks/wrapper_mergekit/mergekit_wrapper.ipynb)[@goddard-etal-2024-arcees],
+[TRL](../examples/notebooks/wrapper_trl/trl_wrapper.ipynb)[@vonwerra2022trl].
 
 
 ## State control
@@ -89,7 +89,7 @@ State control methods satisfy requirements:
 
 Some examples of output control methods include: activation addition/steering, attention steering, and representation
 patching. Example implementations of state control methods can be found in the following notebooks:
-[CAST](../notebooks/controls/cast.ipynb)[@lee2025programming], [PASTA](../notebooks/controls/pasta.ipynb)[@zhang2024tell].
+[CAST](../examples/notebooks/control_cast/cast.ipynb)[@lee2025programming], [PASTA](../examples/notebooks/control_pasta/pasta.ipynb)[@zhang2024tell].
 
 
 
@@ -111,6 +111,6 @@ Output control methods satisfy:
 - *Access*: Requires access to logits, token-probabilities, and possibly hidden states (depending on the method).
 
 Examples of output control methods include: sampling/search strategies, weighted decoding, and reward-augmented
-decoding. Some example methods can be found in the following notebooks: [DeAL](../notebooks/controls/deal.ipynb)[@huang2024deal],
-[RAD](../notebooks/controls/rad.ipynb)[@deng-raffel-2023-reward], [SASA](../notebooks/controls/sasa.ipynb)[@ko2025large],
-[ThinkingIntervention](../notebooks/controls/thinking_intervention.ipynb)[@wu2025effectively].
+decoding. Some example methods can be found in the following notebooks: [DeAL](../examples/notebooks/control_deal/deal.ipynb)[@huang2024deal],
+[RAD](../examples/notebooks/control_rad/rad.ipynb)[@deng-raffel-2023-reward], [SASA](../examples/notebooks/control_sasa/sasa.ipynb)[@ko2025large],
+[ThinkingIntervention](../examples/notebooks/control_thinking_intervention/thinking_intervention.ipynb)[@wu2025effectively].

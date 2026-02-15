@@ -83,4 +83,4 @@ print(few_shot_pipeline.tokenizer.decode(output[0], skip_special_tokens=True))
 ```
 
 And there you have it, a simple few-shot steering control. For more complex controls, as well as examples on how
-controls can be compared on a given task, please see the [example notebooks](../notebooks/index.md).
+controls can be compared on a given task, please see the [example notebooks](../examples/index.md).

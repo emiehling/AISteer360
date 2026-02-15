@@ -12,21 +12,22 @@ class BaseArgs:
     """Base class for all method's args classes."""
 
     @classmethod
-    def validate(cls: Type[T], data: Any | None = None, **kwargs) -> T:
+    def validate(cls: Type[T], _init_data: Any | None = None, **kwargs) -> T:
         """Create and validate an Args instance from dict, kwargs, or existing instance.
 
         Args:
-            data: Existing instance, dict of args, or None
-            **kwargs: Additional args (override values in data if both provided)
+            _init_data: Existing instance, dict of args, or None. Named with underscore prefix
+                to avoid collision with common field names like "data".
+            **kwargs: Additional args (override values in _init_data if both provided)
 
         Returns:
             Validated instance of the Args class
         """
 
-        if isinstance(data, cls):
-            return data
+        if isinstance(_init_data, cls):
+            return _init_data
 
-        if isinstance(data, Mapping):
-            kwargs = {**data, **kwargs}
+        if isinstance(_init_data, Mapping):
+            kwargs = {**_init_data, **kwargs}
 
         return cls(**kwargs)
