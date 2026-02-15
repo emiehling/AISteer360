@@ -10,9 +10,9 @@ based on the [CommonsenseQA dataset](https://huggingface.co/datasets/tau/commons
 ## Setup
 
 The only required file to create a use case is `use_case.py`. This file must be placed in a new directory
-`<custom_use_case>`, of your choosing, in `aisteer360/evaluation/use_cases`:
+`<custom_use_case>`, of your choosing, in `steerx/evaluation/use_cases`:
 ```
-aisteer360/
+steerx/
 └── evaluation/
     └── use_cases/
         └── <custom_use_case>/
@@ -25,9 +25,9 @@ evaluate the model's behavior. Any number of additional keyword arguments specif
 `num_shuffling_runs` for `CommonsenseMCQA`) can also be passed in to the class. For instance,
 
 ```python
-from aisteer360.evaluation.use_cases.commonsense_mcqa.use_case import CommonsenseMCQA
-from aisteer360.evaluation.metrics.custom.commonsense_mcqa.mcqa_accuracy import MCQAAccuracy
-from aisteer360.evaluation.metrics.custom.commonsense_mcqa.mcqa_positional_bias import MCQAPositionalBias
+from steerx.evaluation.use_cases.commonsense_mcqa.use_case import CommonsenseMCQA
+from steerx.evaluation.metrics.custom.commonsense_mcqa.mcqa_accuracy import MCQAAccuracy
+from steerx.evaluation.metrics.custom.commonsense_mcqa.mcqa_positional_bias import MCQAPositionalBias
 
 commonsense_mcqa = CommonsenseMCQA(
     evaluation_data_path="./data/evaluation_qa.jsonl",
@@ -54,7 +54,7 @@ task, this data (stored as a `jsonl` file) contains the following information:
 We've implemented two custom metrics for our use case: `MCQAAccuracy` for evaluating the accuracy statistics of choices
 with respect to the ground truth answers, and `MCQAPositionalBias` for measuring how much the model is biased toward
 choices in a given position. This tutorial will not go into depth about these metrics; please see their implementations
-at `aisteer360/evaluation/metrics/custom/commonsense_mcqa` for details. For details on contributing any new metrics
+at `steerx/evaluation/metrics/custom/commonsense_mcqa` for details. For details on contributing any new metrics
 (either generic metrics or those custom to a use case), please see the
 [tutorial on adding your own metric](./add_new_metric.md).
 
@@ -72,7 +72,7 @@ validation logic for their evaluation data (via `validate_evaluation_data`) base
 For our example use case:
 
 ```python
-from aisteer360.evaluation.use_cases.base import UseCase
+from steerx.evaluation.use_cases.base import UseCase
 
 _EVALUATION_REQ_KEYS = [
     "id",
@@ -273,5 +273,5 @@ def export(self, profiles: dict[str, Any], save_dir) -> None:
 
 
 For a complete example of the `CommonsenseMCQA` use case, please see the implementation located at
-`aisteer360/evaluation/use_cases/commonsense_mcqa/use_case.py`. For instructions on how to build an associated benchmark, please
+`steerx/evaluation/use_cases/commonsense_mcqa/use_case.py`. For instructions on how to build an associated benchmark, please
 see the [tutorial](./add_new_benchmark.md) and the [notebook](../examples/notebooks/benchmark_commonsense_mcqa/commonsense_mcqa.ipynb).

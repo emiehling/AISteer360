@@ -1,6 +1,6 @@
 # Output control
 
-::: aisteer360.algorithms.output_control.base
+::: steerx.algorithms.output_control.base
     handler: python
     options:
         show_if_no_docstring: true

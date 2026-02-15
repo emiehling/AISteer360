@@ -1,6 +1,6 @@
 # Instruction following metrics
 
-::: aisteer360.evaluation.metrics.custom.instruction_following
+::: steerx.evaluation.metrics.custom.instruction_following
     handler: python
     options:
         show_if_no_docstring: true

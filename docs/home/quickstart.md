@@ -1,9 +1,9 @@
 # Quickstart
 
-This guide will walk you through how to run a simple control in AISteer360.
+This guide will walk you through how to run a simple control in SteerX.
 
 !!! note
-    AISteer360 runs the model inside your process. For efficient inference on more complex steering operations, please
+    SteerX runs the model inside your process. For efficient inference on more complex steering operations, please
     run the toolkit from a machine that has enough GPU memory for both the base checkpoint and the extra overhead your
     steering method/pipeline adds.
 
@@ -43,7 +43,7 @@ negative_example_pool = [
 
 Using these pools, we define the `FewShot` control as follows:
 ```python
-from aisteer360.algorithms.input_control.few_shot.control import FewShot
+from steerx.algorithms.input_control.few_shot.control import FewShot
 
 few_shot = FewShot(
     selector_name="random",
@@ -56,7 +56,7 @@ few_shot = FewShot(
 
 We can then define a `SteeringPipeline` on a given base model using the above control:
 ```python
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerx.algorithms.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 few_shot_pipeline = SteeringPipeline(

@@ -15,7 +15,7 @@ model name via `base_model_or_path` along with instantiated controls, e.g.,
 [`few_shot`](../examples/notebooks/control_few_shot/few_shot.ipynb) and [`dpo`](../examples/notebooks/wrapper_trl/trl_wrapper.ipynb), as follows:
 
 ```python
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerx.algorithms.core.steering_pipeline import SteeringPipeline
 
 pipeline = SteeringPipeline(
     model_name_or_path="meta-llama/Llama-2-7b-hf",
@@ -53,7 +53,7 @@ Steering must be called exactly once before using the pipeline for inference.
 
 ## Running inference on the pipeline
 
-Once the pipeline has been steered, inference can be run using the `generate()` method. AISteer360 has been built to be
+Once the pipeline has been steered, inference can be run using the `generate()` method. SteerX has been built to be
 tightly integrated with Hugging Face and thus running inference on a steering pipeline is operationally similar to
 running inference on a Hugging Face model. As with Hugging Face models, prompts must first be encoded via the pipeline's
 tokenizer. It is also recommended to apply the tokenizer's chat template if available:

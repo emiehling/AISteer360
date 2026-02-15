@@ -1,7 +1,7 @@
 # Welcome!
 
 <p style="font-size: 1.05rem;">
-The AI Steerability 360 toolkit is an extensible library for general purpose steering of LLMs.
+The SteerX toolkit is an extensible library for general purpose steering of LLMs.
 </p>
 
 The term *steering* describes any deliberate action to change a model's behavior. Building on this term, the concept of
@@ -10,7 +10,7 @@ Quantifying a model's steerability is desirable primarily in that it enables a b
 model's generations can be controlled and, in turn, contributes to a better understanding of the model's general
 usability, safety, and alignment.[@sorensen2024roadmap]
 
-The AI Steerability 360 toolkit (AISteer360) provides a structured framework for both steering models and evaluating
+The SteerX toolkit (SteerX) provides a structured framework for both steering models and evaluating
 their steerability. To help organize the wide range of steering methods (e.g., few-shot learning, activation steering,
 attention reweighting, parameter-efficient fine-tuning, reward-driven decoding, etc.), the toolkit structures methods (hereafter referred to as
 *controls*) across four categories: **input**, **structural**, **state**, and **output**. Assuming that outputs \( y \)
@@ -38,7 +38,7 @@ given \( x \), control for each category is exerted as follows.
 
 </div>
 
-Given the above structure, AISteer360 enables the composition of various controls into a single operation on a
+Given the above structure, SteerX enables the composition of various controls into a single operation on a
 given model (each exercising control over a different component), in what we term a *steering pipeline*. Steering
 pipelines can consist of simply a single control (e.g., activation steering) or a sequence of multiple controls
 (e.g., LoRA following by reward-augmented decoding). This flexibility allows users to evaluate the impact of various
@@ -50,5 +50,5 @@ Benchmarks facilitate the comparison of steering pipelines on a given use case. 
 testing and comparing methods, addressing the current fragmentation in the field where steering algorithms are typically
 developed and evaluated within isolated, task-specific environments.[@liang2024controllable]
 
-We encourage the community to use AISteer360 in their steering workflows. We will continue to develop in the open, and
-encourage users to suggest any additional features or raise any issues on our [GitHub page](https://github.com/IBM/AISteer360).
+We encourage the community to use SteerX in their steering workflows. We will continue to develop in the open, and
+encourage users to suggest any additional features or raise any issues on our [GitHub page](https://github.com/Anonymous/SteerX).

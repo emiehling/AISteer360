@@ -6,9 +6,9 @@ metrics are of two categories:
 - Generic metrics: metrics that can be called from any use case.
 - Custom metrics:  metrics that are intended to be called from a specific use case (e.g., question answering)
 
-Depending on the metric category, structure your files in `aisteer360/evaluation/metrics` as follows:
+Depending on the metric category, structure your files in `steerx/evaluation/metrics` as follows:
 ```
-aisteer360/
+steerx/
 └── evaluation/
     └── metrics/
         ├── custom/
@@ -21,8 +21,8 @@ aisteer360/
 Implementation of a new metric is the same regardless of the metric's category. Both generic and custom metrics can be
 one of two types:
 
-- standard: subclasses `Metric` from `aisteer360.evaluation.metrics.base`
-- LLM-as-a-judge: subclasses `LLMJudgeMetric` from `aisteer360.evaluation.metrics.base_judge`
+- standard: subclasses `Metric` from `steerx.evaluation.metrics.base`
+- LLM-as-a-judge: subclasses `LLMJudgeMetric` from `steerx.evaluation.metrics.base_judge`
 
 All metrics compute scores using at minimum a `response`, with an optional field `prompt`. Any other necessary arguments
 can be passed into the metric's `compute` method via `kwargs`.
@@ -40,7 +40,7 @@ Below is an example implementation of a `DistinctN` metric (for computing unigra
 from itertools import islice
 from typing import Any
 
-from aisteer360.evaluation.metrics.base import Metric
+from steerx.evaluation.metrics.base import Metric
 
 
 class DistinctN(Metric):
@@ -88,7 +88,7 @@ class DistinctN(Metric):
 The above metric is called as follows:
 
 ```python
-from aisteer360.evaluation.metrics.generic.distinct_n import DistinctN
+from steerx.evaluation.metrics.generic.distinct_n import DistinctN
 
 responses = [
     "I love exploring new places.",
@@ -114,7 +114,7 @@ interval (`lower_bound` and `upper_bound`). Optionally, the template can contain
 instance, the `Factuality` metric requires the `response` (the model's answer) and the `prompt` (the question).
 
 ```python
-from aisteer360.evaluation.metrics.base_judge import LLMJudgeMetric
+from steerx.evaluation.metrics.base_judge import LLMJudgeMetric
 
 
 _PROMPT = """\
@@ -153,7 +153,7 @@ LLM-as-a-judge metrics are initialized by specifying the judge model (via `model
 `num_return_sequences`.
 
 ```python
-from aisteer360.evaluation.metrics.generic.relevance import Relevance
+from steerx.evaluation.metrics.generic.relevance import Relevance
 
 # metric parameters
 judge_model = "meta-llama/Llama-3.2-3B-Instruct"

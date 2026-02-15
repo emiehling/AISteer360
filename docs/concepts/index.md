@@ -1,6 +1,6 @@
 # Concepts
 
-AISteer360 structures steering methods, termed *controls* in the toolkit, into four categories: input, structural, state,
+SteerX structures steering methods, termed *controls* in the toolkit, into four categories: input, structural, state,
 and output. To learn more about these categories, and what dictates why a control is of a particular type, please see the
 conceptual [guide on controls](controls.md).
 

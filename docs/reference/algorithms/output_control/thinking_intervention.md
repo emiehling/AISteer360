@@ -1,6 +1,6 @@
 # ThinkingIntervention
 
-::: aisteer360.algorithms.output_control.thinking_intervention
+::: steerx.algorithms.output_control.thinking_intervention
     handler: python
     options:
         show_if_no_docstring: true

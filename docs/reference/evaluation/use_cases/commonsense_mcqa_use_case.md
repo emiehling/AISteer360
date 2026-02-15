@@ -1,6 +1,6 @@
 # CommonsenseMCQA
 
-::: aisteer360.evaluation.use_cases.commonsense_mcqa
+::: steerx.evaluation.use_cases.commonsense_mcqa
     handler: python
     options:
         show_if_no_docstring: true

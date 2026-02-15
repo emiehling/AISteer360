@@ -3,8 +3,8 @@ import random
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control.few_shot.control import FewShot
+from steerx.algorithms.core.steering_pipeline import SteeringPipeline
+from steerx.algorithms.input_control.few_shot.control import FewShot
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = (

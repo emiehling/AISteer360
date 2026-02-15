@@ -31,9 +31,9 @@ instantiated by passing in the evaluation dataset, the metrics of interest, `MCQ
 and a use case specific argument (`num_shuffling_runs`):
 
 ```python
-from aisteer360.evaluation.use_cases.commonsense_mcqa.use_case import CommonsenseMCQA
-from aisteer360.evaluation.metrics.custom.commonsense_mcqa.mcqa_accuracy import MCQAAccuracy
-from aisteer360.evaluation.metrics.custom.commonsense_mcqa.mcqa_positional_bias import MCQAPositionalBias
+from steerx.evaluation.use_cases.commonsense_mcqa.use_case import CommonsenseMCQA
+from steerx.evaluation.metrics.custom.commonsense_mcqa.mcqa_accuracy import MCQAAccuracy
+from steerx.evaluation.metrics.custom.commonsense_mcqa.mcqa_positional_bias import MCQAPositionalBias
 
 commonsense_mcqa = CommonsenseMCQA(
     evaluation_data="data/evaluation_qa.jsonl",
@@ -105,7 +105,7 @@ train_ds = Dataset.from_list(train_examples)
 
 The controls can now be instantiated as follows:
 ```python
-from aisteer360.algorithms.input_control.few_shot.control import FewShot
+from steerx.algorithms.input_control.few_shot.control import FewShot
 
 few_shot = FewShot(
     selector_name="random",
@@ -118,7 +118,7 @@ few_shot = FewShot(
 and
 ```python
 from peft import PeftType
-from aisteer360.algorithms.structural_control.wrappers.trl.dpotrainer.control import DPO
+from steerx.algorithms.structural_control.wrappers.trl.dpotrainer.control import DPO
 
 dpo_lora = DPO(
     train_dataset=train_ds,
@@ -165,7 +165,7 @@ A benchmark can also optionally accept
 
 The benchmark for `CommonsenseMCQA` can now be constructed as follows:
 ```python
-from aisteer360.evaluation.benchmark import Benchmark
+from steerx.evaluation.benchmark import Benchmark
 
 benchmark = Benchmark(
     use_case=commonsense_mcqa,
@@ -214,7 +214,7 @@ instruction_following = InstructionFollowing(
 
 The `PASTA` control is instantiated via:
 ```python
-from aisteer360.algorithms.state_control.pasta.control import PASTA
+from steerx.algorithms.state_control.pasta.control import PASTA
 pasta = PASTA(
     head_config=[8,9],
     alpha=0.01,
@@ -234,7 +234,7 @@ def instruction_following_intervention(prompt: str, params: dict) -> str:
 ```
 which is then used when instantiating the control:
 ```python
-from aisteer360.algorithms.output_control.thinking_intervention.control import ThinkingIntervention
+from steerx.algorithms.output_control.thinking_intervention.control import ThinkingIntervention
 
 thinking_intervention = ThinkingIntervention(
     intervention=instruction_following_intervention

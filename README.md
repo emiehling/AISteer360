@@ -1,21 +1,16 @@
-![AISteer360](https://github.com/IBM/AISteer360/raw/main/docs/assets/logo_wide_darkmode.png#gh-dark-mode-only)
-![AISteer360](https://github.com/IBM/AISteer360/raw/main/docs/assets/logo_wide_darkmode.png#gh-light-mode-only)
-
 [//]: # (to add: arxiv; pypi; ci)
-[![Docs](https://img.shields.io/badge/docs-live-brightgreen)](https://ibm.github.io/AISteer360/)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue)
-[![GitHub License](https://img.shields.io/github/license/generative-computing/mellea)](https://img.shields.io/github/license/generative-computing/mellea)
 
 ---
 
-The AI Steerability 360 toolkit is an extensible library for general purpose steering of LLMs. The toolkit allows for
+# SteerX
+
+The SteerX toolkit is an extensible library for general purpose steering of LLMs. The toolkit allows for
 the implementation of steering methods across a range of model control surfaces (input, structural, state, and output),
 functionality to compose steering methods (into a `SteeringPipeline`), and the ability to compare steering methods
 (and pipelines) on custom tasks/metrics.
-
-To get started, please see the [documentation](https://ibm.github.io/AISteer360/).
 
 ## Installation
 
@@ -35,27 +30,18 @@ HUGGINGFACE_TOKEN=hf_***
 
 Some Hugging Face models (e.g. `meta-llama/Meta-Llama-3.1-8B-Instruct`) are behind an access gate. To gain access:
 
-1. Request access on the model’s Hub page with the same account whose token you’ll pass to the toolkit.
-2. Wait for approval (you’ll receive an email).
+1. Request access on the model's Hub page with the same account whose token you'll pass to the toolkit.
+2. Wait for approval (you'll receive an email).
 3. (Re-)authenticate locally by running `huggingface-cli login` if your token has expired or was never saved.
 
 
 ## Example library
 
 > [!NOTE]
-> AISteer360 runs the model inside your process. For efficient inference, please run the toolkit from a machine that
-> has enough GPU memory for both the base checkpoint and the extra overhead your steering method/pipeline adds. 
+> SteerX runs the model inside your process. For efficient inference, please run the toolkit from a machine that
+> has enough GPU memory for both the base checkpoint and the extra overhead your steering method/pipeline adds.
 
-Notebook examples for each of the supported steering methods (and wrappers) can be found in the `examples/notebooks/` directory. For detailed investigations into realistic applications using the toolkit, please see our featured examples below.
-
-| <div style="font-size: 18px; font-weight: bold; text-align: left;">Steering for instruction following</div>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| A model's instruction following ability is an important measure of its general usability. This notebook studies the effect of post-hoc attention steering ([PASTA](https://arxiv.org/abs/2311.02262)) on a model's ability to follow instructions. We sweep over the steering strength and investigate the trade-off between a model's instruction following ability and general response quality.<br /><br /><a target="_blank" rel="noopener noreferrer" href="https://colab.research.google.com/github/IBM/AISteer360/blob/main/examples/notebooks/benchmark_instruction_following/instruction_following.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a> |
-
-| <div style="font-size: 18px; font-weight: bold; text-align: left;">Steering for commonsense reasoning</div>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Multiple choice question answering is a common format for evaluating a model's reasoning ability. This notebook benchmarks steering methods on the [CommonsenseQA](https://huggingface.co/datasets/tau/commonsense_qa) dataset, comparing few-shot prompting against a LoRA adapter trained with DPO. We sweep over the number of few-shot examples and study how accuracy scales relative to the fine-tuned baseline across a few different models.<br /><br /><a target="_blank" rel="noopener noreferrer" href="https://colab.research.google.com/github/IBM/AISteer360/blob/main/examples/notebooks/benchmark_commonsense_mcqa/commonsense_mcqa.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a> |
-
+Notebook examples for each of the supported steering methods (and wrappers) can be found in the `examples/notebooks/` directory.
 
 
 ## Contributing
@@ -76,7 +62,7 @@ tutorial on [adding your own steering method](./docs/tutorials/add_new_steering_
 ### Adding a new use case / benchmark
 
 Use cases enable comparison of different steering methods on a common task. The `UseCase`
-(`aisteer360/evaluation/use_cases/`) and `Benchmark` classes (`aisteer360/evaluation/benchmark.py`) enable this
+(`steerx/evaluation/use_cases/`) and `Benchmark` classes (`steerx/evaluation/benchmark.py`) enable this
 comparison. If you'd like to compare various steering methods/pipelines on a novel use case, please see the tutorial on
 [adding your own use case](./docs/tutorials/add_new_use_case.md).
 
@@ -84,11 +70,6 @@ comparison. If you'd like to compare various steering methods/pipelines on a nov
 ### Adding a new metric
 
 Metrics are used by a given benchmark to quantify model performance across steering pipelines in a comparable way. We've
-included a selection of generic metrics (see `aisteer360/evaluation/metrics/`). If you'd like to add new generic metrics
+included a selection of generic metrics (see `steerx/evaluation/metrics/`). If you'd like to add new generic metrics
 or custom metrics (for a new use case), please see the tutorial on
 [adding your own metric](./docs/tutorials/add_new_metric.md).
-
-
-## IBM ❤️ Open Source AI
-
-The AI Steerability 360 toolkit has been brought to you by IBM.

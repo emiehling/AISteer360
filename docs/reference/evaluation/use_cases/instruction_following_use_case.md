@@ -1,6 +1,6 @@
 # InstructionFollowing
 
-::: aisteer360.evaluation.use_cases.instruction_following
+::: steerx.evaluation.use_cases.instruction_following
     handler: python
     options:
         show_if_no_docstring: true

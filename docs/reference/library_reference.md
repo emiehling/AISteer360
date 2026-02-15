@@ -1,6 +1,6 @@
 # API reference
 
-::: aisteer360
+::: steerx
     handler: python
     options:
         show_if_no_docstring: true

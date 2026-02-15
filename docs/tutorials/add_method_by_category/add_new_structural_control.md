@@ -28,7 +28,7 @@ field for `target_modules` must contain `default_factory=list` instead of simply
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from steerx.algorithms.core.base_args import BaseArgs
 
 
 @dataclass
@@ -67,8 +67,8 @@ weight tensors in-place (via the Hugging Face's built-in `prune_heads` utility).
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.structural_control.base import StructuralControl
-from aisteer360.algorithms.structural_control.noise_injection.args import NoiseInjectionArgs
+from steerx.algorithms.structural_control.base import StructuralControl
+from steerx.algorithms.structural_control.noise_injection.args import NoiseInjectionArgs
 
 
 class NoiseInjection(StructuralControl):
@@ -110,8 +110,8 @@ class NoiseInjection(StructuralControl):
 The control can then be called via:
 
 ```python
-from aisteer360.algorithms.structural_control.noise_injection.control import NoiseInjection
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerx.algorithms.structural_control.noise_injection.control import NoiseInjection
+from steerx.algorithms.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 

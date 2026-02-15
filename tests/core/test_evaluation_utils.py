@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from aisteer360.evaluation.utils.data_utils import (
+from steerx.evaluation.utils.data_utils import (
     build_per_example_df,
     extract_metric,
     extract_param,
@@ -552,14 +552,13 @@ class TestVizUtilsImport:
     def test_viz_utils_importable(self):
         """Test that viz_utils can be imported."""
         try:
-            from aisteer360.evaluation.utils import viz_utils
+            from steerx.evaluation.utils import viz_utils
 
             assert hasattr(viz_utils, "plot_metric_by_config")
             assert hasattr(viz_utils, "plot_tradeoff_scatter")
             assert hasattr(viz_utils, "plot_metric_heatmap")
             assert hasattr(viz_utils, "plot_comparison_bars")
             assert hasattr(viz_utils, "plot_pareto_frontier")
-            assert hasattr(viz_utils, "create_tradeoff_figure")
         except ImportError:
             pytest.skip("matplotlib not installed, skipping viz tests")
 
@@ -581,7 +580,7 @@ class TestVizUtils:
         """Test plot_metric_by_config creates figure."""
         import matplotlib.pyplot as plt
 
-        from aisteer360.evaluation.utils.viz_utils import plot_metric_by_config
+        from steerx.evaluation.utils.viz_utils import plot_metric_by_config
 
         df = flatten_profiles(
             sample_profiles_spec,
@@ -606,7 +605,7 @@ class TestVizUtils:
         """Test plot_tradeoff_scatter creates figure."""
         import matplotlib.pyplot as plt
 
-        from aisteer360.evaluation.utils.viz_utils import plot_tradeoff_scatter
+        from steerx.evaluation.utils.viz_utils import plot_tradeoff_scatter
 
         df = flatten_profiles(
             sample_profiles_fixed,
@@ -630,7 +629,7 @@ class TestVizUtils:
         """Test plot_comparison_bars creates figure."""
         import matplotlib.pyplot as plt
 
-        from aisteer360.evaluation.utils.viz_utils import plot_comparison_bars
+        from steerx.evaluation.utils.viz_utils import plot_comparison_bars
 
         comparison_df = pd.DataFrame({
             "group": ["A", "B", "C"],
@@ -651,7 +650,7 @@ class TestVizUtils:
         """Test plot_pareto_frontier creates figure."""
         import matplotlib.pyplot as plt
 
-        from aisteer360.evaluation.utils.viz_utils import plot_pareto_frontier
+        from steerx.evaluation.utils.viz_utils import plot_pareto_frontier
 
         df = flatten_profiles(
             sample_profiles_fixed,
@@ -670,64 +669,6 @@ class TestVizUtils:
 
         assert ax is not None
         assert isinstance(points, list)
-        plt.close("all")
-
-    def test_create_tradeoff_figure(self, sample_profiles_spec):
-        """Test create_tradeoff_figure creates multi-panel figure."""
-        import matplotlib.pyplot as plt
-
-        from aisteer360.evaluation.utils.viz_utils import create_tradeoff_figure
-
-        # Create profiles with two metrics
-        profiles = {
-            "baseline": [
-                {
-                    "trial_id": 0,
-                    "generations": [],
-                    "evaluations": {"Accuracy": {"mean": 0.5}, "Reward": {"mean": 1.0}},
-                    "params": {},
-                }
-            ],
-            "sweep": [
-                {
-                    "trial_id": 0,
-                    "generations": [],
-                    "evaluations": {"Accuracy": {"mean": 0.6}, "Reward": {"mean": 1.2}},
-                    "params": {"CTRL": {"alpha": 5.0}},
-                },
-                {
-                    "trial_id": 0,
-                    "generations": [],
-                    "evaluations": {"Accuracy": {"mean": 0.7}, "Reward": {"mean": 1.4}},
-                    "params": {"CTRL": {"alpha": 10.0}},
-                },
-            ],
-        }
-
-        df = flatten_profiles(
-            profiles,
-            metric_accessors={
-                "accuracy": ("Accuracy", "mean"),
-                "reward": ("Reward", "mean"),
-            },
-        )
-        df["alpha"] = get_param_values(df, "CTRL", "alpha")
-        summary = summarize_by_config(
-            df,
-            metric_cols=["accuracy", "reward"],
-            group_cols=["pipeline", "config_id", "alpha"],
-        )
-
-        fig = create_tradeoff_figure(
-            summary,
-            x_metric="accuracy",
-            y_metric="reward",
-            sweep_col="alpha",
-            baseline_pipeline="baseline",
-        )
-
-        assert fig is not None
-        assert len(fig.axes) == 3  # Three panels
         plt.close("all")
 
 

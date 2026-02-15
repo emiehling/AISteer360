@@ -3,9 +3,8 @@ NOTICE
 This distribution contains code licensed under multiple open source licenses.
 
 1. Original Toolkit Code
-   Name: aisteer360 — AI Steerability 360 Toolkit
+   Name: steerx — SteerX Toolkit
    Version: 0.1.0
-   Copyright © 2025 IBM Research
    Licensed under the Apache License, Version 2.0
    https://www.apache.org/licenses/LICENSE-2.0
 
@@ -28,7 +27,7 @@ This distribution contains code licensed under multiple open source licenses.
    Source: https://github.com/huggingface/trl
 
 License Summary:
-- The original aisteer360 toolkit code is licensed under Apache 2.0.
+- The original steerx toolkit code is licensed under Apache 2.0.
 - MergeKit v0.0.5.1 is licensed under LGPL-3.0-or-later and included as an unmodified dependency.
 - TRL v0.16.1 is licensed under Apache 2.0 and included as an unmodified dependency.
 - MergeKit versions after 0.0.5.1 use the BSL and are not included in this distribution.

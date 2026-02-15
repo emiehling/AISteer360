@@ -32,7 +32,7 @@ The control requires two arguments: a list of `blocked_words` to filter, and a `
 by the following `args.py` file:
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from steerx.algorithms.core.base_args import BaseArgs
 
 
 @dataclass
@@ -63,8 +63,8 @@ from typing import Any, Callable
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.input_control.prompt_censor.args import PromptCensorArgs
+from steerx.algorithms.input_control.base import InputControl
+from steerx.algorithms.input_control.prompt_censor.args import PromptCensorArgs
 
 
 class PromptCensor(InputControl):
@@ -123,8 +123,8 @@ Note that the method's steer method attaches the tokenizer to the control.
 Once the above files are in place, the prompt censor control can be initialized and by simply writing the following:
 
 ```python
-from aisteer360.algorithms.input_control.prompt_censor.control import PromptCensor
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerx.algorithms.input_control.prompt_censor.control import PromptCensor
+from steerx.algorithms.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "microsoft/Phi-3.5-mini-instruct"
 

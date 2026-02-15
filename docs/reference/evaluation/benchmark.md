@@ -1,6 +1,6 @@
 # Benchmark
 
-::: aisteer360.evaluation.benchmark
+::: steerx.evaluation.benchmark
     handler: python
     options:
         show_if_no_docstring: true

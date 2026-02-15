@@ -1,6 +1,6 @@
 # Commonsense MCQA metrics
 
-::: aisteer360.evaluation.metrics.custom.commonsense_mcqa
+::: steerx.evaluation.metrics.custom.commonsense_mcqa
     handler: python
     options:
         show_if_no_docstring: true

@@ -1,7 +1,4 @@
-site_name: AISteer360
-site_url: https://ibm.github.io/AISteer360/
-repo_name: IBM/AISteer360
-repo_url: https://github.com/IBM/AISteer360
+site_name: SteerX
 
 theme:
   name: material
@@ -31,7 +28,6 @@ theme:
         icon: material/brightness-4
         name: Switch to system preference
 
-  logo: assets/logo_darkmode.png
   favicon: assets/favicon.png
   features:
     - content.tabs.link
@@ -55,7 +51,7 @@ extra:
   announcement:
     type: info          # info | warning | success | danger
     text: |
-      **Aug 2025:** Initial release of **AI Steerability 360**!
+      **Aug 2025:** Initial release of **SteerX**!
 
 markdown_extensions:
   - pymdownx.tabbed:
@@ -94,7 +90,7 @@ plugins:
             extensions:
             - griffe_inherited_docstrings
             preload_modules:
-              - aisteer360
+              - steerx
   - mkdocs-jupyter
   - search
   - include-markdown

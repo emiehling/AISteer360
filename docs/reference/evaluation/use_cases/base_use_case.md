@@ -1,6 +1,6 @@
 # Use cases
 
-::: aisteer360.evaluation.use_cases.base
+::: steerx.evaluation.use_cases.base
     handler: python
     options:
         show_if_no_docstring: true

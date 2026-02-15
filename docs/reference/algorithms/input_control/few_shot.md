@@ -1,6 +1,6 @@
 # FewShot
 
-::: aisteer360.algorithms.input_control.few_shot
+::: steerx.algorithms.input_control.few_shot
     handler: python
     options:
         show_if_no_docstring: true

@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.cast.control import CAST
-from aisteer360.algorithms.state_control.cast.utils.steering_vector import (
+from steerx.algorithms.core.steering_pipeline import SteeringPipeline
+from steerx.algorithms.state_control.cast.control import CAST
+from steerx.algorithms.state_control.cast.utils.steering_vector import (
     SteeringVector,
 )
 from tests.utils.sweep import build_param_grid

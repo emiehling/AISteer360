@@ -25,7 +25,7 @@ Next, define the arguments class. This is where we define the required arguments
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from steerx.algorithms.core.base_args import BaseArgs
 
 
 @dataclass
@@ -50,8 +50,8 @@ Lastly, the control is implemented as follows:
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.state_control.base import StateControl, HookSpec
-from aisteer360.algorithms.state_control.activation_bias.args import ActivationBiasArgs
+from steerx.algorithms.state_control.base import StateControl, HookSpec
+from steerx.algorithms.state_control.activation_bias.args import ActivationBiasArgs
 
 
 class ActivationBias(StateControl):
@@ -114,12 +114,12 @@ class ActivationBias(StateControl):
 ```
 
 The hooks are then registered into the model via the `register_hooks` method in the state control base class
-(`aisteer360/algorithms/state_control/base.py`) such that they can be run on every `generate` call. The control can
+(`steerx/algorithms/state_control/base.py`) such that they can be run on every `generate` call. The control can
 then be called via:
 
 ```python
-from aisteer360.algorithms.state_control.activation_bias.control import ActivationBias
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerx.algorithms.state_control.activation_bias.control import ActivationBias
+from steerx.algorithms.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
 

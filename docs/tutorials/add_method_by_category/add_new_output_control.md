@@ -27,7 +27,7 @@ keywords are passed in at inference time since they are tied to the specific pro
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from steerx.algorithms.core.base_args import BaseArgs
 
 
 @dataclass
@@ -55,8 +55,8 @@ from typing import Any
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.output_control.base import OutputControl
-from aisteer360.algorithms.output_control.keyword_reranker.args import KeywordRerankerArgs
+from steerx.algorithms.output_control.base import OutputControl
+from steerx.algorithms.output_control.keyword_reranker.args import KeywordRerankerArgs
 
 
 class KeywordReranker(OutputControl):
@@ -134,8 +134,8 @@ class KeywordReranker(OutputControl):
 The control can then be run as follows:
 
 ```python
-from aisteer360.algorithms.output_control.keyword_reranker.control import KeywordReranker
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerx.algorithms.output_control.keyword_reranker.control import KeywordReranker
+from steerx.algorithms.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "microsoft/Phi-3.5-mini-instruct"
 

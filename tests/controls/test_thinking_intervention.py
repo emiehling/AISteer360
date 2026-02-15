@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.output_control.thinking_intervention.control import (
+from steerx.algorithms.core.steering_pipeline import SteeringPipeline
+from steerx.algorithms.output_control.thinking_intervention.control import (
     ThinkingIntervention,
 )
 from tests.utils.sweep import build_param_grid

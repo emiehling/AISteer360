@@ -1,6 +1,6 @@
 # Generic metrics
 
-::: aisteer360.evaluation.metrics.generic
+::: steerx.evaluation.metrics.generic
     handler: python
     options:
         show_if_no_docstring: true

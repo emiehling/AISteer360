@@ -6,10 +6,10 @@ steering method is dictated by what aspects of the model the method influences. 
 
 ## Required files
 
-Once you have determined the steering category, create the following files in `aisteer360/algorithms`:
+Once you have determined the steering category, create the following files in `steerx/algorithms`:
 
 ```
-aisteer360/
+steerx/
 └── algorithms/
         └── <category>/
             └── <custom_control>/
@@ -50,7 +50,7 @@ logic.
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from steerx.algorithms.core.base_args import BaseArgs
 
 @dataclass
 class CustomControlArgs(BaseArgs):

@@ -1,6 +1,6 @@
 # Metrics
 
-::: aisteer360.evaluation.metrics.base
+::: steerx.evaluation.metrics.base
     handler: python
     options:
         show_if_no_docstring: true
@@ -17,7 +17,7 @@
         filters:
           - "!^_"
 
-::: aisteer360.evaluation.metrics.base_judge
+::: steerx.evaluation.metrics.base_judge
     handler: python
     options:
         show_if_no_docstring: true

@@ -2,9 +2,9 @@
 import pytest
 import torch
 
-from aisteer360.algorithms.state_control.act_add import ActAdd, ActAddArgs
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control.common.estimators import SinglePairEstimator
+from steerx.algorithms.state_control.act_add import ActAdd, ActAddArgs
+from steerx.algorithms.state_control.common.steering_vector import SteeringVector
+from steerx.algorithms.state_control.common.estimators import SinglePairEstimator
 
 
 class TestActAddArgs:
@@ -229,7 +229,7 @@ class TestActAdd:
 
     def test_registry_entry(self):
         """Test that registry entry is correctly configured."""
-        from aisteer360.algorithms.state_control.act_add import STEERING_METHOD
+        from steerx.algorithms.state_control.act_add import STEERING_METHOD
 
         assert STEERING_METHOD["category"] == "state_control"
         assert STEERING_METHOD["name"] == "act_add"
