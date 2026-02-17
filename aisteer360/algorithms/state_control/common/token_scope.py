@@ -8,25 +8,31 @@ TokenScope = Literal["all", "after_prompt", "last_k", "from_position"]
 
 def compute_prompt_lens(
     input_ids: torch.LongTensor,
-    pad_token_id: int | None,
+    pad_token_id: int | None = None,  # noqa: ARG001
 ) -> torch.LongTensor:
     """Compute per-batch-item prompt lengths from input_ids.
 
-    For left-padded sequences, the prompt length is the number of non-pad
-    tokens. For sequences without padding, it equals seq_len.
+    For the "after_prompt" token scope, the prompt length should represent the
+    absolute position where generation begins. With KV-cached generation, this
+    is always the full input sequence length (seq_len), regardless of padding
+    side or pad token count. The model's KV cache covers all input positions
+    including pads, and generation continues from position seq_len.
 
     Args:
         input_ids: Shape [B, T] or [T].
-        pad_token_id: The pad token id, or None if no padding.
+        pad_token_id: Unused. Kept for API compatibility.
 
     Returns:
-        Tensor of shape [B] with prompt lengths.
+        Tensor of shape [B] where each value is seq_len.
     """
     if input_ids.ndim == 1:
         input_ids = input_ids.unsqueeze(0)
-    if pad_token_id is None:
-        return torch.full((input_ids.size(0),), input_ids.size(1), dtype=torch.long, device=input_ids.device)
-    return (input_ids != pad_token_id).sum(dim=1)
+    return torch.full(
+        (input_ids.size(0),),
+        input_ids.size(1),
+        dtype=torch.long,
+        device=input_ids.device,
+    )
 
 
 def make_token_mask(

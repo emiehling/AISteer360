@@ -262,7 +262,12 @@ class TestVectorTrainSpec:
 
 
 class TestComputePromptLens:
-    """Tests for compute_prompt_lens function."""
+    """Tests for compute_prompt_lens function.
+
+    compute_prompt_lens returns seq_len for all items, regardless of padding.
+    This ensures that with "after_prompt" scope, generation starts after all
+    input positions (including pads), which is correct for KV-cached generation.
+    """
 
     def test_no_padding(self):
         """Test prompt lens with no padding."""
@@ -271,14 +276,14 @@ class TestComputePromptLens:
         assert lens.tolist() == [5]
 
     def test_with_padding(self):
-        """Test prompt lens with left padding."""
-        # pad_token_id=0, actual tokens are 1,2,3
+        """Test prompt lens with left padding returns seq_len for all items."""
         input_ids = torch.tensor([
-            [0, 0, 1, 2, 3],  # 3 non-pad tokens
-            [0, 1, 2, 3, 4],  # 4 non-pad tokens
+            [0, 0, 1, 2, 3],  # 3 non-pad tokens but seq_len=5
+            [0, 1, 2, 3, 4],  # 4 non-pad tokens but seq_len=5
         ])
         lens = compute_prompt_lens(input_ids, pad_token_id=0)
-        assert lens.tolist() == [3, 4]
+        # returns seq_len (5) for all items regardless of pad count
+        assert lens.tolist() == [5, 5]
 
     def test_1d_input(self):
         """Test that 1D input is handled correctly."""
