@@ -116,6 +116,17 @@ included a selection of generic metrics (see `aisteer360/evaluation/metrics/`). 
 or custom metrics (for a new use case), please see the tutorial on
 [adding your own metric](./docs/tutorials/add_new_metric.md).
 
+## Reference
+
+If you find the toolkit useful in your work, please cite the following:
+```bibtex
+@article{miehling2026aisteerability360,
+  title = {AI Steerability 360: A Toolkit for Steering Large Language Models},
+  author = {Miehling, Erik and Ramamurthy, Karthikeyan Natesan and Venkateswaran, Praveen and Ko, Irene and Dognin, Pierre and Singh, Moninder and Pedapati, Tejaswini and Balakrishnan, Avinash and Riemer, Matthew and Wei, Dennis and Vejsbjerg, Inge and Daly, Elizabeth M. and Varshney, Kush R.},
+  journal = {arXiv preprint arXiv:2603.07837},
+  year = {2026}
+}
+```
 
 ## IBM ❤️ Open Source AI
 

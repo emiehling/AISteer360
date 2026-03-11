@@ -41,9 +41,6 @@ def _squeeze_direction(d: torch.Tensor) -> torch.Tensor:
 class CAST(StateControl):
     """Conditional Activation Steering (CAST).
 
-    Composes: ContrastiveDirectionEstimator + ConditionPointSelector
-    + MultiKeyThresholdGate (wrapped by CacheOnceGate) + AdditiveTransform.
-
     CAST enables selective control of LLM behavior by conditionally applying
     activation steering based on input context. It operates in two phases:
 
@@ -54,12 +51,19 @@ class CAST(StateControl):
     2. **Conditional Behavior Modification**: When conditions are met, applies
        steering vectors to hidden states at designated behavior layers.
 
+    It composes:
+
+    - ContrastiveDirectionEstimator: learns per-layer direction vectors from contrastive text pairs via PCA.
+    - ConditionPointSelector: grid-searches for the layer, threshold, and comparator that best separate positive from negative examples using projected cosine similarity.
+    - AdditiveTransform: adds scaled direction vectors to hidden states at designated layers.
+    - MultiKeyThresholdGate (wrapped by CacheOnceGate): opens when projected scores cross a threshold,
+          then caches the decision for subsequent tokens.
+
     Reference:
 
-        - "Programming Refusal with Conditional Activation Steering"
-          Bruce W. Lee, Inkit Padhi, Karthikeyan Natesan Ramamurthy, Erik Miehling,
-          Pierre Dognin, Manish Nagireddy, Amit Dhurandhar
-          [https://arxiv.org/abs/2409.05907](https://arxiv.org/abs/2409.05907)
+    - "Programming Refusal with Conditional Activation Steering"
+    Bruce W. Lee, Inkit Padhi, Karthikeyan Natesan Ramamurthy, Erik Miehling, Pierre Dognin, Manish Nagireddy, Amit Dhurandhar
+    [https://arxiv.org/abs/2409.05907](https://arxiv.org/abs/2409.05907)
     """
 
     Args = CASTArgs
@@ -183,7 +187,7 @@ class CAST(StateControl):
         else:
             self._gate = AlwaysOpenGate()
 
-        # pre-compute condition projectors for hook speed
+        # pre-compute condition projectors
         self._cond_projectors = {}
         if condition_vec is not None:
             for lid in self._condition_layer_set:
