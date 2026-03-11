@@ -1,6 +1,7 @@
 """Head-level additive transform for activation steering."""
 import torch
 
+from ..steering_vector import SteeringVector
 from .base import BaseTransform
 
 
@@ -14,23 +15,28 @@ class HeadAdditiveTransform(BaseTransform):
     where each head_dim-sized slice corresponds to an individual attention head's
     output. The directions must be computed in the same space.
 
+    Expects a SteeringVector whose directions are shaped [num_heads, head_dim]
+    per layer, with num_heads and head_dim metadata set. Only head indices
+    present in ``active_heads`` are applied; other heads are left untouched.
+
     Args:
-        head_directions: Nested mapping layer_id -> {head_id -> direction[head_dim]}.
-        num_heads: Number of attention heads per layer.
-        head_dim: Dimension of each head's output slice.
+        steering_vector: Unified SteeringVector with per-head directions.
+        active_heads: Mapping from layer_id to set of head indices to intervene on.
         strength: Global scaling factor (alpha in ITI).
     """
 
     def __init__(
         self,
-        head_directions: dict[int, dict[int, torch.Tensor]],
-        num_heads: int,
-        head_dim: int,
+        steering_vector: SteeringVector,
+        active_heads: dict[int, set[int]],
         strength: float = 1.0,
     ):
-        self.head_directions = head_directions
-        self.num_heads = num_heads
-        self.head_dim = head_dim
+        if steering_vector.num_heads is None or steering_vector.head_dim is None:
+            raise ValueError("HeadAdditiveTransform requires num_heads and head_dim metadata on the SteeringVector.")
+        self.steering_vector = steering_vector
+        self.active_heads = active_heads
+        self.num_heads = steering_vector.num_heads
+        self.head_dim = steering_vector.head_dim
         self.strength = strength
 
     def apply(
@@ -52,16 +58,20 @@ class HeadAdditiveTransform(BaseTransform):
         Returns:
             Modified hidden states, same shape as input.
         """
-        heads = self.head_directions.get(layer_id)
+        heads = self.active_heads.get(layer_id)
         if not heads:
             return hidden_states
 
-        # EM: clone to be safe (if any references the original tensor are made)
+        dirs = self.steering_vector.directions.get(layer_id)
+        if dirs is None:
+            return hidden_states
+
         hidden_states = hidden_states.clone()
 
-        for head_id, direction in heads.items():
+        for head_id in heads:
             start = head_id * self.head_dim
             end = start + self.head_dim
+            direction = dirs[head_id]  # [head_dim]
             v = (self.strength * direction).to(dtype=hidden_states.dtype, device=hidden_states.device)
             # scale by token mask so unmasked positions are untouched
             delta = token_mask.unsqueeze(-1).to(hidden_states.dtype) * v.view(1, 1, -1)

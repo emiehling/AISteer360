@@ -8,9 +8,9 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control.common.gates import AlwaysOpenGate
-from aisteer360.algorithms.state_control.common.head_steering_vector import HeadSteeringVector
 from aisteer360.algorithms.state_control.common.hook_utils import get_model_layer_list
 from aisteer360.algorithms.state_control.common.selectors import TopKHeadSelector
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.common.token_scope import compute_prompt_lens, make_token_mask
 from aisteer360.algorithms.state_control.common.transforms import HeadAdditiveTransform, NormPreservingTransform
 
@@ -21,8 +21,8 @@ from .utils import ProbeMassShiftEstimator
 class ITI(StateControl):
     """Inference-Time Intervention (ITI).
 
-    Steers model behavior by shifting activations at a sparse set of attention heads 
-    during inference. The intervention operates at the residual stream level by adding 
+    Steers model behavior by shifting activations at a sparse set of attention heads
+    during inference. The intervention operates at the residual stream level by adding
     direction vectors to head-associated slices of the hidden dimension.
 
     ITI operates in two phases:
@@ -52,7 +52,7 @@ class ITI(StateControl):
         super().__init__(*args, **kwargs)
 
         # populated in steer()
-        self._head_steering_vector: HeadSteeringVector | None = None
+        self._steering_vector: SteeringVector | None = None
         self._transform = None
         self._layer_names: list[str] = []
         self._oproj_names: list[str] = []
@@ -71,7 +71,7 @@ class ITI(StateControl):
         tokenizer: PreTrainedTokenizerBase | None = None,
         **__,
     ) -> PreTrainedModel:
-        """Initialize ITI by training or loading the head steering vector.
+        """Initialize ITI by training or loading the steering vector.
 
         Args:
             model: The base language model to be steered.
@@ -94,48 +94,40 @@ class ITI(StateControl):
 
         self._oproj_names = [name + oproj_suffix for name in layer_names]
 
-        num_heads = model.config.num_attention_heads
-        hidden_size = model.config.hidden_size
-        head_dim = hidden_size // num_heads
-
-        # resolve head steering vector
-        if self.head_steering_vector is not None:
-            hsv = self.head_steering_vector
+        # resolve steering vector
+        if self.steering_vector is not None:
+            sv = self.steering_vector
         else:
             estimator = ProbeMassShiftEstimator()
-            hsv = estimator.fit(model, tokenizer, data=self.data, spec=self.train_spec)
+            sv = estimator.fit(model, tokenizer, data=self.data, spec=self.train_spec)
 
         # move to device
-        hsv = hsv.to(device, dtype=model.dtype)
-
-        self._head_steering_vector = hsv
+        sv = sv.to(device, dtype=model.dtype)
+        self._steering_vector = sv
 
         # resolve head selection
         if self.selected_heads is not None:
             selected = self.selected_heads
         else:
-            if hsv.probe_accuracies is None:
+            if sv.probe_accuracies is None:
                 raise ValueError(
-                    "head_steering_vector has no probe_accuracies. "
+                    "steering_vector has no probe_accuracies. "
                     "Either provide selected_heads explicitly or use data to train a new vector."
                 )
             selector = TopKHeadSelector(self.num_heads)
-            selected = selector.select(probe_accuracies=hsv.probe_accuracies)
+            selected = selector.select(steering_vector=sv)
 
-        # group selected directions by layer: {layer_id: {head_id: direction}}
-        grouped: dict[int, dict[int, torch.Tensor]] = {}
+        # group selected heads by layer
+        active_heads: dict[int, set[int]] = {}
         for layer_id, head_id in selected:
-            if layer_id not in grouped:
-                grouped[layer_id] = {}
-            grouped[layer_id][head_id] = hsv.directions[(layer_id, head_id)]
+            active_heads.setdefault(layer_id, set()).add(head_id)
 
-        self._active_layer_ids = set(grouped.keys())
+        self._active_layer_ids = set(active_heads.keys())
 
         # build transform
         transform = HeadAdditiveTransform(
-            head_directions=grouped,
-            num_heads=num_heads,
-            head_dim=head_dim,
+            steering_vector=sv,
+            active_heads=active_heads,
             strength=self.alpha,
         )
         if self.use_norm_preservation:

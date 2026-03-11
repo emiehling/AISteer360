@@ -1,5 +1,4 @@
 """State control component library."""
-from .head_steering_vector import HeadSteeringVector
 from .selectors import FixedLayerSelector, FractionalDepthSelector, TopKHeadSelector
 from .specs import (
     Comparator,

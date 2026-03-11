@@ -12,14 +12,14 @@ from aisteer360.algorithms.state_control.common.estimators.utils import (
     select_at_positions,
     tokenize_texts,
 )
-from aisteer360.algorithms.state_control.common.head_steering_vector import HeadSteeringVector
 from aisteer360.algorithms.state_control.common.hook_utils import get_model_layer_list
 from aisteer360.algorithms.state_control.common.specs import LabeledExamples, VectorTrainSpec
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
 logger = logging.getLogger(__name__)
 
 
-class ProbeMassShiftEstimator(BaseEstimator[HeadSteeringVector]):
+class ProbeMassShiftEstimator(BaseEstimator[SteeringVector]):
     """Learns per-head direction vectors using probe-based mass mean shift.
 
     For each (layer, head) pair:
@@ -28,6 +28,9 @@ class ProbeMassShiftEstimator(BaseEstimator[HeadSteeringVector]):
     2. Train a binary logistic regression probe to classify positive vs negative samples.
     3. Record the probe's validation accuracy (80/20 split) for later head selection.
     4. Compute the mass mean shift: direction = mean(activations_true) - mean(activations_false).
+
+    Returns a unified SteeringVector with directions shaped [num_heads, head_dim]
+    per layer and probe_accuracies populated for all (layer, head) pairs.
 
     This estimator captures attention outputs using temporary forward pre-hooks on o_proj
     modules. The hooks are registered only during fit() and removed after extraction.
@@ -46,7 +49,7 @@ class ProbeMassShiftEstimator(BaseEstimator[HeadSteeringVector]):
         *,
         data: LabeledExamples,
         spec: VectorTrainSpec,
-    ) -> HeadSteeringVector:
+    ) -> SteeringVector:
         """Extract head steering vectors using probe-based mass mean shift.
 
         Args:
@@ -57,8 +60,8 @@ class ProbeMassShiftEstimator(BaseEstimator[HeadSteeringVector]):
             spec: Training configuration (accumulate mode and batch_size).
 
         Returns:
-            HeadSteeringVector with directions in pre-o_proj space and validation
-            probe accuracies for all heads.
+            SteeringVector with directions shaped [num_heads, head_dim] per layer,
+            num_heads/head_dim metadata, and probe_accuracies for all heads.
         """
         device = next(model.parameters()).device
         model_type = getattr(model.config, "model_type", "unknown")
@@ -93,7 +96,7 @@ class ProbeMassShiftEstimator(BaseEstimator[HeadSteeringVector]):
         if attn_mask_neg is not None:
             attn_mask_neg = attn_mask_neg.cpu()
 
-        directions: dict[tuple[int, int], torch.Tensor] = {}
+        directions: dict[int, torch.Tensor] = {}
         probe_accuracies: dict[tuple[int, int], float] = {}
 
         for layer_id in range(num_layers):
@@ -116,6 +119,7 @@ class ProbeMassShiftEstimator(BaseEstimator[HeadSteeringVector]):
             ap_heads = ap_agg.view(n_pos, num_heads, head_dim)
             an_heads = an_agg.view(n_neg, num_heads, head_dim)
 
+            layer_directions = []
             for head_id in range(num_heads):
                 hp = ap_heads[:, head_id, :].float().numpy()  # [n_pos, head_dim]
                 hn = an_heads[:, head_id, :].float().numpy()  # [n_neg, head_dim]
@@ -149,17 +153,19 @@ class ProbeMassShiftEstimator(BaseEstimator[HeadSteeringVector]):
 
                 # store sigma * theta_hat so that downstream transform applies alpha * sigma * theta_hat
                 direction = theta_hat * sigma
+                layer_directions.append(direction)
 
-                key = (layer_id, head_id)
-                directions[key] = direction
-                probe_accuracies[key] = accuracy
+                probe_accuracies[(layer_id, head_id)] = accuracy
+
+            # stack all head directions into [num_heads, head_dim]
+            directions[layer_id] = torch.stack(layer_directions, dim=0)
 
         logger.debug("Finished fitting probe-based head directions")
-        return HeadSteeringVector(
+        return SteeringVector(
             model_type=model_type,
+            directions=directions,
             num_heads=num_heads,
             head_dim=head_dim,
-            directions=directions,
             probe_accuracies=probe_accuracies,
         )
 

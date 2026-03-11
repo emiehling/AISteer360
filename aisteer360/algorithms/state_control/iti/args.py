@@ -2,13 +2,13 @@
 from dataclasses import dataclass, field
 
 from aisteer360.algorithms.core.base_args import BaseArgs
-from aisteer360.algorithms.state_control.common.head_steering_vector import HeadSteeringVector
 from aisteer360.algorithms.state_control.common.specs import (
     ContrastivePairs,
     LabeledExamples,
     VectorTrainSpec,
     as_labeled_examples,
 )
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.common.token_scope import TokenScope
 
 
@@ -16,7 +16,7 @@ from aisteer360.algorithms.state_control.common.token_scope import TokenScope
 class ITIArgs(BaseArgs):
     """Arguments for ITI (Inference-Time Intervention).
 
-    Users provide EITHER a pre-computed head steering vector OR training data.
+    Users provide EITHER a pre-computed steering vector OR training data.
     If data is provided, the vector is fitted during steer().
 
     Note:
@@ -26,10 +26,11 @@ class ITIArgs(BaseArgs):
         `steer()`.
 
     Attributes:
-        head_steering_vector: Pre-trained head steering vector. If provided, skip training.
+        steering_vector: Pre-trained steering vector with per-head directions
+            (shape [num_heads, head_dim] per layer). If provided, skip training.
         data: Labeled examples (true/false statements) for training. Unlike ContrastivePairs,
             positives and negatives do not need to be equal length. Required if
-            head_steering_vector is None.
+            steering_vector is None.
         train_spec: Controls extraction method and accumulation mode.
         num_heads: Number of top heads to select based on probe accuracy.
             Paper default is 48 (tuned for LLaMA-7B).
@@ -42,7 +43,7 @@ class ITIArgs(BaseArgs):
     """
 
     # steering vector source (provide exactly one)
-    head_steering_vector: HeadSteeringVector | None = None
+    steering_vector: SteeringVector | None = None
     data: LabeledExamples | dict | None = None
 
     # training configuration
@@ -62,15 +63,15 @@ class ITIArgs(BaseArgs):
     use_norm_preservation: bool = False
 
     def __post_init__(self):
-        # exactly one of head_steering_vector or data must be provided
-        if self.head_steering_vector is None and self.data is None:
-            raise ValueError("Provide either head_steering_vector or data.")
-        if self.head_steering_vector is not None and self.data is not None:
-            raise ValueError("Provide head_steering_vector or data, not both.")
+        # exactly one of steering_vector or data must be provided
+        if self.steering_vector is None and self.data is None:
+            raise ValueError("Provide either steering_vector or data.")
+        if self.steering_vector is not None and self.data is not None:
+            raise ValueError("Provide steering_vector or data, not both.")
 
-        # validate head_steering_vector if provided
-        if self.head_steering_vector is not None:
-            self.head_steering_vector.validate()
+        # validate steering_vector if provided
+        if self.steering_vector is not None:
+            self.steering_vector.validate()
 
         # normalize dict inputs; reject ContrastivePairs with a clear error
         if self.data is not None:

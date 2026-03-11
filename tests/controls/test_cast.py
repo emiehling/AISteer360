@@ -1,12 +1,9 @@
-import numpy as np
 import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control.cast.control import CAST
-from aisteer360.algorithms.state_control.cast.utils.steering_vector import (
-    SteeringVector,
-)
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = (
@@ -23,9 +20,8 @@ CAST_GRID = {
 
 
 def create_dummy_steering_vector(model_type, hidden_size, num_layer):
-    '''Creates a dummy steering vector for a given model_type, hidden_size and num_layer.'''
-
-    directions = {k: np.zeros((hidden_size,), dtype=float) for k in range(num_layer)}
+    """Creates a dummy steering vector for a given model_type, hidden_size and num_layer."""
+    directions = {k: torch.zeros(1, hidden_size) for k in range(num_layer)}
     explained_variances = {k: 0.5 for k in range(num_layer)}
     vec = SteeringVector(model_type=model_type, directions=directions, explained_variances=explained_variances)
     return vec
@@ -33,9 +29,7 @@ def create_dummy_steering_vector(model_type, hidden_size, num_layer):
 
 @pytest.mark.parametrize("conf", build_param_grid(CAST_GRID))
 def test_cast(model_and_tokenizer, device: torch.device, conf: dict):
-    """
-    Verify that CAST steers and generates on every model/device/param combo.
-    """
+    """Verify that CAST steers and generates on every model/device/param combo."""
 
     # move model to target device
     base_model, tokenizer = model_and_tokenizer
@@ -58,7 +52,7 @@ def test_cast(model_and_tokenizer, device: torch.device, conf: dict):
         condition_vector=condition_vector,
         condition_layer_ids=[1],
         condition_vector_threshold=conf['condition_vector_threshold'],
-        condition_comparator_threshold_is='larger'
+        condition_comparator_threshold_is='larger',
     )
     pipeline = SteeringPipeline(
         controls=[cast],
