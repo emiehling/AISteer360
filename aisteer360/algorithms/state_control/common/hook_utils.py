@@ -71,3 +71,44 @@ def replace_hidden_states(
     input_kwargs = dict(input_kwargs)
     input_kwargs["hidden_states"] = new_hidden
     return input_args, input_kwargs
+
+
+def get_norm_module_names(model: PreTrainedModel) -> list[tuple[int, str]]:
+    """Return (layer_id, module_path) pairs for normalization submodules.
+
+    Returns paths for both pre-attention and pre-MLP norms at each layer
+    (e.g., ``model.layers.0.input_layernorm``,
+    ``model.layers.0.post_attention_layernorm``).
+
+    Supports llama/mistral/gemma-style and GPT-2-style architectures.
+
+    Args:
+        model: A HuggingFace causal LM.
+
+    Returns:
+        List of (layer_id, dotted module path) pairs, sorted by layer_id
+        then by submodule name.
+
+    Raises:
+        ValueError: If model architecture is not recognized.
+    """
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        prefix = "model.layers"
+        layers = model.model.layers
+        norm_attrs = ("input_layernorm", "post_attention_layernorm")
+    elif hasattr(model, "transformer") and hasattr(model.transformer, "h"):
+        prefix = "transformer.h"
+        layers = model.transformer.h
+        norm_attrs = ("ln_1", "ln_2")
+    else:
+        raise ValueError(
+            f"Cannot determine norm modules for {type(model).__name__}. "
+            f"Expected model.model.layers or model.transformer.h."
+        )
+
+    result: list[tuple[int, str]] = []
+    for i, layer in enumerate(layers):
+        for attr in norm_attrs:
+            if hasattr(layer, attr):
+                result.append((i, f"{prefix}.{i}.{attr}"))
+    return result
