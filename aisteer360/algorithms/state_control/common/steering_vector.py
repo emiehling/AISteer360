@@ -14,12 +14,12 @@ class SteeringVector:
     """Per-layer direction tensors for activation steering.
 
     Directions are stored as [K, D] tensors per layer, where K and D are
-    interpreted by the consuming transform:
+    interpreted by the consuming transform. For example:
 
-        CAA, CAST:         K=1, D=hidden_size    (single broadcast direction)
-        ActAdd:            K=T, D=hidden_size    (positional directions)
-        Angular Steering:  K=2, D=hidden_size    (orthonormal basis pair)
-        ITI:               K=num_heads, D=head_dim (per-head directions)
+        CAA, CAST: K=1, D=hidden_size (single broadcast direction)
+        ActAdd: K=T, D=hidden_size (positional directions)
+        Angular Steering: K=2, D=hidden_size (orthonormal basis pair)
+        ITI: K=num_heads, D=head_dim (per-head directions)
 
     The container is agnostic to what K and D mean (varies depending on the method). 
     Semantics come from the consumer (transform).
