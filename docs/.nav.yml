@@ -44,6 +44,7 @@ nav:
         - TRL wrapper: "examples/notebooks/wrapper_trl/trl_wrapper.ipynb"
       - State control:
         - ActAdd: "examples/notebooks/control_act_add/act_add.ipynb"
+        - Angular Steering: "examples/notebooks/control_angular_steering/angular_steering.ipynb"
         - CAA: "examples/notebooks/control_caa/caa.ipynb"
         - CAST: "examples/notebooks/control_cast/cast.ipynb"
         - ITI: "examples/notebooks/control_iti/iti.ipynb"
@@ -76,6 +77,7 @@ nav:
             - Base classes: reference/algorithms/state_control/base_state_control.md
             - Common library: reference/algorithms/state_control/common.md
             - ActAdd: reference/algorithms/state_control/act_add.md
+            - Angular Steering: reference/algorithms/state_control/angular_steering.md
             - CAA: reference/algorithms/state_control/caa.md
             - CAST: reference/algorithms/state_control/cast.md
             - ITI: reference/algorithms/state_control/iti.md

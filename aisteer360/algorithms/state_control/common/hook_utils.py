@@ -2,6 +2,17 @@
 import torch
 from transformers import PreTrainedModel
 
+# Layernorm sub-module suffixes used for angular steering hooks and
+# activation extraction.  These cover the standard architectures:
+#   post_attention_layernorm – LLaMA / Mistral / Qwen (resid_mid)
+#   pre_feedforward_layernorm – Gemma-2 / Gemma-3 (resid_mid)
+#   input_layernorm – all (resid_pre = resid_post of previous layer)
+LAYERNORM_MID_MODULES: tuple[str, ...] = (
+    "post_attention_layernorm",
+    "pre_feedforward_layernorm",
+)
+LAYERNORM_INPUT_MODULE: str = "input_layernorm"
+
 
 def get_model_layer_list(model: PreTrainedModel) -> tuple[list, list[str]]:
     """Return (layer_modules, layer_name_strings) for a HuggingFace model.

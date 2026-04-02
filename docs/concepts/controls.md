@@ -87,9 +87,14 @@ State control methods satisfy requirements:
 
 - *Access*: Requires access to internal states (to define hooks).
 
-Some examples of output control methods include: activation addition/steering, attention steering, and representation
+Some examples of state control methods include: activation addition/steering, attention steering, and representation
 patching. Example implementations of state control methods can be found in the following notebooks:
-[CAST](../examples/notebooks/control_cast/cast.ipynb)[@lee2025programming], [PASTA](../examples/notebooks/control_pasta/pasta.ipynb)[@zhang2024tell].
+[ActAdd](../examples/notebooks/control_act_add/act_add.ipynb)[@turner2023steering],
+[Angular Steering](../examples/notebooks/control_angular_steering/angular_steering.ipynb)[@vu2025angular],
+[CAA](../examples/notebooks/control_caa/caa.ipynb)[@panickssery2023steering],
+[CAST](../examples/notebooks/control_cast/cast.ipynb)[@lee2025programming],
+[ITI](../examples/notebooks/control_iti/iti.ipynb)[@li2023inference],
+[PASTA](../examples/notebooks/control_pasta/pasta.ipynb)[@zhang2024tell].
 
 
 

@@ -33,6 +33,8 @@ from wrappers), as well as demonstrations of more extensive benchmarks.
 
     :octicons-arrow-right-24: [ActAdd](./notebooks/control_act_add/act_add.ipynb)
 
+    :octicons-arrow-right-24: [Angular Steering](./notebooks/control_angular_steering/angular_steering.ipynb)
+
     :octicons-arrow-right-24: [CAA](./notebooks/control_caa/caa.ipynb)
 
     :octicons-arrow-right-24: [CAST](./notebooks/control_cast/cast.ipynb)
