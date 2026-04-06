@@ -240,17 +240,31 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
             Hp = _pool_over_spans(hs_pos[layer_id], spans_pos)  # [N, H]
             Hn = _pool_over_spans(hs_neg[layer_id], spans_neg)  # [N, H]
 
-            # compute pairwise differences
-            diffs = (Hp - Hn).numpy()  # [N, H]
-
             if spec.method == "pca_pairwise":
-                # fit PCA to get principal direction
-                pca = PCA(n_components=1)
+                # per-pair centering: subtract each pair's midpoint from both members,
+                # then fit PCA on all 2N centered samples.
+                center = (Hp + Hn) / 2  # [N, H]
+                pos_centered = Hp - center  # [N, H]
+                neg_centered = Hn - center  # [N, H]
+                train = torch.cat([pos_centered, neg_centered], dim=0).numpy()  # [2N, H]
+                pca = PCA(n_components=1, whiten=False)
+                pca.fit(train)
+                direction = pca.components_[0]
+                variance = float(pca.explained_variance_ratio_[0])
+            elif spec.method == "pca_diff":
+                diffs = (Hp - Hn).numpy()  # [N, H]
+                pca = PCA(n_components=1, whiten=False)
                 pca.fit(diffs)
-                direction = pca.components_[0]  # shape [H]
+                direction = pca.components_[0]
                 variance = float(pca.explained_variance_ratio_[0])
             else:
                 raise ValueError(f"Unknown method: {spec.method}")
+
+            # orient so positive examples project higher than negative
+            proj_pos = (Hp.numpy() @ direction).mean()
+            proj_neg = (Hn.numpy() @ direction).mean()
+            if proj_pos < proj_neg:
+                direction = -direction
 
             directions[layer_id] = torch.tensor(direction, dtype=torch.float32).unsqueeze(0)  # [1, H]
             explained_variances[layer_id] = variance

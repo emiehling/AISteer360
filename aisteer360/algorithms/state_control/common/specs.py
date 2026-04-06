@@ -3,6 +3,12 @@ from dataclasses import dataclass
 from typing import Literal, Sequence
 
 Comparator = Literal["larger", "smaller"]
+"""Threshold comparison direction.
+
+"larger" means the gate opens when score >= threshold (the score is larger).
+"smaller" means the gate opens when score <= threshold (the score is smaller).
+"""
+
 CompMode = Literal["mean", "last"]
 
 
@@ -79,6 +85,61 @@ class ContrastivePairs:
         if self.prompts is not None and len(self.prompts) != len(self.positives):
             raise ValueError("prompts must have the same length as positives/negatives.")
 
+    @classmethod
+    def from_suffixes(
+        cls,
+        prompts: Sequence[str],
+        positive_suffixes: Sequence[str],
+        negative_suffixes: Sequence[str],
+    ) -> "ContrastivePairs":
+        """Build ContrastivePairs via cartesian product of prompts x suffix pairs.
+
+        Each prompt is combined with every (positive_suffix, negative_suffix)
+        pair to create the full expansion. The original prompts are preserved
+        in the ``prompts`` field so that ``suffix-only`` accumulation can
+        isolate the suffix portion during hidden state extraction.
+
+        This replicates the data construction used in the reference CAST
+        implementation (``activation_steering.SteeringDataset``) where each
+        question is paired with every response-prefix suffix pair.
+
+        Args:
+            prompts: Base prompt strings (e.g., chat-templated questions).
+            positive_suffixes: Suffixes appended to positives
+                (e.g., refusal prefixes).
+            negative_suffixes: Suffixes appended to negatives
+                (e.g., compliance prefixes). Must be the same length as
+                positive_suffixes (they are paired).
+
+        Returns:
+            ContrastivePairs with ``len(prompts) * len(positive_suffixes)`` entries.
+
+        Raises:
+            ValueError: If positive_suffixes and negative_suffixes differ in length.
+        """
+        if len(positive_suffixes) != len(negative_suffixes):
+            raise ValueError(
+                f"positive_suffixes ({len(positive_suffixes)}) and "
+                f"negative_suffixes ({len(negative_suffixes)}) must have equal length."
+            )
+
+        expanded_prompts = []
+        expanded_pos = []
+        expanded_neg = []
+
+        # outer loop over suffix pairs, inner loop over prompts (matches reference iteration order)
+        for pos_sfx, neg_sfx in zip(positive_suffixes, negative_suffixes):
+            for prompt in prompts:
+                expanded_prompts.append(prompt)
+                expanded_pos.append(pos_sfx)
+                expanded_neg.append(neg_sfx)
+
+        return cls(
+            positives=expanded_pos,
+            negatives=expanded_neg,
+            prompts=expanded_prompts,
+        )
+
 
 def as_contrastive_pairs(x) -> ContrastivePairs:
     """Normalize input to ContrastivePairs.
@@ -109,7 +170,8 @@ class VectorTrainSpec:
 
     Attributes:
         method: Extraction algorithm.
-            "pca_pairwise" uses PCA on paired differences of hidden states.
+            "pca_pairwise" uses PCA on per-pair centered hidden states (2N samples).
+            "pca_diff" uses PCA on the N pairwise difference vectors.
             "mean_diff" uses the mean difference of hidden states (CAA method).
         accumulate: How to select hidden state spans for aggregation.
             "all" uses the full sequence.
@@ -118,7 +180,7 @@ class VectorTrainSpec:
         batch_size: Batch size for hidden state extraction forward passes.
     """
 
-    method: Literal["pca_pairwise", "mean_diff"] = "pca_pairwise"
+    method: Literal["pca_pairwise", "pca_diff", "mean_diff"] = "pca_pairwise"
     accumulate: Literal["all", "suffix-only", "last_token"] = "all"
     batch_size: int = 8
 

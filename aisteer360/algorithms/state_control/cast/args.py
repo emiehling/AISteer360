@@ -38,8 +38,9 @@ class CASTArgs(BaseArgs):
         search: Configuration for automatic condition point search.
         condition_layer_ids: Layers to check the condition on.
         condition_vector_threshold: Similarity threshold for condition detection.
-        condition_comparator_threshold_is: Whether to activate when similarity
-            is "larger" or "smaller" than threshold.
+        condition_comparator_threshold_is: Direction for threshold comparison.
+            "larger" opens the gate when the score >= threshold.
+            "smaller" opens the gate when the score <= threshold.
         condition_threshold_comparison_mode: How to aggregate hidden states
             for comparison ("mean" or "last").
         apply_behavior_on_first_call: Whether to apply behavior vector on the

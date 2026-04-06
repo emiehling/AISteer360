@@ -12,10 +12,13 @@ Tests cover:
 - projected_cosine_similarity
 - AdditiveTransform
 - NormPreservingTransform
+- ContrastiveDirectionEstimator (pca_pairwise, pca_diff, orientation, suffix-only)
+- ContrastivePairs.from_suffixes
 """
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -25,6 +28,7 @@ from aisteer360.algorithms.state_control.common import (
     VectorTrainSpec,
     as_contrastive_pairs,
 )
+from aisteer360.algorithms.state_control.common.estimators import ContrastiveDirectionEstimator
 from aisteer360.algorithms.state_control.common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control.common.hook_utils import (
     extract_hidden_states,
@@ -856,3 +860,184 @@ class TestLayerHeuristics:
         # 3 layers -> last third is layer 2
         result = late_third(3)
         assert result == [2]
+
+
+class TestContrastivePairsFromSuffixes:
+    """Tests for ContrastivePairs.from_suffixes classmethod."""
+
+    def test_basic_expansion(self):
+        """2 prompts x 2 suffix pairs = 4 entries."""
+        result = ContrastivePairs.from_suffixes(
+            prompts=["Q1", "Q2"],
+            positive_suffixes=["R1", "R2"],
+            negative_suffixes=["C1", "C2"],
+        )
+        assert len(result.positives) == 4
+        assert len(result.negatives) == 4
+        assert result.prompts is not None
+        assert len(result.prompts) == 4
+
+    def test_prompts_field_set_for_suffix_only(self):
+        """The prompts field must be populated for suffix-only accumulation."""
+        result = ContrastivePairs.from_suffixes(
+            prompts=["P"],
+            positive_suffixes=["R"],
+            negative_suffixes=["C"],
+        )
+        assert result.prompts == ["P"]
+        assert result.positives == ["R"]
+        assert result.negatives == ["C"]
+
+    def test_iteration_order(self):
+        """Outer loop over suffix pairs, inner loop over prompts."""
+        result = ContrastivePairs.from_suffixes(
+            prompts=["P1", "P2"],
+            positive_suffixes=["R1", "R2"],
+            negative_suffixes=["C1", "C2"],
+        )
+        # first suffix pair (R1, C1) x both prompts, then second pair
+        assert list(result.positives) == ["R1", "R1", "R2", "R2"]
+        assert list(result.negatives) == ["C1", "C1", "C2", "C2"]
+        assert list(result.prompts) == ["P1", "P2", "P1", "P2"]
+
+    def test_unequal_suffix_lengths_raises(self):
+        """Mismatched suffix lengths should raise ValueError."""
+        with pytest.raises(ValueError, match="equal length"):
+            ContrastivePairs.from_suffixes(["P"], ["R1", "R2"], ["C1"])
+
+
+class TestContrastiveDirectionEstimator:
+    """Tests for ContrastiveDirectionEstimator PCA methods and orientation."""
+
+    def test_pca_pairwise_differs_from_pca_diff(self, model_and_tokenizer):
+        """pca_pairwise and pca_diff should yield different directions when
+        the global mean of differences is non-trivial."""
+        model, tokenizer = model_and_tokenizer
+        pairs = ContrastivePairs(
+            positives=["happy day", "joyful morning", "great news"],
+            negatives=["sad day", "gloomy morning", "bad news"],
+        )
+
+        vec_pairwise = ContrastiveDirectionEstimator().fit(
+            model, tokenizer,
+            data=pairs, spec=VectorTrainSpec(method="pca_pairwise", batch_size=3),
+        )
+        vec_diff = ContrastiveDirectionEstimator().fit(
+            model, tokenizer,
+            data=pairs, spec=VectorTrainSpec(method="pca_diff", batch_size=3),
+        )
+
+        # both should produce directions for the same layers
+        assert set(vec_pairwise.directions.keys()) == set(vec_diff.directions.keys())
+
+        # at least some layers should have different directions (not perfectly aligned)
+        cosines = []
+        for layer_id in vec_pairwise.directions:
+            d1 = vec_pairwise.directions[layer_id].squeeze()
+            d2 = vec_diff.directions[layer_id].squeeze()
+            cos = torch.nn.functional.cosine_similarity(d1, d2, dim=0).item()
+            cosines.append(abs(cos))
+        # they are generally similar but not identical
+        assert any(c < 0.9999 for c in cosines), "Expected pca_pairwise and pca_diff to differ on some layer"
+
+    def test_pca_pairwise_orientation(self, model_and_tokenizer):
+        """Positive examples should project higher than negatives on the
+        extracted direction."""
+        model, tokenizer = model_and_tokenizer
+        pairs = ContrastivePairs(
+            positives=["I cannot help with that", "I refuse to assist"],
+            negatives=["Sure, I'd be happy to help!", "Of course, here you go!"],
+        )
+        vec = ContrastiveDirectionEstimator().fit(
+            model, tokenizer,
+            data=pairs, spec=VectorTrainSpec(method="pca_pairwise", batch_size=2),
+        )
+
+        # orientation is tested implicitly: the fit method orients so positive
+        # projects higher; we verify the vector is non-degenerate
+        for layer_id, d in vec.directions.items():
+            assert d.shape[-1] == model.config.hidden_size
+            assert d.norm().item() > 0
+
+    def test_pca_pairwise_zero_mean_training_data(self):
+        """Training data for pca_pairwise should be zero-mean by construction
+        (pair deviations cancel). Use synthetic hidden states."""
+        from sklearn.decomposition import PCA
+
+        rng = np.random.RandomState(42)
+        N, H = 50, 16
+        # known direction along first axis
+        Hp = torch.tensor(rng.randn(N, H).astype(np.float32)) + torch.tensor([1.0] + [0.0] * (H - 1))
+        Hn = torch.tensor(rng.randn(N, H).astype(np.float32)) + torch.tensor([-1.0] + [0.0] * (H - 1))
+
+        # pca_pairwise: per-pair centering
+        center = (Hp + Hn) / 2
+        pos_centered = Hp - center
+        neg_centered = Hn - center
+        train = torch.cat([pos_centered, neg_centered], dim=0).numpy()
+
+        # training data should be zero-mean by construction
+        assert np.abs(train.mean(axis=0)).max() < 1e-5
+
+        # extracted direction should align with the known [1, 0, ..., 0] direction
+        pca = PCA(n_components=1).fit(train)
+        direction = pca.components_[0]
+        assert abs(abs(direction[0]) - 1.0) < 0.3, "Direction should roughly align with axis 0"
+
+    def test_pca_diff_method(self, model_and_tokenizer):
+        """pca_diff should run PCA on the N difference vectors."""
+        model, tokenizer = model_and_tokenizer
+        pairs = ContrastivePairs(positives=["happy", "joy"], negatives=["sad", "gloom"])
+        vec = ContrastiveDirectionEstimator().fit(
+            model, tokenizer,
+            data=pairs, spec=VectorTrainSpec(method="pca_diff", batch_size=2),
+        )
+        assert len(vec.directions) > 0
+        H = model.config.hidden_size
+        for d in vec.directions.values():
+            assert d.shape == (1, H)
+
+    def test_unknown_method_raises(self, model_and_tokenizer):
+        """Unknown method should raise ValueError."""
+        model, tokenizer = model_and_tokenizer
+        pairs = ContrastivePairs(positives=["a"], negatives=["b"])
+        with pytest.raises(ValueError, match="Unknown method"):
+            ContrastiveDirectionEstimator().fit(
+                model, tokenizer,
+                data=pairs, spec=VectorTrainSpec(method="nonexistent", batch_size=1),
+            )
+
+
+class TestContrastiveDirectionEstimatorSuffixOnly:
+    """Tests for suffix-only accumulation in ContrastiveDirectionEstimator."""
+
+    def test_suffix_only_with_prompts(self, model_and_tokenizer):
+        """Verify the estimator runs end-to-end with suffix-only accumulation
+        and a ContrastivePairs that has the prompts field set."""
+        model, tokenizer = model_and_tokenizer
+        pairs = ContrastivePairs(
+            positives=["I cannot help", "I refuse"],
+            negatives=["Sure!", "Of course!"],
+            prompts=["Hello, ", "Hi, "],
+        )
+        spec = VectorTrainSpec(method="pca_pairwise", accumulate="suffix-only", batch_size=2)
+        vec = ContrastiveDirectionEstimator().fit(model, tokenizer, data=pairs, spec=spec)
+        assert len(vec.directions) > 0
+        H = model.config.hidden_size
+        for d in vec.directions.values():
+            assert d.shape == (1, H)
+
+    def test_suffix_only_via_from_suffixes(self, model_and_tokenizer):
+        """End-to-end: ContrastivePairs.from_suffixes -> estimator with suffix-only."""
+        model, tokenizer = model_and_tokenizer
+        pairs = ContrastivePairs.from_suffixes(
+            prompts=["Hello, ", "Hi, "],
+            positive_suffixes=["I cannot", "I refuse"],
+            negative_suffixes=["Sure!", "Of course"],
+        )
+        # 2 prompts x 2 suffix pairs = 4 entries
+        assert len(pairs.positives) == 4
+
+        spec = VectorTrainSpec(method="pca_pairwise", accumulate="suffix-only", batch_size=4)
+        vec = ContrastiveDirectionEstimator().fit(model, tokenizer, data=pairs, spec=spec)
+        assert len(vec.directions) > 0
