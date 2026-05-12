@@ -38,6 +38,8 @@ class ContrastivePairGenerator:
         model=None,
         tokenizer=None,
         on_progress: Callable[[int, int], None] | None = None,
+        output_path: Path | None = None,
+        behavior: str | None = None,
     ) -> GenerationResult:
         """Produce contrastive pairs.
 
@@ -45,13 +47,55 @@ class ContrastivePairGenerator:
             model: Optional pre-loaded generator model.
             tokenizer: Optional pre-loaded tokenizer.
             on_progress: Callback receiving `(completed_pairs, total_pairs)`.
+            output_path: Optional path to a JSONL file. When set, each completed batch is appended immediately so
+                that an interrupted run can be resumed. If the file already exists, its valid lines are loaded and
+                generation resumes from the next pair.
+            behavior: Behavior label written into each JSONL record. Required when `output_path` is set.
 
         Returns:
             `GenerationResult` containing the `ContrastivePairs`.
         """
         cfg = self.config
-        owns_model = model is None
 
+        if output_path is not None and behavior is None:
+            raise ValueError("behavior must be provided when output_path is set.")
+
+        seeds = self._resolve_seeds(cfg)
+        total = cfg.n_pairs
+
+        positives: list[str] = []
+        negatives: list[str] = []
+        prompts_used: list[str] = []
+
+        if output_path is not None:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            if output_path.exists() and output_path.stat().st_size > 0:
+                existing = self._read_existing_records(output_path)
+                n_done = len(existing)
+                logger.info("Resuming generation: %d/%d pairs already on disk.", n_done, total)
+                for rec in existing:
+                    prompts_used.append(rec["prompt"])
+                    positives.append(rec["positive"])
+                    negatives.append(rec["negative"])
+            else:
+                n_done = 0
+        else:
+            n_done = 0
+
+        if n_done >= total:
+            pairs = ContrastivePairs(
+                positives=positives[:total],
+                negatives=negatives[:total],
+                prompts=prompts_used[:total],
+            )
+            return GenerationResult(
+                pairs=pairs,
+                seed_prompts_used=prompts_used[:total],
+                config=asdict(cfg),
+            )
+
+        owns_model = model is None
         if owns_model:
             logger.info("Loading generator model: %s", cfg.generator_model)
             tokenizer = AutoTokenizer.from_pretrained(cfg.generator_model)
@@ -60,14 +104,7 @@ class ContrastivePairGenerator:
                 cfg.generator_model, device_map="auto", torch_dtype="auto"
             )
 
-        seeds = self._resolve_seeds(cfg)
-
-        positives: list[str] = []
-        negatives: list[str] = []
-        prompts_used: list[str] = []
-        total = cfg.n_pairs
-
-        for batch_start in range(0, total, cfg.batch_size):
+        for batch_start in range(n_done, total, cfg.batch_size):
             batch_end = min(batch_start + cfg.batch_size, total)
             batch_seeds = seeds[batch_start:batch_end]
 
@@ -83,6 +120,17 @@ class ContrastivePairGenerator:
             positives.extend(pos_batch)
             negatives.extend(neg_batch)
             prompts_used.extend(batch_seeds)
+
+            if output_path is not None:
+                with open(output_path, "a") as f:
+                    for seed, pos, neg in zip(batch_seeds, pos_batch, neg_batch):
+                        record = {
+                            "prompt": seed,
+                            "positive": pos,
+                            "negative": neg,
+                            "behavior": behavior,
+                        }
+                        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
             if on_progress:
                 on_progress(len(positives), total)
@@ -102,6 +150,26 @@ class ContrastivePairGenerator:
             seed_prompts_used=prompts_used,
             config=asdict(cfg),
         )
+
+    @staticmethod
+    def _read_existing_records(path: Path) -> list[dict]:
+        """Load valid JSONL records from an existing pairs file.
+
+        A malformed trailing line (from a crash mid-write) is logged and discarded so that generation resumes
+        from the last fully-flushed batch boundary.
+        """
+        records: list[dict] = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    logger.warning("Discarding malformed trailing line in %s", path)
+                    break
+        return records
 
     @staticmethod
     def _resolve_seeds(cfg: GenerationConfig) -> list[str]:

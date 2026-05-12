@@ -1,235 +1,235 @@
-{"prompt": "What is a mutex and why is it used in concurrent programming?"}
-{"prompt": "How does garbage collection work in modern programming languages?"}
-{"prompt": "What is the difference between TCP and UDP?"}
-{"prompt": "Explain how a hash table handles collisions."}
-{"prompt": "What is the CAP theorem in distributed systems?"}
-{"prompt": "How does public-key cryptography work?"}
-{"prompt": "What is the difference between a process and a thread?"}
-{"prompt": "How does a neural network learn through backpropagation?"}
-{"prompt": "What is eventual consistency and when would you use it?"}
-{"prompt": "Explain the difference between compiled and interpreted languages."}
-{"prompt": "What is a container and how does it differ from a virtual machine?"}
-{"prompt": "How does DNS resolution work?"}
-{"prompt": "What is the purpose of an index in a database?"}
-{"prompt": "Explain how HTTPS establishes a secure connection."}
-{"prompt": "What is a memory leak and how do you detect one?"}
-{"prompt": "How does a load balancer distribute traffic?"}
-{"prompt": "What is the difference between SQL and NoSQL databases?"}
-{"prompt": "Explain what a deadlock is and how to prevent one."}
-{"prompt": "What is MapReduce and what problem does it solve?"}
-{"prompt": "How does version control with Git work at a high level?"}
-{"prompt": "What is the difference between symmetric and asymmetric encryption?"}
-{"prompt": "How does a recommendation system work?"}
-{"prompt": "What is a race condition?"}
-{"prompt": "How does pagination work in APIs?"}
-{"prompt": "What is the difference between a stack and a queue?"}
-{"prompt": "How does OAuth authentication work?"}
-{"prompt": "What is a microkernel and how does it differ from a monolithic kernel?"}
-{"prompt": "How does a bloom filter work and when would you use one?"}
-{"prompt": "What is the difference between strong and weak typing in programming languages?"}
-{"prompt": "How do graph databases differ from relational databases?"}
-{"prompt": "What is WebAssembly and what problems does it solve?"}
-{"prompt": "How does a CDN improve website performance?"}
-{"prompt": "What is the actor model in concurrent programming?"}
-{"prompt": "How does a B-tree index work?"}
-{"prompt": "What is the difference between REST and GraphQL?"}
-{"prompt": "How does containerization differ from virtualization at the kernel level?"}
-{"prompt": "What is a service mesh and why would you use one?"}
-{"prompt": "How does consistent hashing work in distributed systems?"}
-{"prompt": "What is the difference between optimistic and pessimistic locking?"}
-{"prompt": "How does a garbage collector decide which objects to free?"}
-{"prompt": "What is tail call optimization?"}
-{"prompt": "How does a reverse proxy differ from a forward proxy?"}
-{"prompt": "What is the purpose of a write-ahead log in databases?"}
-{"prompt": "How does mTLS work and when is it needed?"}
-{"prompt": "What is the difference between horizontal and vertical scaling?"}
-{"prompt": "How does a distributed consensus algorithm like Raft work?"}
-{"prompt": "What is the purpose of dependency injection?"}
-{"prompt": "How does a compiler optimize code?"}
-{"prompt": "What is the difference between concurrency and parallelism?"}
-{"prompt": "How does a lock-free data structure work?"}
-{"prompt": "What causes the seasons on Earth?"}
-{"prompt": "How does natural selection drive evolution?"}
-{"prompt": "What is the greenhouse effect?"}
-{"prompt": "Explain the basic structure of an atom."}
-{"prompt": "How does a vaccine work?"}
-{"prompt": "What is the theory of plate tectonics?"}
-{"prompt": "How do antibiotics work?"}
-{"prompt": "What is the Doppler effect?"}
-{"prompt": "How does photosynthesis work?"}
-{"prompt": "What is entropy in thermodynamics?"}
-{"prompt": "How does the immune system fight infections?"}
-{"prompt": "What is quantum entanglement?"}
-{"prompt": "How does a battery store and release energy?"}
-{"prompt": "What is the difference between weather and climate?"}
-{"prompt": "How do black holes form?"}
-{"prompt": "What is CRISPR and how does it edit genes?"}
-{"prompt": "How does the water cycle work?"}
-{"prompt": "What is the difference between mitosis and meiosis?"}
-{"prompt": "How do tides work?"}
-{"prompt": "What is dark matter and why do scientists think it exists?"}
-{"prompt": "How does an MRI machine create images of the body?"}
-{"prompt": "What is the Heisenberg uncertainty principle?"}
-{"prompt": "How do volcanoes form?"}
-{"prompt": "What is the difference between a virus and a bacterium?"}
-{"prompt": "How does the brain form and store memories?"}
-{"prompt": "What causes ocean currents?"}
-{"prompt": "How does nuclear fusion differ from nuclear fission?"}
-{"prompt": "What is the microbiome and why does it matter for health?"}
-{"prompt": "How do earthquakes happen?"}
-{"prompt": "What is the relationship between electricity and magnetism?"}
-{"prompt": "What caused the fall of the Roman Empire?"}
-{"prompt": "How does inflation affect an economy?"}
-{"prompt": "What is the difference between a democracy and a republic?"}
-{"prompt": "How did the printing press change society?"}
-{"prompt": "What is cognitive dissonance?"}
-{"prompt": "How does the electoral college work in the United States?"}
-{"prompt": "What is the social contract theory?"}
-{"prompt": "How did the Industrial Revolution change daily life?"}
-{"prompt": "What is confirmation bias and how does it affect decision-making?"}
-{"prompt": "How does international trade benefit countries with different resources?"}
-{"prompt": "What is the tragedy of the commons?"}
-{"prompt": "How did the invention of the internet change communication?"}
-{"prompt": "What is the difference between a recession and a depression?"}
-{"prompt": "How does the justice system differ between adversarial and inquisitorial models?"}
-{"prompt": "What is cultural relativism?"}
-{"prompt": "How does gerrymandering work?"}
-{"prompt": "What is the bystander effect?"}
-{"prompt": "How did the Cold War shape modern geopolitics?"}
-{"prompt": "What is opportunity cost?"}
-{"prompt": "How does propaganda work psychologically?"}
-{"prompt": "What is the difference between equity and equality?"}
-{"prompt": "How does urbanization affect a society?"}
-{"prompt": "What is the Dunning-Kruger effect?"}
-{"prompt": "How does a central bank control the money supply?"}
-{"prompt": "What is the difference between deductive and inductive reasoning?"}
-{"prompt": "How did the civil rights movement change American law?"}
-{"prompt": "What is moral hazard in economics?"}
-{"prompt": "How does language shape the way people think?"}
-{"prompt": "What is the prisoner's dilemma and why does it matter?"}
-{"prompt": "How does collective memory differ from individual memory?"}
-{"prompt": "How do you create and stick to a personal budget?"}
-{"prompt": "What should someone look for when buying a used car?"}
-{"prompt": "How does compound interest work and why does it matter for saving?"}
-{"prompt": "What is the best way to learn a new language as an adult?"}
-{"prompt": "How do you negotiate a salary?"}
-{"prompt": "What should you consider when choosing health insurance?"}
-{"prompt": "How do you develop a consistent exercise routine?"}
-{"prompt": "What is the difference between a Roth IRA and a traditional IRA?"}
-{"prompt": "How do you handle a disagreement with a neighbor?"}
-{"prompt": "What should you look for when renting an apartment?"}
-{"prompt": "How do you build good credit?"}
-{"prompt": "What is the best way to prepare for a natural disaster?"}
-{"prompt": "How do you meal plan for a week on a tight budget?"}
-{"prompt": "What should someone know before adopting a pet?"}
-{"prompt": "How do you reduce household energy consumption?"}
-{"prompt": "What is the best way to improve your sleep quality?"}
-{"prompt": "How do you choose a reliable contractor for home repairs?"}
-{"prompt": "What should you consider when planning for retirement?"}
-{"prompt": "How do you approach a difficult conversation with a family member?"}
-{"prompt": "What are the most important things to check before signing a lease?"}
-{"prompt": "How does refinancing a mortgage work?"}
-{"prompt": "What is the best way to organize and declutter a home?"}
-{"prompt": "How do you evaluate whether a news source is reliable?"}
-{"prompt": "What should someone know before traveling internationally for the first time?"}
-{"prompt": "How do you safely invest money as a beginner?"}
-{"prompt": "What is the best approach to managing chronic stress?"}
-{"prompt": "How do you teach a child about money?"}
-{"prompt": "What should you do in the first 24 hours after a car accident?"}
-{"prompt": "How do you choose between buying and leasing a car?"}
-{"prompt": "What are the basics of cooking a balanced meal?"}
-{"prompt": "What are the most important things to consider when choosing a programming language for a new project?"}
-{"prompt": "How should someone approach learning a new technical skill?"}
-{"prompt": "What makes a good code review?"}
-{"prompt": "How do you decide between building and buying a software solution?"}
-{"prompt": "What are the key principles of writing maintainable code?"}
-{"prompt": "How should a team handle technical debt?"}
-{"prompt": "What makes an effective meeting?"}
-{"prompt": "How do you prioritize tasks when everything seems urgent?"}
-{"prompt": "What should someone consider before accepting a job offer?"}
-{"prompt": "How do you give constructive feedback to a colleague?"}
-{"prompt": "How do you run a productive one-on-one meeting with a direct report?"}
-{"prompt": "What makes a strong presentation to a non-technical audience?"}
-{"prompt": "How do you manage scope creep in a project?"}
-{"prompt": "What is the best way to onboard a new team member?"}
-{"prompt": "How do you build trust with a new team?"}
-{"prompt": "What should a manager do when two team members have a conflict?"}
-{"prompt": "How do you write a clear and persuasive proposal?"}
-{"prompt": "What makes a good mentor-mentee relationship?"}
-{"prompt": "How do you decide when to delegate a task?"}
-{"prompt": "What is the best way to communicate bad news to stakeholders?"}
-{"prompt": "How do you set goals that are actually useful?"}
-{"prompt": "What should you do when you disagree with your manager's decision?"}
-{"prompt": "How do you maintain work-life balance in a demanding job?"}
-{"prompt": "What makes a team retrospective actually useful?"}
-{"prompt": "How do you transition from an individual contributor to a management role?"}
-{"prompt": "Is Python a good first programming language?"}
-{"prompt": "Are microservices better than monoliths?"}
-{"prompt": "Should developers write their own authentication systems?"}
-{"prompt": "Is test-driven development worth the overhead?"}
-{"prompt": "Are coding bootcamps a good alternative to a computer science degree?"}
-{"prompt": "Should teams use agile or waterfall methodologies?"}
-{"prompt": "Is remote work better than working in an office?"}
-{"prompt": "Are electric vehicles ready to replace gasoline cars?"}
-{"prompt": "Should children learn to code in school?"}
-{"prompt": "Is social media net positive or net negative for society?"}
-{"prompt": "Should a company prioritize growth or profitability?"}
-{"prompt": "Is a college degree still worth the cost?"}
-{"prompt": "Should governments regulate artificial intelligence?"}
-{"prompt": "Is nuclear energy a good solution to climate change?"}
-{"prompt": "Should companies require employees to return to the office?"}
-{"prompt": "Is it better to specialize deeply or be a generalist?"}
-{"prompt": "Should news organizations use paywalls?"}
-{"prompt": "Is space exploration worth the cost?"}
-{"prompt": "Should tipping culture be replaced with higher wages?"}
-{"prompt": "Is it ethical to use animals in scientific research?"}
-{"prompt": "Should cities prioritize public transit over car infrastructure?"}
-{"prompt": "Is universal basic income a good idea?"}
-{"prompt": "Should social media platforms be responsible for content moderation?"}
-{"prompt": "Is homework beneficial for students?"}
-{"prompt": "Should countries adopt a four-day work week?"}
-{"prompt": "Describe what a typical day might look like for a software engineer in 2040."}
-{"prompt": "If you could redesign the internet from scratch, what would you change?"}
-{"prompt": "What would a programming language designed for non-programmers look like?"}
-{"prompt": "How might AI change the practice of medicine in the next decade?"}
-{"prompt": "What would an ideal city of the future look like?"}
-{"prompt": "What would the world look like if humans could photosynthesize?"}
-{"prompt": "How would society change if everyone could read each other's thoughts?"}
-{"prompt": "What would a school system designed from scratch today look like?"}
-{"prompt": "If you could add one amendment to the US Constitution, what would it be and why?"}
-{"prompt": "What would a world without money look like?"}
-{"prompt": "How would history have been different if the printing press was invented 500 years earlier?"}
-{"prompt": "What would the ideal work environment look like?"}
-{"prompt": "If you could solve one global problem overnight, which would you choose and why?"}
-{"prompt": "What would transportation look like in a city with no cars?"}
-{"prompt": "How would you design a fair voting system from scratch?"}
-{"prompt": "What would a restaurant menu look like in 2100?"}
-{"prompt": "If you could live in any historical period, which would you choose and why?"}
-{"prompt": "What would a social media platform designed for mental health look like?"}
-{"prompt": "How would you redesign the hospital experience for patients?"}
-{"prompt": "What would an economy look like if energy were free and unlimited?"}
-{"prompt": "What is the role of the Federal Reserve in the US economy?"}
-{"prompt": "How does a clinical trial work?"}
-{"prompt": "What is the difference between civil law and common law?"}
-{"prompt": "How does supply and demand determine prices?"}
-{"prompt": "What is the scientific method?"}
-{"prompt": "How does a patent differ from a trademark?"}
-{"prompt": "What is triage and how does it work in an emergency room?"}
-{"prompt": "How does a stock market index like the S&P 500 work?"}
-{"prompt": "What is the difference between a felony and a misdemeanor?"}
-{"prompt": "How does peer review work in academic publishing?"}
-{"prompt": "What is an amortization schedule for a loan?"}
-{"prompt": "How does a grand jury differ from a trial jury?"}
-{"prompt": "What is the difference between a systematic review and a meta-analysis?"}
-{"prompt": "How does bond pricing work?"}
-{"prompt": "What is informed consent in medical research?"}
-{"prompt": "How does a franchise business model work?"}
-{"prompt": "What is the difference between a tax deduction and a tax credit?"}
-{"prompt": "How does the FDA approve a new drug?"}
-{"prompt": "What is the difference between mediation and arbitration?"}
-{"prompt": "How does academic tenure work?"}
-{"prompt": "What is the speed of light?"}
-{"prompt": "What is the largest ocean on Earth?"}
-{"prompt": "What year was the World Wide Web invented?"}
-{"prompt": "What is the boiling point of water at sea level?"}
-{"prompt": "How far is the Moon from the Earth?"}
+"What is a mutex and why is it used in concurrent programming?"
+"How does garbage collection work in modern programming languages?"
+"What is the difference between TCP and UDP?"
+"Explain how a hash table handles collisions."
+"What is the CAP theorem in distributed systems?"
+"How does public-key cryptography work?"
+"What is the difference between a process and a thread?"
+"How does a neural network learn through backpropagation?"
+"What is eventual consistency and when would you use it?"
+"Explain the difference between compiled and interpreted languages."
+"What is a container and how does it differ from a virtual machine?"
+"How does DNS resolution work?"
+"What is the purpose of an index in a database?"
+"Explain how HTTPS establishes a secure connection."
+"What is a memory leak and how do you detect one?"
+"How does a load balancer distribute traffic?"
+"What is the difference between SQL and NoSQL databases?"
+"Explain what a deadlock is and how to prevent one."
+"What is MapReduce and what problem does it solve?"
+"How does version control with Git work at a high level?"
+"What is the difference between symmetric and asymmetric encryption?"
+"How does a recommendation system work?"
+"What is a race condition?"
+"How does pagination work in APIs?"
+"What is the difference between a stack and a queue?"
+"How does OAuth authentication work?"
+"What is a microkernel and how does it differ from a monolithic kernel?"
+"How does a bloom filter work and when would you use one?"
+"What is the difference between strong and weak typing in programming languages?"
+"How do graph databases differ from relational databases?"
+"What is WebAssembly and what problems does it solve?"
+"How does a CDN improve website performance?"
+"What is the actor model in concurrent programming?"
+"How does a B-tree index work?"
+"What is the difference between REST and GraphQL?"
+"How does containerization differ from virtualization at the kernel level?"
+"What is a service mesh and why would you use one?"
+"How does consistent hashing work in distributed systems?"
+"What is the difference between optimistic and pessimistic locking?"
+"How does a garbage collector decide which objects to free?"
+"What is tail call optimization?"
+"How does a reverse proxy differ from a forward proxy?"
+"What is the purpose of a write-ahead log in databases?"
+"How does mTLS work and when is it needed?"
+"What is the difference between horizontal and vertical scaling?"
+"How does a distributed consensus algorithm like Raft work?"
+"What is the purpose of dependency injection?"
+"How does a compiler optimize code?"
+"What is the difference between concurrency and parallelism?"
+"How does a lock-free data structure work?"
+"What causes the seasons on Earth?"
+"How does natural selection drive evolution?"
+"What is the greenhouse effect?"
+"Explain the basic structure of an atom."
+"How does a vaccine work?"
+"What is the theory of plate tectonics?"
+"How do antibiotics work?"
+"What is the Doppler effect?"
+"How does photosynthesis work?"
+"What is entropy in thermodynamics?"
+"How does the immune system fight infections?"
+"What is quantum entanglement?"
+"How does a battery store and release energy?"
+"What is the difference between weather and climate?"
+"How do black holes form?"
+"What is CRISPR and how does it edit genes?"
+"How does the water cycle work?"
+"What is the difference between mitosis and meiosis?"
+"How do tides work?"
+"What is dark matter and why do scientists think it exists?"
+"How does an MRI machine create images of the body?"
+"What is the Heisenberg uncertainty principle?"
+"How do volcanoes form?"
+"What is the difference between a virus and a bacterium?"
+"How does the brain form and store memories?"
+"What causes ocean currents?"
+"How does nuclear fusion differ from nuclear fission?"
+"What is the microbiome and why does it matter for health?"
+"How do earthquakes happen?"
+"What is the relationship between electricity and magnetism?"
+"What caused the fall of the Roman Empire?"
+"How does inflation affect an economy?"
+"What is the difference between a democracy and a republic?"
+"How did the printing press change society?"
+"What is cognitive dissonance?"
+"How does the electoral college work in the United States?"
+"What is the social contract theory?"
+"How did the Industrial Revolution change daily life?"
+"What is confirmation bias and how does it affect decision-making?"
+"How does international trade benefit countries with different resources?"
+"What is the tragedy of the commons?"
+"How did the invention of the internet change communication?"
+"What is the difference between a recession and a depression?"
+"How does the justice system differ between adversarial and inquisitorial models?"
+"What is cultural relativism?"
+"How does gerrymandering work?"
+"What is the bystander effect?"
+"How did the Cold War shape modern geopolitics?"
+"What is opportunity cost?"
+"How does propaganda work psychologically?"
+"What is the difference between equity and equality?"
+"How does urbanization affect a society?"
+"What is the Dunning-Kruger effect?"
+"How does a central bank control the money supply?"
+"What is the difference between deductive and inductive reasoning?"
+"How did the civil rights movement change American law?"
+"What is moral hazard in economics?"
+"How does language shape the way people think?"
+"What is the prisoner's dilemma and why does it matter?"
+"How does collective memory differ from individual memory?"
+"How do you create and stick to a personal budget?"
+"What should someone look for when buying a used car?"
+"How does compound interest work and why does it matter for saving?"
+"What is the best way to learn a new language as an adult?"
+"How do you negotiate a salary?"
+"What should you consider when choosing health insurance?"
+"How do you develop a consistent exercise routine?"
+"What is the difference between a Roth IRA and a traditional IRA?"
+"How do you handle a disagreement with a neighbor?"
+"What should you look for when renting an apartment?"
+"How do you build good credit?"
+"What is the best way to prepare for a natural disaster?"
+"How do you meal plan for a week on a tight budget?"
+"What should someone know before adopting a pet?"
+"How do you reduce household energy consumption?"
+"What is the best way to improve your sleep quality?"
+"How do you choose a reliable contractor for home repairs?"
+"What should you consider when planning for retirement?"
+"How do you approach a difficult conversation with a family member?"
+"What are the most important things to check before signing a lease?"
+"How does refinancing a mortgage work?"
+"What is the best way to organize and declutter a home?"
+"How do you evaluate whether a news source is reliable?"
+"What should someone know before traveling internationally for the first time?"
+"How do you safely invest money as a beginner?"
+"What is the best approach to managing chronic stress?"
+"How do you teach a child about money?"
+"What should you do in the first 24 hours after a car accident?"
+"How do you choose between buying and leasing a car?"
+"What are the basics of cooking a balanced meal?"
+"What are the most important things to consider when choosing a programming language for a new project?"
+"How should someone approach learning a new technical skill?"
+"What makes a good code review?"
+"How do you decide between building and buying a software solution?"
+"What are the key principles of writing maintainable code?"
+"How should a team handle technical debt?"
+"What makes an effective meeting?"
+"How do you prioritize tasks when everything seems urgent?"
+"What should someone consider before accepting a job offer?"
+"How do you give constructive feedback to a colleague?"
+"How do you run a productive one-on-one meeting with a direct report?"
+"What makes a strong presentation to a non-technical audience?"
+"How do you manage scope creep in a project?"
+"What is the best way to onboard a new team member?"
+"How do you build trust with a new team?"
+"What should a manager do when two team members have a conflict?"
+"How do you write a clear and persuasive proposal?"
+"What makes a good mentor-mentee relationship?"
+"How do you decide when to delegate a task?"
+"What is the best way to communicate bad news to stakeholders?"
+"How do you set goals that are actually useful?"
+"What should you do when you disagree with your manager's decision?"
+"How do you maintain work-life balance in a demanding job?"
+"What makes a team retrospective actually useful?"
+"How do you transition from an individual contributor to a management role?"
+"Is Python a good first programming language?"
+"Are microservices better than monoliths?"
+"Should developers write their own authentication systems?"
+"Is test-driven development worth the overhead?"
+"Are coding bootcamps a good alternative to a computer science degree?"
+"Should teams use agile or waterfall methodologies?"
+"Is remote work better than working in an office?"
+"Are electric vehicles ready to replace gasoline cars?"
+"Should children learn to code in school?"
+"Is social media net positive or net negative for society?"
+"Should a company prioritize growth or profitability?"
+"Is a college degree still worth the cost?"
+"Should governments regulate artificial intelligence?"
+"Is nuclear energy a good solution to climate change?"
+"Should companies require employees to return to the office?"
+"Is it better to specialize deeply or be a generalist?"
+"Should news organizations use paywalls?"
+"Is space exploration worth the cost?"
+"Should tipping culture be replaced with higher wages?"
+"Is it ethical to use animals in scientific research?"
+"Should cities prioritize public transit over car infrastructure?"
+"Is universal basic income a good idea?"
+"Should social media platforms be responsible for content moderation?"
+"Is homework beneficial for students?"
+"Should countries adopt a four-day work week?"
+"Describe what a typical day might look like for a software engineer in 2040."
+"If you could redesign the internet from scratch, what would you change?"
+"What would a programming language designed for non-programmers look like?"
+"How might AI change the practice of medicine in the next decade?"
+"What would an ideal city of the future look like?"
+"What would the world look like if humans could photosynthesize?"
+"How would society change if everyone could read each other's thoughts?"
+"What would a school system designed from scratch today look like?"
+"If you could add one amendment to the US Constitution, what would it be and why?"
+"What would a world without money look like?"
+"How would history have been different if the printing press was invented 500 years earlier?"
+"What would the ideal work environment look like?"
+"If you could solve one global problem overnight, which would you choose and why?"
+"What would transportation look like in a city with no cars?"
+"How would you design a fair voting system from scratch?"
+"What would a restaurant menu look like in 2100?"
+"If you could live in any historical period, which would you choose and why?"
+"What would a social media platform designed for mental health look like?"
+"How would you redesign the hospital experience for patients?"
+"What would an economy look like if energy were free and unlimited?"
+"What is the role of the Federal Reserve in the US economy?"
+"How does a clinical trial work?"
+"What is the difference between civil law and common law?"
+"How does supply and demand determine prices?"
+"What is the scientific method?"
+"How does a patent differ from a trademark?"
+"What is triage and how does it work in an emergency room?"
+"How does a stock market index like the S&P 500 work?"
+"What is the difference between a felony and a misdemeanor?"
+"How does peer review work in academic publishing?"
+"What is an amortization schedule for a loan?"
+"How does a grand jury differ from a trial jury?"
+"What is the difference between a systematic review and a meta-analysis?"
+"How does bond pricing work?"
+"What is informed consent in medical research?"
+"How does a franchise business model work?"
+"What is the difference between a tax deduction and a tax credit?"
+"How does the FDA approve a new drug?"
+"What is the difference between mediation and arbitration?"
+"How does academic tenure work?"
+"What is the speed of light?"
+"What is the largest ocean on Earth?"
+"What year was the World Wide Web invented?"
+"What is the boiling point of water at sea level?"
+"How far is the Moon from the Earth?"

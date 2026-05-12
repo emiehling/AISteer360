@@ -22,31 +22,47 @@ class GenerationResult:
     config: dict = field(default_factory=dict)
 
     def save(self, path: str | Path) -> None:
-        """Serialize pairs, seeds, and config to a JSON file."""
+        """Write pairs to a JSONL file (one record per line)."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "positives": list(self.pairs.positives),
-            "negatives": list(self.pairs.negatives),
-            "prompts": list(self.pairs.prompts) if self.pairs.prompts else None,
-            "seed_prompts_used": self.seed_prompts_used,
-            "config": self.config,
-        }
-        path.write_text(json.dumps(data, indent=2))
+        prompts = self.pairs.prompts or [""] * len(self.pairs.positives)
+        behavior = self.config.get("behavior", "") if self.config else ""
+        with open(path, "w") as f:
+            for prompt, pos, neg in zip(prompts, self.pairs.positives, self.pairs.negatives):
+                record = {
+                    "prompt": prompt,
+                    "positive": pos,
+                    "negative": neg,
+                    "behavior": behavior,
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     @classmethod
     def load(cls, path: str | Path) -> "GenerationResult":
-        """Reconstruct a `GenerationResult` from a saved JSON file."""
-        data = json.loads(Path(path).read_text())
+        """Load a GenerationResult from a JSONL file.
+
+        Malformed trailing lines (e.g. from an interrupted write) are treated as truncation and discarded.
+        """
+        path = Path(path)
+        records: list[dict] = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    break
         pairs = ContrastivePairs(
-            positives=data["positives"],
-            negatives=data["negatives"],
-            prompts=data.get("prompts"),
+            positives=[r["positive"] for r in records],
+            negatives=[r["negative"] for r in records],
+            prompts=[r["prompt"] for r in records],
         )
         return cls(
             pairs=pairs,
-            seed_prompts_used=data.get("seed_prompts_used", []),
-            config=data.get("config", {}),
+            seed_prompts_used=[r["prompt"] for r in records],
+            config={"behavior": records[0]["behavior"]} if records else {},
         )
 
 

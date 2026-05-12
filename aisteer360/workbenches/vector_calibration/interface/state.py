@@ -69,6 +69,13 @@ class ServerState:
     def reset_cancel(self) -> None:
         self._cancel_requested = False
 
+    @property
+    def run_dir(self) -> Path | None:
+        """The active run directory for the most recent pipeline invocation, if any."""
+        if self.builder is not None:
+            return self.builder._run_dir
+        return None
+
     def rebuild_builder(self) -> None:
         """Reconstruct the builder from current config (e.g. after a config change)."""
         if self.builder is not None:

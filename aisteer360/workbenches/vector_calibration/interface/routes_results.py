@@ -69,8 +69,11 @@ def get_cell_detail(
 def download_svec(request: Request) -> FileResponse:
     """Download the steering vector as a .svec file."""
     state = _current_state(request)
+    run_dir = state.run_dir
+    if run_dir is None:
+        raise HTTPException(404, "No active run.")
     behavior = state.config.generation.behavior
-    path = state.save_dir / f"{behavior}.svec"
+    path = run_dir / f"{behavior}.svec"
     if not path.exists():
         raise HTTPException(404, "No .svec file found.")
     return FileResponse(
@@ -81,18 +84,26 @@ def download_svec(request: Request) -> FileResponse:
 @router.get("/artifacts/pairs")
 def download_pairs(request: Request) -> FileResponse:
     """Download the generated contrastive pairs."""
-    path = _current_state(request).save_dir / "pairs.json"
+    state = _current_state(request)
+    run_dir = state.run_dir
+    if run_dir is None:
+        raise HTTPException(404, "No active run.")
+    path = run_dir / "pairs.jsonl"
     if not path.exists():
         raise HTTPException(404, "No pairs file found.")
     return FileResponse(
-        path, filename="pairs.json", media_type="application/json"
+        path, filename="pairs.jsonl", media_type="application/x-jsonlines"
     )
 
 
 @router.get("/artifacts/result")
 def download_result(request: Request) -> FileResponse:
     """Download the full calibration result."""
-    path = _current_state(request).save_dir / "calibration_result.json"
+    state = _current_state(request)
+    run_dir = state.run_dir
+    if run_dir is None:
+        raise HTTPException(404, "No active run.")
+    path = run_dir / "calibration_result.json"
     if not path.exists():
         raise HTTPException(404, "No calibration result found.")
     return FileResponse(
