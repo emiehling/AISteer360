@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 
 from aisteer360.algorithms.core.steering_utils import ensure_pad_token
 from aisteer360.algorithms.state_control.common.specs import ContrastivePairs
@@ -16,6 +16,20 @@ from .configs import GenerationConfig
 from .results import GenerationResult
 
 logger = logging.getLogger(__name__)
+
+
+class _CancelStoppingCriteria(StoppingCriteria):
+    """Stops `model.generate` as soon as `cancel_check()` returns True."""
+
+    def __init__(self, cancel_check: Callable[[], bool]):
+        self._cancel_check = cancel_check
+        self.cancelled = False
+
+    def __call__(self, input_ids, scores, **kwargs) -> bool:
+        if self._cancel_check():
+            self.cancelled = True
+            return True
+        return False
 
 
 class ContrastivePairGenerator:
@@ -40,6 +54,7 @@ class ContrastivePairGenerator:
         on_progress: Callable[[int, int], None] | None = None,
         output_path: Path | None = None,
         behavior: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> GenerationResult:
         """Produce contrastive pairs.
 
@@ -51,6 +66,8 @@ class ContrastivePairGenerator:
                 that an interrupted run can be resumed. If the file already exists, its valid lines are loaded and
                 generation resumes from the next pair.
             behavior: Behavior label written into each JSONL record. Required when `output_path` is set.
+            cancel_check: Optional callable polled after each batch; when it returns True, generation stops and
+                returns a `GenerationResult` containing whatever pairs have been completed so far.
 
         Returns:
             `GenerationResult` containing the `ContrastivePairs`.
@@ -61,7 +78,7 @@ class ContrastivePairGenerator:
             raise ValueError("behavior must be provided when output_path is set.")
 
         seeds = self._resolve_seeds(cfg)
-        total = cfg.n_pairs
+        total = len(seeds)
 
         positives: list[str] = []
         negatives: list[str] = []
@@ -108,14 +125,27 @@ class ContrastivePairGenerator:
             batch_end = min(batch_start + cfg.batch_size, total)
             batch_seeds = seeds[batch_start:batch_end]
 
-            pos_batch = self._generate_batch(
+            if cancel_check is not None and cancel_check():
+                logger.info("Generation cancelled before batch at %d/%d pairs.", len(positives), total)
+                break
+
+            pos_batch, pos_cancelled = self._generate_batch(
                 model, tokenizer, batch_seeds,
                 system_prompt=cfg.positive_prompt, cfg=cfg,
+                cancel_check=cancel_check,
             )
-            neg_batch = self._generate_batch(
+            if pos_cancelled:
+                logger.info("Generation cancelled mid-batch at %d/%d pairs.", len(positives), total)
+                break
+
+            neg_batch, neg_cancelled = self._generate_batch(
                 model, tokenizer, batch_seeds,
                 system_prompt=cfg.negative_prompt, cfg=cfg,
+                cancel_check=cancel_check,
             )
+            if neg_cancelled:
+                logger.info("Generation cancelled mid-batch at %d/%d pairs.", len(positives), total)
+                break
 
             positives.extend(pos_batch)
             negatives.extend(neg_batch)
@@ -134,6 +164,10 @@ class ContrastivePairGenerator:
 
             if on_progress:
                 on_progress(len(positives), total)
+
+            if cancel_check is not None and cancel_check():
+                logger.info("Generation cancelled after %d/%d pairs.", len(positives), total)
+                break
 
         if owns_model:
             del model
@@ -173,7 +207,10 @@ class ContrastivePairGenerator:
 
     @staticmethod
     def _resolve_seeds(cfg: GenerationConfig) -> list[str]:
-        """Load, sample, or cycle seed prompts to reach `n_pairs`."""
+        """Load seed prompts and return them in shuffled order.
+
+        The number of pairs produced equals the length of the resolved seed list.
+        """
         if isinstance(cfg.seed_prompts, str):
             raw_path = Path(cfg.seed_prompts)
             text = raw_path.read_text()
@@ -197,11 +234,8 @@ class ContrastivePairGenerator:
             raise ValueError("seed_prompts is empty after resolution.")
 
         rng = random.Random(cfg.seed)
-        if len(seeds) >= cfg.n_pairs:
-            return rng.sample(seeds, cfg.n_pairs)
-        full = seeds * (cfg.n_pairs // len(seeds) + 1)
-        rng.shuffle(full)
-        return full[: cfg.n_pairs]
+        rng.shuffle(seeds)
+        return seeds
 
     @staticmethod
     def _generate_batch(
@@ -210,8 +244,14 @@ class ContrastivePairGenerator:
         seed_prompts: list[str],
         system_prompt: str,
         cfg: GenerationConfig,
-    ) -> list[str]:
-        """Generate a batch of responses with the given system prompt."""
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[list[str], bool]:
+        """Generate a batch of responses with the given system prompt.
+
+        Returns a tuple of (decoded outputs, cancelled). When `cancel_check` fires during generation, the stopping
+        criterion aborts `model.generate` and the returned `cancelled` flag is True; callers should discard the
+        partially-generated outputs.
+        """
         messages_batch = [
             [
                 {"role": "system", "content": system_prompt},
@@ -229,6 +269,12 @@ class ContrastivePairGenerator:
             texts, return_tensors="pt", padding=True, truncation=True
         ).to(model.device)
 
+        stopping_criteria = None
+        cancel_criterion: _CancelStoppingCriteria | None = None
+        if cancel_check is not None:
+            cancel_criterion = _CancelStoppingCriteria(cancel_check)
+            stopping_criteria = StoppingCriteriaList([cancel_criterion])
+
         with torch.no_grad():
             output_ids = model.generate(
                 **inputs,
@@ -237,9 +283,14 @@ class ContrastivePairGenerator:
                 top_p=cfg.top_p,
                 do_sample=True,
                 pad_token_id=tokenizer.pad_token_id,
+                stopping_criteria=stopping_criteria,
             )
+
+        cancelled = bool(cancel_criterion and cancel_criterion.cancelled)
+        if cancelled:
+            return [], True
 
         prompt_len = inputs["input_ids"].shape[1]
         return tokenizer.batch_decode(
             output_ids[:, prompt_len:], skip_special_tokens=True
-        )
+        ), False

@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
+import json
 import logging
 import time
+from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from .schemas import RunRequest, RunStatusResponse
@@ -17,7 +20,44 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["run"])
 
 
-def _pipeline_task(state: ServerState, manager: ConnectionManager, stages: list[str]):
+def _count_jsonl_lines(path: Path) -> int:
+    if not path.exists() or path.stat().st_size == 0:
+        return 0
+    count = 0
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.strip():
+                    count += 1
+    except OSError:
+        return 0
+    return count
+
+
+def _read_first_jsonl_record(path: Path) -> dict | None:
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    return json.loads(line)
+                except json.JSONDecodeError:
+                    return None
+    except OSError:
+        return None
+    return None
+
+
+def _pipeline_task(
+    state: ServerState,
+    manager: ConnectionManager,
+    stages: list[str],
+    resume_run_dir: str | None = None,
+):
     """Coroutine that runs the requested stages in background threads."""
 
     async def _run():
@@ -32,6 +72,11 @@ def _pipeline_task(state: ServerState, manager: ConnectionManager, stages: list[
             try:
                 if state.builder is None:
                     state.rebuild_builder()
+
+                if "generation" in stages and not state.config.generation.behavior.strip():
+                    raise ValueError(
+                        "Behavior label is required for generation. Set it in the 'Dimension label' field."
+                    )
 
                 if "generation" in stages:
                     state.run_status.phase = RunPhase.GENERATION
@@ -51,16 +96,28 @@ def _pipeline_task(state: ServerState, manager: ConnectionManager, stages: list[
                             },
                         )
 
+                    run_dir_override: Path | None = None
+                    if resume_run_dir:
+                        candidate = state.save_dir / resume_run_dir
+                        if not candidate.is_dir():
+                            raise ValueError(
+                                f"Resume run directory '{resume_run_dir}' not found under {state.save_dir}."
+                            )
+                        run_dir_override = candidate
+
                     result = await asyncio.to_thread(
-                        state.builder.run_generation, on_progress=gen_progress
+                        state.builder.run_generation,
+                        on_progress=gen_progress,
+                        cancel_check=lambda: state.is_cancel_requested,
+                        run_dir=run_dir_override,
                     )
                     state.generation_result = result
 
-                if state.is_cancel_requested:
-                    state.run_status.phase = RunPhase.CANCELLED
-                    state.run_status.finished_at = time.time()
-                    manager.broadcast("phase", {"phase": "cancelled"})
-                    return
+                    if state.is_cancel_requested:
+                        state.run_status.phase = RunPhase.CANCELLED
+                        state.run_status.finished_at = time.time()
+                        manager.broadcast("phase", {"phase": "cancelled"})
+                        return
 
                 if "extraction" in stages:
                     state.run_status.phase = RunPhase.EXTRACTION
@@ -137,8 +194,79 @@ async def start_run(request: Request, body: RunRequest = RunRequest()):
             content={"error": "A run is already in progress."},
         )
 
-    asyncio.create_task(_pipeline_task(state, manager, body.stages)())
+    asyncio.create_task(
+        _pipeline_task(state, manager, body.stages, resume_run_dir=body.resume_run_dir)()
+    )
     return {"status": "started", "stages": body.stages}
+
+
+@router.get("/runs")
+def list_runs(request: Request, behavior: str = Query("", max_length=200)) -> dict:
+    """List existing run subdirectories matching a behavior label.
+
+    For each matching run directory under `save_dir`, returns its pair count, the expected total (from the sidecar
+    `run_meta.json` when present), and the parameters used so the frontend can decide whether resume is compatible.
+    """
+    state: ServerState = request.app.state.server
+    save_dir = state.save_dir
+    if not save_dir.exists():
+        return {"runs": []}
+
+    behavior_clean = (behavior or "").strip()
+    prefix = f"{behavior_clean}_" if behavior_clean else ""
+
+    runs = []
+    for entry in save_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        if prefix and not entry.name.startswith(prefix):
+            continue
+        pairs_path = entry / "pairs.jsonl"
+        meta_path = entry / "run_meta.json"
+        pairs_count = _count_jsonl_lines(pairs_path)
+
+        meta: dict = {}
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                meta = {}
+
+        run_behavior = meta.get("behavior")
+        if not run_behavior:
+            first = _read_first_jsonl_record(pairs_path)
+            if first:
+                run_behavior = first.get("behavior")
+
+        if behavior_clean and run_behavior and run_behavior != behavior_clean:
+            continue
+
+        has_svec = any(entry.glob("*.svec"))
+        has_calibration = (entry / "calibration_result.json").exists()
+
+        created = meta.get("created")
+        if not created:
+            try:
+                created = datetime.datetime.fromtimestamp(
+                    entry.stat().st_mtime, tz=datetime.UTC
+                ).isoformat()
+            except OSError:
+                created = None
+
+        runs.append({
+            "run_dir": entry.name,
+            "pairs_count": pairs_count,
+            "behavior": run_behavior,
+            "generator_model": meta.get("generator_model"),
+            "positive_prompt": meta.get("positive_prompt"),
+            "negative_prompt": meta.get("negative_prompt"),
+            "created": created,
+            "has_svec": has_svec,
+            "has_calibration": has_calibration,
+        })
+
+    runs.sort(key=lambda r: r.get("created") or "", reverse=True)
+    return {"runs": runs}
 
 
 @router.post("/run/cancel")

@@ -17,9 +17,8 @@ class GenerationConfig:
             the model.
         positive_prompt: System instruction for the positive direction.
         negative_prompt: System instruction for the negative direction.
-        seed_prompts: Seed user messages. If a string, treated as a path to a JSON or JSONL file of strings.
-        n_pairs: Number of pairs to produce. If `len(seed_prompts) < n_pairs`, seeds are cycled; if greater, a
-            random subset is sampled.
+        seed_prompts: Seed user messages. If a string, treated as a path to a JSON or JSONL file of strings. The
+            number of pairs produced equals the number of seed prompts resolved from this field.
         max_new_tokens: Max tokens per response.
         temperature: Sampling temperature for the generator.
         top_p: Nucleus sampling threshold.
@@ -32,7 +31,6 @@ class GenerationConfig:
     positive_prompt: str
     negative_prompt: str
     seed_prompts: list[str] | str | None = None
-    n_pairs: int = 300
     max_new_tokens: int = 160
     temperature: float = 0.9
     top_p: float = 0.95

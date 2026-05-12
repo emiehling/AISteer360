@@ -14,7 +14,6 @@ class GenerationConfigSchema(BaseModel):
     positive_prompt: str
     negative_prompt: str
     seed_prompts: list[str] | str | None = None
-    n_pairs: int = 300
     max_new_tokens: int = 160
     temperature: float = 0.9
     top_p: float = 0.95
@@ -82,6 +81,10 @@ class RunRequest(BaseModel):
     stages: list[Literal["generation", "extraction", "calibration"]] = Field(
         default=["generation", "extraction", "calibration"],
         description="Ordered list of stages to run.",
+    )
+    resume_run_dir: str | None = Field(
+        default=None,
+        description="Name of an existing run subdirectory (under save_dir) to resume generation into.",
     )
 
 

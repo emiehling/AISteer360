@@ -814,6 +814,8 @@
   .mc-item .mc-meta .mc-provider.wired { border-color: var(--good); color: var(--good); }
   .mc-item .mc-meta .mc-provider.disabled { border-color: var(--danger); color: var(--danger); opacity: 0.8; }
   .mc-item .mc-id { font-family: var(--mono); color: var(--text-dim); font-size: 10px; }
+  .mc-item.mc-use-raw { border-top: 1px solid var(--line); opacity: 0.7; }
+  .mc-item.mc-use-raw:hover { opacity: 1; }
   .mc-empty {
     padding: 10px 10px;
     font-family: var(--mono);
@@ -1286,6 +1288,42 @@
   .provider-status .prow .pill.miss { color: var(--danger); border-color: var(--danger); }
   .provider-status .prow .pill.disabled { color: var(--text-dimmer); }
 
+  /* model specs collapse + spacing */
+  #modelSpecs:empty { display: none; }
+  #modelSpecs { margin-top: 6px; }
+
+  /* resume row */
+  .toggle-row.resume-row { margin-top: 6px; }
+  .toggle-row.resume-row.disabled .k { color: var(--text-dimmer); }
+  .toggle.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  /* help modal content */
+  #helpContent h4 {
+    margin: 18px 0 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  #helpContent ol, #helpContent ul {
+    padding-left: 20px;
+    margin: 6px 0;
+  }
+  #helpContent li {
+    margin: 4px 0;
+    font-size: 12.5px;
+    color: var(--text-soft);
+  }
+  #helpContent p {
+    margin: 6px 0;
+    font-size: 12.5px;
+    color: var(--text-soft);
+  }
+  #helpContent strong { color: var(--text); }
+
   /* tooltip */
   #tt {
     position: fixed;
@@ -1326,6 +1364,14 @@
     <span class="name"><span class="sub">Vector Calibration Workbench</span></span>
   </div>
   <div class="spacer"></div>
+  <button class="icon-btn" id="btnHelp" title="How to use">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+      <line x1="12" y1="17" x2="12.01" y2="17"/>
+    </svg>
+  </button>
   <button class="icon-btn" id="btnSettings" title="Serving settings">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="3"/>
@@ -1379,6 +1425,22 @@
     <div class="modal-foot">
       <button class="btn" id="settingsCancel">Cancel</button>
       <button class="btn primary" id="settingsSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- help modal -->
+<div class="modal-scrim" id="helpModal">
+  <div class="modal" role="dialog" aria-label="How to use" style="width: 620px; max-height: 80vh;">
+    <div class="modal-head">
+      <span class="title">How to Use the Workbench</span>
+      <button class="close" id="helpClose">×</button>
+    </div>
+    <div class="modal-body" style="overflow-y:auto; max-height:65vh; line-height:1.6;">
+      <div id="helpContent"></div>
+    </div>
+    <div class="modal-foot" style="justify-content:flex-end;">
+      <button class="btn primary" id="helpDone">Got it</button>
     </div>
   </div>
 </div>
@@ -1515,26 +1577,30 @@
 
         <span class="field-label">Dimension label:</span>
         <label class="select">
-          <input id="behavior" type="text" placeholder="warmth">
+          <input id="behavior" type="text" placeholder="<>">
         </label>
 
         <span class="field-label positive">Positive prompt:</span>
         <div class="prompt-btn positive">
-          <textarea id="positivePrompt" rows="3"></textarea>
+          <textarea id="positivePrompt" rows="3" placeholder="<>"></textarea>
         </div>
 
         <span class="field-label negative">Negative prompt:</span>
         <div class="prompt-btn negative">
-          <textarea id="negativePrompt" rows="3"></textarea>
+          <textarea id="negativePrompt" rows="3" placeholder="<>"></textarea>
         </div>
 
         <div class="specs-block" id="genSettingsBlock">
           <div class="sub-label"><span>Generation settings</span></div>
-          <div class="field-row"><span class="k">n pairs</span><input class="inline" id="nPairs" type="number" min="1"></div>
           <div class="field-row"><span class="k">max tokens</span><input class="inline" id="maxNewTokensGen" type="number" min="1"></div>
           <div class="field-row"><span class="k">temperature</span><input class="inline" id="temperature" type="number" step="0.05"></div>
           <div class="field-row"><span class="k">top-p</span><input class="inline" id="topP" type="number" step="0.01"></div>
           <div class="field-row"><span class="k">batch size</span><input class="inline" id="batchSizeGen" type="number" min="1"></div>
+        </div>
+
+        <div class="toggle-row resume-row" id="resumePanel">
+          <span class="k" id="resumeLabel">resume previous run</span>
+          <span class="toggle" id="tgResume"></span>
         </div>
 
         <div class="run-row">
@@ -1902,7 +1968,6 @@
       seedPromptsList = null;
       $("seedPromptsPath").value = "";
     }
-    $("nPairs").value = g.n_pairs ?? 300;
     $("maxNewTokensGen").value = g.max_new_tokens ?? 160;
     $("temperature").value = g.temperature ?? 0.9;
     $("topP").value = g.top_p ?? 0.95;
@@ -1961,7 +2026,6 @@
       positive_prompt: $("positivePrompt").value,
       negative_prompt: $("negativePrompt").value,
       seed_prompts: seedPromptsValue,
-      n_pairs: +$("nPairs").value,
       max_new_tokens: +$("maxNewTokensGen").value,
       temperature: +$("temperature").value,
       top_p: +$("topP").value,
@@ -2391,6 +2455,9 @@
       $("statusCounter").textContent = "";
     }
     if (phase === "complete") $("statusCounter").textContent = "";
+    if (phase === "complete" || phase === "cancelled" || phase === "error") {
+      refreshResumePanel();
+    }
   }
 
   function updateProgress(msg) {
@@ -2453,6 +2520,29 @@
 
   // ── actions ──────────────────────────────────────────────────
   async function runPipeline(stages) {
+    if (stages.includes("generation")) {
+      const beh = ($("behavior").value || "").trim();
+      if (!beh) {
+        alert("Please enter a Dimension label (e.g. 'warmth') before running generation.");
+        return;
+      }
+    }
+
+    const body = { stages };
+    if (stages.includes("generation")) {
+      const toggle = $("tgResume");
+      const panel = $("resumePanel");
+      if (
+        toggle &&
+        toggle.classList.contains("on") &&
+        !toggle.classList.contains("disabled") &&
+        panel &&
+        panel.dataset.runDir
+      ) {
+        body.resume_run_dir = panel.dataset.runDir;
+      }
+    }
+
     try {
       try {
         await saveConfig({ silent: true });
@@ -2462,11 +2552,122 @@
       await api("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stages }),
+        body: JSON.stringify(body),
       });
     } catch (e) {
       alert("Failed to start run: " + e.message);
     }
+  }
+
+  // ── resume panel ─────────────────────────────────────────────
+  let resumeTimer = null;
+  function scheduleResumeRefresh() {
+    if (resumeTimer) clearTimeout(resumeTimer);
+    resumeTimer = setTimeout(refreshResumePanel, 500);
+  }
+
+  function setResumeDisabled(text) {
+    const panel = $("resumePanel");
+    const toggle = $("tgResume");
+    const label = $("resumeLabel");
+    if (!panel || !toggle || !label) return;
+    panel.classList.add("disabled");
+    toggle.classList.add("disabled");
+    toggle.classList.remove("on");
+    panel.dataset.runDir = "";
+    label.textContent = text;
+  }
+
+  async function refreshResumePanel() {
+    const panel = $("resumePanel");
+    const toggle = $("tgResume");
+    const label = $("resumeLabel");
+    if (!panel || !toggle || !label) return;
+
+    const behavior = ($("behavior").value || "").trim();
+    if (!behavior) {
+      setResumeDisabled("resume previous run");
+      return;
+    }
+
+    let runs = [];
+    try {
+      const data = await api(`/api/runs?behavior=${encodeURIComponent(behavior)}`);
+      runs = Array.isArray(data.runs) ? data.runs : [];
+    } catch (e) {
+      setResumeDisabled("resume previous run");
+      return;
+    }
+
+    const currentParams = {
+      behavior,
+      generator_model: ($("generatorModel").value || "").trim(),
+      positive_prompt: $("positivePrompt").value || "",
+      negative_prompt: $("negativePrompt").value || "",
+    };
+
+    const match = runs.find((r) => (
+      r.behavior === currentParams.behavior &&
+      (r.generator_model || "") === currentParams.generator_model &&
+      (r.positive_prompt || "") === currentParams.positive_prompt &&
+      (r.negative_prompt || "") === currentParams.negative_prompt
+    ));
+
+    if (!match) {
+      setResumeDisabled("resume previous run");
+      return;
+    }
+
+    const done = match.pairs_count || 0;
+    panel.classList.remove("disabled");
+    toggle.classList.remove("disabled");
+    toggle.classList.add("on");
+    panel.dataset.runDir = match.run_dir;
+    label.textContent = `resume previous run (${done} pairs on disk)`;
+  }
+
+  // ── help modal ───────────────────────────────────────────────
+  function renderHelpContent() {
+    $("helpContent").innerHTML = `
+      <p>The Vector Calibration Workbench helps you find the optimal way to steer a language model's behavior
+      by searching over layers and multiplier strengths.</p>
+
+      <h4>Quick start</h4>
+      <ol>
+        <li><strong>Choose a target model</strong> — type or select a HuggingFace model ID in the
+          <em>Target model</em> section. The architecture info will appear below.</li>
+        <li><strong>Define the behavior</strong> — enter a short label (e.g. "warmth", "formality")
+          in the <em>Dimension label</em> field, then write contrasting system prompts:
+          the <em>positive prompt</em> should instruct the model to exhibit the behavior, and
+          the <em>negative prompt</em> should instruct it to avoid the behavior.</li>
+        <li><strong>Run Generation</strong> — this produces contrastive response pairs. Progress
+          is saved automatically; you can resume an interrupted run.</li>
+        <li><strong>Run Extraction</strong> — fits a steering vector from the contrastive pairs
+          using the steered model's hidden states.</li>
+        <li><strong>Run Calibration</strong> — sweeps a grid of (layer, multiplier) combinations,
+          generates steered text for each, and scores with an LLM judge. Results appear in the
+          heatmap.</li>
+      </ol>
+
+      <h4>Reading the heatmap</h4>
+      <p>Each cell is a (layer, multiplier) pair. Colors show the score delta — how much the steered
+      response improved over baseline. Click a cell to inspect the actual generations side-by-side.
+      Use the dropdown above the color bar to switch between score delta, coherence, and perplexity views.</p>
+
+      <h4>Tips</h4>
+      <ul>
+        <li>Start with a small number of pairs (30–50) and eval prompts (10–15) to iterate quickly.
+          Scale up once you've settled on good prompts.</li>
+        <li>The generator model can differ from the target model — use a larger model to
+          produce higher-quality contrastive pairs if needed.</li>
+        <li>If the heatmap is mostly grey (incoherent), try a narrower multiplier range or a
+          different extraction method.</li>
+        <li>Click <strong>Run All</strong> to execute all three stages in sequence.</li>
+      </ul>
+
+      <h4>Keyboard shortcuts</h4>
+      <p>None yet — everything is point-and-click.</p>
+    `;
   }
 
   async function saveConfig(opts = {}) {
@@ -2518,6 +2719,7 @@
     cfg.save_dir = $("sSaveDir").value || null;
     cfg.device_map = $("sDeviceMap").value || "auto";
     cfg.hf_model_kwargs = kwargs;
+    let configOk = false;
     try {
       await api("/api/config", {
         method: "PUT",
@@ -2525,11 +2727,16 @@
         body: JSON.stringify(cfg),
       });
       currentConfig = cfg;
-      await saveCatalog();
-      closeSettings();
+      configOk = true;
     } catch (e) {
-      alert("Failed to save settings: " + e.message);
+      alert("Failed to save config: " + e.message);
     }
+    try {
+      await saveCatalog();
+    } catch (e) {
+      alert("Failed to save catalog: " + e.message);
+    }
+    if (configOk) closeSettings();
   }
 
   // ── catalog + model combos ───────────────────────────────────
@@ -2593,7 +2800,21 @@
       );
     });
     if (!relevant.length) {
-      dd.innerHTML = `<div class="mc-empty">no matching models</div>`;
+      if (q) {
+        const raw = input.value.trim();
+        dd.innerHTML = `
+          <div class="mc-item mc-use-raw" data-id="${escapeHtml(raw)}">
+            <div class="mc-label">Use "${escapeHtml(raw)}"</div>
+            <div class="mc-meta"><span class="mc-id">not in catalog</span></div>
+          </div>`;
+        dd.querySelector(".mc-use-raw").addEventListener("mousedown", (ev) => {
+          ev.preventDefault();
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+          combo.classList.remove("open");
+        });
+      } else {
+        dd.innerHTML = `<div class="mc-empty">no models in catalog</div>`;
+      }
       return;
     }
     dd.innerHTML = relevant
@@ -2611,7 +2832,23 @@
         `;
       })
       .join("");
-    dd.querySelectorAll(".mc-item").forEach((item) => {
+    const typed = input.value.trim();
+    const exactMatch = relevant.some((e) => e.model_id === typed);
+    if (typed && !exactMatch) {
+      const raw = document.createElement("div");
+      raw.className = "mc-item mc-use-raw";
+      raw.dataset.id = typed;
+      raw.innerHTML = `
+        <div class="mc-label">Use "${escapeHtml(typed)}"</div>
+        <div class="mc-meta"><span class="mc-id">not in catalog</span></div>`;
+      raw.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        combo.classList.remove("open");
+      });
+      dd.appendChild(raw);
+    }
+    dd.querySelectorAll(".mc-item:not(.mc-use-raw)").forEach((item) => {
       item.addEventListener("mousedown", (ev) => {
         ev.preventDefault();
         const id = item.dataset.id;
@@ -2649,8 +2886,11 @@
   function scheduleTargetProbe() {
     const id = ($("steeredModel").value || "").trim();
     if (probeTimer) clearTimeout(probeTimer);
+    const specs = $("modelSpecs");
+    if (specs) specs.dataset.source = "";
     if (!id) {
       targetModelProbe = null;
+      if (specs) specs.innerHTML = "";
       if (!heatmapData) renderEmptyHeatmap();
       return;
     }
@@ -2660,6 +2900,11 @@
   async function probeTargetModel(id) {
     if (probeInFlight === id) return;
     probeInFlight = id;
+    const specs = $("modelSpecs");
+    if (specs) {
+      specs.innerHTML = `<div class="field-row"><span class="k" style="opacity:0.5">probing model…</span></div>`;
+      specs.dataset.source = "probe";
+    }
     try {
       const info = await api(`/api/model/probe?model_id=${encodeURIComponent(id)}`);
       targetModelProbe = info;
@@ -2667,7 +2912,10 @@
       if (!heatmapData) renderEmptyHeatmap();
     } catch (e) {
       targetModelProbe = null;
-      renderProbeInfo(null);
+      if (specs) {
+        specs.innerHTML = `<div class="field-row"><span class="k" style="color: var(--danger)">probe failed</span><span class="v" style="opacity:0.6; font-size:10px">${escapeHtml(e.message || "unknown error")}</span></div>`;
+        specs.dataset.source = "";
+      }
       if (!heatmapData) renderEmptyHeatmap();
     } finally {
       probeInFlight = null;
@@ -2920,6 +3168,24 @@
     $("settingsModal").addEventListener("click", (e) => {
       if (e.target.id === "settingsModal") closeSettings();
     });
+
+    $("btnHelp").addEventListener("click", () => {
+      renderHelpContent();
+      $("helpModal").classList.add("open");
+    });
+    $("helpClose").addEventListener("click", () => $("helpModal").classList.remove("open"));
+    $("helpDone").addEventListener("click", () => $("helpModal").classList.remove("open"));
+    $("helpModal").addEventListener("click", (e) => {
+      if (e.target.id === "helpModal") $("helpModal").classList.remove("open");
+    });
+
+    for (const id of ["behavior", "generatorModel", "positivePrompt", "negativePrompt"]) {
+      const el = $(id);
+      if (!el) continue;
+      el.addEventListener("input", scheduleResumeRefresh);
+      el.addEventListener("change", scheduleResumeRefresh);
+    }
+    refreshResumePanel();
 
     $("statusBtn").addEventListener("click", () => $("runModal").classList.add("open"));
     $("runModalClose").addEventListener("click", () => $("runModal").classList.remove("open"));

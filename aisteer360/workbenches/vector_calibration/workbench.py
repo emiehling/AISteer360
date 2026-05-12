@@ -123,6 +123,7 @@ class VectorCalibrationWorkbench:
         self,
         on_progress: Callable[[int, int], None] | None = None,
         run_dir: str | Path | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> GenerationResult:
         """Run the contrastive pair generation stage.
 
@@ -131,6 +132,18 @@ class VectorCalibrationWorkbench:
         """
         active_run_dir = self._resolve_run_dir(create=True, run_dir=run_dir) if self._save_dir else None
         output_path = active_run_dir / "pairs.jsonl" if active_run_dir else None
+
+        if active_run_dir is not None:
+            meta = {
+                "behavior": self.config.generation.behavior,
+                "generator_model": self.config.generation.generator_model,
+                "positive_prompt": self.config.generation.positive_prompt,
+                "negative_prompt": self.config.generation.negative_prompt,
+                "created": datetime.datetime.now(datetime.UTC).isoformat(),
+            }
+            meta_path = active_run_dir / "run_meta.json"
+            if not meta_path.exists():
+                meta_path.write_text(json.dumps(meta, indent=2))
 
         gen = ContrastivePairGenerator(self.config.generation)
         behavior = self.config.generation.behavior
@@ -144,12 +157,14 @@ class VectorCalibrationWorkbench:
                 on_progress=on_progress,
                 output_path=output_path,
                 behavior=behavior if output_path is not None else None,
+                cancel_check=cancel_check,
             )
         else:
             result = gen.generate(
                 on_progress=on_progress,
                 output_path=output_path,
                 behavior=behavior if output_path is not None else None,
+                cancel_check=cancel_check,
             )
 
         return result

@@ -80,6 +80,9 @@ def probe_model(model_id: str = Query(..., min_length=1)) -> ModelProbeResponse:
         except HfHubHTTPError as exc:
             raise HTTPException(502, f"Hub error probing '{model_id}': {exc}") from exc
         except Exception as exc:
+            error_msg = str(exc)
+            if "Entry Not Found" in error_msg:
+                raise HTTPException(404, f"Model '{model_id}' exists but has no config.json.") from exc
             raise HTTPException(500, f"Failed to probe '{model_id}': {exc}") from exc
 
     payload = {

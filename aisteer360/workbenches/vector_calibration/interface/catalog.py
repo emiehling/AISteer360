@@ -104,6 +104,8 @@ def load_catalog(path: Path | None = None) -> list[CatalogEntry]:
             roles=list(raw.get("roles") or ALL_ROLES),
         ).sanitized()
         entries.append(entry)
+    if not entries:
+        return _default_entries()
     return entries
 
 
