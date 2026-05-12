@@ -12,7 +12,7 @@ from aisteer360.algorithms.state_control.common.selectors import FixedLayerSelec
 from aisteer360.algorithms.state_control.common.token_scope import compute_prompt_lens, make_token_mask
 from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
 
-from aisteer360.algorithms.state_control.common.estimators import MeanDifferenceEstimator
+from aisteer360.algorithms.state_control.common.estimators import ContrastiveDirectionEstimator, MeanDifferenceEstimator
 from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
 from .args import CAAArgs
@@ -84,7 +84,10 @@ class CAA(StateControl):
         if self.steering_vector is not None:
             sv = self.steering_vector
         else:
-            estimator = MeanDifferenceEstimator()
+            if self.train_spec.method == "pca_pairwise":
+                estimator = ContrastiveDirectionEstimator()
+            else:
+                estimator = MeanDifferenceEstimator()
             sv = estimator.fit(model, tokenizer, data=self.data, spec=self.train_spec)
 
         # move to device

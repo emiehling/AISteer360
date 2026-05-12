@@ -1,0 +1,538 @@
+"""Calibration sweep: evaluate steering vectors across a layer x multiplier grid."""
+import json
+import logging
+import math
+import time
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, Callable
+
+import torch
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
+
+from aisteer360.algorithms.state_control.common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.token_scope import (
+    compute_prompt_lens,
+    make_token_mask,
+)
+from aisteer360.algorithms.state_control.common.transforms import (
+    AdditiveTransform,
+    NormPreservingTransform,
+)
+from aisteer360.evaluation.metrics.base_judge import LLMJudgeMetric
+
+from .configs import CalibrationConfig, JudgeConfig, QualityGate
+from .results import CalibrationResult, CellResult
+
+logger = logging.getLogger(__name__)
+
+_CHECKPOINT_FILENAME = "calibration_checkpoint.json"
+
+
+class CalibrationSweep:
+    """Grid-sweep evaluation of a steering vector.
+
+    For each `(layer, multiplier)` cell in the sweep grid:
+
+      1. Register a forward hook that adds `multiplier * direction[layer]` to the residual stream at that layer.
+      2. Generate responses to eval prompts under the hook.
+      3. Score the responses with the judge model.
+      4. Compute perplexity and coherence metrics.
+      5. Apply the quality gate.
+
+    The steered model is loaded once by the caller and hooks are swapped per cell. The judge model is loaded
+    internally at the start of `run()` and released when the sweep completes.
+
+    Supports checkpoint and resume: completed cells are written to disk after each cell, and skipped on restart.
+    """
+
+    def __init__(self, config: CalibrationConfig):
+        self.config = config
+
+    def run(
+        self,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizerBase,
+        steering_vector: SteeringVector,
+        eval_prompts: list[str],
+        save_dir: str | Path | None = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+    ) -> CalibrationResult:
+        """Execute the full calibration sweep.
+
+        Args:
+            model: The steered model (already loaded).
+            tokenizer: Corresponding tokenizer.
+            steering_vector: Pre-computed steering vector.
+            eval_prompts: Prompts to generate on at each cell.
+            save_dir: Directory for checkpoints (created if missing).
+            on_progress: Callback receiving a dict with keys `"completed"`, `"total"`, `"current_cell"`,
+                `"elapsed_s"`.
+
+        Returns:
+            `CalibrationResult` with all cell evaluations.
+        """
+        cfg = self.config
+        save_dir_path = Path(save_dir) if save_dir else None
+        if save_dir_path:
+            save_dir_path.mkdir(parents=True, exist_ok=True)
+
+        layers, multipliers = self._build_grid(steering_vector)
+        total_cells = len(layers) * len(multipliers)
+
+        completed: dict[tuple[int, float], CellResult] = {}
+        if save_dir_path:
+            completed = self._load_checkpoint(save_dir_path)
+
+        judge = self._build_judge(cfg.judge)
+
+        baseline_score, baseline_perplexity, baseline_texts = self._evaluate_baseline(
+            model, tokenizer, eval_prompts, judge, cfg,
+        )
+
+        _, layer_names = get_model_layer_list(model)
+
+        cells: list[CellResult] = list(completed.values())
+        start_time = time.monotonic()
+        done = len(cells)
+
+        for layer in layers:
+            if layer not in steering_vector.directions:
+                continue
+
+            for mult in multipliers:
+                if (layer, mult) in completed:
+                    continue
+
+                transform = self._build_transform(
+                    steering_vector, layer, mult, cfg.transform
+                )
+
+                generations = self._generate_with_hook(
+                    model=model,
+                    tokenizer=tokenizer,
+                    prompts=eval_prompts,
+                    layer_name=layer_names[layer],
+                    layer_id=layer,
+                    transform=transform,
+                    token_scope=cfg.token_scope,
+                    max_new_tokens=cfg.max_new_tokens,
+                    batch_size=cfg.batch_size,
+                )
+
+                steered_texts = [g["steered_text"] for g in generations]
+                scores, reasons = judge.score_batch(
+                    prompts=eval_prompts, responses=steered_texts
+                )
+
+                score_mean = _nan_mean(scores)
+                perplexity = self._compute_mean_perplexity(
+                    model, tokenizer, eval_prompts, steered_texts
+                )
+                coherence = self._compute_coherence(
+                    model, tokenizer, eval_prompts, steered_texts, baseline_texts
+                )
+
+                for i, gen in enumerate(generations):
+                    gen["baseline_text"] = baseline_texts[i] if i < len(baseline_texts) else None
+                    gen["judge_score"] = scores[i] if i < len(scores) else None
+                    gen["judge_reason"] = reasons[i] if reasons and i < len(reasons) else None
+
+                cell = CellResult(
+                    layer=layer,
+                    multiplier=mult,
+                    score_mean=score_mean,
+                    score_delta=score_mean - baseline_score,
+                    coherence=coherence,
+                    perplexity=perplexity,
+                    perplexity_delta=perplexity - baseline_perplexity,
+                    coherent=self._passes_gate(
+                        coherence, perplexity, baseline_perplexity, cfg.quality_gate
+                    ),
+                    generations=generations,
+                )
+
+                cells.append(cell)
+                completed[(layer, mult)] = cell
+                done += 1
+
+                if save_dir_path:
+                    self._save_checkpoint(save_dir_path, cells)
+
+                if on_progress:
+                    on_progress(
+                        {
+                            "completed": done,
+                            "total": total_cells,
+                            "current_cell": {"layer": layer, "multiplier": mult},
+                            "elapsed_s": time.monotonic() - start_time,
+                        }
+                    )
+
+        del judge
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        coherent_cells = [c for c in cells if c.coherent]
+        peak = max(coherent_cells, key=lambda c: c.score_delta) if coherent_cells else None
+
+        return CalibrationResult(
+            cells=cells,
+            baseline_score=baseline_score,
+            baseline_perplexity=baseline_perplexity,
+            peak_cell=peak,
+            grid_shape=(len(layers), len(multipliers)),
+            layers=layers,
+            multipliers=multipliers,
+            config=asdict(cfg),
+        )
+
+    # ── grid / transform helpers ─────────────────────────────────────
+
+    def _build_grid(
+        self, steering_vector: SteeringVector
+    ) -> tuple[list[int], list[float]]:
+        """Resolve the grid axes from config and the steering vector's available layers."""
+        cfg = self.config.sweep
+
+        available_layers = sorted(steering_vector.directions.keys())
+        if not available_layers:
+            raise ValueError("SteeringVector has no directions.")
+
+        if cfg.layer_range is not None:
+            start, end = cfg.layer_range
+        else:
+            start, end = available_layers[0], available_layers[-1]
+        layers = [layer for layer in range(start, end + 1, cfg.layer_step) if layer in steering_vector.directions]
+
+        lo, hi = cfg.multiplier_range
+        if cfg.multiplier_step <= 0:
+            raise ValueError("sweep.multiplier_step must be > 0.")
+        n_steps = int(round((hi - lo) / cfg.multiplier_step))
+        multipliers = [round(lo + i * cfg.multiplier_step, 4) for i in range(n_steps + 1)]
+        return layers, multipliers
+
+    @staticmethod
+    def _build_transform(
+        sv: SteeringVector,
+        layer: int,
+        multiplier: float,
+        method: str,
+    ):
+        """Build a transform for a single (layer, multiplier) cell."""
+        single_layer_dirs = {layer: sv.directions[layer]}
+        transform = AdditiveTransform(directions=single_layer_dirs, strength=multiplier)
+        if method == "norm_preserving":
+            transform = NormPreservingTransform(transform)
+        elif method != "additive":
+            raise ValueError(f"Unknown transform '{method}'.")
+        return transform
+
+    # ── generation with hook ─────────────────────────────────────────
+
+    def _generate_with_hook(
+        self,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizerBase,
+        prompts: list[str],
+        layer_name: str,
+        layer_id: int,
+        transform,
+        token_scope: str,
+        max_new_tokens: int,
+        batch_size: int,
+    ) -> list[dict[str, Any]]:
+        """Generate responses with a steering hook registered.
+
+        Returns:
+            A list of dicts with keys `prompt`, `steered_text`.
+        """
+        generations: list[dict[str, Any]] = []
+
+        for batch_start in range(0, len(prompts), batch_size):
+            batch_prompts = prompts[batch_start: batch_start + batch_size]
+
+            inputs = _tokenize_chat(tokenizer, batch_prompts).to(model.device)
+            prompt_lens = compute_prompt_lens(inputs["input_ids"])
+            initial_seq_len = inputs["input_ids"].size(1)
+
+            hook_state = {"position_offset": 0, "initial_seq_len": initial_seq_len}
+
+            def _hook(
+                module,
+                args,
+                kwargs,
+                output,
+                *,
+                _layer_id=layer_id,
+                _transform=transform,
+                _prompt_lens=prompt_lens,
+                _scope=token_scope,
+                _state=hook_state,
+            ):
+                hidden = output[0] if isinstance(output, tuple) else output
+                if hidden is None:
+                    return output
+
+                seq_len = hidden.size(1)
+                if seq_len < _state["initial_seq_len"]:
+                    offset = _state["position_offset"]
+                    _state["position_offset"] += seq_len
+                else:
+                    offset = 0
+                    _state["position_offset"] = seq_len
+
+                mask = make_token_mask(
+                    _scope,
+                    seq_len=seq_len,
+                    prompt_lens=_prompt_lens.to(hidden.device),
+                    position_offset=offset,
+                )
+                hidden = _transform.apply(hidden, layer_id=_layer_id, token_mask=mask)
+                if isinstance(output, tuple):
+                    return (hidden,) + output[1:]
+                return hidden
+
+            layer_module = model.get_submodule(layer_name)
+            handle = layer_module.register_forward_hook(_hook, with_kwargs=True)
+            try:
+                with torch.no_grad():
+                    output_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        pad_token_id=tokenizer.pad_token_id,
+                    )
+            finally:
+                handle.remove()
+
+            prompt_len = inputs["input_ids"].shape[1]
+            decoded = tokenizer.batch_decode(
+                output_ids[:, prompt_len:], skip_special_tokens=True
+            )
+
+            for prompt, text in zip(batch_prompts, decoded):
+                generations.append({"prompt": prompt, "steered_text": text})
+
+        return generations
+
+    # ── quality gate ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _passes_gate(
+        coherence: float,
+        perplexity: float,
+        baseline_ppl: float,
+        gate: QualityGate,
+    ) -> bool:
+        coh_ok = coherence >= gate.coherence_threshold
+        ppl_ok = (
+            perplexity <= baseline_ppl * gate.perplexity_max_ratio
+            if baseline_ppl > 0 and math.isfinite(baseline_ppl)
+            else math.isfinite(perplexity)
+        )
+        return coh_ok and ppl_ok
+
+    # ── baseline ─────────────────────────────────────────────────────
+
+    def _evaluate_baseline(
+        self,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizerBase,
+        prompts: list[str],
+        judge: "_Judge",
+        cfg: CalibrationConfig,
+    ) -> tuple[float, float, list[str]]:
+        """Generate with no steering and score it; returns `(score, perplexity, texts)`."""
+        baseline_texts: list[str] = []
+        for batch_start in range(0, len(prompts), cfg.batch_size):
+            batch_prompts = prompts[batch_start: batch_start + cfg.batch_size]
+            inputs = _tokenize_chat(tokenizer, batch_prompts).to(model.device)
+            with torch.no_grad():
+                output_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=cfg.max_new_tokens,
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+            prompt_len = inputs["input_ids"].shape[1]
+            decoded = tokenizer.batch_decode(
+                output_ids[:, prompt_len:], skip_special_tokens=True
+            )
+            baseline_texts.extend(decoded)
+
+        scores, _ = judge.score_batch(prompts=prompts, responses=baseline_texts)
+        baseline_score = _nan_mean(scores)
+        baseline_perplexity = self._compute_mean_perplexity(
+            model, tokenizer, prompts, baseline_texts
+        )
+        return baseline_score, baseline_perplexity, baseline_texts
+
+    # ── perplexity / coherence ───────────────────────────────────────
+
+    @staticmethod
+    @torch.no_grad()
+    def _compute_mean_perplexity(
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizerBase,
+        prompts: list[str],
+        responses: list[str],
+    ) -> float:
+        """Mean perplexity of `responses` conditioned on their prompts.
+
+        Computes per-response NLL on the response tokens only (prompt tokens are masked out of the loss).
+        """
+        if not responses:
+            return float("nan")
+
+        device = next(model.parameters()).device
+        total_nll = 0.0
+        total_tokens = 0
+
+        for prompt, response in zip(prompts, responses):
+            prompt_ids = _tokenize_chat(tokenizer, [prompt])["input_ids"][0]
+            full_text = tokenizer.decode(prompt_ids, skip_special_tokens=False) + response
+            full_ids = tokenizer(full_text, return_tensors="pt").input_ids[0]
+
+            if full_ids.size(0) <= prompt_ids.size(0):
+                continue
+            labels = full_ids.clone()
+            labels[: prompt_ids.size(0)] = -100
+
+            input_ids = full_ids.unsqueeze(0).to(device)
+            labels = labels.unsqueeze(0).to(device)
+
+            out = model(input_ids=input_ids, labels=labels)
+            n_resp_tokens = (labels != -100).sum().item() - 1
+            if n_resp_tokens <= 0:
+                continue
+            total_nll += float(out.loss) * n_resp_tokens
+            total_tokens += n_resp_tokens
+
+        if total_tokens == 0:
+            return float("nan")
+        return float(math.exp(total_nll / total_tokens))
+
+    @staticmethod
+    def _compute_coherence(
+        model: PreTrainedModel,  # noqa: ARG004
+        tokenizer: PreTrainedTokenizerBase,  # noqa: ARG004
+        prompts: list[str],  # noqa: ARG004
+        responses: list[str],
+        baseline_texts: list[str],  # noqa: ARG004
+    ) -> float:
+        """Cheap proxy for coherence: fraction of responses that are non-empty and non-degenerate.
+
+        Degenerate here means: empty after stripping, or a single token repeated more than 80% of the time.
+        Returns a value in `[0, 1]`.
+        """
+        if not responses:
+            return 0.0
+        good = 0
+        for text in responses:
+            stripped = text.strip()
+            if not stripped:
+                continue
+            tokens = stripped.split()
+            if not tokens:
+                continue
+            most_common = max(tokens.count(t) for t in set(tokens))
+            if most_common / len(tokens) > 0.8 and len(tokens) > 4:
+                continue
+            good += 1
+        return good / len(responses)
+
+    # ── judge ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_judge(judge_config: JudgeConfig) -> "_Judge":
+        """Load the judge model and wrap it in a small scoring interface."""
+        return _Judge(judge_config)
+
+    # ── checkpointing ────────────────────────────────────────────────
+
+    @staticmethod
+    def _save_checkpoint(save_dir: Path, cells: list[CellResult]) -> None:
+        path = save_dir / _CHECKPOINT_FILENAME
+        data = [asdict(c) for c in cells]
+        path.write_text(json.dumps(data))
+
+    @staticmethod
+    def _load_checkpoint(save_dir: Path) -> dict[tuple[int, float], CellResult]:
+        path = save_dir / _CHECKPOINT_FILENAME
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            logger.warning("Could not parse checkpoint at %s; starting fresh.", path)
+            return {}
+        cells = [CellResult(**d) for d in data]
+        return {(c.layer, c.multiplier): c for c in cells}
+
+
+# ── helpers ──────────────────────────────────────────────────────────
+
+def _tokenize_chat(tokenizer: PreTrainedTokenizerBase, prompts: list[str]):
+    """Apply the tokenizer's chat template and return a padded batch on CPU."""
+    texts = [
+        tokenizer.apply_chat_template(
+            [{"role": "user", "content": p}],
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+        for p in prompts
+    ]
+    return tokenizer(texts, return_tensors="pt", padding=True, truncation=True)
+
+
+def _nan_mean(values: list[float]) -> float:
+    """Mean over non-NaN entries; returns NaN when the list is empty or all NaN."""
+    finite = [v for v in values if v is not None and math.isfinite(v)]
+    if not finite:
+        return float("nan")
+    return sum(finite) / len(finite)
+
+
+def _render_judge_prompt(config: JudgeConfig) -> str:
+    """Build the judge prompt template from `rating_scale` rows, or fall back to `criteria`."""
+    if not config.rating_scale:
+        return config.criteria
+    lines = [f"{int(label)}: {description.strip()}" for label, description in config.rating_scale]
+    lo, hi = config.scale
+    return (
+        f"Rate the response on the integer scale {lo} to {hi} using the rubric below. "
+        f"Respond with only the numeric rating.\n"
+        f"\nRubric:\n" + "\n".join(lines) +
+        f"\n\nResponse:\n{{response}}"
+    )
+
+
+class _Judge:
+    """Small adapter over `LLMJudgeMetric` that exposes a `score_batch` interface.
+
+    Returns `(scores, reasons)` per call. Reasons are left as `None` because the default judge template only
+    captures a numeric score; custom rubrics that emit a `reason` field can be surfaced later.
+    """
+
+    def __init__(self, config: JudgeConfig):
+        criteria = _render_judge_prompt(config)
+        if "{response}" not in criteria:
+            raise ValueError(
+                "Judge prompt must include a '{response}' placeholder."
+            )
+        self._metric = LLMJudgeMetric(
+            model_or_id=config.model,
+            prompt_template=criteria,
+            scale=config.scale,
+            batch_size=config.batch_size,
+        )
+
+    def score_batch(
+        self, prompts: list[str], responses: list[str]
+    ) -> tuple[list[float], list[str | None]]:
+        result = self._metric.compute(responses=responses, prompts=prompts)
+        scores = list(result["scores"])
+        reasons: list[str | None] = [None] * len(scores)
+        return scores, reasons

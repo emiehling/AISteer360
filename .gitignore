@@ -18,3 +18,6 @@ examples/**/profiles_*/
 **/profiles/
 .claude/
 **/CLAUDE.md
+/logs
+
+examples/scripts/

@@ -1,0 +1,2980 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AI Steerability 360 — Vector Calibration Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  :root {
+    --bg: #0b0b0e;
+    --panel: #131317;
+    --panel-2: #191920;
+    --panel-3: #1f1f26;
+    --line: rgba(255,255,255,0.06);
+    --line-2: rgba(255,255,255,0.1);
+    --line-3: rgba(255,255,255,0.18);
+    --text: #eaeaea;
+    --text-soft: #c4c0bb;
+    --text-dim: #8a8580;
+    --text-dimmer: #54504b;
+    --text-faint: #36332f;
+    --accent: #c9a15a;
+    --accent-hov: #d4ac67;
+    --accent-soft: rgba(201,161,90,0.14);
+    --good: #7cc17a;
+    --danger: #d66b5b;
+
+    --sans: 'IBM Plex Sans', system-ui, sans-serif;
+    --mono: 'JetBrains Mono', monospace;
+  }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+    overflow: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  input, textarea, select { font-family: inherit; color: inherit; }
+
+  /* ============ top bar ============ */
+  .topbar {
+    height: 56px;
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: center;
+    padding: 0 20px;
+    background: var(--panel);
+    color: var(--text-dim);
+  }
+  .topbar .brand { display: flex; align-items: center; gap: 14px; }
+  .topbar .brand .logo {
+    height: 34px;
+    width: auto;
+    display: block;
+  }
+  .topbar .brand .name {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: -0.005em;
+    color: var(--text);
+    line-height: 1;
+  }
+  .topbar .brand .sep {
+    color: var(--text-faint);
+    margin: 0 6px;
+    font-weight: 300;
+  }
+  .topbar .brand .sub {
+    font-family: var(--sans);
+    font-weight: 400;
+    color: var(--text-dim);
+    font-size: 16px;
+  }
+  .topbar .spacer { flex: 1; }
+  .status {
+    display: flex; align-items: center; gap: 7px;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-family: var(--mono);
+    padding: 4px 10px;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    cursor: pointer;
+    transition: border-color 0.12s, color 0.12s;
+  }
+  .status:hover { border-color: var(--line-2); color: var(--text); }
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--text-dimmer);
+  }
+  .dot.idle       { background: var(--text-dimmer); box-shadow: none; }
+  .dot.generation,
+  .dot.extraction,
+  .dot.calibration { background: var(--accent); box-shadow: 0 0 8px var(--accent-soft); }
+  .dot.complete   { background: var(--good); box-shadow: 0 0 8px #7cc17a80; }
+  .dot.error      { background: var(--danger); box-shadow: 0 0 8px #d66b5b80; }
+  .dot.cancelled  { background: var(--text-dim); }
+
+  .icon-btn {
+    width: 28px; height: 28px;
+    border: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--text-dim);
+    margin-left: 12px;
+    transition: color 0.12s;
+  }
+  .icon-btn:hover { color: var(--text); }
+  .icon-btn svg { width: 14px; height: 14px; display: block; }
+
+  /* ============ modal ============ */
+  .modal-scrim {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 500;
+  }
+  .modal-scrim.open { display: flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    border-radius: 3px;
+    width: 420px;
+    max-width: 90vw;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  }
+  .modal-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .modal-head .title {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .modal-head .close {
+    color: var(--text-dim);
+    font-size: 18px;
+    line-height: 1;
+    padding: 0 4px;
+  }
+  .modal-head .close:hover { color: var(--accent); }
+  .modal-body {
+    padding: 16px 18px;
+  }
+  .modal-foot {
+    display: flex; gap: 8px;
+    padding: 12px 18px;
+    border-top: 1px solid var(--line);
+    justify-content: flex-end;
+  }
+  .modal-foot .btn { width: auto; padding: 7px 14px; }
+
+  /* ============ layout ============ */
+  .app {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    height: calc(100vh - 56px - 26px);
+  }
+  .left {
+    display: grid;
+    grid-template-rows: 1fr 320px;
+    border-right: 1px solid var(--line);
+    min-width: 0;
+    min-height: 0;
+  }
+  .right {
+    overflow-y: auto;
+    background: var(--panel);
+  }
+
+  /* ============ heatmap section ============ */
+  .heatmap-section {
+    padding: 14px 16px 10px;
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .hm-head {
+    display: flex; align-items: center; gap: 20px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .hm-head h2 {
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    color: var(--text);
+  }
+  .hm-head h2 em {
+    font-style: normal;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .hm-head .meta {
+    display: flex; align-items: center; gap: 14px;
+    margin-left: 10px;
+    padding-left: 14px;
+    border-left: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .hm-head .meta b { color: var(--text); font-weight: 500; }
+  .hm-head .meta .peak b { color: var(--accent); }
+  .hm-head .spacer { flex: 1; }
+  .view-toggle {
+    display: flex;
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .view-toggle button {
+    padding: 5px 12px;
+    font-family: var(--sans);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border-right: 1px solid var(--line-2);
+    transition: color 0.12s, background 0.12s;
+  }
+  .view-toggle button:last-child { border-right: none; }
+  .view-toggle button:hover { color: var(--text); }
+  .view-toggle button.active {
+    background: var(--accent);
+    color: #1a1410;
+    font-weight: 700;
+  }
+  .colorbar {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--text-dim);
+  }
+  .colorbar .gradient {
+    width: 140px; height: 8px;
+    border: 1px solid var(--line-2);
+  }
+
+  .hm-wrap {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 16px 1fr;
+    grid-template-rows: 1fr 14px 12px;
+    gap: 2px;
+    min-height: 0;
+  }
+  .hm-ylabel {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-family: var(--sans);
+    font-size: 9px;
+    font-weight: 500;
+    color: var(--text-dimmer);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    text-align: center;
+    display: flex; align-items: center; justify-content: center;
+    grid-column: 1; grid-row: 1;
+  }
+  .hm-grid-wrap {
+    grid-column: 2; grid-row: 1;
+    position: relative;
+    min-height: 0; min-width: 0;
+    display: flex; flex-direction: row; gap: 0;
+  }
+  .hm-yticks {
+    display: flex; flex-direction: column;
+    justify-content: space-between;
+    padding: 0 4px 0 0;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    height: 100%;
+    min-width: 20px;
+    text-align: right;
+  }
+  .hm-grid {
+    flex: 1;
+    display: grid;
+    gap: 1px;
+    background: var(--line);
+    padding: 1px;
+    border: 1px solid var(--line-2);
+    min-width: 0;
+    min-height: 0;
+  }
+  .hm-placeholder {
+    flex: 1;
+    border: 1px dashed var(--line-2);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dimmer);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+  /* empty grid: same layout as populated .hm-grid but muted */
+  .hm-grid.empty-grid {
+    background: var(--line);
+    border: 1px solid var(--line-2);
+  }
+  .hm-grid.empty-grid .hm-cell-empty {
+    background: var(--panel-2);
+    cursor: default;
+  }
+  .hm-grid.empty-grid .hm-cell-empty.col-zero {
+    background: var(--panel-3);
+  }
+  .hm-cell {
+    font-size: 0;
+    cursor: pointer;
+    position: relative;
+    transition: transform 0.08s, box-shadow 0.08s;
+  }
+  .hm-cell:hover {
+    transform: scale(2.6);
+    z-index: 10;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7), 0 0 0 2px var(--accent);
+  }
+  .hm-cell.incoherent { background: #2a2a30 !important; }
+  .hm-cell.selected {
+    outline: 2px solid var(--accent);
+    z-index: 5;
+    box-shadow: 0 0 0 1px var(--bg), 0 4px 12px rgba(0,0,0,0.5);
+  }
+  .hm-cell.peak {
+    outline: 1.5px dashed var(--accent);
+    outline-offset: -2px;
+  }
+  .hm-xticks {
+    grid-column: 2; grid-row: 2;
+    display: flex; justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    padding-left: 24px;
+  }
+  .hm-xlabel {
+    grid-column: 2; grid-row: 3;
+    text-align: center;
+    font-family: var(--sans);
+    font-size: 9px;
+    font-weight: 500;
+    color: var(--text-dimmer);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    padding-left: 24px;
+  }
+
+  /* ============ cell inspector ============ */
+  .inspector {
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .insp-strip {
+    display: flex; align-items: center;
+    gap: 24px;
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+  .insp-coord {
+    font-family: var(--mono);
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+  .insp-coord em {
+    font-style: normal;
+    color: var(--text);
+    font-weight: 600;
+  }
+  .insp-coord .mini {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-dim);
+    margin-left: 10px;
+  }
+  .insp-metrics {
+    display: flex; align-items: center;
+    gap: 0;
+    margin-left: auto;
+    flex-wrap: wrap;
+  }
+  .insp-metric {
+    padding: 2px 18px;
+    border-right: 1px solid var(--line);
+    text-align: left;
+  }
+  .insp-metric:last-child { border-right: none; padding-right: 0; }
+  .insp-metric:first-child { padding-left: 0; }
+  .insp-metric .label {
+    font-family: var(--sans);
+    font-size: 9.5px;
+    font-weight: 500;
+    color: var(--text-dimmer);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 2px;
+  }
+  .insp-metric .val {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .insp-metric .val.good { color: var(--good); }
+  .insp-metric .val.accent { color: var(--accent); }
+  .insp-metric .val.bad { color: var(--danger); }
+  .insp-metric .delta {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    font-weight: 400;
+    margin-left: 4px;
+  }
+
+  .insp-body {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--line);
+    min-height: 0;
+    overflow: hidden;
+  }
+  .gen-col {
+    background: var(--panel);
+    padding: 14px 24px 14px;
+    overflow-y: auto;
+  }
+  .gen-col .col-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  .gen-col .col-head .tag {
+    font-family: var(--sans);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-dimmer);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .gen-col.steered .col-head .tag { color: var(--text); }
+  .gen-col .prompt {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    font-style: italic;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    padding-left: 10px;
+    border-left: 2px solid var(--line-2);
+    white-space: pre-wrap;
+  }
+  .gen-col .body {
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--text-soft);
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+  .gen-col .judge {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--line-2);
+    display: flex; gap: 14px; align-items: flex-start;
+  }
+  .gen-col .judge .score {
+    font-family: var(--mono);
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.03em;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .gen-col .judge .score sub {
+    font-size: 11px;
+    color: var(--text-dim);
+    vertical-align: baseline;
+    font-weight: 400;
+  }
+  .gen-col .judge .reason {
+    font-family: var(--sans);
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.55;
+    flex: 1;
+    white-space: pre-wrap;
+  }
+
+  .prompt-nav {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .prompt-nav button {
+    width: 18px; height: 18px;
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    color: var(--text-dim);
+    font-size: 10px;
+    line-height: 1;
+  }
+  .prompt-nav button:hover { border-color: var(--accent); color: var(--accent); }
+
+  .empty {
+    color: var(--text-dimmer);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 20px 0;
+    text-align: center;
+  }
+
+  /* ============ right sidebar ============ */
+  .right .sec {
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .right .sec.stage { background: linear-gradient(180deg, rgba(201,161,90,0.025) 0%, transparent 30%); }
+
+  .sec-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px;
+    gap: 8px;
+  }
+  .sec.stage .sec-head { cursor: pointer; user-select: none; }
+  .sec.stage .sec-head:hover .sec-toggle { color: var(--accent); }
+  .sec-head > div:first-child {
+    display: flex; align-items: center;
+  }
+  .sec-num {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+    margin-right: 6px;
+  }
+  .sec-title {
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.005em;
+  }
+  .sec-desc {
+    font-family: var(--sans);
+    font-style: italic;
+    font-size: 10.5px;
+    color: var(--text-dimmer);
+    margin-top: 2px;
+    margin-bottom: 12px;
+    line-height: 1.4;
+  }
+  .sec-action {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .sec-action:hover { color: var(--accent); }
+  .sec-action.good { color: var(--good); }
+  .sec-action.bad  { color: var(--danger); }
+
+  .sec-toggle {
+    margin-left: auto;
+    color: var(--text-dim);
+    font-size: 20px;
+    line-height: 1;
+    padding: 2px 6px;
+    transition: color 0.12s, transform 0.16s;
+    user-select: none;
+  }
+  .sec-toggle:hover { color: var(--accent); }
+  .sec.collapsed .sec-toggle { transform: rotate(-90deg); }
+  .sec.collapsed .sec-body { display: none; }
+  .sec.collapsed .sec-desc { display: none; }
+
+  .sec-run {
+    margin-top: 14px;
+  }
+
+  .stage-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--text-dimmer);
+    margin-left: 14px;
+    display: inline-block;
+    vertical-align: middle;
+    flex-shrink: 0;
+  }
+  .stage-dot.running {
+    background: var(--accent);
+    animation: stage-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes stage-pulse {
+    0%   { opacity: 0.55; }
+    50%  { opacity: 1; }
+    100% { opacity: 0.55; }
+  }
+  .stage-dot.complete { background: var(--good); box-shadow: 0 0 6px #7cc17a60; }
+  .stage-dot.error    { background: var(--danger); box-shadow: 0 0 6px #d66b5b60; }
+  .stage-dot.idle     { background: var(--text-dimmer); }
+
+  .run-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 8px;
+    margin-top: 14px;
+  }
+  .run-row .btn + .btn { margin-top: 0; }
+  .run-row .btn { width: 100%; }
+
+  .field-row {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px;
+    padding: 5px 0;
+    gap: 8px;
+  }
+  .field-row .k {
+    font-family: var(--sans);
+    color: var(--text-dim);
+    font-weight: 400;
+    flex-shrink: 0;
+  }
+  .field-row .v {
+    font-family: var(--mono);
+    color: var(--text);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .field-row .v.accent { color: var(--accent); }
+  .field-row .v.dim { color: var(--text-dim); font-weight: 400; }
+
+  /* external field label (rendered ABOVE its input) */
+  .field-label {
+    display: block;
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-soft);
+    margin: 6px 0 5px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .field-label .hint {
+    font-family: var(--sans);
+    font-style: italic;
+    font-weight: 400;
+    color: var(--text-faint);
+    font-size: 10.5px;
+    margin-left: 4px;
+  }
+
+  /* editable select-like field backed by a real input */
+  .select {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    color: var(--text);
+    padding: 8px 10px;
+    font-family: var(--sans);
+    border-radius: 2px;
+    display: block;
+    margin-bottom: 8px;
+    transition: border-color 0.12s;
+    text-align: left;
+  }
+  .select:last-child { margin-bottom: 0; }
+  .select:hover { border-color: var(--line-3); }
+  .select:focus-within { border-color: var(--accent); }
+  .select.active { border-color: var(--accent); }
+  .select .sk {
+    font-family: var(--sans);
+    font-size: 9.5px;
+    font-weight: 500;
+    color: var(--text-dimmer);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    display: block;
+    margin-bottom: 3px;
+  }
+  .select input, .select select {
+    width: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    font-family: var(--mono);
+    color: var(--text);
+    font-size: 11.5px;
+    font-weight: 500;
+    padding: 0;
+  }
+  .select select {
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+  }
+  .select.active input, .select.active select { color: var(--accent); }
+
+  /* model combo: text input + catalog dropdown trigger */
+  .model-combo {
+    position: relative;
+    margin-bottom: 8px;
+  }
+  .model-combo .mc-input-row {
+    display: flex;
+    align-items: stretch;
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    transition: border-color 0.12s;
+  }
+  .model-combo:hover .mc-input-row { border-color: var(--line-3); }
+  .model-combo.focused .mc-input-row { border-color: var(--accent); }
+  .model-combo.active .mc-input-row { border-color: var(--accent); }
+  .model-combo .mc-input-row input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    padding: 8px 10px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text);
+    font-weight: 500;
+  }
+  .model-combo.active .mc-input-row input { color: var(--accent); }
+  .model-combo .mc-toggle {
+    border: none;
+    border-left: 1px solid var(--line-2);
+    background: transparent;
+    padding: 0 10px;
+    color: var(--text-dim);
+    font-size: 10px;
+    cursor: pointer;
+    transition: color 0.12s;
+  }
+  .model-combo .mc-toggle:hover { color: var(--accent); }
+  .model-combo .mc-dropdown {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0; right: 0;
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    max-height: 220px;
+    overflow-y: auto;
+    z-index: 30;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+    display: none;
+  }
+  .model-combo.open .mc-dropdown { display: block; }
+  .mc-item {
+    padding: 7px 10px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    gap: 2px;
+    transition: background 0.1s;
+  }
+  .mc-item:last-child { border-bottom: none; }
+  .mc-item:hover, .mc-item.highlight { background: var(--panel-2); }
+  .mc-item .mc-label {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .mc-item .mc-meta {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 8px;
+  }
+  .mc-item .mc-meta .mc-provider {
+    padding: 1px 6px;
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    text-transform: uppercase;
+    font-size: 8.5px;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+  }
+  .mc-item .mc-meta .mc-provider.wired { border-color: var(--good); color: var(--good); }
+  .mc-item .mc-meta .mc-provider.disabled { border-color: var(--danger); color: var(--danger); opacity: 0.8; }
+  .mc-item .mc-id { font-family: var(--mono); color: var(--text-dim); font-size: 10px; }
+  .mc-empty {
+    padding: 10px 10px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-dimmer);
+    text-align: center;
+  }
+
+  /* prompt editor */
+  .prompt-btn {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    padding: 8px 10px;
+    text-align: left;
+    margin-bottom: 8px;
+    transition: border-color 0.12s;
+    display: block;
+  }
+  .prompt-btn:hover { border-color: var(--line-3); }
+  .prompt-btn:focus-within { border-color: var(--accent); }
+  .prompt-btn .pl {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 4px;
+  }
+  .prompt-btn .pl-label {
+    font-family: var(--sans);
+    font-size: 9.5px;
+    font-weight: 600;
+    color: var(--text-dimmer);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .prompt-btn.judge .pl-label { color: var(--text-dim); }
+
+  /* external label tinted by role (used ABOVE a prompt-btn) */
+  .field-label.judge    { color: var(--text-dim); }
+  .prompt-btn .pl-edit {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-dimmer);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .prompt-btn .pl-edit:hover { color: var(--accent); }
+  .prompt-btn textarea {
+    width: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    resize: both;
+    min-height: 34px;
+    overflow: hidden;
+    font-family: var(--sans);
+    font-style: italic;
+    font-size: 11px;
+    color: var(--text-soft);
+    line-height: 1.4;
+    display: block;
+  }
+  .prompt-btn textarea.manually-resized {
+    overflow: auto;
+  }
+
+  .specs-block {
+    margin-top: 10px;
+    padding: 10px 0 0;
+    border-top: 1px dashed var(--line-2);
+  }
+  .specs-block:empty { margin: 0; padding: 0; border-top: none; }
+  .specs-block.collapsible .collapsible-head { cursor: pointer; user-select: none; }
+  .specs-block.collapsible .collapsible-chevron {
+    color: var(--text-dim);
+    font-size: 10px;
+    transition: transform 0.16s;
+  }
+  .specs-block.collapsible:hover .collapsible-chevron { color: var(--accent); }
+  .specs-block.collapsible.collapsed .collapsible-chevron { transform: rotate(-90deg); }
+  .specs-block.collapsible.collapsed .collapsible-body { display: none; }
+  .specs-block .sub-label {
+    font-family: var(--sans);
+    font-size: 9.5px;
+    font-weight: 600;
+    color: var(--text-dimmer);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 6px;
+    display: flex; justify-content: space-between;
+  }
+  .specs-block .sub-label .hint {
+    font-family: var(--sans);
+    font-style: italic;
+    font-weight: 400;
+    color: var(--text-faint);
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 10px;
+  }
+
+  /* elevated variant for prominent grouped settings (e.g. Generation Settings) */
+  .specs-block.elevated {
+    margin-top: 14px;
+    padding: 10px 12px 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    border-radius: 3px;
+  }
+  .specs-block.elevated .sub-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--text-soft);
+    text-transform: none;
+    letter-spacing: 0;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  .specs-block.elevated .sub-label .hint {
+    font-size: 10.5px;
+  }
+
+  .field-row input.inline {
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    color: var(--text);
+    padding: 3px 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    border-radius: 2px;
+    width: 90px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .field-row input.inline:focus { outline: none; border-color: var(--accent); }
+
+  .range-row {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .num-input {
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    color: var(--text);
+    padding: 5px 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    border-radius: 2px;
+    width: 100%;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    outline: none;
+  }
+  .num-input:focus { border-color: var(--accent); }
+  .range-row .dash {
+    font-family: var(--mono);
+    color: var(--text-dimmer);
+    font-size: 10px;
+  }
+  .range-label {
+    display: flex; justify-content: space-between;
+    font-family: var(--sans);
+    font-size: 9.5px;
+    font-weight: 500;
+    color: var(--text-dimmer);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+  }
+  .range-label .sub {
+    font-family: var(--mono);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+  }
+
+  /* slim toggle for booleans */
+  .toggle-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 4px 0;
+    font-size: 11px;
+  }
+  .toggle-row .k {
+    font-family: var(--sans);
+    color: var(--text-dim);
+  }
+  .toggle {
+    width: 26px; height: 14px;
+    background: var(--panel-3);
+    border: 1px solid var(--line-2);
+    border-radius: 100px;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    flex-shrink: 0;
+  }
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 1px; left: 1px;
+    width: 10px; height: 10px;
+    background: var(--text-dim);
+    border-radius: 50%;
+    transition: transform 0.16s, background 0.12s;
+  }
+  .toggle.on { background: var(--accent-soft); border-color: var(--accent); }
+  .toggle.on::after {
+    transform: translateX(12px);
+    background: var(--accent);
+  }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid var(--line-2);
+    background: transparent;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-radius: 2px;
+    transition: all 0.12s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn.primary {
+    background: var(--accent);
+    color: #1a1410;
+    border-color: var(--accent);
+    font-weight: 700;
+  }
+  .btn.primary:hover { background: var(--accent-hov); border-color: var(--accent-hov); color: #1a1410; }
+  .btn + .btn { margin-top: 8px; }
+
+  .mini-progress {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--line-2);
+  }
+  .mini-progress .bar {
+    height: 3px;
+    background: var(--panel-3);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 6px;
+  }
+  .mini-progress .bar .fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.2s;
+  }
+  .mini-progress .lab {
+    display: flex; justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+  }
+
+  /* ============ footer ============ */
+  .footer {
+    height: 26px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    display: flex; align-items: center; gap: 18px;
+    padding: 0 14px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dimmer);
+    overflow: hidden;
+  }
+  .footer b { color: var(--text-dim); font-weight: 500; }
+  .footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .footer .spacer { flex: 1; }
+
+  /* judge rating scale editor */
+  .rating-scale-list {
+    display: flex; flex-direction: column;
+    gap: 6px;
+  }
+  .rating-scale-row {
+    display: grid;
+    grid-template-columns: 52px 1fr 22px;
+    gap: 6px;
+    align-items: stretch;
+  }
+  .rating-scale-row input[type="number"],
+  .rating-scale-row input[type="text"] {
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    color: var(--text);
+    padding: 6px 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    border-radius: 2px;
+    outline: none;
+    width: 100%;
+  }
+  .rating-scale-row input[type="text"] {
+    font-family: var(--sans);
+    font-size: 11.5px;
+  }
+  .rating-scale-row input:focus { border-color: var(--accent); }
+  .rating-scale-row input[type="number"] {
+    text-align: center;
+    font-weight: 600;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  .rating-scale-row input[type="number"]::-webkit-outer-spin-button,
+  .rating-scale-row input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .num-input {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  .num-input::-webkit-outer-spin-button,
+  .num-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .rating-scale-row .rs-del {
+    border: 1px solid var(--line-2);
+    background: transparent;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 12px;
+    border-radius: 2px;
+    cursor: pointer;
+    padding: 0;
+  }
+  .rating-scale-row .rs-del:hover { border-color: var(--danger); color: var(--danger); }
+
+  /* settings modal: model catalog editor */
+  .catalog-list {
+    display: flex; flex-direction: column;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .catalog-row {
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    background: var(--panel-2);
+    padding: 8px 10px;
+    display: flex; flex-direction: column;
+    gap: 6px;
+  }
+  .catalog-row-head {
+    display: flex; align-items: center; gap: 6px;
+  }
+  .catalog-row-head input {
+    flex: 1;
+    background: transparent;
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    padding: 4px 7px;
+    font-family: var(--sans);
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text);
+    outline: none;
+  }
+  .catalog-row-head input:focus { border-color: var(--accent); }
+  .catalog-row-head .rm-btn {
+    border: 1px solid var(--line-2);
+    color: var(--text-dim);
+    padding: 2px 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    border-radius: 2px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .catalog-row-head .rm-btn:hover { border-color: var(--danger); color: var(--danger); }
+  .catalog-row-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .catalog-row-grid label {
+    display: flex; flex-direction: column;
+    gap: 2px;
+    font-family: var(--sans);
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .catalog-row-grid input,
+  .catalog-row-grid select {
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    padding: 4px 7px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  .catalog-row-grid input:focus, .catalog-row-grid select:focus { border-color: var(--accent); }
+  .catalog-row-roles {
+    display: flex; gap: 10px; align-items: center;
+    font-family: var(--sans);
+    font-size: 10.5px;
+    color: var(--text-dim);
+    flex-wrap: wrap;
+  }
+  .catalog-row-roles label {
+    display: inline-flex; gap: 4px; align-items: center;
+    cursor: pointer;
+  }
+  .catalog-row-roles label.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .catalog-row-roles input[type="checkbox"] { accent-color: var(--accent); }
+  .catalog-add-btn {
+    margin-top: 6px;
+    width: 100%;
+    padding: 6px;
+    border: 1px dashed var(--line-2);
+    border-radius: 2px;
+    color: var(--text-dim);
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 10.5px;
+    cursor: pointer;
+    transition: border-color 0.12s, color 0.12s;
+  }
+  .catalog-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  .provider-status {
+    display: flex; flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .provider-status .prow {
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    padding: 4px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .provider-status .prow:last-child { border-bottom: none; }
+  .provider-status .prow .name { color: var(--text); font-family: var(--sans); font-size: 11.5px; font-weight: 500; }
+  .provider-status .prow .pill {
+    padding: 1px 6px;
+    border-radius: 2px;
+    border: 1px solid var(--line-2);
+    font-size: 9.5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .provider-status .prow .pill.ok { color: var(--good); border-color: var(--good); }
+  .provider-status .prow .pill.miss { color: var(--danger); border-color: var(--danger); }
+  .provider-status .prow .pill.disabled { color: var(--text-dimmer); }
+
+  /* tooltip */
+  #tt {
+    position: fixed;
+    pointer-events: none;
+    padding: 7px 11px;
+    background: rgba(20,20,24,0.96);
+    color: #eee;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.12);
+    z-index: 1000;
+    opacity: 0;
+    transition: opacity 0.1s;
+    white-space: nowrap;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+  }
+  #tt.on { opacity: 1; }
+  #tt .ttl {
+    color: var(--text-dim);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  #tt .ttv {
+    color: var(--text);
+    font-weight: 600;
+    font-size: 12px;
+    margin-left: 4px;
+  }
+</style>
+</head>
+<body>
+
+<nav class="topbar">
+  <div class="brand">
+    <img class="logo" src="/logo_darkmode.svg" alt="AI Steerability 360">
+    <span class="name"><span class="sub">Vector Calibration Workbench</span></span>
+  </div>
+  <div class="spacer"></div>
+  <button class="icon-btn" id="btnSettings" title="Serving settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+  </button>
+</nav>
+
+<!-- settings modal -->
+<div class="modal-scrim" id="settingsModal">
+  <div class="modal" role="dialog" aria-label="Serving settings" style="width: 560px;">
+    <div class="modal-head">
+      <span class="title">Settings</span>
+      <button class="close" id="settingsClose">×</button>
+    </div>
+    <div class="modal-body">
+      <span class="field-label">Save directory:</span>
+      <label class="select">
+        <input id="sSaveDir" type="text" placeholder="./runs">
+      </label>
+
+      <span class="field-label">Device map:</span>
+      <label class="select">
+        <input id="sDeviceMap" type="text" placeholder="auto">
+      </label>
+
+      <div class="specs-block elevated" style="margin-top: 10px;">
+        <div class="sub-label"><span>HF model kwargs</span><span class="hint">JSON</span></div>
+        <textarea id="sHfKwargs" rows="4" style="
+          width:100%;background:var(--panel);border:1px solid var(--line-2);color:var(--text);
+          padding:7px 10px;font-family:var(--mono);font-size:11px;border-radius:2px;outline:none;resize:both;"></textarea>
+      </div>
+
+      <div class="specs-block elevated">
+        <div class="sub-label"><span>Model catalog</span><span class="hint">available in model selectors</span></div>
+        <div class="catalog-list" id="catalogList"></div>
+        <button class="catalog-add-btn" id="catalogAddBtn" type="button">+ Add model</button>
+      </div>
+
+      <div class="specs-block elevated">
+        <div class="sub-label"><span>Provider status</span><span class="hint">credentials read from env</span></div>
+        <div class="provider-status" id="providerStatus"></div>
+      </div>
+
+      <div class="specs-block">
+        <div class="sub-label"><span>Endpoint</span></div>
+        <div class="field-row"><span class="k">host</span><span class="v dim" id="sHost">—</span></div>
+        <div class="field-row"><span class="k">port</span><span class="v dim" id="sPort">—</span></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="settingsCancel">Cancel</button>
+      <button class="btn primary" id="settingsSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- run-status modal -->
+<div class="modal-scrim" id="runModal">
+  <div class="modal" role="dialog" aria-label="Current run">
+    <div class="modal-head">
+      <span class="title">Current run</span>
+      <button class="close" id="runModalClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row"><span class="k">phase</span><span class="v" id="runStateLabel">idle</span></div>
+      <div class="field-row"><span class="k">cells evaluated</span><span class="v" id="runCells">—</span></div>
+      <div class="field-row"><span class="k">coherent</span><span class="v" id="runCoherent">—</span></div>
+      <div class="field-row"><span class="k">peak Δ</span><span class="v accent" id="runPeakDelta">—</span></div>
+      <div class="field-row"><span class="k">peak location</span><span class="v" id="runPeakLoc">—</span></div>
+      <div class="field-row"><span class="k">wall time</span><span class="v" id="runWall">—</span></div>
+      <div class="mini-progress">
+        <div class="bar"><div class="fill" id="progressFill"></div></div>
+        <div class="lab"><span id="progressLabel">—</span><span id="progressPct">—</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="app">
+  <div class="left">
+    <!-- ============ HEATMAP ============ -->
+    <section class="heatmap-section">
+      <div class="hm-head">
+        <h2 id="hmTitle">dimension: <em id="hmDimension">—</em>, baseline: <em id="hmBaseline">—</em></h2>
+        <span class="spacer"></span>
+        <div class="colorbar">
+          <span id="cbLo">−</span>
+          <span id="cbGradient" class="gradient"></span>
+          <span id="cbHi">+</span>
+        </div>
+      </div>
+
+      <div class="hm-wrap">
+        <div class="hm-ylabel">layer</div>
+        <div class="hm-grid-wrap">
+          <div class="hm-yticks" id="yticks"></div>
+          <div id="hmContainer" class="hm-placeholder">no calibration result yet · run the pipeline</div>
+        </div>
+        <div class="hm-xticks" id="xticks"></div>
+        <div class="hm-xlabel">multiplier</div>
+      </div>
+    </section>
+
+    <!-- ============ CELL INSPECTOR ============ -->
+    <section class="inspector">
+      <div class="insp-strip">
+        <div class="insp-coord">
+          L<em id="ins-layer">—</em> · mult <em id="ins-mult">—</em>
+          <span class="mini" id="ins-sub"></span>
+        </div>
+        <div class="insp-metrics" id="insMetrics"></div>
+      </div>
+
+      <div class="insp-body">
+        <div class="gen-col baseline">
+          <div class="col-head">
+            <span class="tag">baseline · mult 0.00</span>
+            <div class="prompt-nav">
+              <button id="btnPrevGen">‹</button>
+              <span id="promptCounter">— / —</span>
+              <button id="btnNextGen">›</button>
+            </div>
+          </div>
+          <div id="basePromptWrap"></div>
+        </div>
+
+        <div class="gen-col steered">
+          <div class="col-head">
+            <span class="tag" id="steeredTag">steered · — · —</span>
+            <div class="prompt-nav">
+              <button id="btnPrevGen2">‹</button>
+              <span id="promptCounter2">— / —</span>
+              <button id="btnNextGen2">›</button>
+            </div>
+          </div>
+          <div id="steeredPromptWrap"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ============ RIGHT SIDEBAR ============ -->
+  <aside class="right">
+
+    <!-- 0. Target model -->
+    <div class="sec">
+      <div class="sec-head">
+        <div><span class="sec-title">Target model</span></div>
+      </div>
+      <span class="field-label">Model:</span>
+      <div class="model-combo active" data-role="target" id="mcTarget">
+        <div class="mc-input-row">
+          <input id="steeredModel" type="text" placeholder="select from catalog" autocomplete="off">
+          <button class="mc-toggle" type="button" title="Catalog" aria-label="Catalog">▾</button>
+        </div>
+        <div class="mc-dropdown"></div>
+      </div>
+      <div class="specs-block" id="modelSpecs"></div>
+    </div>
+
+    <!-- Generation -->
+    <div class="sec stage" id="secGeneration">
+      <div class="sec-head">
+        <div><span class="sec-title">Generation</span><span class="stage-dot idle" id="dotGeneration"></span></div>
+        <button class="sec-toggle" data-target="secGeneration">▾</button>
+      </div>
+
+      <div class="sec-body">
+        <span class="field-label">Seed prompts:</span>
+        <label class="select" style="display:flex; align-items:center; gap:8px;">
+          <input id="seedPromptsPath" type="text" placeholder="(no file selected)" style="flex:1;" readonly>
+          <label for="seedPromptsFile" title="Upload jsonl" style="cursor:pointer; color: var(--text-dimmer); padding: 0 4px; align-self:center;">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </label>
+          <input type="file" id="seedPromptsFile" accept=".jsonl,.json" style="display:none;">
+        </label>
+
+        <span class="field-label">Generator model:</span>
+        <div class="model-combo" data-role="generator" id="mcGenerator">
+          <div class="mc-input-row">
+            <input id="generatorModel" type="text" autocomplete="off" readonly placeholder="select from catalog">
+            <button class="mc-toggle" type="button" title="Catalog" aria-label="Catalog">▾</button>
+          </div>
+          <div class="mc-dropdown"></div>
+        </div>
+
+        <span class="field-label">Dimension label:</span>
+        <label class="select">
+          <input id="behavior" type="text" placeholder="warmth">
+        </label>
+
+        <span class="field-label positive">Positive prompt:</span>
+        <div class="prompt-btn positive">
+          <textarea id="positivePrompt" rows="3"></textarea>
+        </div>
+
+        <span class="field-label negative">Negative prompt:</span>
+        <div class="prompt-btn negative">
+          <textarea id="negativePrompt" rows="3"></textarea>
+        </div>
+
+        <div class="specs-block" id="genSettingsBlock">
+          <div class="sub-label"><span>Generation settings</span></div>
+          <div class="field-row"><span class="k">n pairs</span><input class="inline" id="nPairs" type="number" min="1"></div>
+          <div class="field-row"><span class="k">max tokens</span><input class="inline" id="maxNewTokensGen" type="number" min="1"></div>
+          <div class="field-row"><span class="k">temperature</span><input class="inline" id="temperature" type="number" step="0.05"></div>
+          <div class="field-row"><span class="k">top-p</span><input class="inline" id="topP" type="number" step="0.01"></div>
+          <div class="field-row"><span class="k">batch size</span><input class="inline" id="batchSizeGen" type="number" min="1"></div>
+        </div>
+
+        <div class="run-row">
+          <button class="btn primary" id="btnRunGen">Run Generation</button>
+          <button class="btn" id="btnCancelGen" disabled>Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Extraction -->
+    <div class="sec stage" id="secExtraction">
+      <div class="sec-head">
+        <div><span class="sec-title">Extraction</span><span class="stage-dot idle" id="dotExtraction"></span></div>
+        <button class="sec-toggle" data-target="secExtraction">▾</button>
+      </div>
+
+      <div class="sec-body">
+        <span class="field-label">Method:</span>
+        <label class="select active">
+          <select id="method">
+            <option value="mean_diff">mean_diff</option>
+            <option value="pca_pairwise">pca_pairwise</option>
+          </select>
+        </label>
+
+        <div class="specs-block">
+          <div class="sub-label"><span>method parameters</span></div>
+          <span class="field-label" style="margin-top:0;">Accumulate:</span>
+          <label class="select" style="margin-bottom:6px;">
+            <select id="accumulate">
+              <option value="last_token">last_token</option>
+              <option value="all">all</option>
+              <option value="suffix-only">suffix-only</option>
+            </select>
+          </label>
+          <div class="toggle-row">
+            <span class="k">normalize directions</span>
+            <span class="toggle" id="tgNormalize" data-target="normalize"></span>
+          </div>
+          <div class="toggle-row">
+            <span class="k">center activations</span>
+            <span class="toggle" id="tgCenter" data-target="center"></span>
+          </div>
+          <div class="toggle-row">
+            <span class="k">per-layer rescale</span>
+            <span class="toggle" id="tgPerLayer" data-target="perLayerRescale"></span>
+          </div>
+        </div>
+
+        <div class="specs-block">
+          <div class="sub-label"><span>Layer extraction</span></div>
+          <div class="field-row"><span class="k">batch size</span><input class="inline" id="batchSizeExt" type="number" min="1"></div>
+        </div>
+
+        <div class="run-row">
+          <button class="btn primary" id="btnRunExtract">Run Extraction</button>
+          <button class="btn" id="btnCancelExtract" disabled>Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Calibration -->
+    <div class="sec stage" id="secCalibration">
+      <div class="sec-head">
+        <div><span class="sec-title">Calibration</span><span class="stage-dot idle" id="dotCalibration"></span></div>
+        <button class="sec-toggle" data-target="secCalibration">▾</button>
+      </div>
+
+      <div class="sec-body">
+        <div class="specs-block">
+          <div class="sub-label"><span>Transform</span></div>
+          <span class="field-label" style="margin-top:0;">Method:</span>
+          <label class="select">
+            <select id="transform">
+              <option value="additive">additive · h ← h + α·v</option>
+              <option value="norm_preserving">norm_preserving</option>
+            </select>
+          </label>
+
+          <span class="field-label">Token scope:</span>
+          <label class="select">
+            <select id="tokenScope">
+              <option value="all">all tokens</option>
+              <option value="after_prompt">after_prompt</option>
+              <option value="last_k">last_k</option>
+              <option value="from_position">from_position</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="specs-block">
+          <div class="sub-label"><span>Judge</span></div>
+          <span class="field-label" style="margin-top:0;">Model:</span>
+          <div class="model-combo" data-role="judge" id="mcJudge">
+            <div class="mc-input-row">
+              <input id="judgeModel" type="text" autocomplete="off" readonly placeholder="select from catalog">
+              <button class="mc-toggle" type="button" title="Catalog" aria-label="Catalog">▾</button>
+            </div>
+            <div class="mc-dropdown"></div>
+          </div>
+
+          <span class="field-label">Rating scale:</span>
+          <div id="ratingScaleBlock" style="margin-top: 0;">
+            <div class="rating-scale-list" id="ratingScaleList"></div>
+            <button class="catalog-add-btn" id="ratingScaleAddBtn" type="button">+ Add rating</button>
+          </div>
+        </div>
+
+        <div class="specs-block">
+          <div class="sub-label"><span>Sweep grid</span></div>
+
+          <div class="range-label"><span>multipliers</span></div>
+          <div class="range-row">
+            <input class="num-input" id="multRangeLo" type="number" step="0.1">
+            <span class="dash">→</span>
+            <input class="num-input" id="multRangeHi" type="number" step="0.1">
+          </div>
+          <div class="field-row"><span class="k">step</span><input class="inline" id="multStep" type="number" step="0.05"></div>
+
+          <div class="range-label" style="margin-top:8px;"><span>layers</span></div>
+          <div class="field-row"><span class="k">step</span><input class="inline" id="layerStep" type="number" min="1"></div>
+        </div>
+
+        <div class="specs-block">
+          <div class="sub-label"><span>Quality gate</span></div>
+          <div class="field-row"><span class="k">coherence min</span><input class="inline" id="coherenceThr" type="number" step="0.01"></div>
+          <div class="field-row"><span class="k">ppl max ratio</span><input class="inline" id="pplMaxRatio" type="number" step="0.1"></div>
+        </div>
+
+        <div class="specs-block">
+          <div class="sub-label"><span>Execution</span></div>
+          <div class="field-row"><span class="k">max new tokens</span><input class="inline" id="maxNewTokensCal" type="number" min="1"></div>
+          <div class="field-row"><span class="k">batch size</span><input class="inline" id="batchSizeCal" type="number" min="1"></div>
+          <div class="field-row"><span class="k">eval prompts</span><input class="inline" id="nEvalPrompts" type="number" min="1"></div>
+        </div>
+
+        <div class="run-row">
+          <button class="btn primary" id="btnRunCalibrate">Run Calibration</button>
+          <button class="btn" id="btnCancelCalibrate" disabled>Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="sec">
+      <div class="run-row">
+        <button class="btn primary" id="btnRunFull">↻ Run All</button>
+        <button class="btn" id="btnCancel" disabled>Cancel</button>
+      </div>
+      <button class="btn" id="btnSaveConfig">Save config</button>
+      <a href="/api/artifacts/svec" class="btn" style="text-decoration:none;" id="lnkSvec">Export svec</a>
+      <a href="/api/artifacts/result" class="btn" style="text-decoration:none;" id="lnkResult">Export result · json</a>
+    </div>
+  </aside>
+</div>
+
+<footer class="footer">
+  <span id="fCopyright"></span>
+  <span class="spacer"></span>
+  <button class="status" id="statusBtn" title="Current run details"><span id="statusDot" class="dot idle"></span> <span id="statusText">idle</span><span id="statusCounter" style="color: var(--text-dimmer); margin-left: 6px;"></span></button>
+</footer>
+
+<div id="tt"></div>
+
+<script>
+  // ── state ────────────────────────────────────────────────────
+  let heatmapData = null;
+  let selectedCell = null;
+  let currentView = "score_delta";
+  let currentConfig = null;
+  let genIndex = 0;
+  let seedPromptsList = null;  // list[str] loaded client-side; when set, overrides the path field
+
+  // catalog + probe state
+  let catalogEntries = [];
+  let catalogProviders = [];
+  let catalogRoles = ["target", "generator", "judge"];
+  let providerStatusMap = {};
+  let targetModelProbe = null;  // { num_hidden_layers, hidden_size, ... }
+  let probeInFlight = null;
+
+  // judge rating scale: list of { label:int, description:string }
+  let ratingScale = [
+    { label: 0, description: "" },
+    { label: 1, description: "" },
+  ];
+
+  const VIEW_RANGES = {
+    score_delta: { lo: "−3", hi: "+3" },
+    coherence:   { lo: "0",  hi: "1"  },
+    perplexity:  { lo: "0",  hi: "3×" },
+  };
+
+  const DELTA_COLORS = [
+    [0.6706, 0.0361, 0.2643],
+    [0.7427, 0.1543, 0.2855],
+    [0.8315, 0.2595, 0.2869],
+    [0.9043, 0.3600, 0.2787],
+    [0.9448, 0.4631, 0.2841],
+    [0.9722, 0.5690, 0.3373],
+    [0.9879, 0.6872, 0.3928],
+    [0.9811, 0.7831, 0.4873],
+    [0.9989, 0.8593, 0.5544],
+    [0.9966, 0.9334, 0.6517],
+    [0.9761, 0.9686, 0.7102],
+    [0.9457, 0.9754, 0.6729],
+    [0.8813, 0.9520, 0.6298],
+    [0.7954, 0.9158, 0.6149],
+    [0.6787, 0.8692, 0.6246],
+    [0.5494, 0.8196, 0.6447],
+    [0.4534, 0.7449, 0.6515],
+    [0.3379, 0.6593, 0.6883],
+    [0.2681, 0.5664, 0.7010],
+    [0.2715, 0.4526, 0.6939],
+    [0.3255, 0.3467, 0.6455],
+  ];
+
+  function sampleCmap(cmap, t) {
+    t = Math.max(0, Math.min(1, t));
+    const n = cmap.length;
+    const pos = t * (n - 1);
+    const i = Math.floor(pos);
+    const j = Math.min(n - 1, i + 1);
+    const f = pos - i;
+    const c0 = cmap[i];
+    const c1 = cmap[j];
+    const r = (c0[0] + (c1[0] - c0[0]) * f) * 255;
+    const g = (c0[1] + (c1[1] - c0[1]) * f) * 255;
+    const b = (c0[2] + (c1[2] - c0[2]) * f) * 255;
+    return `rgb(${r | 0},${g | 0},${b | 0})`;
+  }
+
+  function cmapCssGradient(cmap, stops = 9) {
+    const parts = [];
+    for (let i = 0; i < stops; i++) parts.push(sampleCmap(cmap, i / (stops - 1)));
+    return `linear-gradient(to right, ${parts.join(",")})`;
+  }
+
+  // ── helpers ──────────────────────────────────────────────────
+  const $ = (id) => document.getElementById(id);
+  const fmt = (x, d = 2) => (x === null || x === undefined || Number.isNaN(x) ? "—" : Number(x).toFixed(d));
+  const fmtSigned = (x, d = 2) => {
+    if (x === null || x === undefined || Number.isNaN(x)) return "—";
+    const n = Number(x);
+    return (n >= 0 ? "+" : "") + n.toFixed(d);
+  };
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  function parseSeedPromptsText(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.map((p) => (typeof p === "string" ? p : p.prompt)).filter(Boolean);
+      }
+    } catch { /* fall through to jsonl */ }
+    const out = [];
+    for (const line of trimmed.split(/\r?\n/)) {
+      const s = line.trim();
+      if (!s) continue;
+      try {
+        const obj = JSON.parse(s);
+        out.push(typeof obj === "string" ? obj : obj.prompt);
+      } catch { /* skip bad line */ }
+    }
+    return out.filter(Boolean);
+  }
+
+  async function loadDefaultSeedPrompts() {
+    try {
+      const res = await fetch("/default_seed_prompts.jsonl");
+      const text = await res.text();
+      seedPromptsList = parseSeedPromptsText(text);
+      $("seedPromptsPath").value = "default_seed_prompts.jsonl";
+    } catch (e) {
+      /* ignore — user can still pick one */
+    }
+  }
+
+  function loadSeedPromptsFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      seedPromptsList = parseSeedPromptsText(String(reader.result || ""));
+      $("seedPromptsPath").value = file.name;
+    };
+    reader.readAsText(file);
+  }
+
+  function autoGrow(ta) {
+    if (!ta || ta.classList.contains("manually-resized")) return;
+    ta.style.height = "auto";
+    ta.style.height = ta.scrollHeight + "px";
+  }
+
+  function attachAutoGrow(id) {
+    const ta = $(id);
+    if (!ta) return;
+    ta.addEventListener("input", () => autoGrow(ta));
+    let lastH = ta.offsetHeight;
+    new ResizeObserver(() => {
+      const h = ta.offsetHeight;
+      if (Math.abs(h - lastH) > 1 && document.activeElement !== ta) {
+        ta.classList.add("manually-resized");
+      }
+      lastH = h;
+    }).observe(ta);
+    ta.addEventListener("mousedown", () => {
+      lastH = ta.offsetHeight;
+      const onUp = () => {
+        if (Math.abs(ta.offsetHeight - lastH) > 1) ta.classList.add("manually-resized");
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mouseup", onUp);
+    });
+  }
+
+  async function api(path, opts) {
+    const res = await fetch(path, opts);
+    if (!res.ok) throw new Error(`${path} → ${res.status}`);
+    if (res.status === 204) return null;
+    return res.json();
+  }
+
+  // ── color mapping ────────────────────────────────────────────
+  function scoreColor(v, view, coherent) {
+    if (v === null || v === undefined || Number.isNaN(v)) return "var(--panel-3)";
+    if (view === "score_delta" && coherent === false) return "#2a2a30";
+
+    if (view === "score_delta") {
+      const bound = 3.0;
+      const t = (Math.max(-bound, Math.min(bound, v)) + bound) / (2 * bound);
+      return sampleCmap(DELTA_COLORS, t);
+    }
+    if (view === "coherence") {
+      return sampleCmap(DELTA_COLORS, Math.max(0, Math.min(1, v)));
+    }
+    if (view === "perplexity") {
+      const t = 1 - Math.max(0, Math.min(3, v)) / 3;
+      return sampleCmap(DELTA_COLORS, t);
+    }
+    return "var(--panel-3)";
+  }
+
+  // ── config load / bind ───────────────────────────────────────
+  function writeConfigToUI(cfg) {
+    currentConfig = cfg;
+    $("steeredModel").value = cfg.steered_model || "";
+
+    const g = cfg.generation || {};
+    $("generatorModel").value = g.generator_model || "";
+    $("behavior").value = g.behavior || "";
+    $("positivePrompt").value = g.positive_prompt || "";
+    $("negativePrompt").value = g.negative_prompt || "";
+    if (Array.isArray(g.seed_prompts)) {
+      seedPromptsList = g.seed_prompts;
+      $("seedPromptsPath").value = g.seed_prompts_source || "";
+    } else if (typeof g.seed_prompts === "string") {
+      seedPromptsList = null;
+      $("seedPromptsPath").value = g.seed_prompts;
+    } else {
+      seedPromptsList = null;
+      $("seedPromptsPath").value = "";
+    }
+    $("nPairs").value = g.n_pairs ?? 300;
+    $("maxNewTokensGen").value = g.max_new_tokens ?? 160;
+    $("temperature").value = g.temperature ?? 0.9;
+    $("topP").value = g.top_p ?? 0.95;
+    $("batchSizeGen").value = g.batch_size ?? 8;
+
+    const e = cfg.extraction || {};
+    $("method").value = e.method || "mean_diff";
+    $("accumulate").value = e.accumulate || "last_token";
+    setToggle($("tgNormalize"), !!e.normalize);
+    setToggle($("tgCenter"), !!e.center);
+    setToggle($("tgPerLayer"), !!e.per_layer_rescale);
+    $("batchSizeExt").value = e.batch_size ?? 8;
+
+    const c = cfg.calibration || {};
+    $("judgeModel").value = (c.judge && c.judge.model) || "";
+    if (c.judge && Array.isArray(c.judge.rating_scale) && c.judge.rating_scale.length) {
+      ratingScale = c.judge.rating_scale.map((row) => {
+        if (Array.isArray(row)) return { label: Number(row[0]) || 0, description: String(row[1] || "") };
+        return { label: Number(row.label) || 0, description: String(row.description || "") };
+      });
+    }
+    renderRatingScale();
+    $("transform").value = c.transform || "additive";
+    $("tokenScope").value = c.token_scope || "all";
+    const sw = c.sweep || {};
+    const mr = sw.multiplier_range || [-3.0, 3.0];
+    $("multRangeLo").value = mr[0];
+    $("multRangeHi").value = mr[1];
+    $("multStep").value = sw.multiplier_step ?? 0.25;
+    $("layerStep").value = sw.layer_step ?? 1;
+    const qg = c.quality_gate || {};
+    $("coherenceThr").value = qg.coherence_threshold ?? 0.95;
+    $("pplMaxRatio").value = qg.perplexity_max_ratio ?? 2.0;
+    $("maxNewTokensCal").value = c.max_new_tokens ?? 200;
+    $("batchSizeCal").value = c.batch_size ?? 32;
+    $("nEvalPrompts").value = c.n_eval_prompts ?? 30;
+
+
+    $("hmDimension").textContent = g.behavior || "—";
+
+    for (const id of ["positivePrompt", "negativePrompt"]) autoGrow($(id));
+  }
+
+  function readConfigFromUI() {
+    const cfg = JSON.parse(JSON.stringify(currentConfig || {}));
+    cfg.steered_model = $("steeredModel").value;
+    let seedPromptsValue;
+    if (seedPromptsList !== null) seedPromptsValue = seedPromptsList;
+    else if ($("seedPromptsPath").value.trim()) seedPromptsValue = $("seedPromptsPath").value.trim();
+    else seedPromptsValue = null;
+
+    cfg.generation = {
+      ...(cfg.generation || {}),
+      generator_model: $("generatorModel").value,
+      behavior: $("behavior").value,
+      positive_prompt: $("positivePrompt").value,
+      negative_prompt: $("negativePrompt").value,
+      seed_prompts: seedPromptsValue,
+      n_pairs: +$("nPairs").value,
+      max_new_tokens: +$("maxNewTokensGen").value,
+      temperature: +$("temperature").value,
+      top_p: +$("topP").value,
+      batch_size: +$("batchSizeGen").value,
+    };
+    cfg.extraction = {
+      ...(cfg.extraction || {}),
+      method: $("method").value,
+      accumulate: $("accumulate").value,
+      normalize: $("tgNormalize").classList.contains("on"),
+      center: $("tgCenter").classList.contains("on"),
+      per_layer_rescale: $("tgPerLayer").classList.contains("on"),
+      batch_size: +$("batchSizeExt").value,
+    };
+    cfg.calibration = {
+      ...(cfg.calibration || {}),
+      judge: (() => {
+        const prev = (cfg.calibration && cfg.calibration.judge) || {};
+        const scaleRows = ratingScale
+          .filter((r) => Number.isFinite(r.label))
+          .map((r) => [r.label, r.description || ""]);
+        const labels = scaleRows.map((r) => r[0]);
+        const scale = labels.length
+          ? [Math.min(...labels), Math.max(...labels)]
+          : prev.scale || [0, 1];
+        return {
+          ...prev,
+          model: $("judgeModel").value,
+          rating_scale: scaleRows,
+          scale,
+          criteria: prev.criteria || "",
+        };
+      })(),
+      sweep: {
+        ...((cfg.calibration && cfg.calibration.sweep) || {}),
+        multiplier_range: [+$("multRangeLo").value, +$("multRangeHi").value],
+        multiplier_step: +$("multStep").value,
+        layer_step: +$("layerStep").value,
+      },
+      quality_gate: {
+        coherence_threshold: +$("coherenceThr").value,
+        perplexity_max_ratio: +$("pplMaxRatio").value,
+      },
+      transform: $("transform").value,
+      token_scope: $("tokenScope").value,
+      max_new_tokens: +$("maxNewTokensCal").value,
+      batch_size: +$("batchSizeCal").value,
+      n_eval_prompts: +$("nEvalPrompts").value,
+    };
+    return cfg;
+  }
+
+  function setToggle(el, on) {
+    el.classList.toggle("on", !!on);
+  }
+
+  // ── model info ───────────────────────────────────────────────
+  function renderModelInfo(info) {
+    const rows = [
+      ["layers", info.num_layers],
+      ["d_model", info.hidden_size],
+      ["heads", info.num_attention_heads],
+      ["kv heads", info.num_key_value_heads],
+      ["ffn dim", info.intermediate_size],
+      ["type", info.model_type],
+    ];
+    const html = rows
+      .filter(([, v]) => v !== null && v !== undefined)
+      .map(
+        ([k, v]) =>
+          `<div class="field-row"><span class="k">${k}</span><span class="v">${escapeHtml(String(v))}</span></div>`
+      )
+      .join("");
+    const specs = $("modelSpecs");
+    specs.innerHTML = html;
+    specs.dataset.source = "live";
+  }
+
+  // ── heatmap ──────────────────────────────────────────────────
+  function computeGridAxesFromConfig() {
+    const lo = parseFloat($("multRangeLo").value);
+    const hi = parseFloat($("multRangeHi").value);
+    const step = parseFloat($("multStep").value);
+    const layerStep = Math.max(1, parseInt($("layerStep").value || "1", 10));
+    const numLayers = targetModelProbe && targetModelProbe.num_hidden_layers;
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || !Number.isFinite(step) || step <= 0) {
+      return null;
+    }
+    if (!numLayers || numLayers <= 0) return null;
+    const nSteps = Math.max(0, Math.round((hi - lo) / step));
+    const multipliers = [];
+    for (let i = 0; i <= nSteps; i++) {
+      multipliers.push(Math.round((lo + i * step) * 10000) / 10000);
+    }
+    const layers = [];
+    for (let l = 0; l < numLayers; l += layerStep) layers.push(l);
+    return { layers, multipliers };
+  }
+
+  function renderEmptyHeatmap() {
+    const wrap = $("hmContainer");
+    const axes = computeGridAxesFromConfig();
+    if (!axes || !axes.layers.length || !axes.multipliers.length) {
+      wrap.className = "hm-placeholder";
+      wrap.innerHTML = targetModelProbe
+        ? "sweep grid undefined · check multiplier / layer settings"
+        : "set a target model to preview the grid";
+      renderAxes(null);
+      return;
+    }
+    wrap.className = "hm-grid empty-grid";
+    wrap.innerHTML = "";
+    wrap.style.gridTemplateColumns = `repeat(${axes.multipliers.length}, 1fr)`;
+    wrap.style.gridTemplateRows = `repeat(${axes.layers.length}, 1fr)`;
+    for (let r = axes.layers.length - 1; r >= 0; r--) {
+      for (let c = 0; c < axes.multipliers.length; c++) {
+        const d = document.createElement("div");
+        d.className = "hm-cell-empty";
+        if (Math.abs(axes.multipliers[c]) < 1e-6) d.classList.add("col-zero");
+        wrap.appendChild(d);
+      }
+    }
+    renderAxes({ layers: axes.layers, multipliers: axes.multipliers });
+  }
+
+  function renderHeatmap(data, view) {
+    const wrap = $("hmContainer");
+    if (!data || !data.layers.length || !data.multipliers.length) {
+      renderEmptyHeatmap();
+      return;
+    }
+    wrap.className = "hm-grid";
+    wrap.innerHTML = "";
+
+    const grid = data.grids[view] || [];
+    const coherenceGrid = data.grids.coherence || [];
+    const nLayers = data.layers.length;
+    const nMults = data.multipliers.length;
+    wrap.style.gridTemplateColumns = `repeat(${nMults}, 1fr)`;
+    wrap.style.gridTemplateRows = `repeat(${nLayers}, 1fr)`;
+
+    for (let r = nLayers - 1; r >= 0; r--) {
+      for (let c = 0; c < nMults; c++) {
+        const layer = data.layers[r];
+        const mult = data.multipliers[c];
+        const v = grid[r][c];
+        const co = coherenceGrid[r] ? coherenceGrid[r][c] : null;
+        const coherent = co === null || co === undefined ? true : co >= 0.95;
+        const div = document.createElement("div");
+        div.className = "hm-cell";
+        if (!coherent && view === "score_delta") div.classList.add("incoherent");
+        div.style.background = scoreColor(v, view, coherent);
+        div.dataset.layer = layer;
+        div.dataset.mult = mult;
+
+        if (data.peak && data.peak.layer === layer &&
+            Math.abs(data.peak.multiplier - mult) < 1e-6) {
+          div.classList.add("peak");
+        }
+        if (selectedCell && selectedCell.layer === layer &&
+            Math.abs(selectedCell.multiplier - mult) < 1e-6) {
+          div.classList.add("selected");
+        }
+
+        div.addEventListener("mousemove", (e) => {
+          const tt = $("tt");
+          tt.classList.add("on");
+          tt.innerHTML = `
+            <div><span class="ttl">layer</span><span class="ttv">${layer}</span></div>
+            <div><span class="ttl">mult</span><span class="ttv">${fmtSigned(mult)}</span></div>
+            <div><span class="ttl">${view}</span><span class="ttv">${v === null || v === undefined ? "—" : (view === "score_delta" ? fmtSigned(v) : fmt(v))}</span></div>
+          `;
+          tt.style.left = (e.clientX + 14) + "px";
+          tt.style.top  = (e.clientY + 14) + "px";
+        });
+        div.addEventListener("mouseleave", () => $("tt").classList.remove("on"));
+        div.addEventListener("click", () => selectCell(layer, mult));
+        wrap.appendChild(div);
+      }
+    }
+
+    renderAxes(data);
+    updateHeatmapHead(data, view);
+  }
+
+  function renderAxes(data) {
+    const yTicks = $("yticks");
+    const xTicks = $("xticks");
+    yTicks.innerHTML = "";
+    xTicks.innerHTML = "";
+    if (!data) return;
+
+    const nL = data.layers.length;
+    const yVals = nL <= 9
+      ? data.layers.slice().reverse()
+      : [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) =>
+          data.layers[Math.min(nL - 1, Math.round(i * (nL - 1) / 8))]
+        ).reverse();
+    for (const v of yVals) {
+      const d = document.createElement("div");
+      d.textContent = v;
+      yTicks.appendChild(d);
+    }
+
+    const nM = data.multipliers.length;
+    const xVals = nM <= 7
+      ? data.multipliers
+      : [0, 1, 2, 3, 4, 5, 6].map((i) =>
+          data.multipliers[Math.min(nM - 1, Math.round(i * (nM - 1) / 6))]
+        );
+    for (const v of xVals) {
+      const d = document.createElement("div");
+      d.textContent = fmtSigned(v, 1);
+      if (Math.abs(v) < 1e-6) d.style.color = "var(--text)";
+      xTicks.appendChild(d);
+    }
+  }
+
+  function updateHeatmapHead(data, view) {
+    if (!data) return;
+    const behavior = (currentConfig && currentConfig.generation && currentConfig.generation.behavior) || "—";
+    $("hmDimension").textContent = behavior;
+    $("hmBaseline").textContent = fmt(data.baseline_score);
+    const r = VIEW_RANGES[view];
+    if (r) { $("cbLo").textContent = r.lo; $("cbHi").textContent = r.hi; }
+  }
+
+  function fillHeatmapCell(layer, multiplier, metricValues) {
+    if (!heatmapData) return;
+    const rIdx = heatmapData.layers.indexOf(layer);
+    const cIdx = heatmapData.multipliers.findIndex((m) => Math.abs(m - multiplier) < 1e-6);
+    if (rIdx < 0 || cIdx < 0) return;
+    for (const k of ["score_delta", "coherence", "perplexity"]) {
+      if (metricValues && k in metricValues) {
+        heatmapData.grids[k][rIdx][cIdx] = metricValues[k];
+      }
+    }
+    renderHeatmap(heatmapData, currentView);
+  }
+
+  // ── cell inspector ───────────────────────────────────────────
+  async function selectCell(layer, mult) {
+    try {
+      selectedCell = await api(`/api/results/cell/${layer}/${mult}`);
+      genIndex = 0;
+      renderInspector(selectedCell);
+      if (heatmapData) renderHeatmap(heatmapData, currentView);
+    } catch (e) {
+      $("ins-layer").textContent = "—";
+      $("ins-mult").textContent = "—";
+    }
+  }
+
+  function renderInspector(cell) {
+    $("ins-layer").textContent = cell.layer;
+    $("ins-mult").textContent = fmtSigned(cell.multiplier);
+    const behavior = (currentConfig && currentConfig.generation && currentConfig.generation.behavior) || "—";
+    const method = (currentConfig && currentConfig.extraction && currentConfig.extraction.method) || "—";
+    const acc = (currentConfig && currentConfig.extraction && currentConfig.extraction.accumulate) || "—";
+    $("ins-sub").textContent = `${behavior} · ${method} · ${acc}`;
+    $("steeredTag").textContent = `steered · L${cell.layer} · ${fmtSigned(cell.multiplier)}`;
+
+    const baseline = heatmapData ? heatmapData.baseline_score : null;
+    const basePpl = heatmapData ? heatmapData.baseline_perplexity : null;
+    const deltaClass = cell.score_delta >= 0 ? "good" : "bad";
+    const metrics = [
+      {
+        label: "Δ score",
+        valHtml: `<span class="val ${deltaClass}">${fmtSigned(cell.score_delta)}<span class="delta">(${fmt(baseline)} → ${fmt(cell.score_mean)})</span></span>`,
+      },
+      { label: "coherence", valHtml: `<span class="val">${fmt(cell.coherence)}</span>` },
+      {
+        label: "perplexity",
+        valHtml: `<span class="val">${fmt(cell.perplexity, 1)}<span class="delta">${fmtSigned(cell.perplexity_delta, 1)}</span></span>`,
+      },
+      {
+        label: "baseline",
+        valHtml: `<span class="val">${fmt(baseline)}<span class="delta">ppl ${fmt(basePpl, 1)}</span></span>`,
+      },
+      {
+        label: "gate",
+        valHtml: `<span class="val ${cell.coherent ? "good" : "bad"}">${cell.coherent ? "pass" : "fail"}</span>`,
+      },
+    ];
+    $("insMetrics").innerHTML = metrics
+      .map((m) => `<div class="insp-metric"><div class="label">${m.label}</div>${m.valHtml}</div>`)
+      .join("");
+
+    renderGenerations();
+  }
+
+  function renderGenerations() {
+    if (!selectedCell || !selectedCell.generations || !selectedCell.generations.length) {
+      $("basePromptWrap").innerHTML = `<div class="empty">no generations available</div>`;
+      $("steeredPromptWrap").innerHTML = `<div class="empty">no generations available</div>`;
+      $("promptCounter").textContent = "— / —";
+      $("promptCounter2").textContent = "— / —";
+      return;
+    }
+    const n = selectedCell.generations.length;
+    if (genIndex >= n) genIndex = n - 1;
+    if (genIndex < 0) genIndex = 0;
+    const g = selectedCell.generations[genIndex];
+
+    $("promptCounter").textContent = `prompt ${String(genIndex + 1).padStart(2, "0")} / ${n}`;
+    $("promptCounter2").textContent = $("promptCounter").textContent;
+
+    const promptHtml = g.prompt
+      ? `<div class="prompt">"${escapeHtml(g.prompt)}"</div>`
+      : "";
+
+    const baseBody = g.baseline_text !== undefined ? g.baseline_text : (g.baseline || "");
+    const steeredBody = g.steered_text !== undefined ? g.steered_text : (g.steered || "");
+
+    $("basePromptWrap").innerHTML = `
+      ${promptHtml}
+      <div class="body">${escapeHtml(baseBody)}</div>
+    `;
+
+    let judgeBlock = "";
+    if (g.judge_score !== undefined && g.judge_score !== null) {
+      const scaleHi = (currentConfig && currentConfig.calibration && currentConfig.calibration.judge && currentConfig.calibration.judge.scale) ? currentConfig.calibration.judge.scale[1] : 5;
+      judgeBlock = `
+        <div class="judge">
+          <div class="score">${fmt(g.judge_score, 1)}<sub>/ ${scaleHi}</sub></div>
+          <div class="reason">${escapeHtml(g.judge_reason || "")}</div>
+        </div>
+      `;
+    }
+    $("steeredPromptWrap").innerHTML = `
+      ${promptHtml}
+      <div class="body">${escapeHtml(steeredBody)}</div>
+      ${judgeBlock}
+    `;
+  }
+
+  const PHASE_LABEL = {
+    idle: "idle",
+    generation: "generating",
+    extraction: "extracting",
+    calibration: "calibrating",
+    complete: "complete",
+    error: "error",
+    cancelled: "cancelled",
+  };
+
+  const STAGE_IDS = ["Generation", "Extraction", "Calibration"];
+
+  function setStageDot(stage, state) {
+    const el = $(`dot${stage}`);
+    if (el) el.className = "stage-dot " + state;
+  }
+
+  function setStageRunning(runningStage) {
+    for (const s of STAGE_IDS) {
+      const runBtn = $(`btnRun${s === "Calibration" ? "Calibrate" : s === "Generation" ? "Gen" : "Extract"}`);
+      const cancelBtn = $(`btnCancel${s === "Calibration" ? "Calibrate" : s === "Generation" ? "Gen" : "Extract"}`);
+      if (!runBtn || !cancelBtn) continue;
+      const isThis = s === runningStage;
+      const anyRunning = runningStage !== null;
+      runBtn.disabled = anyRunning;
+      cancelBtn.disabled = !isThis;
+    }
+    $("btnRunFull").disabled = runningStage !== null;
+    $("btnCancel").disabled = runningStage === null;
+  }
+
+  function applyPhaseToDots(phase) {
+    const stageFromPhase = {
+      generation: "Generation",
+      extraction: "Extraction",
+      calibration: "Calibration",
+    };
+    if (phase in stageFromPhase) {
+      const active = stageFromPhase[phase];
+      for (const s of STAGE_IDS) {
+        const el = $(`dot${s}`);
+        if (!el) continue;
+        if (s === active) setStageDot(s, "running");
+        else if (el.classList.contains("complete") || el.classList.contains("error")) {
+          // keep existing terminal state
+        } else {
+          setStageDot(s, "idle");
+        }
+      }
+    } else if (phase === "complete") {
+      for (const s of STAGE_IDS) {
+        const el = $(`dot${s}`);
+        if (el && !el.classList.contains("error")) setStageDot(s, "complete");
+      }
+    } else if (phase === "error") {
+      for (const s of STAGE_IDS) {
+        const el = $(`dot${s}`);
+        if (el && el.classList.contains("running")) setStageDot(s, "error");
+      }
+    } else if (phase === "cancelled") {
+      for (const s of STAGE_IDS) {
+        const el = $(`dot${s}`);
+        if (el && el.classList.contains("running")) setStageDot(s, "idle");
+      }
+    }
+  }
+
+  // ── status + progress ────────────────────────────────────────
+  function updatePhase(phase, extra) {
+    const label = PHASE_LABEL[phase] || phase;
+    $("statusText").textContent = label;
+    $("statusDot").className = "dot " + phase;
+    $("runStateLabel").textContent = label;
+    $("runStateLabel").className = "sec-action" + (phase === "complete" ? " good" : phase === "error" ? " bad" : "");
+    $("progressLabel").textContent = label + (extra && extra.error ? ` · ${extra.error}` : "");
+
+    applyPhaseToDots(phase);
+
+    const runningStage = { generation: "Generation", extraction: "Extraction", calibration: "Calibration" }[phase] || null;
+    setStageRunning(runningStage);
+
+    if (phase === "complete") {
+      $("progressFill").style.width = "100%";
+      $("progressPct").textContent = "done";
+      refreshHeatmap();
+      refreshStatus();
+    }
+    if (phase === "idle" || phase === "error" || phase === "cancelled") {
+      $("progressFill").style.width = "0%";
+      $("progressPct").textContent = "—";
+      $("statusCounter").textContent = "";
+    }
+    if (phase === "complete") $("statusCounter").textContent = "";
+  }
+
+  function updateProgress(msg) {
+    if (msg.total && msg.total > 0) {
+      const pct = Math.round((msg.completed / msg.total) * 100);
+      $("progressFill").style.width = pct + "%";
+      $("progressLabel").textContent = `${msg.phase} · ${msg.completed}/${msg.total}`;
+      $("progressPct").textContent = pct + "%";
+      $("statusCounter").textContent = `(${msg.completed}/${msg.total})`;
+      if (msg.phase === "calibration") {
+        $("runCells").textContent = `${msg.completed} / ${msg.total}`;
+      }
+    } else if (msg.phase) {
+      $("progressLabel").textContent = msg.phase;
+    }
+  }
+
+  async function refreshStatus() {
+    try {
+      const s = await api("/api/run/status");
+      updatePhase(s.phase);
+      if (s.wall_time_s !== null && s.wall_time_s !== undefined) {
+        const m = Math.floor(s.wall_time_s / 60);
+        const sec = Math.round(s.wall_time_s % 60);
+        $("runWall").textContent = m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  async function refreshHeatmap() {
+    try {
+      heatmapData = await api("/api/results/heatmap");
+      renderHeatmap(heatmapData, currentView);
+      if (heatmapData.peak) {
+        $("runPeakDelta").textContent = fmtSigned(heatmapData.peak.score_delta);
+        $("runPeakLoc").textContent = `L${heatmapData.peak.layer} · ${fmtSigned(heatmapData.peak.multiplier)}`;
+        if (!selectedCell) {
+          selectCell(heatmapData.peak.layer, heatmapData.peak.multiplier);
+        }
+      }
+      const nCells = heatmapData.layers.length * heatmapData.multipliers.length;
+      $("runCells").textContent = String(nCells);
+    } catch (e) { /* no result yet */ }
+  }
+
+  // ── websocket ────────────────────────────────────────────────
+  function connectWebSocket() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${location.host}/ws/progress`);
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.event === "phase") updatePhase(msg.phase, msg);
+      else if (msg.event === "progress") updateProgress(msg);
+      else if (msg.event === "cell_complete")
+        fillHeatmapCell(msg.layer, msg.multiplier, msg);
+    };
+    ws.onclose = () => setTimeout(connectWebSocket, 2000);
+    ws.onerror = () => ws.close();
+  }
+
+  // ── actions ──────────────────────────────────────────────────
+  async function runPipeline(stages) {
+    try {
+      try {
+        await saveConfig({ silent: true });
+      } catch (e) {
+        if (!/→ 409/.test(String(e.message))) throw e;
+      }
+      await api("/api/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stages }),
+      });
+    } catch (e) {
+      alert("Failed to start run: " + e.message);
+    }
+  }
+
+  async function saveConfig(opts = {}) {
+    const cfg = readConfigFromUI();
+    try {
+      await api("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cfg),
+      });
+      currentConfig = cfg;
+      const behavior = cfg.generation.behavior || "—";
+      $("hmDimension").textContent = behavior;
+    } catch (e) {
+      if (!opts.silent) alert("Failed to save config: " + e.message);
+      throw e;
+    }
+  }
+
+  async function cancelRun() {
+    try { await api("/api/run/cancel", { method: "POST" }); } catch (e) { /* ignore */ }
+  }
+
+  // ── settings modal ───────────────────────────────────────────
+  async function openSettings() {
+    const cfg = currentConfig || {};
+    $("sSaveDir").value = cfg.save_dir || "";
+    $("sDeviceMap").value = cfg.device_map || "auto";
+    $("sHfKwargs").value = JSON.stringify(cfg.hf_model_kwargs || {}, null, 2);
+    $("sHost").textContent = location.hostname || "—";
+    $("sPort").textContent = location.port || "—";
+    await refreshCatalog();
+    catalogModalOpen();
+    $("settingsModal").classList.add("open");
+  }
+  function closeSettings() {
+    $("settingsModal").classList.remove("open");
+  }
+  async function saveSettings() {
+    let kwargs = {};
+    try {
+      const raw = $("sHfKwargs").value.trim();
+      kwargs = raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      alert("HF model kwargs is not valid JSON.");
+      return;
+    }
+    const cfg = readConfigFromUI();
+    cfg.save_dir = $("sSaveDir").value || null;
+    cfg.device_map = $("sDeviceMap").value || "auto";
+    cfg.hf_model_kwargs = kwargs;
+    try {
+      await api("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cfg),
+      });
+      currentConfig = cfg;
+      await saveCatalog();
+      closeSettings();
+    } catch (e) {
+      alert("Failed to save settings: " + e.message);
+    }
+  }
+
+  // ── catalog + model combos ───────────────────────────────────
+  async function refreshCatalog() {
+    try {
+      const data = await api("/api/catalog");
+      catalogEntries = Array.isArray(data.entries) ? data.entries : [];
+      catalogProviders = Array.isArray(data.providers) ? data.providers : ["hf"];
+      catalogRoles = Array.isArray(data.roles) ? data.roles : ["target", "generator", "judge"];
+    } catch (e) { /* leave defaults */ }
+    try {
+      const st = await api("/api/catalog/providers/status");
+      providerStatusMap = st.providers || {};
+    } catch (e) { /* leave defaults */ }
+    renderAllModelCombos();
+  }
+
+  function providerWired(providerName) {
+    const p = providerStatusMap[providerName];
+    if (!p) return providerName === "hf";
+    if (!p.wired) return false;
+    if (p.env_var && !p.env_present) return false;
+    return true;
+  }
+
+  function entriesForRole(role) {
+    return catalogEntries.filter((e) => Array.isArray(e.roles) && e.roles.includes(role));
+  }
+
+  function renderAllModelCombos() {
+    renderModelCombo("mcTarget", "target", $("steeredModel"));
+    renderModelCombo("mcGenerator", "generator", $("generatorModel"));
+    renderModelCombo("mcJudge", "judge", $("judgeModel"));
+    updateRolePlaceholders();
+  }
+
+  function updateRolePlaceholders() {
+    const pairs = [
+      ["target", $("steeredModel")],
+      ["generator", $("generatorModel")],
+      ["judge", $("judgeModel")],
+    ];
+    for (const [role, input] of pairs) {
+      if (!input) continue;
+      const hasEntries = entriesForRole(role).length > 0;
+      input.placeholder = hasEntries ? "select from catalog" : "—";
+    }
+  }
+
+  function renderModelCombo(comboId, role, input) {
+    const combo = $(comboId);
+    if (!combo) return;
+    const dd = combo.querySelector(".mc-dropdown");
+    const q = (input.value || "").toLowerCase().trim();
+    const relevant = entriesForRole(role).filter((e) => {
+      if (!q) return true;
+      return (
+        e.label.toLowerCase().includes(q) ||
+        e.model_id.toLowerCase().includes(q) ||
+        (e.provider || "").toLowerCase().includes(q)
+      );
+    });
+    if (!relevant.length) {
+      dd.innerHTML = `<div class="mc-empty">no matching models</div>`;
+      return;
+    }
+    dd.innerHTML = relevant
+      .map((e) => {
+        const wired = providerWired(e.provider);
+        const cls = wired ? "wired" : "disabled";
+        return `
+          <div class="mc-item" data-id="${escapeHtml(e.model_id)}" data-provider="${escapeHtml(e.provider)}">
+            <div class="mc-label">${escapeHtml(e.label)}</div>
+            <div class="mc-meta">
+              <span class="mc-id">${escapeHtml(e.model_id)}</span>
+              <span class="mc-provider ${cls}">${escapeHtml(e.provider)}${wired ? "" : " · n/a"}</span>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+    dd.querySelectorAll(".mc-item").forEach((item) => {
+      item.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        const id = item.dataset.id;
+        input.value = id;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        combo.classList.remove("open");
+      });
+    });
+  }
+
+  function attachModelCombo(comboId, role) {
+    const combo = $(comboId);
+    if (!combo) return;
+    const input = combo.querySelector("input");
+    const toggle = combo.querySelector(".mc-toggle");
+    const open = () => { renderModelCombo(comboId, role, input); combo.classList.add("open"); };
+    const close = () => combo.classList.remove("open");
+    input.addEventListener("focus", () => { combo.classList.add("focused"); open(); });
+    input.addEventListener("blur", () => {
+      combo.classList.remove("focused");
+      setTimeout(close, 120);
+    });
+    input.addEventListener("input", () => open());
+    input.addEventListener("click", () => open());
+    toggle.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      if (combo.classList.contains("open")) close();
+      else { input.focus(); open(); }
+    });
+  }
+
+  // ── model probe (target model) ───────────────────────────────
+  let probeTimer = null;
+  function scheduleTargetProbe() {
+    const id = ($("steeredModel").value || "").trim();
+    if (probeTimer) clearTimeout(probeTimer);
+    if (!id) {
+      targetModelProbe = null;
+      if (!heatmapData) renderEmptyHeatmap();
+      return;
+    }
+    probeTimer = setTimeout(() => probeTargetModel(id), 350);
+  }
+
+  async function probeTargetModel(id) {
+    if (probeInFlight === id) return;
+    probeInFlight = id;
+    try {
+      const info = await api(`/api/model/probe?model_id=${encodeURIComponent(id)}`);
+      targetModelProbe = info;
+      renderProbeInfo(info);
+      if (!heatmapData) renderEmptyHeatmap();
+    } catch (e) {
+      targetModelProbe = null;
+      renderProbeInfo(null);
+      if (!heatmapData) renderEmptyHeatmap();
+    } finally {
+      probeInFlight = null;
+    }
+  }
+
+  function renderProbeInfo(info) {
+    // only render probe info if no live model is loaded; /api/model/info output (with dtype/device) takes precedence.
+    const specs = $("modelSpecs");
+    if (!specs) return;
+    const hasLive = specs.dataset.source === "live";
+    if (hasLive) return;
+    if (!info) {
+      specs.innerHTML = "";
+      return;
+    }
+    const rows = [
+      ["layers", info.num_hidden_layers],
+      ["d_model", info.hidden_size],
+      ["heads", info.num_attention_heads],
+      ["kv heads", info.num_key_value_heads],
+      ["ffn dim", info.intermediate_size],
+      ["type", info.model_type],
+    ];
+    specs.innerHTML = rows
+      .filter(([, v]) => v !== null && v !== undefined)
+      .map(([k, v]) => `<div class="field-row"><span class="k">${k}</span><span class="v">${escapeHtml(String(v))}</span></div>`)
+      .join("");
+    specs.dataset.source = "probe";
+  }
+
+  // ── catalog editor (settings modal) ──────────────────────────
+  let catalogDraft = [];
+
+  function catalogModalOpen() {
+    catalogDraft = catalogEntries.map((e) => ({
+      label: e.label,
+      model_id: e.model_id,
+      provider: e.provider || "hf",
+      endpoint: e.endpoint || "",
+      roles: Array.isArray(e.roles) ? [...e.roles] : ["target", "generator", "judge"],
+    }));
+    renderCatalogEditor();
+    renderProviderStatus();
+  }
+
+  function renderCatalogEditor() {
+    const list = $("catalogList");
+    list.innerHTML = "";
+    catalogDraft.forEach((entry, idx) => {
+      const isHf = entry.provider === "hf";
+      const row = document.createElement("div");
+      row.className = "catalog-row";
+      row.innerHTML = `
+        <div class="catalog-row-head">
+          <input type="text" data-k="label" value="${escapeHtml(entry.label)}" placeholder="Display name">
+          <button class="rm-btn" type="button" title="Remove">×</button>
+        </div>
+        <input type="text" data-k="model_id" value="${escapeHtml(entry.model_id)}"
+          placeholder="e.g. ibm-granite/granite-3.3-2b-instruct"
+          style="background: var(--panel); border:1px solid var(--line-2); border-radius:2px; padding:4px 7px; font-family: var(--mono); font-size: 11px; color: var(--text); outline: none;">
+        <div class="catalog-row-grid">
+          <label>provider
+            <select data-k="provider">
+              ${catalogProviders.map((p) => `<option value="${p}"${p === entry.provider ? " selected" : ""}>${p}</option>`).join("")}
+            </select>
+          </label>
+          <label>endpoint
+            <input type="text" data-k="endpoint" value="${escapeHtml(entry.endpoint || "")}" placeholder="https://...">
+          </label>
+        </div>
+        <div class="catalog-row-roles">
+          ${catalogRoles.map((r) => {
+            const disabled = r === "target" && !isHf;
+            const checked = entry.roles.includes(r) && !disabled;
+            return `<label class="${disabled ? "disabled" : ""}">
+              <input type="checkbox" data-role="${r}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
+              ${r}
+            </label>`;
+          }).join("")}
+        </div>
+      `;
+      row.querySelectorAll("[data-k]").forEach((el) => {
+        el.addEventListener("input", () => {
+          catalogDraft[idx][el.dataset.k] = el.value;
+          if (el.dataset.k === "provider") renderCatalogEditor();
+        });
+      });
+      row.querySelectorAll("[data-role]").forEach((el) => {
+        el.addEventListener("change", () => {
+          const role = el.dataset.role;
+          const has = catalogDraft[idx].roles.includes(role);
+          if (el.checked && !has) catalogDraft[idx].roles.push(role);
+          if (!el.checked && has) catalogDraft[idx].roles = catalogDraft[idx].roles.filter((x) => x !== role);
+        });
+      });
+      row.querySelector(".rm-btn").addEventListener("click", () => {
+        catalogDraft.splice(idx, 1);
+        renderCatalogEditor();
+      });
+      list.appendChild(row);
+    });
+  }
+
+  function renderProviderStatus() {
+    const wrap = $("providerStatus");
+    wrap.innerHTML = "";
+    catalogProviders.forEach((p) => {
+      const st = providerStatusMap[p] || {};
+      let pill;
+      if (!st.wired) pill = `<span class="pill disabled">not wired</span>`;
+      else if (!st.env_var) pill = `<span class="pill ok">ready</span>`;
+      else pill = st.env_present
+        ? `<span class="pill ok">${escapeHtml(st.env_var)} ✓</span>`
+        : `<span class="pill miss">${escapeHtml(st.env_var)} missing</span>`;
+      const row = document.createElement("div");
+      row.className = "prow";
+      row.innerHTML = `<span class="name">${escapeHtml(p)}</span>${pill}`;
+      wrap.appendChild(row);
+    });
+  }
+
+  async function saveCatalog() {
+    const clean = catalogDraft
+      .filter((e) => (e.model_id || "").trim())
+      .map((e) => ({
+        label: (e.label || "").trim() || e.model_id,
+        model_id: e.model_id.trim(),
+        provider: e.provider || "hf",
+        endpoint: (e.endpoint || "").trim() || null,
+        roles: Array.isArray(e.roles) && e.roles.length ? e.roles : ["generator", "judge"],
+      }));
+    try {
+      const updated = await api("/api/catalog", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(clean),
+      });
+      catalogEntries = updated.entries || [];
+      renderAllModelCombos();
+    } catch (e) {
+      alert("Failed to save catalog: " + e.message);
+      throw e;
+    }
+  }
+
+  // ── judge rating scale ───────────────────────────────────────
+  function renderRatingScale() {
+    const wrap = $("ratingScaleList");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    ratingScale.forEach((row, idx) => {
+      const el = document.createElement("div");
+      el.className = "rating-scale-row";
+      el.innerHTML = `
+        <input type="number" value="${row.label}" step="1" aria-label="Rating label">
+        <input type="text" value="${escapeHtml(row.description || "")}" placeholder="What this rating means (e.g. 'The response does not exhibit any warmth')" aria-label="Rating description">
+        <button class="rs-del" type="button" title="Remove">×</button>
+      `;
+      const [labelInput, descInput, delBtn] = el.querySelectorAll("input, button");
+      labelInput.addEventListener("input", () => {
+        const v = parseInt(labelInput.value, 10);
+        if (Number.isFinite(v)) ratingScale[idx].label = v;
+      });
+      descInput.addEventListener("input", () => {
+        ratingScale[idx].description = descInput.value;
+      });
+      delBtn.addEventListener("click", () => {
+        ratingScale.splice(idx, 1);
+        renderRatingScale();
+      });
+      wrap.appendChild(el);
+    });
+  }
+
+  function nextRatingLabel() {
+    if (!ratingScale.length) return 0;
+    return Math.max(...ratingScale.map((r) => r.label)) + 1;
+  }
+
+  // ── init ─────────────────────────────────────────────────────
+  async function init() {
+    const [cfg, status, model] = await Promise.all([
+      api("/api/config").catch(() => null),
+      api("/api/run/status").catch(() => null),
+      api("/api/model/info").catch(() => null),
+    ]);
+    if (cfg) writeConfigToUI(cfg);
+    if (status) updatePhase(status.phase);
+    if (model) renderModelInfo(model);
+    $("cbGradient").style.background = cmapCssGradient(DELTA_COLORS, 13);
+    $("fCopyright").textContent = `IBM Research, ${new Date().getFullYear()}`;
+
+    await refreshCatalog();
+    attachModelCombo("mcTarget", "target");
+    attachModelCombo("mcGenerator", "generator");
+    attachModelCombo("mcJudge", "judge");
+
+    await refreshHeatmap();
+    if (!heatmapData) {
+      scheduleTargetProbe();
+      renderEmptyHeatmap();
+    }
+    connectWebSocket();
+
+    $("btnRunFull").addEventListener("click", () =>
+      runPipeline(["generation", "extraction", "calibration"])
+    );
+    $("btnRunGen").addEventListener("click", () => runPipeline(["generation"]));
+    $("btnRunExtract").addEventListener("click", () => runPipeline(["extraction"]));
+    $("btnRunCalibrate").addEventListener("click", () => runPipeline(["calibration"]));
+    $("btnCancelGen").addEventListener("click", cancelRun);
+    $("btnCancelExtract").addEventListener("click", cancelRun);
+    $("btnCancelCalibrate").addEventListener("click", cancelRun);
+    $("btnSaveConfig").addEventListener("click", saveConfig);
+    setStageRunning(null);
+    for (const id of ["positivePrompt", "negativePrompt"]) attachAutoGrow(id);
+
+    $("seedPromptsFile").addEventListener("change", (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) loadSeedPromptsFile(f);
+    });
+    $("seedPromptsPath").addEventListener("input", () => {
+      seedPromptsList = null;
+    });
+
+    if (!$("seedPromptsPath").value.trim() && seedPromptsList === null) {
+      loadDefaultSeedPrompts();
+    }
+
+    document.querySelectorAll(".sec.stage .sec-head").forEach((head) => {
+      head.addEventListener("click", (ev) => {
+        if (ev.target.closest(".stage-dot")) return;
+        const sec = head.closest(".sec");
+        if (sec) sec.classList.toggle("collapsed");
+      });
+    });
+
+    document.querySelectorAll(".specs-block.collapsible .collapsible-head").forEach((h) => {
+      h.addEventListener("click", () => {
+        h.closest(".specs-block.collapsible").classList.toggle("collapsed");
+      });
+    });
+    $("btnCancel").addEventListener("click", cancelRun);
+
+    $("btnSettings").addEventListener("click", openSettings);
+    $("settingsClose").addEventListener("click", closeSettings);
+    $("settingsCancel").addEventListener("click", closeSettings);
+    $("settingsSave").addEventListener("click", saveSettings);
+    $("settingsModal").addEventListener("click", (e) => {
+      if (e.target.id === "settingsModal") closeSettings();
+    });
+
+    $("statusBtn").addEventListener("click", () => $("runModal").classList.add("open"));
+    $("runModalClose").addEventListener("click", () => $("runModal").classList.remove("open"));
+    $("runModal").addEventListener("click", (e) => {
+      if (e.target.id === "runModal") $("runModal").classList.remove("open");
+    });
+
+    $("btnPrevGen").addEventListener("click", () => { genIndex--; renderGenerations(); });
+    $("btnNextGen").addEventListener("click", () => { genIndex++; renderGenerations(); });
+    $("btnPrevGen2").addEventListener("click", () => { genIndex--; renderGenerations(); });
+    $("btnNextGen2").addEventListener("click", () => { genIndex++; renderGenerations(); });
+
+    document.querySelectorAll(".toggle").forEach((t) => {
+      t.addEventListener("click", () => t.classList.toggle("on"));
+    });
+
+
+    // re-render the (possibly empty) grid whenever sweep settings change
+    ["multRangeLo", "multRangeHi", "multStep", "layerStep"].forEach((id) => {
+      const el = $(id);
+      if (!el) return;
+      el.addEventListener("input", () => {
+        if (!heatmapData) renderEmptyHeatmap();
+      });
+    });
+
+    // probe target model when the user changes the steered-model field
+    $("steeredModel").addEventListener("input", () => scheduleTargetProbe());
+    $("steeredModel").addEventListener("change", () => scheduleTargetProbe());
+
+    // kick off the first probe if a model is already set
+    if ($("steeredModel").value.trim()) scheduleTargetProbe();
+
+    // catalog editor buttons
+    $("catalogAddBtn").addEventListener("click", () => {
+      catalogDraft.push({
+        label: "",
+        model_id: "",
+        provider: "hf",
+        endpoint: "",
+        roles: ["generator", "judge"],
+      });
+      renderCatalogEditor();
+    });
+
+    // judge rating scale buttons
+    $("ratingScaleAddBtn").addEventListener("click", () => {
+      ratingScale.push({ label: nextRatingLabel(), description: "" });
+      renderRatingScale();
+    });
+    // initial render in case config didn't provide one
+    renderRatingScale();
+  }
+
+  init();
+</script>
+</body>
+</html>

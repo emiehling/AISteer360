@@ -241,7 +241,7 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
             Hn = _pool_over_spans(hs_neg[layer_id], spans_neg)  # [N, H]
 
             # compute pairwise differences
-            diffs = (Hp - Hn).numpy()  # [N, H]
+            diffs = (Hp - Hn).float().numpy()  # [N, H]
 
             if spec.method == "pca_pairwise":
                 # fit PCA to get principal direction
