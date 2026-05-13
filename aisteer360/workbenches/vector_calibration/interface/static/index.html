@@ -1137,17 +1137,12 @@
     -moz-appearance: textfield;
     appearance: textfield;
   }
-  .rating-scale-row input[type="number"]::-webkit-outer-spin-button,
-  .rating-scale-row input[type="number"]::-webkit-inner-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-  }
-  .num-input {
+  input[type="number"] {
     -moz-appearance: textfield;
     appearance: textfield;
   }
-  .num-input::-webkit-outer-spin-button,
-  .num-input::-webkit-inner-spin-button {
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
     -webkit-appearance: none;
     margin: 0;
   }
@@ -1204,6 +1199,62 @@
     cursor: pointer;
   }
   .catalog-row-head .rm-btn:hover { border-color: var(--danger); color: var(--danger); }
+  .catalog-row-head input.cat-model-id {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 400;
+    background: var(--panel);
+  }
+  .cat-id-wrap { position: relative; flex: 1; display: flex; }
+  .cat-id-wrap input.cat-model-id { width: 100%; }
+  .cat-id-suggestions {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    z-index: 20;
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    max-height: 220px;
+    overflow-y: auto;
+    display: none;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  }
+  .cat-id-wrap.open .cat-id-suggestions { display: block; }
+  .cat-id-suggestions .cat-sug-item {
+    padding: 5px 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    cursor: pointer;
+    border-bottom: 1px solid var(--line);
+  }
+  .cat-id-suggestions .cat-sug-item:last-child { border-bottom: none; }
+  .cat-id-suggestions .cat-sug-item:hover,
+  .cat-id-suggestions .cat-sug-item.active {
+    background: var(--panel-3);
+    color: var(--accent);
+  }
+  .cat-id-suggestions .cat-sug-empty {
+    padding: 6px 8px;
+    font-family: var(--sans);
+    font-size: 11px;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .catalog-row input.cat-label {
+    background: transparent;
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    padding: 4px 7px;
+    font-family: var(--sans);
+    font-size: 11.5px;
+    color: var(--text);
+    outline: none;
+    width: 100%;
+  }
+  .catalog-row input.cat-label:focus { border-color: var(--accent); }
   .catalog-row-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -1793,7 +1844,7 @@
           <span class="field-label" style="margin-top:0;">Method:</span>
           <label class="select">
             <select id="transform">
-              <option value="additive">additive · h ← h + α·v</option>
+              <option value="additive">additive</option>
               <option value="norm_preserving">norm_preserving</option>
             </select>
           </label>
@@ -2995,15 +3046,17 @@
     const combo = $(comboId);
     if (!combo) return;
     const dd = combo.querySelector(".mc-dropdown");
-    const q = (input.value || "").toLowerCase().trim();
-    const relevant = entriesForRole(role).filter((e) => {
-      if (!q) return true;
-      return (
-        e.label.toLowerCase().includes(q) ||
-        e.model_id.toLowerCase().includes(q) ||
-        (e.provider || "").toLowerCase().includes(q)
-      );
-    });
+    const raw = (input.value || "").trim();
+    const q = raw.toLowerCase();
+    const allForRole = entriesForRole(role);
+    const exactSelection = allForRole.some((e) => e.model_id === raw);
+    const relevant = (!q || exactSelection)
+      ? allForRole
+      : allForRole.filter((e) =>
+          e.label.toLowerCase().includes(q) ||
+          e.model_id.toLowerCase().includes(q) ||
+          (e.provider || "").toLowerCase().includes(q)
+        );
     if (!relevant.length) {
       if (q) {
         const raw = input.value.trim();
@@ -3162,6 +3215,7 @@
       provider: e.provider || "hf",
       endpoint: e.endpoint || "",
       roles: Array.isArray(e.roles) ? [...e.roles] : ["target", "generator", "judge"],
+      _prevModelId: e.model_id,
     }));
     renderCatalogEditor();
     renderProviderStatus();
@@ -3169,6 +3223,19 @@
 
   function needsEndpoint(provider) {
     return ["openai", "openai_compatible", "custom"].includes(provider);
+  }
+
+  function deriveLabelFromModelId(modelId) {
+    if (!modelId) return "";
+    const tail = modelId.includes("/") ? modelId.split("/").pop() : modelId;
+    return tail
+      .split(/[-_]+/)
+      .filter(Boolean)
+      .map((word) => {
+        if (/^\d/.test(word)) return word.toUpperCase();
+        return word.charAt(0).toUpperCase() + word.slice(1);
+      })
+      .join(" ");
   }
 
   function renderCatalogEditor() {
@@ -3180,12 +3247,14 @@
       row.className = "catalog-row";
       row.innerHTML = `
         <div class="catalog-row-head">
-          <input type="text" data-k="label" value="${escapeHtml(entry.label)}" placeholder="Display name">
+          <div class="cat-id-wrap">
+            <input type="text" data-k="model_id" class="cat-model-id" value="${escapeHtml(entry.model_id)}"
+              placeholder="e.g. ibm-granite/granite-3.3-2b-instruct" autocomplete="off">
+            <div class="cat-id-suggestions" role="listbox"></div>
+          </div>
           <button class="rm-btn" type="button" title="Remove">×</button>
         </div>
-        <input type="text" data-k="model_id" value="${escapeHtml(entry.model_id)}"
-          placeholder="e.g. ibm-granite/granite-3.3-2b-instruct"
-          style="background: var(--panel); border:1px solid var(--line-2); border-radius:2px; padding:4px 7px; font-family: var(--mono); font-size: 11px; color: var(--text); outline: none;">
+        <input type="text" data-k="label" class="cat-label" value="${escapeHtml(entry.label)}" placeholder="Display name">
         <div class="catalog-row-grid">
           <label>provider
             <select data-k="provider">
@@ -3212,6 +3281,112 @@
           catalogDraft[idx][el.dataset.k] = el.value;
           if (el.dataset.k === "provider") renderCatalogEditor();
         });
+      });
+      const modelIdEl = row.querySelector('[data-k="model_id"]');
+      const labelEl = row.querySelector('[data-k="label"]');
+      const maybeAutofillLabel = () => {
+        const current = labelEl.value.trim();
+        const derivedFromPrev = deriveLabelFromModelId(catalogDraft[idx]._prevModelId || "");
+        const labelIsAuto = !current || current === derivedFromPrev;
+        if (!labelIsAuto) return;
+        const next = deriveLabelFromModelId(modelIdEl.value.trim());
+        if (next) {
+          labelEl.value = next;
+          catalogDraft[idx].label = next;
+        }
+        catalogDraft[idx]._prevModelId = modelIdEl.value.trim();
+      };
+      modelIdEl.addEventListener("blur", maybeAutofillLabel);
+
+      const wrap = row.querySelector(".cat-id-wrap");
+      const sugBox = row.querySelector(".cat-id-suggestions");
+      let acTimer = null;
+      let acToken = 0;
+      let activeIdx = -1;
+
+      const closeSuggestions = () => {
+        wrap.classList.remove("open");
+        sugBox.innerHTML = "";
+        activeIdx = -1;
+      };
+
+      const commitSuggestion = (id) => {
+        modelIdEl.value = id;
+        catalogDraft[idx].model_id = id;
+        maybeAutofillLabel();
+        closeSuggestions();
+      };
+
+      const renderSuggestions = (items, note) => {
+        if (!items.length && !note) {
+          sugBox.innerHTML = `<div class="cat-sug-empty">no matches</div>`;
+        } else if (!items.length && note) {
+          sugBox.innerHTML = `<div class="cat-sug-empty">${escapeHtml(note)}</div>`;
+        } else {
+          sugBox.innerHTML = items
+            .map((it, i) => `<div class="cat-sug-item${i === activeIdx ? " active" : ""}" data-id="${escapeHtml(it.model_id)}">${escapeHtml(it.model_id)}</div>`)
+            .join("");
+          sugBox.querySelectorAll(".cat-sug-item").forEach((el) => {
+            el.addEventListener("mousedown", (ev) => {
+              ev.preventDefault();
+              commitSuggestion(el.dataset.id);
+            });
+          });
+        }
+        wrap.classList.add("open");
+      };
+
+      const fetchSuggestions = async () => {
+        const q = modelIdEl.value.trim();
+        const provider = catalogDraft[idx].provider || "hf";
+        if (q.length < 2 || provider === "custom") { closeSuggestions(); return; }
+        const myToken = ++acToken;
+        try {
+          const endpoint = catalogDraft[idx].endpoint || "";
+          const url = `/api/catalog/model-suggestions?provider=${encodeURIComponent(provider)}&q=${encodeURIComponent(q)}`
+            + (endpoint ? `&base_url=${encodeURIComponent(endpoint)}` : "");
+          const data = await api(url);
+          if (myToken !== acToken) return;
+          activeIdx = -1;
+          renderSuggestions(data.entries || [], data.note);
+        } catch (_) {
+          if (myToken !== acToken) return;
+          closeSuggestions();
+        }
+      };
+
+      modelIdEl.addEventListener("input", () => {
+        clearTimeout(acTimer);
+        acTimer = setTimeout(fetchSuggestions, 250);
+      });
+      modelIdEl.addEventListener("focus", () => {
+        if (modelIdEl.value.trim().length >= 2) fetchSuggestions();
+      });
+      modelIdEl.addEventListener("blur", () => {
+        setTimeout(closeSuggestions, 120);
+      });
+      modelIdEl.addEventListener("keydown", (ev) => {
+        const items = sugBox.querySelectorAll(".cat-sug-item");
+        if (ev.key === "ArrowDown" && items.length) {
+          ev.preventDefault();
+          activeIdx = (activeIdx + 1) % items.length;
+          items.forEach((el, i) => el.classList.toggle("active", i === activeIdx));
+        } else if (ev.key === "ArrowUp" && items.length) {
+          ev.preventDefault();
+          activeIdx = (activeIdx - 1 + items.length) % items.length;
+          items.forEach((el, i) => el.classList.toggle("active", i === activeIdx));
+        } else if (ev.key === "Enter") {
+          if (activeIdx >= 0 && items[activeIdx]) {
+            ev.preventDefault();
+            commitSuggestion(items[activeIdx].dataset.id);
+          } else {
+            maybeAutofillLabel();
+          }
+        } else if (ev.key === "Tab") {
+          maybeAutofillLabel();
+        } else if (ev.key === "Escape") {
+          closeSuggestions();
+        }
       });
       row.querySelectorAll("[data-role]").forEach((el) => {
         el.addEventListener("change", () => {
@@ -3425,6 +3600,7 @@
     if (autoSelect) {
       await selectRun(autoSelect.id);
     } else {
+      writeConfigToUI({});
       renderEmptyHeatmap();
       scheduleTargetProbe();
     }
@@ -3560,6 +3736,7 @@
         provider: "hf",
         endpoint: "",
         roles: ["generator", "judge"],
+        _prevModelId: "",
       });
       renderCatalogEditor();
     });
