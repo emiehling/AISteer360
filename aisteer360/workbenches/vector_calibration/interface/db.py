@@ -18,6 +18,8 @@ from typing import Any
 import aiosqlite
 import bcrypt
 
+from . import secrets as secrets_vault
+
 logger = logging.getLogger(__name__)
 
 SCHEMA = """
@@ -43,7 +45,18 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_owner ON runs(owner_token_hash);
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
+
+CREATE TABLE IF NOT EXISTS owner_secrets (
+  owner_token_hash  TEXT PRIMARY KEY,
+  hf_token_enc      TEXT,
+  anthropic_key_enc TEXT,
+  openai_key_enc    TEXT,
+  updated_at        REAL NOT NULL
+);
 """
+
+SECRET_FIELDS: tuple[str, ...] = ("hf_token", "anthropic_key", "openai_key")
+_SECRET_COLUMN = {name: f"{name}_enc" for name in SECRET_FIELDS}
 
 STATUS_CREATED = "created"
 STATUS_CLAIMED = "claimed"
@@ -294,6 +307,102 @@ class Database:
         await cur.close()
         return [_row_to_run(r) for r in rows]
 
+    # ── owner secrets ────────────────────────────────────────────
+
+    async def upsert_secrets(self, owner_hash: str, updates: dict[str, str | None]) -> None:
+        """Write encrypted secrets for an owner.
+
+        `updates` maps field names from `SECRET_FIELDS` to plaintext values. Semantics:
+
+          - missing key: field is left unchanged
+          - non-empty string: field is encrypted and stored
+          - empty string `""`: field is cleared (set to NULL)
+        """
+        row = await self._fetch_secrets_row(owner_hash)
+        existing = dict(row) if row else {}
+
+        next_values: dict[str, str | None] = {}
+        for name in SECRET_FIELDS:
+            column = _SECRET_COLUMN[name]
+            if name not in updates:
+                next_values[column] = existing.get(column)
+                continue
+            plaintext = updates[name]
+            if plaintext is None or plaintext == "":
+                next_values[column] = None
+            else:
+                next_values[column] = secrets_vault.encrypt(plaintext)
+
+        now = time.time()
+        if row is None:
+            await self.conn.execute(
+                """
+                INSERT INTO owner_secrets
+                    (owner_token_hash, hf_token_enc, anthropic_key_enc, openai_key_enc, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    owner_hash,
+                    next_values["hf_token_enc"],
+                    next_values["anthropic_key_enc"],
+                    next_values["openai_key_enc"],
+                    now,
+                ),
+            )
+        else:
+            await self.conn.execute(
+                """
+                UPDATE owner_secrets
+                   SET hf_token_enc      = ?,
+                       anthropic_key_enc = ?,
+                       openai_key_enc    = ?,
+                       updated_at        = ?
+                 WHERE owner_token_hash  = ?
+                """,
+                (
+                    next_values["hf_token_enc"],
+                    next_values["anthropic_key_enc"],
+                    next_values["openai_key_enc"],
+                    now,
+                    owner_hash,
+                ),
+            )
+        await self.conn.commit()
+
+    async def get_secrets(self, owner_hash: str) -> dict[str, str | None]:
+        """Return decrypted plaintext secrets for an owner. Missing rows yield an empty dict."""
+        row = await self._fetch_secrets_row(owner_hash)
+        if row is None:
+            return {}
+        out: dict[str, str | None] = {}
+        for name in SECRET_FIELDS:
+            token = row[_SECRET_COLUMN[name]]
+            if not token:
+                out[name] = None
+                continue
+            try:
+                out[name] = secrets_vault.decrypt(token)
+            except Exception as exc:
+                logger.warning("Failed to decrypt %s for owner: %s", name, exc)
+                out[name] = None
+        return out
+
+    async def get_secrets_status(self, owner_hash: str) -> dict[str, bool]:
+        """Return which secrets are set, without decrypting. Missing rows yield all-False."""
+        row = await self._fetch_secrets_row(owner_hash)
+        if row is None:
+            return {name: False for name in SECRET_FIELDS}
+        return {name: bool(row[_SECRET_COLUMN[name]]) for name in SECRET_FIELDS}
+
+    async def _fetch_secrets_row(self, owner_hash: str) -> aiosqlite.Row | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM owner_secrets WHERE owner_token_hash = ?",
+            (owner_hash,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        return row
+
 
 def _row_to_run(row: aiosqlite.Row) -> Run:
     data = dict(row)
@@ -332,6 +441,7 @@ def ensure_run_dir(data_root: Path, run_id: str) -> Path:
 __all__ = [
     "Run",
     "Database",
+    "SECRET_FIELDS",
     "STATUS_CREATED",
     "STATUS_CLAIMED",
     "STATUS_RUNNING",

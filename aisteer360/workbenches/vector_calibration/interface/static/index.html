@@ -597,7 +597,7 @@
     user-select: none;
   }
   .sec-toggle:hover { color: var(--accent); }
-  .sec.collapsed .sec-toggle { transform: rotate(-90deg); }
+  .sec.collapsed .sec-toggle { transform: rotate(90deg); }
   .sec.collapsed .sec-body { display: none; }
   .sec.collapsed .sec-desc { display: none; }
 
@@ -868,7 +868,7 @@
     background: transparent;
     border: none;
     outline: none;
-    resize: both;
+    resize: vertical;
     min-height: 34px;
     overflow: hidden;
     font-family: var(--sans);
@@ -895,7 +895,7 @@
     transition: transform 0.16s;
   }
   .specs-block.collapsible:hover .collapsible-chevron { color: var(--accent); }
-  .specs-block.collapsible.collapsed .collapsible-chevron { transform: rotate(-90deg); }
+  .specs-block.collapsible.collapsed .collapsible-chevron { transform: rotate(90deg); }
   .specs-block.collapsible.collapsed .collapsible-body { display: none; }
   .specs-block .sub-label {
     font-family: var(--sans);
@@ -1400,7 +1400,17 @@
     <span class="name"><span class="sub">Vector Calibration Workbench</span></span>
   </div>
   <div class="spacer"></div>
-  <button class="btn" id="btnRunsList" title="Open runs list" style="margin-right: 10px;">Runs</button>
+  <button class="icon-btn" id="btnRunsList" title="Runs list">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round">
+      <line x1="8" y1="6" x2="21" y2="6"/>
+      <line x1="8" y1="12" x2="21" y2="12"/>
+      <line x1="8" y1="18" x2="21" y2="18"/>
+      <line x1="3" y1="6" x2="3.01" y2="6"/>
+      <line x1="3" y1="12" x2="3.01" y2="12"/>
+      <line x1="3" y1="18" x2="3.01" y2="18"/>
+    </svg>
+  </button>
   <button class="icon-btn" id="btnHelp" title="How to use">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
          stroke-linecap="round" stroke-linejoin="round">
@@ -1449,8 +1459,38 @@
       </div>
 
       <div class="specs-block elevated">
-        <div class="sub-label"><span>Provider status</span><span class="hint">credentials read from env</span></div>
+        <div class="sub-label"><span>Provider status</span><span class="hint">ready when a key is set</span></div>
         <div class="provider-status" id="providerStatus"></div>
+      </div>
+
+      <div class="specs-block elevated">
+        <div class="sub-label">
+          <span>API keys</span>
+          <span class="hint">encrypted on server, never displayed</span>
+        </div>
+        <div class="field-row" style="gap: 6px;">
+          <span class="k">HuggingFace</span>
+          <input id="sKeyHf" class="inline" type="password" autocomplete="off"
+                 placeholder="not set" style="flex: 1;">
+          <button class="icon-btn" data-clear-key="hf_token" title="Clear stored key" type="button">×</button>
+        </div>
+        <div class="field-row" style="gap: 6px;">
+          <span class="k">Anthropic</span>
+          <input id="sKeyAnthropic" class="inline" type="password" autocomplete="off"
+                 placeholder="not set" style="flex: 1;">
+          <button class="icon-btn" data-clear-key="anthropic_key" title="Clear stored key" type="button">×</button>
+        </div>
+        <div class="field-row" style="gap: 6px;">
+          <span class="k">OpenAI</span>
+          <input id="sKeyOpenai" class="inline" type="password" autocomplete="off"
+                 placeholder="not set" style="flex: 1;">
+          <button class="icon-btn" data-clear-key="openai_key" title="Clear stored key" type="button">×</button>
+        </div>
+        <p style="margin-top: 8px; color: var(--text-dim); font-size: 11px; line-height: 1.5;">
+          Keys are encrypted on the server and delivered to the agent at run time.
+          They are never displayed in the browser. Leave an input blank to keep the
+          existing stored value; use the <strong>×</strong> button to clear it.
+        </p>
       </div>
 
       <div class="specs-block">
@@ -1653,16 +1693,6 @@
           </div>
           <div class="mc-dropdown"></div>
         </div>
-        <div class="field-row" style="margin-top: 6px; gap: 6px;">
-          <span class="k">provider</span>
-          <select id="generatorProvider" class="inline">
-            <option value="hf">hf (local)</option>
-            <option value="anthropic">anthropic</option>
-            <option value="openai">openai-compatible</option>
-          </select>
-          <input id="generatorBaseUrl" class="inline" type="text" placeholder="base_url (openai only)" style="display: none; flex: 1;">
-        </div>
-
         <span class="field-label">Dimension label:</span>
         <label class="select">
           <input id="behavior" type="text" placeholder="<>">
@@ -1789,16 +1819,6 @@
             </div>
             <div class="mc-dropdown"></div>
           </div>
-          <div class="field-row" style="margin-top: 6px; gap: 6px;">
-            <span class="k">provider</span>
-            <select id="judgeProvider" class="inline">
-              <option value="hf">hf (local)</option>
-              <option value="anthropic">anthropic</option>
-              <option value="openai">openai-compatible</option>
-            </select>
-            <input id="judgeBaseUrl" class="inline" type="text" placeholder="base_url (openai only)" style="display: none; flex: 1;">
-          </div>
-
           <span class="field-label">Rating scale:</span>
           <div id="ratingScaleBlock" style="margin-top: 0;">
             <div class="rating-scale-list" id="ratingScaleList"></div>
@@ -2105,9 +2125,6 @@
     $("temperature").value = g.temperature ?? 0.9;
     $("topP").value = g.top_p ?? 0.95;
     $("batchSizeGen").value = g.batch_size ?? 8;
-    $("generatorProvider").value = g.generator_provider || "hf";
-    $("generatorBaseUrl").value = g.generator_base_url || "";
-    $("generatorBaseUrl").style.display = g.generator_provider === "openai" ? "" : "none";
 
     const e = cfg.extraction || {};
     $("method").value = e.method || "mean_diff";
@@ -2126,10 +2143,6 @@
       });
     }
     renderRatingScale();
-    const jp = (c.judge && c.judge.provider) || "hf";
-    $("judgeProvider").value = jp;
-    $("judgeBaseUrl").value = (c.judge && c.judge.base_url) || "";
-    $("judgeBaseUrl").style.display = jp === "openai" ? "" : "none";
     $("transform").value = c.transform || "additive";
     $("tokenScope").value = c.token_scope || "all";
     const sw = c.sweep || {};
@@ -2151,6 +2164,15 @@
     for (const id of ["positivePrompt", "negativePrompt"]) autoGrow($(id));
   }
 
+  function catalogLookup(modelId) {
+    const entry = catalogEntries.find((e) => e.model_id === modelId);
+    if (!entry) return { provider: "hf", endpoint: null };
+    const providerMap = { openai_compatible: "openai" };
+    const provider = providerMap[entry.provider] || entry.provider || "hf";
+    const endpoint = (entry.endpoint || "").trim() || null;
+    return { provider, endpoint };
+  }
+
   function readConfigFromUI() {
     const cfg = JSON.parse(JSON.stringify(currentConfig || {}));
     cfg.steered_model = $("steeredModel").value;
@@ -2170,8 +2192,8 @@
       temperature: +$("temperature").value,
       top_p: +$("topP").value,
       batch_size: +$("batchSizeGen").value,
-      generator_provider: $("generatorProvider").value || "hf",
-      generator_base_url: ($("generatorBaseUrl").value || "").trim() || null,
+      generator_provider: catalogLookup($("generatorModel").value).provider,
+      generator_base_url: catalogLookup($("generatorModel").value).endpoint,
     };
     cfg.extraction = {
       ...(cfg.extraction || {}),
@@ -2199,8 +2221,8 @@
           rating_scale: scaleRows,
           scale,
           criteria: prev.criteria || "",
-          provider: $("judgeProvider").value || "hf",
-          base_url: ($("judgeBaseUrl").value || "").trim() || null,
+          provider: catalogLookup($("judgeModel").value).provider,
+          base_url: catalogLookup($("judgeModel").value).endpoint,
         };
       })(),
       sweep: {
@@ -2783,6 +2805,9 @@
         <li>If the heatmap is mostly grey (incoherent), try a narrower multiplier range or a
           different extraction method.</li>
         <li>Click <strong>Run All</strong> to execute all three stages in sequence.</li>
+        <li>API keys for Anthropic, OpenAI, and HuggingFace providers are entered in the
+        <strong>Settings → API keys</strong> panel. They are encrypted on the server and
+        delivered to the agent at run time.</li>
       </ul>
 
       <h4>Keyboard shortcuts</h4>
@@ -2820,6 +2845,49 @@
   }
 
   // ── settings modal ───────────────────────────────────────────
+  const SECRET_INPUTS = [
+    ["hf_token", "sKeyHf"],
+    ["anthropic_key", "sKeyAnthropic"],
+    ["openai_key", "sKeyOpenai"],
+  ];
+
+  async function loadSecretStatus() {
+    let data = {};
+    try {
+      data = await api("/api/secrets/status") || {};
+    } catch (e) {
+      /* leave all inputs as "not set" */
+    }
+    for (const [key, inputId] of SECRET_INPUTS) {
+      const input = $(inputId);
+      if (!input) continue;
+      input.value = "";
+      input.placeholder = data[key] ? "••••••••" : "not set";
+    }
+  }
+
+  async function saveSecrets() {
+    const payload = {};
+    for (const [key, inputId] of SECRET_INPUTS) {
+      const el = $(inputId);
+      if (el && el.value !== "") payload[key] = el.value;
+    }
+    if (Object.keys(payload).length === 0) return;
+    await api("/api/secrets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async function clearStoredSecret(key) {
+    await api("/api/secrets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [key]: "" }),
+    });
+  }
+
   async function openSettings() {
     const cfg = currentConfig || {};
     $("sSaveDir").value = cfg.save_dir || "";
@@ -2828,6 +2896,7 @@
     $("sHost").textContent = location.hostname || "—";
     $("sPort").textContent = location.port || "—";
     await refreshCatalog();
+    await loadSecretStatus();
     catalogModalOpen();
     $("settingsModal").classList.add("open");
   }
@@ -2865,6 +2934,12 @@
       await saveCatalog();
     } catch (e) {
       alert("Failed to save catalog: " + e.message);
+    }
+    try {
+      await saveSecrets();
+    } catch (e) {
+      alert("Failed to save API keys: " + e.message);
+      configOk = false;
     }
     if (configOk) closeSettings();
   }
@@ -3092,6 +3167,10 @@
     renderProviderStatus();
   }
 
+  function needsEndpoint(provider) {
+    return ["openai", "openai_compatible", "custom"].includes(provider);
+  }
+
   function renderCatalogEditor() {
     const list = $("catalogList");
     list.innerHTML = "";
@@ -3113,9 +3192,9 @@
               ${catalogProviders.map((p) => `<option value="${p}"${p === entry.provider ? " selected" : ""}>${p}</option>`).join("")}
             </select>
           </label>
-          <label>endpoint
+          ${needsEndpoint(entry.provider) ? `<label>endpoint
             <input type="text" data-k="endpoint" value="${escapeHtml(entry.endpoint || "")}" placeholder="https://...">
-          </label>
+          </label>` : ""}
         </div>
         <div class="catalog-row-roles">
           ${catalogRoles.map((r) => {
@@ -3408,6 +3487,20 @@
     $("settingsModal").addEventListener("click", (e) => {
       if (e.target.id === "settingsModal") closeSettings();
     });
+    $("settingsModal").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-clear-key]");
+      if (!btn) return;
+      e.preventDefault();
+      const key = btn.dataset.clearKey;
+      try {
+        await clearStoredSecret(key);
+      } catch (err) {
+        alert("Failed to clear key: " + err.message);
+        return;
+      }
+      await loadSecretStatus();
+      try { await refreshCatalog(); renderProviderStatus(); } catch (err) { /* ignore */ }
+    });
 
     $("btnHelp").addEventListener("click", () => {
       renderHelpContent();
@@ -3503,16 +3596,6 @@
     $("agentCmdModal").addEventListener("click", (e) => {
       if (e.target.id === "agentCmdModal") $("agentCmdModal").classList.remove("open");
     });
-    // show/hide base_url field based on provider choice
-    for (const [selId, urlId] of [["generatorProvider", "generatorBaseUrl"], ["judgeProvider", "judgeBaseUrl"]]) {
-      const sel = $(selId);
-      const url = $(urlId);
-      if (!sel || !url) continue;
-      sel.addEventListener("change", () => {
-        url.style.display = sel.value === "openai" ? "" : "none";
-      });
-    }
-
     $("btnCopyAgentCmd").addEventListener("click", async () => {
       const text = $("agentCmdText").textContent;
       try {

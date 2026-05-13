@@ -59,9 +59,8 @@ class _CancelPoller:
 class AgentRunner:
     """Execute the full three-stage pipeline for one run."""
 
-    def __init__(self, client: ServerClient, keys: ProviderKeys):
+    def __init__(self, client: ServerClient):
         self.client = client
-        self.keys = keys
         self._workbench: VectorCalibrationWorkbench | None = None
         self._gen_provider: GenerationProvider | None = None
         self._judge_provider: JudgeProvider | None = None
@@ -74,8 +73,15 @@ class AgentRunner:
         run_dir = Path(claim["run_dir"])
         logger.info("Claimed run %s at %s", self.client.run_id, run_dir)
 
+        server_keys = claim.get("provider_keys") or {}
+        keys = ProviderKeys(
+            hf_token=server_keys.get("hf_token"),
+            anthropic_key=server_keys.get("anthropic_key"),
+            openai_key=server_keys.get("openai_key"),
+        )
+
         cfg = from_server_config(raw_cfg)
-        self._gen_provider, self._judge_provider = build_from_config(raw_cfg, self.keys)
+        self._gen_provider, self._judge_provider = build_from_config(raw_cfg, keys)
 
         workbench = VectorCalibrationWorkbench(cfg)
         workbench._run_dir = run_dir  # force the active run dir

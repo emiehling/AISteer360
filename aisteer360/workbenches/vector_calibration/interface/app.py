@@ -61,12 +61,14 @@ def create_app(
     from .routes_catalog import router as catalog_router
     from .routes_model import router as model_router
     from .routes_runs import router as runs_router
+    from .routes_secrets import router as secrets_router
     from .ws import router as ws_router
 
     app.include_router(runs_router, prefix="/api")
     app.include_router(agent_router, prefix="/api")
     app.include_router(catalog_router, prefix="/api")
     app.include_router(model_router, prefix="/api")
+    app.include_router(secrets_router, prefix="/api")
     app.include_router(ws_router)
 
     static_dir = Path(__file__).parent / "static"

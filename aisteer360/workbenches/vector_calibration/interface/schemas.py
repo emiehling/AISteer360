@@ -140,6 +140,7 @@ class ClaimResponse(BaseModel):
     run_id: str
     run_dir: str
     config: FullConfigSchema
+    provider_keys: dict[str, str | None] = Field(default_factory=dict)
 
 
 class ProgressPost(BaseModel):

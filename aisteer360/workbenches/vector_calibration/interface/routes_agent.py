@@ -63,7 +63,13 @@ async def claim(
         )
     if run.status == STATUS_CREATED or run.is_stale():
         await db.claim(run_id)
-    return ClaimResponse(run_id=run_id, run_dir=run.run_dir, config=run.config)
+    provider_keys = await db.get_secrets(run.owner_token_hash)
+    return ClaimResponse(
+        run_id=run_id,
+        run_dir=run.run_dir,
+        config=run.config,
+        provider_keys=provider_keys,
+    )
 
 
 @router.get("/runs/{run_id}/config")

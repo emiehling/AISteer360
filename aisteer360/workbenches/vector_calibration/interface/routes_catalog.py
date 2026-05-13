@@ -4,10 +4,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from .auth import OwnerTokenHash
+from .auth import OwnerTokenHash, get_db
 from .catalog import (
     ALL_PROVIDERS,
     ALL_ROLES,
@@ -16,6 +16,7 @@ from .catalog import (
     provider_status,
     save_catalog,
 )
+from .db import Database
 
 router = APIRouter(tags=["catalog"])
 
@@ -67,5 +68,18 @@ def put_catalog(body: list[CatalogEntrySchema], _: OwnerTokenHash) -> CatalogRes
 
 
 @router.get("/catalog/providers/status", response_model=ProviderStatusResponse)
-def get_provider_status(_: OwnerTokenHash) -> ProviderStatusResponse:
-    return ProviderStatusResponse(providers=provider_status())
+async def get_provider_status(
+    owner_hash: OwnerTokenHash,
+    db: Database = Depends(get_db),
+) -> ProviderStatusResponse:
+    providers = provider_status()
+    stored = await db.get_secrets_status(owner_hash)
+    provider_key_map = {
+        "anthropic": "anthropic_key",
+        "openai": "openai_key",
+        "openai_compatible": "openai_key",
+    }
+    for provider, key_name in provider_key_map.items():
+        if provider in providers and stored.get(key_name):
+            providers[provider]["env_present"] = True
+    return ProviderStatusResponse(providers=providers)
