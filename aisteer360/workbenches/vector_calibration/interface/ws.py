@@ -1,78 +1,64 @@
-"""WebSocket connection manager and /ws/progress endpoint."""
+"""Per-run WebSocket progress relay."""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from .auth import authorise_ws_owner
+from .db import Database
+from .relay import ProgressRelay
+
 logger = logging.getLogger(__name__)
-
-
-class ConnectionManager:
-    """Manages active WebSocket connections and broadcasts events."""
-
-    def __init__(self):
-        self._connections: list[WebSocket] = []
-        self._loop: asyncio.AbstractEventLoop | None = None
-
-    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        self._loop = loop
-
-    async def connect(self, ws: WebSocket) -> None:
-        await ws.accept()
-        self._connections.append(ws)
-
-    def disconnect(self, ws: WebSocket) -> None:
-        self._connections = [c for c in self._connections if c is not ws]
-
-    async def _send(self, message: dict[str, Any]) -> None:
-        """Send to all connections, removing any that have closed."""
-        payload = json.dumps(message)
-        alive: list[WebSocket] = []
-        for ws in self._connections:
-            try:
-                await ws.send_text(payload)
-                alive.append(ws)
-            except Exception:
-                logger.debug("Dropping closed WebSocket connection.")
-        self._connections = alive
-
-    def broadcast(self, event_type: str, data: dict[str, Any]) -> None:
-        """Thread-safe broadcast callable from the builder's on_progress callback.
-
-        The builder runs in a worker thread (via asyncio.to_thread), so this
-        schedules the actual send on the event loop.
-        """
-        message = {"event": event_type, **data}
-        if self._loop is not None and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._send(message), self._loop)
-
 
 router = APIRouter()
 
 
-@router.websocket("/ws/progress")
-async def ws_progress(websocket: WebSocket):
-    """WebSocket endpoint for real-time pipeline progress.
+@router.websocket("/ws/runs/{run_id}")
+async def ws_run(websocket: WebSocket, run_id: str) -> None:
+    """Subscribe the browser to progress events for one run.
 
-    Events sent to the client:
-
-      - `{"event": "phase",         "phase": ...}`
-      - `{"event": "progress",      "phase": ..., "completed": int, "total": int, ...}`
-      - `{"event": "cell_complete", "layer": int, "multiplier": float, ...}`
-
-    Clients do not need to send anything; this is a server-push channel.
+    Authentication is via `?token=dt-...` query param or `Authorization: Bearer ...` header. The
+    server validates that the token's SHA-256 hash matches the run's `owner_token_hash`.
     """
-    manager: ConnectionManager = websocket.app.state.ws_manager
-    await manager.connect(websocket)
+    db: Database = websocket.app.state.db
+    relay: ProgressRelay = websocket.app.state.relay
+
+    run = await authorise_ws_owner(run_id, websocket, db)
+    if run is None:
+        return
+
+    await websocket.accept()
+    queue = await relay.subscribe(run_id)
+
+    # emit a hello with the latest known state so the UI can paint immediately
+    latest = run.to_summary()
+    await websocket.send_json({"event": "snapshot", **latest})
+
     try:
         while True:
-            await websocket.receive_text()
+            recv_task = asyncio.create_task(websocket.receive_text())
+            send_task = asyncio.create_task(queue.get())
+            done, pending = await asyncio.wait(
+                {recv_task, send_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if recv_task in done:
+                # client closed (or sent a ping); either way treat as keepalive
+                try:
+                    recv_task.result()
+                except WebSocketDisconnect:
+                    raise
+                except Exception:
+                    raise WebSocketDisconnect()
+                continue
+            event = send_task.result()
+            await websocket.send_json(event)
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        logger.debug("WS disconnect for run %s", run_id)
     except Exception as exc:
-        logger.debug("WebSocket closed with error: %s", exc)
-        manager.disconnect(websocket)
+        logger.debug("WS for run %s closed with error: %s", run_id, exc)
+    finally:
+        await relay.unsubscribe(run_id, queue)

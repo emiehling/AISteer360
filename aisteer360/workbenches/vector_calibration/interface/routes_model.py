@@ -1,15 +1,18 @@
-"""Steered model info + lightweight probe endpoints."""
+"""Model probe endpoint.
+
+The former `/model/info` endpoint (which needed a loaded HF model) is gone — model info for a run
+is now POSTed by the agent and read from `runs.model_info_json` via `GET /api/runs/{id}`.
+"""
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from .schemas import ModelInfoResponse
-from .state import ServerState
+from .auth import OwnerTokenHash
 
 logger = logging.getLogger(__name__)
 
@@ -33,24 +36,15 @@ class ModelProbeResponse(BaseModel):
     source: str = "hf"
 
 
-@router.get("/model/info", response_model=ModelInfoResponse)
-def get_model_info(request: Request) -> ModelInfoResponse:
-    """Return metadata about the currently loaded steered model.
-
-    Returns nulls if the model hasn't been loaded yet (it loads lazily on
-    first pipeline run).
-    """
-    state: ServerState = request.app.state.server
-    info = state.model_info or state.extract_model_info()
-    return ModelInfoResponse(**info) if info else ModelInfoResponse()
-
-
 @router.get("/model/probe", response_model=ModelProbeResponse)
-def probe_model(model_id: str = Query(..., min_length=1)) -> ModelProbeResponse:
+def probe_model(
+    _: OwnerTokenHash,
+    model_id: str = Query(..., min_length=1),
+) -> ModelProbeResponse:
     """Probe a HF model's architecture without downloading weights.
 
-    Fetches only `config.json` via `huggingface_hub.hf_hub_download` (or reads it locally if `model_id` is a filesystem
-    path). Used by the dashboard to draw an empty heatmap sized to the model's layer count before a run begins.
+    Fetches only `config.json` via `huggingface_hub.hf_hub_download` (or reads it locally if
+    `model_id` is a filesystem path). No GPU needed.
     """
     model_id = model_id.strip()
     if model_id in _PROBE_CACHE:
@@ -69,9 +63,7 @@ def probe_model(model_id: str = Query(..., min_length=1)) -> ModelProbeResponse:
             from huggingface_hub import hf_hub_download
             from huggingface_hub.utils import HfHubHTTPError, RepositoryNotFoundError
         except ImportError as exc:
-            raise HTTPException(
-                501, "huggingface_hub is required for model probing."
-            ) from exc
+            raise HTTPException(501, "huggingface_hub is required for model probing.") from exc
         try:
             cfg_path = hf_hub_download(repo_id=model_id, filename="config.json")
             config_data = json.loads(Path(cfg_path).read_text())

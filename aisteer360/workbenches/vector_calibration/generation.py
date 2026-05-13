@@ -1,10 +1,12 @@
 """Contrastive pair generation using an LLM."""
+from __future__ import annotations
+
 import json
 import logging
 import random
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
@@ -14,6 +16,9 @@ from aisteer360.algorithms.state_control.common.specs import ContrastivePairs
 
 from .configs import GenerationConfig
 from .results import GenerationResult
+
+if TYPE_CHECKING:
+    from .agent.providers.base import GenerationProvider
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +49,9 @@ class ContrastivePairGenerator:
     the steered model), those are used instead.
     """
 
-    def __init__(self, config: GenerationConfig):
+    def __init__(self, config: GenerationConfig, provider: "GenerationProvider | None" = None):
         self.config = config
+        self.provider = provider
 
     def generate(
         self,
@@ -112,14 +118,16 @@ class ContrastivePairGenerator:
                 config=asdict(cfg),
             )
 
-        owns_model = model is None
-        if owns_model:
-            logger.info("Loading generator model: %s", cfg.generator_model)
-            tokenizer = AutoTokenizer.from_pretrained(cfg.generator_model)
-            tokenizer = ensure_pad_token(tokenizer)
-            model = AutoModelForCausalLM.from_pretrained(
-                cfg.generator_model, device_map="auto", torch_dtype="auto"
-            )
+        owns_model = False
+        if self.provider is None:
+            owns_model = model is None
+            if owns_model:
+                logger.info("Loading generator model: %s", cfg.generator_model)
+                tokenizer = AutoTokenizer.from_pretrained(cfg.generator_model)
+                tokenizer = ensure_pad_token(tokenizer)
+                model = AutoModelForCausalLM.from_pretrained(
+                    cfg.generator_model, device_map="auto", torch_dtype="auto"
+                )
 
         for batch_start in range(n_done, total, cfg.batch_size):
             batch_end = min(batch_start + cfg.batch_size, total)
@@ -129,23 +137,53 @@ class ContrastivePairGenerator:
                 logger.info("Generation cancelled before batch at %d/%d pairs.", len(positives), total)
                 break
 
-            pos_batch, pos_cancelled = self._generate_batch(
-                model, tokenizer, batch_seeds,
-                system_prompt=cfg.positive_prompt, cfg=cfg,
-                cancel_check=cancel_check,
-            )
-            if pos_cancelled:
-                logger.info("Generation cancelled mid-batch at %d/%d pairs.", len(positives), total)
-                break
+            if self.provider is not None:
+                pos_batch = self.provider.generate_batch(
+                    cfg.positive_prompt, batch_seeds,
+                    max_new_tokens=cfg.max_new_tokens,
+                    temperature=cfg.temperature,
+                    top_p=cfg.top_p,
+                    cancel_check=cancel_check,
+                )
+                if not pos_batch or (cancel_check is not None and cancel_check()):
+                    logger.info(
+                        "Generation cancelled mid-batch at %d/%d pairs.", len(positives), total
+                    )
+                    break
+                neg_batch = self.provider.generate_batch(
+                    cfg.negative_prompt, batch_seeds,
+                    max_new_tokens=cfg.max_new_tokens,
+                    temperature=cfg.temperature,
+                    top_p=cfg.top_p,
+                    cancel_check=cancel_check,
+                )
+                if not neg_batch or (cancel_check is not None and cancel_check()):
+                    logger.info(
+                        "Generation cancelled mid-batch at %d/%d pairs.", len(positives), total
+                    )
+                    break
+            else:
+                pos_batch, pos_cancelled = self._generate_batch(
+                    model, tokenizer, batch_seeds,
+                    system_prompt=cfg.positive_prompt, cfg=cfg,
+                    cancel_check=cancel_check,
+                )
+                if pos_cancelled:
+                    logger.info(
+                        "Generation cancelled mid-batch at %d/%d pairs.", len(positives), total
+                    )
+                    break
 
-            neg_batch, neg_cancelled = self._generate_batch(
-                model, tokenizer, batch_seeds,
-                system_prompt=cfg.negative_prompt, cfg=cfg,
-                cancel_check=cancel_check,
-            )
-            if neg_cancelled:
-                logger.info("Generation cancelled mid-batch at %d/%d pairs.", len(positives), total)
-                break
+                neg_batch, neg_cancelled = self._generate_batch(
+                    model, tokenizer, batch_seeds,
+                    system_prompt=cfg.negative_prompt, cfg=cfg,
+                    cancel_check=cancel_check,
+                )
+                if neg_cancelled:
+                    logger.info(
+                        "Generation cancelled mid-batch at %d/%d pairs.", len(positives), total
+                    )
+                    break
 
             positives.extend(pos_batch)
             negatives.extend(neg_batch)

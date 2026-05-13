@@ -19,6 +19,8 @@ class GenerationConfigSchema(BaseModel):
     top_p: float = 0.95
     batch_size: int = 8
     seed: int = 42
+    generator_provider: Literal["hf", "anthropic", "openai"] = "hf"
+    generator_base_url: str | None = None
 
 
 class ExtractionConfigSchema(BaseModel):
@@ -38,6 +40,8 @@ class JudgeConfigSchema(BaseModel):
     scale: tuple[int, int] = (1, 5)
     batch_size: int = 32
     hf_model_kwargs: dict[str, Any] = Field(default_factory=dict)
+    provider: Literal["hf", "anthropic", "openai"] = "hf"
+    base_url: str | None = None
 
 
 class SweepGridSchema(BaseModel):
@@ -76,53 +80,78 @@ class FullConfigSchema(BaseModel):
 
 # ── run schemas ──────────────────────────────────────────────────
 
-class RunRequest(BaseModel):
-    """Which stages to execute."""
-    stages: list[Literal["generation", "extraction", "calibration"]] = Field(
-        default=["generation", "extraction", "calibration"],
-        description="Ordered list of stages to run.",
-    )
-    resume_run_dir: str | None = Field(
-        default=None,
-        description="Name of an existing run subdirectory (under save_dir) to resume generation into.",
-    )
+class RunCreateRequest(BaseModel):
+    """Body for POST /api/runs."""
+    config: FullConfigSchema
 
 
-class RunStatusResponse(BaseModel):
-    phase: str
+class RunSummary(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    id: str
+    behavior: str
+    steered_model: str
+    status: str
+    phase: str | None = None
     progress: dict[str, Any] = Field(default_factory=dict)
+    model_info: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
-    started_at: float | None = None
-    finished_at: float | None = None
-    wall_time_s: float | None = None
+    stale: bool = False
+    created_at: float
+    updated_at: float
+    last_heartbeat: float | None = None
+    claimed_at: float | None = None
+    completed_at: float | None = None
 
 
-# ── result schemas ───────────────────────────────────────────────
+class RunDetail(RunSummary):
+    model_config = {"protected_namespaces": ()}
 
-class HeatmapResponse(BaseModel):
-    """Grid data for the heatmap panel."""
-    layers: list[int]
-    multipliers: list[float]
-    grids: dict[str, list[list[float | None]]]
-    baseline_score: float
-    baseline_perplexity: float
-    peak: dict[str, Any] | None = None
+    config: FullConfigSchema
+    run_dir: str
 
 
-class CellDetailResponse(BaseModel):
-    """Full detail for a selected heatmap cell."""
-    layer: int
-    multiplier: float
-    score_mean: float
-    score_delta: float
-    coherence: float
-    perplexity: float
-    perplexity_delta: float
-    coherent: bool
-    generations: list[dict[str, Any]] = Field(default_factory=list)
+class AgentCommand(BaseModel):
+    """Container for the command line the user runs locally to start an agent."""
+    command: str
+    server: str
+    run_id: str
+    agent_token: str
 
 
-class ModelInfoResponse(BaseModel):
+class RunCreateResponse(BaseModel):
+    run: RunDetail
+    agent_token: str
+    agent_command: AgentCommand
+
+
+class RunListResponse(BaseModel):
+    runs: list[RunSummary]
+
+
+class RegenerateTokenResponse(BaseModel):
+    agent_token: str
+    agent_command: AgentCommand
+
+
+# ── agent-facing schemas ─────────────────────────────────────────
+
+class ClaimResponse(BaseModel):
+    run_id: str
+    run_dir: str
+    config: FullConfigSchema
+
+
+class ProgressPost(BaseModel):
+    phase: str
+    completed: int | None = None
+    total: int | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelInfoPost(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     model_name: str | None = None
     num_layers: int | None = None
     hidden_size: int | None = None
@@ -134,3 +163,69 @@ class ModelInfoResponse(BaseModel):
     dtype: str | None = None
     device: str | None = None
     model_type: str | None = None
+
+
+class CancelCheckResponse(BaseModel):
+    cancel_requested: bool
+
+
+class StageCompleteRequest(BaseModel):
+    notes: str | None = None
+
+
+class ErrorPost(BaseModel):
+    message: str
+
+
+class LogPost(BaseModel):
+    lines: list[str]
+
+
+# ── result schemas ───────────────────────────────────────────────
+
+class HeatmapResponse(BaseModel):
+    layers: list[int]
+    multipliers: list[float]
+    grids: dict[str, list[list[float | None]]]
+    baseline_score: float
+    baseline_perplexity: float
+    peak: dict[str, Any] | None = None
+
+
+class CellDetailResponse(BaseModel):
+    layer: int
+    multiplier: float
+    score_mean: float
+    score_delta: float
+    coherence: float
+    perplexity: float
+    perplexity_delta: float
+    coherent: bool
+    generations: list[dict[str, Any]] = Field(default_factory=list)
+
+
+__all__ = [
+    "GenerationConfigSchema",
+    "ExtractionConfigSchema",
+    "JudgeConfigSchema",
+    "SweepGridSchema",
+    "QualityGateSchema",
+    "CalibrationConfigSchema",
+    "FullConfigSchema",
+    "RunCreateRequest",
+    "RunSummary",
+    "RunDetail",
+    "AgentCommand",
+    "RunCreateResponse",
+    "RunListResponse",
+    "RegenerateTokenResponse",
+    "ClaimResponse",
+    "ProgressPost",
+    "ModelInfoPost",
+    "CancelCheckResponse",
+    "StageCompleteRequest",
+    "ErrorPost",
+    "LogPost",
+    "HeatmapResponse",
+    "CellDetailResponse",
+]

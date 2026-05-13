@@ -1,10 +1,12 @@
 """Top-level orchestrator for the vector calibration workbench."""
+from __future__ import annotations
+
 import datetime
 import json
 import logging
 import random
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -18,6 +20,9 @@ from .configs import CalibrationBuilderConfig
 from .extraction import SteeringVectorExtractor
 from .generation import ContrastivePairGenerator
 from .results import CalibrationResult, GenerationResult
+
+if TYPE_CHECKING:
+    from .agent.providers.base import GenerationProvider, JudgeProvider
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +129,7 @@ class VectorCalibrationWorkbench:
         on_progress: Callable[[int, int], None] | None = None,
         run_dir: str | Path | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        generation_provider: "GenerationProvider | None" = None,
     ) -> GenerationResult:
         """Run the contrastive pair generation stage.
 
@@ -145,10 +151,18 @@ class VectorCalibrationWorkbench:
             if not meta_path.exists():
                 meta_path.write_text(json.dumps(meta, indent=2))
 
-        gen = ContrastivePairGenerator(self.config.generation)
+        gen = ContrastivePairGenerator(self.config.generation, provider=generation_provider)
         behavior = self.config.generation.behavior
 
         gen_model_name = self.config.generation.generator_model
+        if generation_provider is not None:
+            result = gen.generate(
+                on_progress=on_progress,
+                output_path=output_path,
+                behavior=behavior if output_path is not None else None,
+                cancel_check=cancel_check,
+            )
+            return result
         if gen_model_name == self.config.steered_model:
             self._ensure_steered_model()
             result = gen.generate(
@@ -211,6 +225,7 @@ class VectorCalibrationWorkbench:
         steering_vector: SteeringVector | None = None,
         on_progress: Callable[[dict[str, Any]], None] | None = None,
         run_dir: str | Path | None = None,
+        judge_provider: "JudgeProvider | None" = None,
     ) -> CalibrationResult:
         """Run the calibration sweep.
 
@@ -246,6 +261,7 @@ class VectorCalibrationWorkbench:
             eval_prompts=eval_prompts,
             save_dir=active_run_dir,
             on_progress=on_progress,
+            judge_provider=judge_provider,
         )
 
         if active_run_dir is not None:

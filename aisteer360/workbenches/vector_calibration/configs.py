@@ -36,6 +36,8 @@ class GenerationConfig:
     top_p: float = 0.95
     batch_size: int = 8
     seed: int = 42
+    generator_provider: Literal["hf", "anthropic", "openai"] = "hf"
+    generator_base_url: str | None = None
 
 
 @dataclass
@@ -87,6 +89,8 @@ class JudgeConfig:
     scale: tuple[int, int] = (1, 5)
     batch_size: int = 32
     hf_model_kwargs: dict = field(default_factory=dict)
+    provider: Literal["hf", "anthropic", "openai"] = "hf"
+    base_url: str | None = None
 
     def __post_init__(self) -> None:
         if self.rating_scale:

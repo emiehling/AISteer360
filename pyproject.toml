@@ -76,14 +76,26 @@ docs = [
 workbenches = [
     "fastapi>=0.115.0,<1.0.0",
     "uvicorn[standard]>=0.34.0,<1.0.0",
+    "aiosqlite>=0.20,<1.0.0",
+    "bcrypt>=4.1,<5.0.0",
+    "httpx>=0.27,<1.0.0",
+    "python-multipart>=0.0.9,<1.0.0",
 ]
 
 dev = [
     "pytest>=8.3.2,<9.0.0",
+    "pytest-asyncio>=0.23,<1.0.0",
+    "pytest-httpx>=0.30,<1.0.0",
     "pre-commit>=4.3.0"
 ]
 
+[project.scripts]
+aisteer360-agent = "aisteer360.workbenches.vector_calibration.agent.__main__:main"
+
 # tools
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
 [tool.uv.build-backend]
 module-root = ""
 module-name = "aisteer360"

@@ -1354,6 +1354,42 @@
     font-size: 12px;
     margin-left: 4px;
   }
+  /* ── runs list + agent command modal ──────────────────────── */
+  .runs-list { display: flex; flex-direction: column; gap: 6px; max-height: 460px; overflow-y: auto; }
+  .runs-empty { color: var(--text-dim); font-style: italic; padding: 12px 0; }
+  .run-item {
+    border: 1px solid var(--line-2);
+    border-radius: 3px;
+    padding: 8px 10px;
+    cursor: pointer;
+    background: var(--panel-2);
+    transition: border-color 0.1s, background 0.1s;
+  }
+  .run-item:hover { border-color: var(--line-3); background: var(--panel-3); }
+  .run-item.selected { border-color: var(--accent); background: rgba(201,161,90,0.08); }
+  .run-item .run-id { font-family: var(--mono); font-size: 11px; color: var(--text); }
+  .run-item .run-meta { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+  .run-item .run-sub { font-size: 10px; color: var(--text-dimmer); margin-top: 2px; }
+  .stale-badge {
+    color: var(--danger);
+    border: 1px solid var(--danger);
+    padding: 0 4px;
+    font-size: 9px;
+    border-radius: 2px;
+  }
+  .agent-cmd {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    padding: 10px;
+    border-radius: 3px;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 160px;
+    overflow-y: auto;
+  }
 </style>
 </head>
 <body>
@@ -1364,6 +1400,7 @@
     <span class="name"><span class="sub">Vector Calibration Workbench</span></span>
   </div>
   <div class="spacer"></div>
+  <button class="btn" id="btnRunsList" title="Open runs list" style="margin-right: 10px;">Runs</button>
   <button class="icon-btn" id="btnHelp" title="How to use">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
          stroke-linecap="round" stroke-linejoin="round">
@@ -1441,6 +1478,48 @@
     </div>
     <div class="modal-foot" style="justify-content:flex-end;">
       <button class="btn primary" id="helpDone">Got it</button>
+    </div>
+  </div>
+</div>
+
+<!-- runs-list modal -->
+<div class="modal-scrim" id="runsListModal">
+  <div class="modal" role="dialog" aria-label="Runs" style="width: 720px;">
+    <div class="modal-head">
+      <span class="title">Runs</span>
+      <button class="close" id="runsListClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="runsList" class="runs-list"></div>
+      <div style="margin-top: 10px; display: flex; gap: 8px;">
+        <button class="btn" id="btnRefreshRuns" type="button">Refresh</button>
+        <button class="btn" id="btnShowAgentCmd" type="button">Show agent command</button>
+        <button class="btn" id="btnRegenerateToken" type="button">Regenerate agent token</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- agent command modal -->
+<div class="modal-scrim" id="agentCmdModal">
+  <div class="modal" role="dialog" aria-label="Agent command" style="width: 720px;">
+    <div class="modal-head">
+      <span class="title">Launch your local agent</span>
+      <button class="close" id="agentCmdClose">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="margin-bottom: 10px; color: var(--text-soft);">
+        Copy this command and run it on a machine with access to your steered model. The agent
+        will claim the run, execute all three stages, and stream progress back here.
+      </p>
+      <pre id="agentCmdText" class="agent-cmd"></pre>
+      <div class="field-row"><span class="k">run id</span><span class="v" id="agentCmdRunId">—</span></div>
+      <div class="field-row"><span class="k">server</span><span class="v" id="agentCmdServer">—</span></div>
+      <div class="field-row"><span class="k">agent token</span><span class="v" id="agentCmdToken" style="word-break: break-all;">—</span></div>
+      <div style="margin-top: 10px; display: flex; gap: 8px;">
+        <button class="btn primary" id="btnCopyAgentCmd" type="button">Copy command</button>
+        <button class="btn" id="agentCmdDismiss" type="button">Dismiss</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1574,6 +1653,15 @@
           </div>
           <div class="mc-dropdown"></div>
         </div>
+        <div class="field-row" style="margin-top: 6px; gap: 6px;">
+          <span class="k">provider</span>
+          <select id="generatorProvider" class="inline">
+            <option value="hf">hf (local)</option>
+            <option value="anthropic">anthropic</option>
+            <option value="openai">openai-compatible</option>
+          </select>
+          <input id="generatorBaseUrl" class="inline" type="text" placeholder="base_url (openai only)" style="display: none; flex: 1;">
+        </div>
 
         <span class="field-label">Dimension label:</span>
         <label class="select">
@@ -1701,6 +1789,15 @@
             </div>
             <div class="mc-dropdown"></div>
           </div>
+          <div class="field-row" style="margin-top: 6px; gap: 6px;">
+            <span class="k">provider</span>
+            <select id="judgeProvider" class="inline">
+              <option value="hf">hf (local)</option>
+              <option value="anthropic">anthropic</option>
+              <option value="openai">openai-compatible</option>
+            </select>
+            <input id="judgeBaseUrl" class="inline" type="text" placeholder="base_url (openai only)" style="display: none; flex: 1;">
+          </div>
 
           <span class="field-label">Rating scale:</span>
           <div id="ratingScaleBlock" style="margin-top: 0;">
@@ -1751,8 +1848,8 @@
         <button class="btn" id="btnCancel" disabled>Cancel</button>
       </div>
       <button class="btn" id="btnSaveConfig">Save config</button>
-      <a href="/api/artifacts/svec" class="btn" style="text-decoration:none;" id="lnkSvec">Export svec</a>
-      <a href="/api/artifacts/result" class="btn" style="text-decoration:none;" id="lnkResult">Export result · json</a>
+      <button class="btn" type="button" id="lnkSvec" title="Export .svec">Export svec</button>
+      <button class="btn" type="button" id="lnkResult" title="Export calibration_result.json">Export result · json</button>
     </div>
   </aside>
 </div>
@@ -1921,11 +2018,47 @@
     });
   }
 
+  // ── auth + run-scoping ───────────────────────────────────────
+  const OWNER_TOKEN_KEY = "aisteer_owner_token";
+
+  function readOwnerToken() {
+    const params = new URLSearchParams(location.search);
+    const fromUrl = params.get("owner_token");
+    if (fromUrl) {
+      localStorage.setItem(OWNER_TOKEN_KEY, fromUrl);
+      // strip the token from the URL so it isn't copy-pasted around
+      params.delete("owner_token");
+      const clean = location.pathname + (params.toString() ? "?" + params.toString() : "") + location.hash;
+      history.replaceState(null, "", clean);
+      return fromUrl;
+    }
+    const existing = localStorage.getItem(OWNER_TOKEN_KEY);
+    if (existing) return existing;
+    const fresh = "dt-" + (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "") : Math.random().toString(16).slice(2).padEnd(32, "0"));
+    localStorage.setItem(OWNER_TOKEN_KEY, fresh);
+    return fresh;
+  }
+
+  const OWNER_TOKEN = readOwnerToken();
+
   async function api(path, opts) {
-    const res = await fetch(path, opts);
+    const o = { ...(opts || {}) };
+    o.headers = { ...(o.headers || {}), Authorization: `Bearer ${OWNER_TOKEN}` };
+    const res = await fetch(path, o);
     if (!res.ok) throw new Error(`${path} → ${res.status}`);
     if (res.status === 204) return null;
     return res.json();
+  }
+
+  // current run view state
+  let currentRunId = null;
+  let currentRun = null;        // full run detail payload
+  let runsList = [];            // last-fetched list of summaries
+  let lastAgentCommand = null;  // last seen agent command (for copy-modal)
+
+  function runPath(suffix) {
+    if (!currentRunId) throw new Error("no run selected");
+    return `/api/runs/${encodeURIComponent(currentRunId)}${suffix}`;
   }
 
   // ── color mapping ────────────────────────────────────────────
@@ -1972,6 +2105,9 @@
     $("temperature").value = g.temperature ?? 0.9;
     $("topP").value = g.top_p ?? 0.95;
     $("batchSizeGen").value = g.batch_size ?? 8;
+    $("generatorProvider").value = g.generator_provider || "hf";
+    $("generatorBaseUrl").value = g.generator_base_url || "";
+    $("generatorBaseUrl").style.display = g.generator_provider === "openai" ? "" : "none";
 
     const e = cfg.extraction || {};
     $("method").value = e.method || "mean_diff";
@@ -1990,6 +2126,10 @@
       });
     }
     renderRatingScale();
+    const jp = (c.judge && c.judge.provider) || "hf";
+    $("judgeProvider").value = jp;
+    $("judgeBaseUrl").value = (c.judge && c.judge.base_url) || "";
+    $("judgeBaseUrl").style.display = jp === "openai" ? "" : "none";
     $("transform").value = c.transform || "additive";
     $("tokenScope").value = c.token_scope || "all";
     const sw = c.sweep || {};
@@ -2030,6 +2170,8 @@
       temperature: +$("temperature").value,
       top_p: +$("topP").value,
       batch_size: +$("batchSizeGen").value,
+      generator_provider: $("generatorProvider").value || "hf",
+      generator_base_url: ($("generatorBaseUrl").value || "").trim() || null,
     };
     cfg.extraction = {
       ...(cfg.extraction || {}),
@@ -2057,6 +2199,8 @@
           rating_scale: scaleRows,
           scale,
           criteria: prev.criteria || "",
+          provider: $("judgeProvider").value || "hf",
+          base_url: ($("judgeBaseUrl").value || "").trim() || null,
         };
       })(),
       sweep: {
@@ -2269,7 +2413,7 @@
   // ── cell inspector ───────────────────────────────────────────
   async function selectCell(layer, mult) {
     try {
-      selectedCell = await api(`/api/results/cell/${layer}/${mult}`);
+      selectedCell = await api(runPath(`/results/cell/${layer}/${mult}`));
       genIndex = 0;
       renderInspector(selectedCell);
       if (heatmapData) renderHeatmap(heatmapData, currentView);
@@ -2476,20 +2620,25 @@
   }
 
   async function refreshStatus() {
+    if (!currentRunId) return;
     try {
-      const s = await api("/api/run/status");
-      updatePhase(s.phase);
-      if (s.wall_time_s !== null && s.wall_time_s !== undefined) {
-        const m = Math.floor(s.wall_time_s / 60);
-        const sec = Math.round(s.wall_time_s % 60);
+      const s = await api(runPath(""));
+      currentRun = s;
+      updatePhase(s.status === "completed" ? "complete" : (s.phase || s.status));
+      if (s.claimed_at && s.completed_at) {
+        const wall = s.completed_at - s.claimed_at;
+        const m = Math.floor(wall / 60);
+        const sec = Math.round(wall % 60);
         $("runWall").textContent = m > 0 ? `${m}m ${sec}s` : `${sec}s`;
       }
+      renderModelInfo(s.model_info || {});
     } catch (e) { /* ignore */ }
   }
 
   async function refreshHeatmap() {
+    if (!currentRunId) return;
     try {
-      heatmapData = await api("/api/results/heatmap");
+      heatmapData = await api(runPath("/results/heatmap"));
       renderHeatmap(heatmapData, currentView);
       if (heatmapData.peak) {
         $("runPeakDelta").textContent = fmtSigned(heatmapData.peak.score_delta);
@@ -2504,58 +2653,60 @@
   }
 
   // ── websocket ────────────────────────────────────────────────
+  let currentWs = null;
   function connectWebSocket() {
+    if (currentWs) {
+      try { currentWs.close(); } catch { /* ignore */ }
+      currentWs = null;
+    }
+    if (!currentRunId) return;
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${location.host}/ws/progress`);
+    const url = `${proto}//${location.host}/ws/runs/${encodeURIComponent(currentRunId)}?token=${encodeURIComponent(OWNER_TOKEN)}`;
+    const ws = new WebSocket(url);
+    currentWs = ws;
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
-      if (msg.event === "phase") updatePhase(msg.phase, msg);
+      if (msg.event === "snapshot") {
+        updatePhase(msg.status === "completed" ? "complete" : (msg.phase || msg.status));
+      } else if (msg.event === "phase") updatePhase(msg.phase, msg);
       else if (msg.event === "progress") updateProgress(msg);
-      else if (msg.event === "cell_complete")
-        fillHeatmapCell(msg.layer, msg.multiplier, msg);
+      else if (msg.event === "cell_complete") fillHeatmapCell(msg.layer, msg.multiplier, msg);
+      else if (msg.event === "model_info") renderModelInfo(msg);
+      else if (msg.event === "stage_complete") { /* noop for now */ }
     };
-    ws.onclose = () => setTimeout(connectWebSocket, 2000);
+    ws.onclose = () => {
+      if (currentWs === ws) {
+        currentWs = null;
+        setTimeout(connectWebSocket, 2000);
+      }
+    };
     ws.onerror = () => ws.close();
   }
 
   // ── actions ──────────────────────────────────────────────────
-  async function runPipeline(stages) {
-    if (stages.includes("generation")) {
-      const beh = ($("behavior").value || "").trim();
-      if (!beh) {
-        alert("Please enter a Dimension label (e.g. 'warmth') before running generation.");
-        return;
-      }
+  async function runPipeline(_stages) {
+    // stages arg is ignored — the agent drives all three stages sequentially. We simply create
+    // a run from the current UI config and surface the agent command the user must execute.
+    const beh = ($("behavior").value || "").trim();
+    if (!beh) {
+      alert("Please enter a Dimension label (e.g. 'warmth') before creating a run.");
+      return;
     }
-
-    const body = { stages };
-    if (stages.includes("generation")) {
-      const toggle = $("tgResume");
-      const panel = $("resumePanel");
-      if (
-        toggle &&
-        toggle.classList.contains("on") &&
-        !toggle.classList.contains("disabled") &&
-        panel &&
-        panel.dataset.runDir
-      ) {
-        body.resume_run_dir = panel.dataset.runDir;
-      }
-    }
-
+    const cfg = readConfigFromUI();
     try {
-      try {
-        await saveConfig({ silent: true });
-      } catch (e) {
-        if (!/→ 409/.test(String(e.message))) throw e;
-      }
-      await api("/api/run", {
+      const resp = await api("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ config: cfg }),
       });
+      currentRunId = resp.run.id;
+      currentRun = resp.run;
+      lastAgentCommand = resp.agent_command;
+      await refreshRunsList();
+      connectWebSocket();
+      showAgentCommandModal(resp.agent_command);
     } catch (e) {
-      alert("Failed to start run: " + e.message);
+      alert("Failed to create run: " + e.message);
     }
   }
 
@@ -2590,40 +2741,9 @@
       return;
     }
 
-    let runs = [];
-    try {
-      const data = await api(`/api/runs?behavior=${encodeURIComponent(behavior)}`);
-      runs = Array.isArray(data.runs) ? data.runs : [];
-    } catch (e) {
-      setResumeDisabled("resume previous run");
-      return;
-    }
-
-    const currentParams = {
-      behavior,
-      generator_model: ($("generatorModel").value || "").trim(),
-      positive_prompt: $("positivePrompt").value || "",
-      negative_prompt: $("negativePrompt").value || "",
-    };
-
-    const match = runs.find((r) => (
-      r.behavior === currentParams.behavior &&
-      (r.generator_model || "") === currentParams.generator_model &&
-      (r.positive_prompt || "") === currentParams.positive_prompt &&
-      (r.negative_prompt || "") === currentParams.negative_prompt
-    ));
-
-    if (!match) {
-      setResumeDisabled("resume previous run");
-      return;
-    }
-
-    const done = match.pairs_count || 0;
-    panel.classList.remove("disabled");
-    toggle.classList.remove("disabled");
-    toggle.classList.add("on");
-    panel.dataset.runDir = match.run_dir;
-    label.textContent = `resume previous run (${done} pairs on disk)`;
+    // Multi-run mode: resume is driven by selecting a run from the run list. The legacy
+    // "resume previous run" toggle is kept visible but inert.
+    setResumeDisabled("select a run from the runs list to resume");
   }
 
   // ── help modal ───────────────────────────────────────────────
@@ -2672,8 +2792,14 @@
 
   async function saveConfig(opts = {}) {
     const cfg = readConfigFromUI();
+    if (!currentRunId) {
+      // no active run — just keep the UI snapshot; it'll be used on next "create run"
+      currentConfig = cfg;
+      $("hmDimension").textContent = cfg.generation.behavior || "—";
+      return;
+    }
     try {
-      await api("/api/config", {
+      await api(runPath("/config"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(cfg),
@@ -2688,7 +2814,9 @@
   }
 
   async function cancelRun() {
-    try { await api("/api/run/cancel", { method: "POST" }); } catch (e) { /* ignore */ }
+    if (!currentRunId) return;
+    if (!confirm("Cancel this run? The agent will be asked to stop at the next checkpoint.")) return;
+    try { await api(runPath("/cancel"), { method: "POST" }); } catch (e) { /* ignore */ }
   }
 
   // ── settings modal ───────────────────────────────────────────
@@ -2721,11 +2849,13 @@
     cfg.hf_model_kwargs = kwargs;
     let configOk = false;
     try {
-      await api("/api/config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(cfg),
-      });
+      if (currentRunId) {
+        await api(runPath("/config"), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(cfg),
+        });
+      }
       currentConfig = cfg;
       configOk = true;
     } catch (e) {
@@ -3096,16 +3226,111 @@
     return Math.max(...ratingScale.map((r) => r.label)) + 1;
   }
 
+  // ── runs list + agent-command modal ──────────────────────────
+  async function refreshRunsList() {
+    try {
+      const data = await api("/api/runs");
+      runsList = Array.isArray(data.runs) ? data.runs : [];
+      renderRunsList();
+    } catch (e) {
+      runsList = [];
+      renderRunsList();
+    }
+    return runsList;
+  }
+
+  function renderRunsList() {
+    const wrap = $("runsList");
+    if (!wrap) return;
+    if (!runsList.length) {
+      wrap.innerHTML = `<div class="runs-empty">no runs yet — fill the form and hit "Run All" to create one</div>`;
+      return;
+    }
+    wrap.innerHTML = runsList
+      .map((r) => {
+        const selected = r.id === currentRunId ? " selected" : "";
+        const stale = r.stale
+          ? ` · <span class="stale-badge" title="No heartbeat in 5+ minutes — the agent may have crashed or lost its network connection.">stale</span>`
+          : "";
+        const phase = r.phase ? ` · ${escapeHtml(r.phase)}` : "";
+        return `
+          <div class="run-item${selected}" data-id="${escapeHtml(r.id)}">
+            <div class="run-id">${escapeHtml(r.id)}</div>
+            <div class="run-meta">${escapeHtml(r.status)}${phase}${stale}</div>
+            <div class="run-sub">${escapeHtml(r.behavior || "")} · ${escapeHtml(r.steered_model || "")}</div>
+          </div>`;
+      })
+      .join("");
+    wrap.querySelectorAll(".run-item").forEach((el) => {
+      el.addEventListener("click", () => selectRun(el.dataset.id));
+    });
+  }
+
+  async function selectRun(runId) {
+    if (!runId || runId === currentRunId) return;
+    currentRunId = runId;
+    selectedCell = null;
+    heatmapData = null;
+    try {
+      currentRun = await api(runPath(""));
+    } catch (e) {
+      currentRun = null;
+      alert("Failed to load run: " + e.message);
+      return;
+    }
+    writeConfigToUI(currentRun.config || {});
+    renderModelInfo(currentRun.model_info || {});
+    updatePhase(currentRun.status === "completed" ? "complete" : (currentRun.phase || currentRun.status));
+    renderRunsList();
+    connectWebSocket();
+    await refreshHeatmap();
+    if (!heatmapData) renderEmptyHeatmap();
+  }
+
+  function showAgentCommandModal(cmd) {
+    const modal = $("agentCmdModal");
+    if (!modal) return;
+    $("agentCmdText").textContent = cmd.command;
+    $("agentCmdRunId").textContent = cmd.run_id;
+    $("agentCmdServer").textContent = cmd.server;
+    $("agentCmdToken").textContent = cmd.agent_token;
+    modal.classList.add("open");
+  }
+
+  async function regenerateAgentToken() {
+    if (!currentRunId) return;
+    try {
+      const resp = await api(runPath("/regenerate-token"), { method: "POST" });
+      lastAgentCommand = resp.agent_command;
+      showAgentCommandModal(resp.agent_command);
+    } catch (e) {
+      alert("Failed to regenerate token: " + e.message);
+    }
+  }
+
+  async function downloadArtifact(name, filename) {
+    if (!currentRunId) return;
+    try {
+      const res = await fetch(runPath(`/artifacts/${name}`), {
+        headers: { Authorization: `Bearer ${OWNER_TOKEN}` },
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert(`Failed to download ${name}: ${e.message}`);
+    }
+  }
+
   // ── init ─────────────────────────────────────────────────────
   async function init() {
-    const [cfg, status, model] = await Promise.all([
-      api("/api/config").catch(() => null),
-      api("/api/run/status").catch(() => null),
-      api("/api/model/info").catch(() => null),
-    ]);
-    if (cfg) writeConfigToUI(cfg);
-    if (status) updatePhase(status.phase);
-    if (model) renderModelInfo(model);
     $("cbGradient").style.background = cmapCssGradient(DELTA_COLORS, 13);
     $("fCopyright").textContent = `IBM Research, ${new Date().getFullYear()}`;
 
@@ -3114,12 +3339,27 @@
     attachModelCombo("mcGenerator", "generator");
     attachModelCombo("mcJudge", "judge");
 
-    await refreshHeatmap();
-    if (!heatmapData) {
-      scheduleTargetProbe();
+    await refreshRunsList();
+    // auto-select: prefer most recently claimed; else first in list
+    const claimedRun = runsList.find((r) => r.claimed_at);
+    const autoSelect = claimedRun || runsList[0];
+    if (autoSelect) {
+      await selectRun(autoSelect.id);
+    } else {
       renderEmptyHeatmap();
+      scheduleTargetProbe();
     }
-    connectWebSocket();
+    // periodic run-list refresh so status pills stay fresh without a dedicated WS
+    setInterval(() => { refreshRunsList(); refreshStatus(); }, 5000);
+
+    // artifact downloads
+    $("lnkSvec").addEventListener("click", () => {
+      if (!currentRun) return;
+      downloadArtifact("svec", `${currentRun.behavior || "run"}.svec`);
+    });
+    $("lnkResult").addEventListener("click", () => {
+      downloadArtifact("result", "calibration_result.json");
+    });
 
     $("btnRunFull").addEventListener("click", () =>
       runPipeline(["generation", "extraction", "calibration"])
@@ -3238,6 +3478,51 @@
     });
     // initial render in case config didn't provide one
     renderRatingScale();
+
+    // runs list + agent command modals
+    $("btnRunsList").addEventListener("click", async () => {
+      await refreshRunsList();
+      $("runsListModal").classList.add("open");
+    });
+    $("runsListClose").addEventListener("click", () => $("runsListModal").classList.remove("open"));
+    $("runsListModal").addEventListener("click", (e) => {
+      if (e.target.id === "runsListModal") $("runsListModal").classList.remove("open");
+    });
+    $("btnRefreshRuns").addEventListener("click", refreshRunsList);
+    $("btnShowAgentCmd").addEventListener("click", () => {
+      if (lastAgentCommand) {
+        showAgentCommandModal(lastAgentCommand);
+      } else {
+        alert("No agent command available. Regenerate the token to get a fresh one.");
+      }
+    });
+    $("btnRegenerateToken").addEventListener("click", regenerateAgentToken);
+
+    $("agentCmdClose").addEventListener("click", () => $("agentCmdModal").classList.remove("open"));
+    $("agentCmdDismiss").addEventListener("click", () => $("agentCmdModal").classList.remove("open"));
+    $("agentCmdModal").addEventListener("click", (e) => {
+      if (e.target.id === "agentCmdModal") $("agentCmdModal").classList.remove("open");
+    });
+    // show/hide base_url field based on provider choice
+    for (const [selId, urlId] of [["generatorProvider", "generatorBaseUrl"], ["judgeProvider", "judgeBaseUrl"]]) {
+      const sel = $(selId);
+      const url = $(urlId);
+      if (!sel || !url) continue;
+      sel.addEventListener("change", () => {
+        url.style.display = sel.value === "openai" ? "" : "none";
+      });
+    }
+
+    $("btnCopyAgentCmd").addEventListener("click", async () => {
+      const text = $("agentCmdText").textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        $("btnCopyAgentCmd").textContent = "Copied ✓";
+        setTimeout(() => { $("btnCopyAgentCmd").textContent = "Copy command"; }, 1500);
+      } catch (e) {
+        alert("Copy failed: " + e.message);
+      }
+    });
   }
 
   init();

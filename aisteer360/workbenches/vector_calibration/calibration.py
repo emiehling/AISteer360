@@ -1,11 +1,13 @@
 """Calibration sweep: evaluate steering vectors across a layer x multiplier grid."""
+from __future__ import annotations
+
 import json
 import logging
 import math
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -20,10 +22,12 @@ from aisteer360.algorithms.state_control.common.transforms import (
     AdditiveTransform,
     NormPreservingTransform,
 )
-from aisteer360.evaluation.metrics.base_judge import LLMJudgeMetric
 
 from .configs import CalibrationConfig, JudgeConfig, QualityGate
 from .results import CalibrationResult, CellResult
+
+if TYPE_CHECKING:
+    from .agent.providers.base import JudgeProvider
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +62,7 @@ class CalibrationSweep:
         eval_prompts: list[str],
         save_dir: str | Path | None = None,
         on_progress: Callable[[dict[str, Any]], None] | None = None,
+        judge_provider: "JudgeProvider | None" = None,
     ) -> CalibrationResult:
         """Execute the full calibration sweep.
 
@@ -85,7 +90,7 @@ class CalibrationSweep:
         if save_dir_path:
             completed = self._load_checkpoint(save_dir_path)
 
-        judge = self._build_judge(cfg.judge)
+        judge = self._build_judge(cfg.judge, provider=judge_provider)
 
         baseline_score, baseline_perplexity, baseline_texts = self._evaluate_baseline(
             model, tokenizer, eval_prompts, judge, cfg,
@@ -446,9 +451,15 @@ class CalibrationSweep:
     # ── judge ────────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_judge(judge_config: JudgeConfig) -> "_Judge":
-        """Load the judge model and wrap it in a small scoring interface."""
-        return _Judge(judge_config)
+    def _build_judge(
+        judge_config: JudgeConfig,
+        provider: "JudgeProvider | None" = None,
+    ) -> "_Judge":
+        """Build the judge adapter. Uses `provider` if given, else falls back to HF-local."""
+        if provider is None:
+            from .agent.providers.hf_local import HFJudgeProvider
+            provider = HFJudgeProvider(config=asdict(judge_config))
+        return _Judge(judge_config, provider=provider)
 
     # ── checkpointing ────────────────────────────────────────────────
 
@@ -510,29 +521,29 @@ def _render_judge_prompt(config: JudgeConfig) -> str:
 
 
 class _Judge:
-    """Small adapter over `LLMJudgeMetric` that exposes a `score_batch` interface.
+    """Small adapter that routes scoring calls through a `JudgeProvider`.
 
-    Returns `(scores, reasons)` per call. Reasons are left as `None` because the default judge template only
-    captures a numeric score; custom rubrics that emit a `reason` field can be surfaced later.
+    Reasons are left as `None` because the default judge template only captures a numeric score;
+    custom rubrics that emit a `reason` field can be surfaced later.
     """
 
-    def __init__(self, config: JudgeConfig):
-        criteria = _render_judge_prompt(config)
-        if "{response}" not in criteria:
-            raise ValueError(
-                "Judge prompt must include a '{response}' placeholder."
-            )
-        self._metric = LLMJudgeMetric(
-            model_or_id=config.model,
-            prompt_template=criteria,
-            scale=config.scale,
-            batch_size=config.batch_size,
-        )
+    def __init__(self, config: JudgeConfig, provider: "JudgeProvider"):
+        template = _render_judge_prompt(config)
+        if "{response}" not in template:
+            raise ValueError("Judge prompt must include a '{response}' placeholder.")
+        self.template = template
+        self.scale = tuple(config.scale)
+        self.provider = provider
 
     def score_batch(
         self, prompts: list[str], responses: list[str]
     ) -> tuple[list[float], list[str | None]]:
-        result = self._metric.compute(responses=responses, prompts=prompts)
+        result = self.provider.score(
+            prompts=prompts,
+            responses=responses,
+            template=self.template,
+            scale=self.scale,
+        )
         scores = list(result["scores"])
         reasons: list[str | None] = [None] * len(scores)
         return scores, reasons

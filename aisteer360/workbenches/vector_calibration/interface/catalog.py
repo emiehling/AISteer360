@@ -17,15 +17,16 @@ from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-Provider = Literal["hf", "openai_compatible", "anthropic", "custom"]
+Provider = Literal["hf", "openai", "openai_compatible", "anthropic", "custom"]
 Role = Literal["target", "generator", "judge"]
 
-WIRED_PROVIDERS: set[str] = {"hf"}
-ALL_PROVIDERS: tuple[str, ...] = ("hf", "openai_compatible", "anthropic", "custom")
+WIRED_PROVIDERS: set[str] = {"hf", "openai", "openai_compatible", "anthropic"}
+ALL_PROVIDERS: tuple[str, ...] = ("hf", "openai", "openai_compatible", "anthropic", "custom")
 ALL_ROLES: tuple[str, ...] = ("target", "generator", "judge")
 
 PROVIDER_ENV: dict[str, str | None] = {
     "hf": None,
+    "openai": "OPENAI_API_KEY",
     "openai_compatible": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "custom": None,

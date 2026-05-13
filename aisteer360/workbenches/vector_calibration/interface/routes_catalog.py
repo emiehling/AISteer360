@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from .auth import OwnerTokenHash
 from .catalog import (
     ALL_PROVIDERS,
     ALL_ROLES,
@@ -40,7 +41,7 @@ class ProviderStatusResponse(BaseModel):
 
 
 @router.get("/catalog", response_model=CatalogResponse)
-def get_catalog() -> CatalogResponse:
+def get_catalog(_: OwnerTokenHash) -> CatalogResponse:
     entries = load_catalog()
     return CatalogResponse(
         entries=[CatalogEntrySchema(**asdict(e)) for e in entries],
@@ -50,7 +51,7 @@ def get_catalog() -> CatalogResponse:
 
 
 @router.put("/catalog", response_model=CatalogResponse)
-def put_catalog(body: list[CatalogEntrySchema]) -> CatalogResponse:
+def put_catalog(body: list[CatalogEntrySchema], _: OwnerTokenHash) -> CatalogResponse:
     entries = [
         CatalogEntry(
             label=e.label,
@@ -62,9 +63,9 @@ def put_catalog(body: list[CatalogEntrySchema]) -> CatalogResponse:
         for e in body
     ]
     save_catalog(entries)
-    return get_catalog()
+    return get_catalog(_)
 
 
 @router.get("/catalog/providers/status", response_model=ProviderStatusResponse)
-def get_provider_status() -> ProviderStatusResponse:
+def get_provider_status(_: OwnerTokenHash) -> ProviderStatusResponse:
     return ProviderStatusResponse(providers=provider_status())
