@@ -287,6 +287,26 @@ class Database:
             last_heartbeat=now,
         )
 
+    async def fail_orphaned_runs(self) -> int:
+        """Mark any claimed/running runs as failed. Called once at server startup."""
+        now = time.time()
+        cur = await self.conn.execute(
+            """
+            UPDATE runs SET status = ?, error = ?, updated_at = ?
+            WHERE status IN (?, ?)
+            """,
+            (
+                STATUS_FAILED, "server restarted while run was active", now,
+                STATUS_CLAIMED, STATUS_RUNNING,
+            ),
+        )
+        await self.conn.commit()
+        count = cur.rowcount
+        await cur.close()
+        if count:
+            logger.info("Marked %d orphaned run(s) as failed.", count)
+        return count
+
     async def regenerate_agent_token(self, run_id: str) -> str:
         """Mint a new agent token, rewrite the stored hash, return the plaintext token."""
         token = mint_agent_token()

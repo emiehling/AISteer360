@@ -16,10 +16,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def dispatch_local(argv: list[str]) -> None:
-    """Spawn the agent as a local subprocess."""
+def dispatch_local(argv: list[str]) -> subprocess.Popen:
+    """Spawn the agent as a local subprocess and return the handle."""
     logger.info("Dispatching agent locally: %s", " ".join(shlex.quote(a) for a in argv))
-    subprocess.Popen(argv)
+    return subprocess.Popen(argv)
 
 
 def _extract_run_id(agent_argv: list[str]) -> str:

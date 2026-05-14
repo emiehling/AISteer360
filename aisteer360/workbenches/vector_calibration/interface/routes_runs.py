@@ -163,7 +163,8 @@ async def create_run(
             dispatch_error = str(exc)
     elif mode == "local" or solo:
         try:
-            dispatch_local(agent_argv)
+            proc = dispatch_local(agent_argv)
+            request.app.state.local_agents[run_id] = proc
             dispatch_status = "local"
         except Exception as exc:
             logger.warning("Local dispatch failed for %s: %s", run_id, exc)
@@ -215,10 +216,20 @@ async def update_config(
 async def cancel_run(
     run_id: str,
     run: OwnerScopedRun,
+    request: Request,
     db: Database = Depends(get_db),
 ) -> dict[str, str]:
+    agents = getattr(request.app.state, "local_agents", {})
+    proc = agents.pop(run_id, None)
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        logger.info("Terminated local agent for %s (pid %d)", run_id, proc.pid)
+
     if run.status in ACTIVE_STATUSES:
         await db.set_cancel(run_id, True)
+        if proc is not None:
+            await db.update_status(run_id, status=STATUS_CANCELLED)
+            return {"status": "cancelled"}
         return {"status": "cancel_requested"}
     if run.status == STATUS_CREATED:
         await db.update_status(run_id, status=STATUS_CANCELLED)

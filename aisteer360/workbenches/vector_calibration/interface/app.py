@@ -6,6 +6,7 @@ agent progress to browsers over WebSocket. It never loads a model and never impo
 from __future__ import annotations
 
 import logging
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -45,6 +46,7 @@ def create_app(
         resolved_root.mkdir(parents=True, exist_ok=True)
         db = Database(resolved_root / "runs.db")
         await db.connect()
+        await db.fail_orphaned_runs()
         relay = ProgressRelay()
         app.state.db = db
         app.state.relay = relay
@@ -52,10 +54,17 @@ def create_app(
         app.state.public_server_url = public_server_url
         app.state.agent_command_name = agent_command_name
         app.state.solo_mode = solo_mode
+        app.state.local_agents: dict[str, subprocess.Popen] = {}
         logger.info("Workbench server up. data_root=%s solo_mode=%s", resolved_root, solo_mode)
         try:
             yield
         finally:
+            agents = getattr(app.state, "local_agents", {})
+            for rid, proc in agents.items():
+                if proc.poll() is None:
+                    proc.terminate()
+                    logger.info("Terminated local agent for %s on shutdown", rid)
+            agents.clear()
             await db.close()
 
     app = FastAPI(title="AISteer360 — Vector Calibration", lifespan=lifespan)

@@ -158,7 +158,13 @@
     border-top: 1px solid var(--line);
     justify-content: flex-end;
   }
-  .modal-foot .btn { min-width: 90px; padding: 7px 14px; }
+  .modal-foot .btn {
+    min-width: 90px;
+    width: auto;
+    padding: 7px 14px;
+    height: 32px;
+    box-sizing: border-box;
+  }
 
   .key-row {
     display: grid;
@@ -188,6 +194,23 @@
     text-align: right;
   }
   .key-row .kr-input:focus { border-color: var(--accent); }
+
+  #computeSshFields input[type="text"],
+  #computeSshFields input[type="number"],
+  #computeSshFields input[type="password"] {
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    padding: 4px 7px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    outline: none;
+    flex: 1;
+  }
+  #computeSshFields input[type="text"]:focus,
+  #computeSshFields input[type="number"]:focus,
+  #computeSshFields input[type="password"]:focus { border-color: var(--accent); }
   .key-row .kr-pill {
     text-align: center;
     padding: 2px 6px;
@@ -1217,21 +1240,37 @@
     gap: 6px;
   }
   .catalog-row-head {
-    display: flex; align-items: center; gap: 6px;
+    display: flex; align-items: center; gap: 8px;
   }
-  .catalog-row-head input {
+  .catalog-row-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .cat-field-label {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    color: var(--text-dim);
+    width: 64px;
+    flex-shrink: 0;
+    text-align: right;
+  }
+  .cat-field-input {
     flex: 1;
-    background: transparent;
+    background: var(--panel);
     border: 1px solid var(--line-2);
     border-radius: 2px;
     padding: 4px 7px;
-    font-family: var(--sans);
-    font-size: 11.5px;
-    font-weight: 500;
+    font-family: var(--mono);
+    font-size: 11px;
     color: var(--text);
     outline: none;
   }
-  .catalog-row-head input:focus { border-color: var(--accent); }
+  .cat-field-input:focus { border-color: var(--accent); }
+  select.cat-field-input {
+    appearance: none;
+    -webkit-appearance: none;
+  }
   .catalog-row-head .rm-btn {
     border: 1px solid var(--line-2);
     color: var(--text-dim);
@@ -1243,12 +1282,6 @@
     cursor: pointer;
   }
   .catalog-row-head .rm-btn:hover { border-color: var(--danger); color: var(--danger); }
-  .catalog-row-head input.cat-model-id {
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 400;
-    background: var(--panel);
-  }
   .cat-id-wrap { position: relative; flex: 1; display: flex; }
   .cat-id-wrap input.cat-model-id { width: 100%; }
   .cat-id-suggestions {
@@ -1287,44 +1320,6 @@
     color: var(--text-dim);
     font-style: italic;
   }
-  .catalog-row input.cat-label {
-    background: transparent;
-    border: 1px solid var(--line-2);
-    border-radius: 2px;
-    padding: 4px 7px;
-    font-family: var(--sans);
-    font-size: 11.5px;
-    color: var(--text);
-    outline: none;
-    width: 100%;
-  }
-  .catalog-row input.cat-label:focus { border-color: var(--accent); }
-  .catalog-row-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-  }
-  .catalog-row-grid label {
-    display: flex; flex-direction: column;
-    gap: 2px;
-    font-family: var(--sans);
-    font-size: 10px;
-    color: var(--text-dim);
-  }
-  .catalog-row-grid input,
-  .catalog-row-grid select {
-    background: var(--panel);
-    border: 1px solid var(--line-2);
-    border-radius: 2px;
-    padding: 4px 7px;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text);
-    outline: none;
-    appearance: none;
-    -webkit-appearance: none;
-  }
-  .catalog-row-grid input:focus, .catalog-row-grid select:focus { border-color: var(--accent); }
   .catalog-row-roles {
     display: flex; gap: 10px; align-items: center;
     font-family: var(--sans);
@@ -1536,7 +1531,7 @@
       </div>
 
       <div class="specs-block elevated">
-        <div class="sub-label"><span>Compute</span><span class="hint">where the agent runs</span></div>
+        <div class="sub-label"><span>Compute</span></div>
         <div class="field-row" style="gap:16px; margin-bottom:8px;">
           <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
             <input type="radio" name="computeMode" value="local" id="computeModeLocal">
@@ -1553,15 +1548,15 @@
         <div id="computeSshFields" style="display:none; padding:8px; border:1px solid var(--border); border-radius:4px;">
           <div class="field-row" style="margin-bottom:6px;">
             <span class="field-label" style="width:120px;">Host</span>
-            <input id="sshHost" type="text" class="kr-input" style="flex:1;" placeholder="gpu-box.example.edu">
+            <input id="sshHost" type="text" placeholder="gpu-box.example.edu">
           </div>
           <div class="field-row" style="margin-bottom:6px;">
             <span class="field-label" style="width:120px;">Port</span>
-            <input id="sshPort" type="number" class="kr-input" style="flex:1;" value="22">
+            <input id="sshPort" type="number" value="22">
           </div>
           <div class="field-row" style="margin-bottom:6px;">
             <span class="field-label" style="width:120px;">Username</span>
-            <input id="sshUsername" type="text" class="kr-input" style="flex:1;" placeholder="jsmith">
+            <input id="sshUsername" type="text" placeholder="jsmith">
           </div>
           <div class="field-row" style="margin-bottom:6px;">
             <span class="field-label" style="width:120px;">Auth</span>
@@ -1576,12 +1571,12 @@
           </div>
           <div class="field-row" style="margin-bottom:6px;">
             <span class="field-label" style="width:120px;" id="sshCredentialLabel">Key path / contents</span>
-            <input id="sshCredential" type="password" class="kr-input" style="flex:1;" autocomplete="off"
+            <input id="sshCredential" type="password" autocomplete="off"
                    placeholder="~/.ssh/id_ed25519 or paste key contents">
           </div>
           <div class="field-row" style="margin-bottom:8px;">
             <span class="field-label" style="width:120px;">Python path</span>
-            <input id="sshPythonPath" type="text" class="kr-input" style="flex:1;" value="python3">
+            <input id="sshPythonPath" type="text" value="python3">
           </div>
           <div class="field-row" style="gap:10px; align-items:center;">
             <button class="btn" id="btnTestCompute" type="button">Test connection</button>
@@ -1594,7 +1589,7 @@
       </div>
 
       <div class="specs-block elevated">
-        <div class="sub-label"><span>Model catalog</span><span class="hint">available in model selectors</span></div>
+        <div class="sub-label"><span>Model catalog</span></div>
         <div class="catalog-list" id="catalogList"></div>
         <button class="catalog-add-btn" id="catalogAddBtn" type="button">+ Add model</button>
       </div>
@@ -1982,10 +1977,6 @@
 
     <!-- Actions -->
     <div class="sec">
-      <div class="run-row">
-        <button class="btn primary" id="btnRunFull">↻ Run All</button>
-        <button class="btn" id="btnCancel" disabled>Cancel</button>
-      </div>
       <button class="btn" id="btnSaveConfig">Save config</button>
       <button class="btn" type="button" id="lnkSvec" title="Export .svec">Export svec</button>
       <button class="btn" type="button" id="lnkResult" title="Export calibration_result.json">Export result · json</button>
@@ -2674,8 +2665,6 @@
       runBtn.disabled = anyRunning;
       cancelBtn.disabled = !isThis;
     }
-    $("btnRunFull").disabled = runningStage !== null;
-    $("btnCancel").disabled = runningStage === null;
   }
 
   function applyPhaseToDots(phase) {
@@ -2723,6 +2712,12 @@
     $("runStateLabel").className = "sec-action" + (phase === "complete" ? " good" : phase === "error" ? " bad" : "");
     $("progressLabel").textContent = label + (extra && extra.error ? ` · ${extra.error}` : "");
 
+    if (phase === "error" && extra && extra.error) {
+      $("statusText").textContent = "failed";
+      $("statusDot").className = "dot error";
+      $("progressLabel").textContent = extra.error;
+    }
+
     applyPhaseToDots(phase);
 
     const runningStage = { generation: "Generation", extraction: "Extraction", calibration: "Calibration" }[phase] || null;
@@ -2760,12 +2755,33 @@
     }
   }
 
+  function phaseForRun(run) {
+    if (!run) return "idle";
+    if (run.status === "completed") return "complete";
+    if (run.status === "failed") return "error";
+    if (run.status === "cancelled") return "cancelled";
+    return run.phase || run.status;
+  }
+
+  const TERMINAL_STATUSES = ["completed", "failed", "cancelled"];
+
+  function setConfigEditable(editable) {
+    const panel = document.querySelector("aside.right");
+    if (!panel) return;
+    const inputs = panel.querySelectorAll("input, select, textarea");
+    inputs.forEach((el) => {
+      el.disabled = !editable;
+      el.style.opacity = editable ? "" : "0.5";
+    });
+  }
+
   async function refreshStatus() {
     if (!currentRunId) return;
     try {
       const s = await api(runPath(""));
       currentRun = s;
-      updatePhase(s.status === "completed" ? "complete" : (s.phase || s.status));
+      updatePhase(phaseForRun(s), s.status === "failed" ? { error: s.error } : undefined);
+      setConfigEditable(!TERMINAL_STATUSES.includes(s.status));
       if (s.claimed_at && s.completed_at) {
         const wall = s.completed_at - s.claimed_at;
         const m = Math.floor(wall / 60);
@@ -2813,7 +2829,8 @@
       }
       const msg = JSON.parse(e.data);
       if (msg.event === "snapshot") {
-        updatePhase(msg.status === "completed" ? "complete" : (msg.phase || msg.status));
+        updatePhase(phaseForRun(msg), msg.status === "failed" ? { error: msg.error } : undefined);
+        setConfigEditable(!TERMINAL_STATUSES.includes(msg.status));
       } else if (msg.event === "phase") updatePhase(msg.phase, msg);
       else if (msg.event === "progress") updateProgress(msg);
       else if (msg.event === "cell_complete") fillHeatmapCell(msg.layer, msg.multiplier, msg);
@@ -2945,7 +2962,8 @@
           produce higher-quality contrastive pairs if needed.</li>
         <li>If the heatmap is mostly grey (incoherent), try a narrower multiplier range or a
           different extraction method.</li>
-        <li>Click <strong>Run All</strong> to execute all three stages in sequence.</li>
+        <li>Click <strong>Run Generation</strong>, <strong>Run Extraction</strong>, and
+          <strong>Run Calibration</strong> to execute each stage.</li>
         <li>API keys for Anthropic, OpenAI, and HuggingFace providers are entered in the
         <strong>Settings → API keys</strong> panel. They are encrypted on the server and
         delivered to the agent at run time.</li>
@@ -3241,7 +3259,7 @@
     try {
       const data = await api("/api/catalog");
       catalogEntries = Array.isArray(data.entries) ? data.entries : [];
-      catalogProviders = Array.isArray(data.providers) ? data.providers : ["hf"];
+      catalogProviders = ["hf", "anthropic", "openai"];
       catalogRoles = Array.isArray(data.roles) ? data.roles : ["target", "generator", "judge"];
     } catch (e) { /* leave defaults */ }
     try {
@@ -3461,10 +3479,6 @@
     renderCatalogEditor();
   }
 
-  function needsEndpoint(provider) {
-    return ["openai", "openai_compatible", "custom"].includes(provider);
-  }
-
   function deriveLabelFromModelId(modelId) {
     if (!modelId) return "";
     const tail = modelId.includes("/") ? modelId.split("/").pop() : modelId;
@@ -3487,33 +3501,37 @@
       row.className = "catalog-row";
       row.innerHTML = `
         <div class="catalog-row-head">
-          <div class="cat-id-wrap">
-            <input type="text" data-k="model_id" class="cat-model-id" value="${escapeHtml(entry.model_id)}"
-              placeholder="e.g. ibm-granite/granite-3.3-2b-instruct" autocomplete="off">
-            <div class="cat-id-suggestions" role="listbox"></div>
-          </div>
+          <span class="cat-field-label">Provider</span>
+          <select data-k="provider" class="cat-field-input">
+            ${catalogProviders.map((p) => `<option value="${p}"${p === entry.provider ? " selected" : ""}>${p}</option>`).join("")}
+          </select>
           <button class="rm-btn" type="button" title="Remove">×</button>
         </div>
-        <input type="text" data-k="label" class="cat-label" value="${escapeHtml(entry.label)}" placeholder="Display name">
-        <div class="catalog-row-grid">
-          <label>provider
-            <select data-k="provider">
-              ${catalogProviders.map((p) => `<option value="${p}"${p === entry.provider ? " selected" : ""}>${p}</option>`).join("")}
-            </select>
-          </label>
-          ${needsEndpoint(entry.provider) ? `<label>endpoint
-            <input type="text" data-k="endpoint" value="${escapeHtml(entry.endpoint || "")}" placeholder="https://...">
-          </label>` : ""}
+        <div class="catalog-row-field">
+          <span class="cat-field-label">Model ID</span>
+          <div class="cat-id-wrap">
+            <input type="text" data-k="model_id" class="cat-model-id cat-field-input"
+              value="${escapeHtml(entry.model_id)}" placeholder="not set" autocomplete="off">
+            <div class="cat-id-suggestions" role="listbox"></div>
+          </div>
         </div>
-        <div class="catalog-row-roles">
-          ${catalogRoles.map((r) => {
-            const disabled = r === "target" && !isHf;
-            const checked = entry.roles.includes(r) && !disabled;
-            return `<label class="${disabled ? "disabled" : ""}">
-              <input type="checkbox" data-role="${r}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
-              ${r}
-            </label>`;
-          }).join("")}
+        <div class="catalog-row-field">
+          <span class="cat-field-label">Display</span>
+          <input type="text" data-k="label" class="cat-label cat-field-input"
+            value="${escapeHtml(entry.label)}" placeholder="not set">
+        </div>
+        <div class="catalog-row-field">
+          <span class="cat-field-label">Category</span>
+          <div class="catalog-row-roles">
+            ${catalogRoles.map((r) => {
+              const disabled = r === "target" && !isHf;
+              const checked = entry.roles.includes(r) && !disabled;
+              return `<label class="${disabled ? "disabled" : ""}">
+                <input type="checkbox" data-role="${r}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
+                ${r}
+              </label>`;
+            }).join("")}
+          </div>
         </div>
       `;
       row.querySelectorAll("[data-k]").forEach((el) => {
@@ -3719,7 +3737,7 @@
     const wrap = $("runsList");
     if (!wrap) return;
     if (!runsList.length) {
-      wrap.innerHTML = `<div class="runs-empty">no runs yet — fill the form and hit "Run All" to create one</div>`;
+      wrap.innerHTML = `<div class="runs-empty">no runs yet — fill the form and hit "Run Generation" to start</div>`;
       return;
     }
     wrap.innerHTML = runsList
@@ -3756,7 +3774,9 @@
     }
     writeConfigToUI(currentRun.config || {});
     renderModelInfo(currentRun.model_info || {});
-    updatePhase(currentRun.status === "completed" ? "complete" : (currentRun.phase || currentRun.status));
+    updatePhase(phaseForRun(currentRun),
+      currentRun.status === "failed" ? { error: currentRun.error } : undefined);
+    setConfigEditable(!TERMINAL_STATUSES.includes(currentRun.status));
     renderRunsList();
     connectWebSocket();
     await refreshHeatmap();
@@ -3853,9 +3873,6 @@
       downloadArtifact("result", "calibration_result.json");
     });
 
-    $("btnRunFull").addEventListener("click", () =>
-      runPipeline(["generation", "extraction", "calibration"])
-    );
     $("btnRunGen").addEventListener("click", () => runPipeline(["generation"]));
     $("btnRunExtract").addEventListener("click", () => runPipeline(["extraction"]));
     $("btnRunCalibrate").addEventListener("click", () => runPipeline(["calibration"]));
@@ -3891,8 +3908,6 @@
         h.closest(".specs-block.collapsible").classList.toggle("collapsed");
       });
     });
-    $("btnCancel").addEventListener("click", cancelRun);
-
     $("btnSettings").addEventListener("click", openSettings);
     $("settingsClose").addEventListener("click", closeSettings);
     $("settingsCancel").addEventListener("click", closeSettings);
