@@ -77,6 +77,9 @@ async def db(tmp_data_root: Path) -> Database:
         await d.close()
 
 
+ALL_STAGES: list[str] = ["generation", "extraction", "calibration"]
+
+
 def minimal_config(model: str = "test/model", behavior: str = "warmth") -> dict[str, Any]:
     """A minimal but schema-valid CalibrationBuilderConfig as a dict."""
     return {
@@ -95,6 +98,19 @@ def minimal_config(model: str = "test/model", behavior: str = "warmth") -> dict[
                 "criteria": "Rate warmth 1-5. Response: {response}",
             },
         },
+    }
+
+
+def run_body(
+    *,
+    config: dict[str, Any] | None = None,
+    stages: list[str] | None = None,
+    behavior: str = "warmth",
+) -> dict[str, Any]:
+    """Build a valid /api/runs request body. Stages default to the full pipeline."""
+    return {
+        "config": config if config is not None else minimal_config(behavior=behavior),
+        "stages": list(stages) if stages is not None else list(ALL_STAGES),
     }
 
 

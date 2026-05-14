@@ -7,12 +7,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from ..conftest import minimal_config
+from ..conftest import run_body
 
 
-def _create_run(client: TestClient, owner_header: dict) -> tuple[str, str]:
+def _create_run(
+    client: TestClient, owner_header: dict, stages: list[str] | None = None
+) -> tuple[str, str]:
     resp = client.post(
-        "/api/runs", json={"config": minimal_config()}, headers=owner_header
+        "/api/runs", json=run_body(stages=stages), headers=owner_header,
     ).json()
     return resp["run"]["id"], resp["agent_token"]
 
@@ -34,7 +36,9 @@ def test_claim_then_progress_then_complete(
 
     claim = client.post(f"/api/agent/runs/{rid}/claim", headers=ah)
     assert claim.status_code == 200
-    assert claim.json()["run_id"] == rid
+    body = claim.json()
+    assert body["run_id"] == rid
+    assert body["stages"] == ["generation", "extraction", "calibration"]
 
     assert client.post(
         f"/api/agent/runs/{rid}/progress",
@@ -64,6 +68,13 @@ def test_claim_then_progress_then_complete(
     assert detail["status"] == "completed"
     assert detail["progress"]["completed"] == 3
     assert detail["model_info"]["num_layers"] == 12
+
+
+def test_claim_returns_requested_stages_only(client: TestClient, owner_header: dict) -> None:
+    rid, agent_token = _create_run(client, owner_header, stages=["generation"])
+    ah = {"Authorization": f"Bearer {agent_token}"}
+    body = client.post(f"/api/agent/runs/{rid}/claim", headers=ah).json()
+    assert body["stages"] == ["generation"]
 
 
 def test_cancel_check_reflects_owner_cancel(client: TestClient, owner_header: dict) -> None:

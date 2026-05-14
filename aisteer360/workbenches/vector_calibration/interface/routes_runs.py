@@ -17,8 +17,10 @@ from .catalog import load_catalog
 from .db import (
     ACTIVE_STATUSES,
     STATUS_CANCELLED,
+    STATUS_COMPLETED,
     STATUS_CREATED,
     STATUS_CLAIMED,
+    STATUS_FAILED,
     Database,
     build_run_id,
     ensure_run_dir,
@@ -35,11 +37,13 @@ from .schemas import (
     FullConfigSchema,
     HeatmapResponse,
     RegenerateTokenResponse,
+    RunContinueRequest,
     RunCreateRequest,
     RunCreateResponse,
     RunDetail,
     RunListResponse,
     RunSummary,
+    Stage,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,24 +61,18 @@ _CATALOG_PROVIDER_TO_WIRE = {
 }
 
 
-def _validate_models_against_catalog(cfg: FullConfigSchema) -> None:
-    """Check generator and judge models against the user's catalog.
-
-    Both roles are picked from a curated catalog in the UI, so a model id that is missing or
-    mismatched against its declared provider almost always indicates a stale saved config (the
-    silent fallback in the UI used to coerce unknown ids to provider 'hf', which then sent
-    requests for API-only models to Hugging Face).
-    """
-    entries = {e.model_id: e for e in load_catalog()}
-
-    def _check(model_id: str, declared_provider: str, role: str) -> None:
-        entry = entries.get(model_id)
-        if entry is None:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"{role.capitalize()} model '{model_id}' is not in the model catalog. "
-                "Add it via Settings → Model Catalog.",
-            )
+def _check_catalog_entry(
+    entries: dict, model_id: str, declared_provider: str | None, role: str
+) -> None:
+    """Validate one model id against the catalog. `declared_provider` may be None for target."""
+    entry = entries.get(model_id)
+    if entry is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{role.capitalize()} model '{model_id}' is not in the model catalog. "
+            "Add it via Settings → Model Catalog.",
+        )
+    if declared_provider is not None:
         wire = _CATALOG_PROVIDER_TO_WIRE.get(entry.provider)
         if wire != declared_provider:
             raise HTTPException(
@@ -83,14 +81,57 @@ def _validate_models_against_catalog(cfg: FullConfigSchema) -> None:
                 f"'{entry.provider}' but the run requested '{declared_provider}'. "
                 "Update the catalog entry or pick a different model.",
             )
-        if role not in entry.roles:
+    if role not in entry.roles:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Model '{model_id}' is not enabled for the {role} role in the catalog.",
+        )
+
+
+def _validate_for_stages(cfg: FullConfigSchema, stages: list[Stage]) -> None:
+    """Validate that the config has every field required by the requested stages."""
+    needs = set(stages)
+    entries = {e.model_id: e for e in load_catalog()}
+
+    if "generation" in needs:
+        if not (cfg.generation.behavior or "").strip():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Behavior label is required.")
+        _check_catalog_entry(
+            entries, cfg.generation.generator_model, cfg.generation.generator_provider, "generator"
+        )
+
+    if needs & {"extraction", "calibration"}:
+        if not (cfg.steered_model or "").strip():
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                f"Model '{model_id}' is not enabled for the {role} role in the catalog.",
+                "Target model is required for extraction and calibration.",
             )
+        _check_catalog_entry(entries, cfg.steered_model, None, "target")
 
-    _check(cfg.generation.generator_model, cfg.generation.generator_provider, "generator")
-    _check(cfg.calibration.judge.model, cfg.calibration.judge.provider, "judge")
+    if "calibration" in needs:
+        _check_catalog_entry(
+            entries, cfg.calibration.judge.model, cfg.calibration.judge.provider, "judge"
+        )
+
+
+def _check_prerequisites(run_dir: Path, stages: list[Stage], behavior: str) -> None:
+    """Verify that on-disk artifacts needed by `stages` exist (unless an earlier stage produces them)."""
+    needs = set(stages)
+    if "extraction" in needs and "generation" not in needs:
+        if not (run_dir / "pairs.jsonl").exists():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Cannot run extraction: pairs.jsonl not found in run directory. "
+                "Run generation first.",
+            )
+    if "calibration" in needs and "extraction" not in needs:
+        svec = run_dir / f"{behavior}.svec"
+        if not svec.exists():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Cannot run calibration: {svec.name} not found in run directory. "
+                "Run extraction first.",
+            )
 
 
 def _public_server_url(request: Request) -> str:
@@ -111,6 +152,44 @@ def _agent_command(request: Request, run_id: str, agent_token: str) -> AgentComm
         run_id=run_id,
         agent_token=agent_token,
     )
+
+
+async def _dispatch_agent(
+    request: Request,
+    db: Database,
+    *,
+    run_id: str,
+    cmd: AgentCommand,
+    owner_hash: str,
+) -> tuple[str, str | None]:
+    """Try to start the agent process. Returns (dispatch_status, dispatch_error)."""
+    name = getattr(request.app.state, "agent_command_name", "aisteer360-agent")
+    agent_argv = [
+        name,
+        "--server", cmd.server,
+        "--run-id", cmd.run_id,
+        "--agent-token", cmd.agent_token,
+    ]
+    compute = await db.get_compute_config(owner_hash)
+    mode = compute.get("mode") if compute else None
+    solo = getattr(request.app.state, "solo_mode", False)
+
+    if mode == "ssh":
+        try:
+            dispatch_ssh(compute, agent_argv)
+            return "ssh", None
+        except Exception as exc:
+            logger.warning("SSH dispatch failed for %s: %s", run_id, exc)
+            return "failed", str(exc)
+    if mode == "local" or solo:
+        try:
+            proc = dispatch_local(agent_argv)
+            request.app.state.local_agents[run_id] = proc
+            return "local", None
+        except Exception as exc:
+            logger.warning("Local dispatch failed for %s: %s", run_id, exc)
+            return "failed", str(exc)
+    return "manual", None
 
 
 def _load_calibration_result(run_dir: Path) -> CalibrationResult:
@@ -162,7 +241,7 @@ async def create_run(
 ) -> RunCreateResponse:
     """Create a new run and mint its agent token."""
     cfg = body.config
-    _validate_models_against_catalog(cfg)
+    _validate_for_stages(cfg, body.stages)
     behavior = cfg.generation.behavior.strip() or "run"
     run_id = build_run_id(behavior)
     data_root: Path = request.app.state.data_root
@@ -178,47 +257,60 @@ async def create_run(
         behavior=behavior,
         steered_model=cfg.steered_model,
         config=cfg_dump,
+        stages=list(body.stages),
         owner_token_hash=owner_hash,
         agent_token_hash=hash_agent_token(agent_token),
         run_dir=run_dir,
     )
 
     cmd = _agent_command(request, run_id, agent_token)
-    name = getattr(request.app.state, "agent_command_name", "aisteer360-agent")
-    agent_argv = [
-        name,
-        "--server", cmd.server,
-        "--run-id", cmd.run_id,
-        "--agent-token", cmd.agent_token,
-    ]
-
-    compute = await db.get_compute_config(owner_hash)
-    mode = compute.get("mode") if compute else None
-    solo = getattr(request.app.state, "solo_mode", False)
-
-    dispatch_status = "manual"
-    dispatch_error: str | None = None
-
-    if mode == "ssh":
-        try:
-            dispatch_ssh(compute, agent_argv)
-            dispatch_status = "ssh"
-        except Exception as exc:
-            logger.warning("SSH dispatch failed for %s: %s", run_id, exc)
-            dispatch_status = "failed"
-            dispatch_error = str(exc)
-    elif mode == "local" or solo:
-        try:
-            proc = dispatch_local(agent_argv)
-            request.app.state.local_agents[run_id] = proc
-            dispatch_status = "local"
-        except Exception as exc:
-            logger.warning("Local dispatch failed for %s: %s", run_id, exc)
-            dispatch_status = "failed"
-            dispatch_error = str(exc)
-
+    dispatch_status, dispatch_error = await _dispatch_agent(
+        request, db, run_id=run_id, cmd=cmd, owner_hash=owner_hash,
+    )
     return RunCreateResponse(
         run=RunDetail(**run.to_detail()),
+        agent_token=agent_token,
+        agent_command=cmd,
+        dispatch_status=dispatch_status,
+        dispatch_error=dispatch_error,
+    )
+
+
+@router.post("/runs/{run_id}/continue", response_model=RunCreateResponse)
+async def continue_run(
+    run_id: str,
+    body: RunContinueRequest,
+    request: Request,
+    run: OwnerScopedRun,
+    owner_hash: OwnerTokenHash,
+    db: Database = Depends(get_db),
+) -> RunCreateResponse:
+    """Re-dispatch a terminal run with a new config and stage selection."""
+    if run.status not in (STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Cannot continue a run while status={run.status}.",
+        )
+
+    cfg = body.config
+    _validate_for_stages(cfg, body.stages)
+    _check_prerequisites(Path(run.run_dir), body.stages, cfg.generation.behavior)
+
+    cfg_dump = cfg.model_dump()
+    cfg_dump["save_dir"] = str(Path(run.run_dir).parent)
+    await db.update_config(run_id, cfg_dump)
+    await db.update_stages(run_id, list(body.stages))
+    await db.reset_for_continue(run_id)
+
+    agent_token = await db.regenerate_agent_token(run_id)
+    cmd = _agent_command(request, run_id, agent_token)
+    dispatch_status, dispatch_error = await _dispatch_agent(
+        request, db, run_id=run_id, cmd=cmd, owner_hash=owner_hash,
+    )
+    updated = await db.get_run(run_id)
+    assert updated is not None
+    return RunCreateResponse(
+        run=RunDetail(**updated.to_detail()),
         agent_token=agent_token,
         agent_command=cmd,
         dispatch_status=dispatch_status,

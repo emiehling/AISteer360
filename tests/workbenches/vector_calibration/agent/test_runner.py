@@ -11,11 +11,10 @@ import pytest
 import uvicorn
 
 from aisteer360.workbenches.vector_calibration.agent.client import ServerClient
-from aisteer360.workbenches.vector_calibration.agent.providers.base import ProviderKeys
 from aisteer360.workbenches.vector_calibration.agent.runner import AgentRunner
 from aisteer360.workbenches.vector_calibration.interface.app import create_app
 
-from ..conftest import minimal_config
+from ..conftest import run_body
 
 
 class _FakeWorkbench:
@@ -84,26 +83,71 @@ def live_server(tmp_data_root: Path):
     thread.join(timeout=5.0)
 
 
+def _stub_providers(monkeypatch) -> dict[str, int]:
+    """Replace provider builders with counters so tests can assert which ones were called."""
+    import aisteer360.workbenches.vector_calibration.agent.runner as runner_mod
+    counts = {"generation": 0, "judge": 0}
+
+    def _build_gen(cfg, keys):
+        counts["generation"] += 1
+        return None
+
+    def _build_judge(cfg, keys):
+        counts["judge"] += 1
+        return None
+
+    monkeypatch.setattr(runner_mod, "VectorCalibrationWorkbench", _FakeWorkbench)
+    monkeypatch.setattr(runner_mod, "build_generation_provider", _build_gen)
+    monkeypatch.setattr(runner_mod, "build_judge_provider", _build_judge)
+    return counts
+
+
 def test_runner_round_trip(monkeypatch, live_server: str, owner_header: dict) -> None:
     resp = httpx.post(
         live_server + "/api/runs",
-        json={"config": minimal_config()},
+        json=run_body(),
         headers=owner_header,
         timeout=10.0,
     ).json()
     rid, agent_token = resp["run"]["id"], resp["agent_token"]
 
-    import aisteer360.workbenches.vector_calibration.agent.runner as runner_mod
-    monkeypatch.setattr(runner_mod, "VectorCalibrationWorkbench", _FakeWorkbench)
-    monkeypatch.setattr(
-        runner_mod, "build_from_config", lambda cfg, keys: (None, None)
-    )
+    counts = _stub_providers(monkeypatch)
 
     with ServerClient(live_server, rid, agent_token) as sc:
-        runner = AgentRunner(sc, ProviderKeys())
-        runner.run()
+        AgentRunner(sc).run()
 
     detail = httpx.get(
         f"{live_server}/api/runs/{rid}", headers=owner_header, timeout=10.0
     ).json()
     assert detail["status"] == "completed"
+    assert counts == {"generation": 1, "judge": 1}
+
+
+def test_runner_skips_unrequested_stages_and_providers(
+    monkeypatch, live_server: str, owner_header: dict, tmp_data_root: Path
+) -> None:
+    """A run claimed with stages=[generation] must skip extraction + calibration and the judge."""
+    resp = httpx.post(
+        live_server + "/api/runs",
+        json=run_body(stages=["generation"]),
+        headers=owner_header,
+        timeout=10.0,
+    ).json()
+    rid, agent_token = resp["run"]["id"], resp["agent_token"]
+
+    counts = _stub_providers(monkeypatch)
+
+    with ServerClient(live_server, rid, agent_token) as sc:
+        AgentRunner(sc).run()
+
+    detail = httpx.get(
+        f"{live_server}/api/runs/{rid}", headers=owner_header, timeout=10.0
+    ).json()
+    assert detail["status"] == "completed"
+    assert detail["stages"] == ["generation"]
+    assert counts == {"generation": 1, "judge": 0}
+
+    run_dir = tmp_data_root / rid
+    assert (run_dir / "pairs.jsonl").exists()
+    assert not (run_dir / "warmth.svec").exists()
+    assert not (run_dir / "calibration_result.json").exists()

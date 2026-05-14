@@ -22,12 +22,15 @@ from . import secrets as secrets_vault
 
 logger = logging.getLogger(__name__)
 
-SCHEMA = """
+_ALL_STAGES_JSON = '["generation","extraction","calibration"]'
+
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
   behavior TEXT NOT NULL,
   steered_model TEXT NOT NULL,
   config_json TEXT NOT NULL,
+  stages_json TEXT NOT NULL DEFAULT '{_ALL_STAGES_JSON}',
   status TEXT NOT NULL,
   phase TEXT,
   progress_json TEXT,
@@ -89,6 +92,7 @@ class Run:
     behavior: str
     steered_model: str
     config_json: str
+    stages_json: str
     status: str
     phase: str | None
     progress_json: str | None
@@ -107,6 +111,10 @@ class Run:
     @property
     def config(self) -> dict[str, Any]:
         return json.loads(self.config_json)
+
+    @property
+    def stages(self) -> list[str]:
+        return json.loads(self.stages_json)
 
     @property
     def progress(self) -> dict[str, Any]:
@@ -130,6 +138,7 @@ class Run:
             "behavior": self.behavior,
             "steered_model": self.steered_model,
             "status": self.status,
+            "stages": self.stages,
             "phase": self.phase,
             "progress": self.progress,
             "model_info": self.model_info,
@@ -195,7 +204,17 @@ class Database:
         self._conn = await aiosqlite.connect(str(self.path))
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA)
+        await self._migrate_runs_stages_column()
         await self._conn.commit()
+
+    async def _migrate_runs_stages_column(self) -> None:
+        cur = await self._conn.execute("PRAGMA table_info(runs)")
+        columns = {row["name"] for row in await cur.fetchall()}
+        await cur.close()
+        if "stages_json" not in columns:
+            await self._conn.execute(
+                f"ALTER TABLE runs ADD COLUMN stages_json TEXT NOT NULL DEFAULT '{_ALL_STAGES_JSON}'"
+            )
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -217,6 +236,7 @@ class Database:
         behavior: str,
         steered_model: str,
         config: dict[str, Any],
+        stages: list[str],
         owner_token_hash: str,
         agent_token_hash: str,
         run_dir: Path,
@@ -224,14 +244,14 @@ class Database:
         now = time.time()
         await self.conn.execute(
             """
-            INSERT INTO runs (id, behavior, steered_model, config_json, status,
+            INSERT INTO runs (id, behavior, steered_model, config_json, stages_json, status,
                               owner_token_hash, agent_token_hash, run_dir,
                               created_at, updated_at, cancel_requested)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
-                run_id, behavior, steered_model, json.dumps(config), STATUS_CREATED,
-                owner_token_hash, agent_token_hash, str(run_dir), now, now,
+                run_id, behavior, steered_model, json.dumps(config), json.dumps(stages),
+                STATUS_CREATED, owner_token_hash, agent_token_hash, str(run_dir), now, now,
             ),
         )
         await self.conn.commit()
@@ -241,6 +261,9 @@ class Database:
 
     async def update_config(self, run_id: str, config: dict[str, Any]) -> None:
         await self._update_one(run_id, config_json=json.dumps(config))
+
+    async def update_stages(self, run_id: str, stages: list[str]) -> None:
+        await self._update_one(run_id, stages_json=json.dumps(stages))
 
     async def update_status(
         self,
@@ -286,6 +309,27 @@ class Database:
             claimed_at=now,
             last_heartbeat=now,
         )
+
+    async def reset_for_continue(self, run_id: str) -> None:
+        """Clear transient state so a terminal run can be re-dispatched."""
+        await self.conn.execute(
+            """
+            UPDATE runs SET
+                status = ?,
+                phase = NULL,
+                progress_json = NULL,
+                model_info_json = NULL,
+                error = NULL,
+                cancel_requested = 0,
+                claimed_at = NULL,
+                completed_at = NULL,
+                last_heartbeat = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (STATUS_CREATED, time.time(), run_id),
+        )
+        await self.conn.commit()
 
     async def fail_orphaned_runs(self) -> int:
         """Mark any claimed/running runs as failed. Called once at server startup."""

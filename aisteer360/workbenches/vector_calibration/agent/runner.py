@@ -19,7 +19,8 @@ from .providers.base import (
     GenerationProvider,
     JudgeProvider,
     ProviderKeys,
-    build_from_config,
+    build_generation_provider,
+    build_judge_provider,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,11 +68,12 @@ class AgentRunner:
         self._poller: _CancelPoller | None = None
 
     def run(self) -> None:
-        """Claim the run, execute all stages, report to the server."""
+        """Claim the run, execute the requested stages, report to the server."""
         claim = self.client.claim()
         raw_cfg = claim["config"]
         run_dir = Path(claim["run_dir"])
-        logger.info("Claimed run %s at %s", self.client.run_id, run_dir)
+        stages = set(claim["stages"])
+        logger.info("Claimed run %s at %s; stages=%s", self.client.run_id, run_dir, sorted(stages))
 
         server_keys = claim.get("provider_keys") or {}
         keys = ProviderKeys(
@@ -82,7 +84,11 @@ class AgentRunner:
 
         try:
             cfg = from_server_config(raw_cfg)
-            self._gen_provider, self._judge_provider = build_from_config(raw_cfg, keys)
+
+            if "generation" in stages:
+                self._gen_provider = build_generation_provider(raw_cfg, keys)
+            if "calibration" in stages:
+                self._judge_provider = build_judge_provider(raw_cfg, keys)
 
             workbench = VectorCalibrationWorkbench(cfg)
             workbench._run_dir = run_dir  # force the active run dir
@@ -91,13 +97,16 @@ class AgentRunner:
             self._poller = _CancelPoller(self.client)
             self._poller.start()
 
-            self._run_stage_generation(workbench, run_dir)
-            if self._poller.is_cancelled():
-                raise _Cancelled()
-            self._run_stage_extraction(workbench, run_dir, cfg.generation.behavior)
-            if self._poller.is_cancelled():
-                raise _Cancelled()
-            self._run_stage_calibration(workbench, run_dir)
+            if "generation" in stages:
+                self._run_stage_generation(workbench, run_dir)
+                if self._poller.is_cancelled():
+                    raise _Cancelled()
+            if "extraction" in stages:
+                self._run_stage_extraction(workbench, run_dir, cfg.generation.behavior)
+                if self._poller.is_cancelled():
+                    raise _Cancelled()
+            if "calibration" in stages:
+                self._run_stage_calibration(workbench, run_dir)
             self.client.complete()
             logger.info("Run %s complete.", self.client.run_id)
         except _Cancelled:

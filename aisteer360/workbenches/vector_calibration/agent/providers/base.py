@@ -70,26 +70,24 @@ class JudgeProvider(ABC):
         """Release underlying resources."""
 
 
-def build_from_config(
-    config: dict,
-    keys: ProviderKeys,
-) -> tuple[GenerationProvider, JudgeProvider]:
-    """Instantiate providers for a run's config.
+def build_generation_provider(config: dict, keys: ProviderKeys) -> GenerationProvider:
+    """Instantiate the generation provider for a run's config.
 
-    The config is the JSON form of `CalibrationBuilderConfig`. Reads
-    `generation.generator_provider`, `calibration.judge.provider`, and the corresponding keys
-    from `ProviderKeys`.
+    Reads `generation.generator_provider` and the matching key from `ProviderKeys`.
     """
     gen_cfg = config.get("generation", {})
-    cal_cfg = config.get("calibration", {})
-    judge_cfg = cal_cfg.get("judge", {})
+    name = gen_cfg.get("generator_provider") or "hf"
+    return _make_generation_provider(name, gen_cfg, keys)
 
-    gen_provider_name = gen_cfg.get("generator_provider") or "hf"
-    judge_provider_name = judge_cfg.get("provider") or "hf"
 
-    gen = _make_generation_provider(gen_provider_name, gen_cfg, keys)
-    judge = _make_judge_provider(judge_provider_name, judge_cfg, keys)
-    return gen, judge
+def build_judge_provider(config: dict, keys: ProviderKeys) -> JudgeProvider:
+    """Instantiate the judge provider for a run's config.
+
+    Reads `calibration.judge.provider` and the matching key from `ProviderKeys`.
+    """
+    judge_cfg = config.get("calibration", {}).get("judge", {})
+    name = judge_cfg.get("provider") or "hf"
+    return _make_judge_provider(name, judge_cfg, keys)
 
 
 def _make_generation_provider(

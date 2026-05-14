@@ -80,9 +80,19 @@ class FullConfigSchema(BaseModel):
 
 # ── run schemas ──────────────────────────────────────────────────
 
+Stage = Literal["generation", "extraction", "calibration"]
+
+
 class RunCreateRequest(BaseModel):
     """Body for POST /api/runs."""
     config: FullConfigSchema
+    stages: list[Stage]
+
+
+class RunContinueRequest(BaseModel):
+    """Body for POST /api/runs/{id}/continue."""
+    config: FullConfigSchema
+    stages: list[Stage]
 
 
 class RunSummary(BaseModel):
@@ -92,6 +102,7 @@ class RunSummary(BaseModel):
     behavior: str
     steered_model: str
     status: str
+    stages: list[Stage]
     phase: str | None = None
     progress: dict[str, Any] = Field(default_factory=dict)
     model_info: dict[str, Any] = Field(default_factory=dict)
@@ -175,6 +186,7 @@ class ClaimResponse(BaseModel):
     run_id: str
     run_dir: str
     config: FullConfigSchema
+    stages: list[Stage]
     provider_keys: dict[str, str | None] = Field(default_factory=dict)
 
 
@@ -248,7 +260,9 @@ __all__ = [
     "QualityGateSchema",
     "CalibrationConfigSchema",
     "FullConfigSchema",
+    "Stage",
     "RunCreateRequest",
+    "RunContinueRequest",
     "RunSummary",
     "RunDetail",
     "AgentCommand",

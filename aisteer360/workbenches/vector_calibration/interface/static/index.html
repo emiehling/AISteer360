@@ -2283,8 +2283,9 @@
     return { provider, endpoint };
   }
 
-  function validateModelsAgainstCatalog(cfg) {
+  function validateForStages(cfg, stages) {
     const errors = [];
+    const needs = new Set(stages);
     const checkRole = (modelId, role, label) => {
       if (!modelId) {
         errors.push(`${label} model is not set.`);
@@ -2299,8 +2300,15 @@
         errors.push(`${label} model "${modelId}" is not enabled for the ${role} role.`);
       }
     };
-    checkRole(cfg.generation && cfg.generation.generator_model, "generator", "Generator");
-    checkRole(cfg.calibration && cfg.calibration.judge && cfg.calibration.judge.model, "judge", "Judge");
+    if (needs.has("generation")) {
+      checkRole(cfg.generation && cfg.generation.generator_model, "generator", "Generator");
+    }
+    if (needs.has("extraction") || needs.has("calibration")) {
+      checkRole(cfg.steered_model, "target", "Target");
+    }
+    if (needs.has("calibration")) {
+      checkRole(cfg.calibration && cfg.calibration.judge && cfg.calibration.judge.model, "judge", "Judge");
+    }
     return errors;
   }
 
@@ -2868,25 +2876,32 @@
   }
 
   // ── actions ──────────────────────────────────────────────────
-  async function runPipeline(_stages) {
-    // stages arg is ignored — the agent drives all three stages sequentially. We simply create
-    // a run from the current UI config and surface the agent command the user must execute.
+  function shouldContinueRun(stages) {
+    // "Run Generation" always starts a new run; the other stages continue the current
+    // run when it's terminal so their on-disk inputs (pairs.jsonl, .svec) are reused.
+    if (!currentRun || stages.includes("generation")) return false;
+    return ["completed", "failed", "cancelled"].includes(currentRun.status);
+  }
+
+  async function runPipeline(stages) {
     const beh = ($("behavior").value || "").trim();
     if (!beh) {
       alert("Please enter a Dimension label (e.g. 'warmth') before creating a run.");
       return;
     }
     const cfg = readConfigFromUI();
-    const catalogErrors = validateModelsAgainstCatalog(cfg);
-    if (catalogErrors.length) {
-      alert("Cannot start run:\n\n• " + catalogErrors.join("\n• "));
+    const errors = validateForStages(cfg, stages);
+    if (errors.length) {
+      alert("Cannot start run:\n\n• " + errors.join("\n• "));
       return;
     }
+    const continuing = shouldContinueRun(stages);
+    const url = continuing ? `/api/runs/${currentRun.id}/continue` : "/api/runs";
     try {
-      const resp = await api("/api/runs", {
+      const resp = await api(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: cfg }),
+        body: JSON.stringify({ config: cfg, stages }),
       });
       currentRunId = resp.run.id;
       currentRun = resp.run;
@@ -2895,7 +2910,6 @@
       connectWebSocket();
       const status = resp.dispatch_status || "manual";
       if (status === "local" || status === "ssh") {
-        // agent dispatched by the server; progress arrives via WebSocket.
         if (pendingDispatchWatchdog) clearTimeout(pendingDispatchWatchdog);
         pendingDispatchWatchdog = setTimeout(async () => {
           pendingDispatchWatchdog = null;
@@ -2912,7 +2926,7 @@
         showAgentCommandModal(resp.agent_command);
       }
     } catch (e) {
-      alert("Failed to create run: " + e.message);
+      alert(`Failed to ${continuing ? "continue" : "create"} run: ${e.message}`);
     }
   }
 

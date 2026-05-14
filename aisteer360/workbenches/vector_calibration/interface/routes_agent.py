@@ -68,6 +68,7 @@ async def claim(
         run_id=run_id,
         run_dir=run.run_dir,
         config=run.config,
+        stages=run.stages,
         provider_keys=provider_keys,
     )
 

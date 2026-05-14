@@ -51,9 +51,10 @@ def live_server(tmp_data_root: Path):
 
 def _create_run(base_url: str, owner_header: dict) -> tuple[str, str]:
     import httpx
+    from ..conftest import run_body
     resp = httpx.post(
         base_url + "/api/runs",
-        json={"config": minimal_config()},
+        json=run_body(),
         headers=owner_header,
         timeout=10.0,
     )
