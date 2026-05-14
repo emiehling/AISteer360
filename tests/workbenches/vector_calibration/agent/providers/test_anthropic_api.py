@@ -70,6 +70,71 @@ def test_generation_batch_hits_api(anthropic_stub) -> None:
     assert last["model"] == "claude-test"
     assert last["max_tokens"] == 64
     assert last["temperature"] == 0.5
+    assert "top_p" not in last
+
+
+def test_generation_uses_top_p_when_temperature_default(anthropic_stub) -> None:
+    anthropic_stub["outputs"] = ["ok"]
+    from aisteer360.workbenches.vector_calibration.agent.providers.anthropic_api import (
+        AnthropicGenerationProvider,
+    )
+    p = AnthropicGenerationProvider(model_id="claude-test", api_key="k")
+    p.generate_batch(
+        "sys",
+        ["q"],
+        max_new_tokens=16,
+        temperature=1.0,
+        top_p=0.9,
+    )
+    last = anthropic_stub["client"].messages.last_kwargs
+    assert last["top_p"] == 0.9
+    assert "temperature" not in last
+
+
+def test_generation_uses_temperature_when_non_default(anthropic_stub) -> None:
+    anthropic_stub["outputs"] = ["ok"]
+    from aisteer360.workbenches.vector_calibration.agent.providers.anthropic_api import (
+        AnthropicGenerationProvider,
+    )
+    p = AnthropicGenerationProvider(model_id="claude-test", api_key="k")
+    p.generate_batch(
+        "sys",
+        ["q"],
+        max_new_tokens=16,
+        temperature=0.7,
+        top_p=0.9,
+    )
+    last = anthropic_stub["client"].messages.last_kwargs
+    assert last["temperature"] == 0.7
+    assert "top_p" not in last
+
+
+def test_generation_logs_api_errors(anthropic_stub, caplog) -> None:
+    anthropic_stub["outputs"] = ["unused"]
+    from aisteer360.workbenches.vector_calibration.agent.providers.anthropic_api import (
+        AnthropicGenerationProvider,
+    )
+    p = AnthropicGenerationProvider(model_id="claude-test", api_key="k")
+
+    def boom(**kwargs):
+        raise RuntimeError("simulated 400 Bad Request")
+
+    anthropic_stub["client"] = _FakeAnthropicClient(["unused"])
+    p._client = anthropic_stub["client"]
+    p._client.messages.create = boom
+
+    import logging
+    with caplog.at_level(logging.ERROR):
+        out = p.generate_batch(
+            "sys",
+            ["q1", "q2"],
+            max_new_tokens=16,
+            temperature=0.5,
+            top_p=0.9,
+        )
+    assert out == []
+    assert any("Anthropic generation request failed" in rec.message for rec in caplog.records)
+    assert any("simulated 400 Bad Request" in rec.message for rec in caplog.records)
 
 
 def test_judge_parses_score(anthropic_stub) -> None:

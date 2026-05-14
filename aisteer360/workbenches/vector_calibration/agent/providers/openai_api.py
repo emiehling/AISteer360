@@ -72,11 +72,15 @@ class OpenAIGenerationProvider(GenerationProvider):
 
         with ThreadPoolExecutor(max_workers=self._max_concurrency) as pool:
             futures = [pool.submit(one, i, p) for i, p in enumerate(user_prompts)]
-            for _ in as_completed(futures):
+            for fut in as_completed(futures):
                 if cancel_check is not None and cancel_check():
                     for f in futures:
                         f.cancel()
                     return []
+                try:
+                    fut.result()
+                except Exception as exc:
+                    logger.error("OpenAI generation request failed: %s", exc)
         if any(r is None for r in results):
             return []
         return [r for r in results if r is not None]

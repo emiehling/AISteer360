@@ -145,11 +145,16 @@ class ContrastivePairGenerator:
                     top_p=cfg.top_p,
                     cancel_check=cancel_check,
                 )
-                if not pos_batch or (cancel_check is not None and cancel_check()):
-                    logger.info(
-                        "Generation cancelled mid-batch at %d/%d pairs.", len(positives), total
+                if not pos_batch:
+                    if cancel_check is not None and cancel_check():
+                        logger.info(
+                            "Generation cancelled mid-batch at %d/%d pairs.", len(positives), total
+                        )
+                        break
+                    raise RuntimeError(
+                        f"Generation provider returned no results for the positive batch "
+                        f"(batch starting at {batch_start}). Check provider logs for details."
                     )
-                    break
                 neg_batch = self.provider.generate_batch(
                     cfg.negative_prompt, batch_seeds,
                     max_new_tokens=cfg.max_new_tokens,
@@ -157,11 +162,16 @@ class ContrastivePairGenerator:
                     top_p=cfg.top_p,
                     cancel_check=cancel_check,
                 )
-                if not neg_batch or (cancel_check is not None and cancel_check()):
-                    logger.info(
-                        "Generation cancelled mid-batch at %d/%d pairs.", len(positives), total
+                if not neg_batch:
+                    if cancel_check is not None and cancel_check():
+                        logger.info(
+                            "Generation cancelled mid-batch at %d/%d pairs.", len(positives), total
+                        )
+                        break
+                    raise RuntimeError(
+                        f"Generation provider returned no results for the negative batch "
+                        f"(batch starting at {batch_start}). Check provider logs for details."
                     )
-                    break
             else:
                 pos_batch, pos_cancelled = self._generate_batch(
                     model, tokenizer, batch_seeds,
@@ -211,6 +221,15 @@ class ContrastivePairGenerator:
             del model
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+        if not positives:
+            # cancelled before any batch completed; placeholder entries satisfy
+            # ContrastivePairs validation, and empty seed_prompts_used signals zero real pairs.
+            return GenerationResult(
+                pairs=ContrastivePairs(positives=[""], negatives=[""]),
+                seed_prompts_used=[],
+                config=asdict(cfg),
+            )
 
         pairs = ContrastivePairs(
             positives=positives,

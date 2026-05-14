@@ -82,6 +82,32 @@ def test_generation_forwards_kwargs(openai_stub) -> None:
     assert last["temperature"] == 0.2
 
 
+def test_generation_logs_api_errors(openai_stub, caplog) -> None:
+    openai_stub["outputs"] = ["unused"]
+    from aisteer360.workbenches.vector_calibration.agent.providers.openai_api import (
+        OpenAIGenerationProvider,
+    )
+    p = OpenAIGenerationProvider(model_id="gpt-x", api_key="sk-...")
+
+    def boom(**kwargs):
+        raise RuntimeError("simulated 500 server error")
+
+    p._client.chat.completions.create = boom
+
+    import logging
+    with caplog.at_level(logging.ERROR):
+        out = p.generate_batch(
+            "sys",
+            ["q1", "q2"],
+            max_new_tokens=16,
+            temperature=0.5,
+            top_p=0.9,
+        )
+    assert out == []
+    assert any("OpenAI generation request failed" in rec.message for rec in caplog.records)
+    assert any("simulated 500 server error" in rec.message for rec in caplog.records)
+
+
 def test_judge_round_trip(openai_stub) -> None:
     openai_stub["outputs"] = ['{"score": 3}']
     from aisteer360.workbenches.vector_calibration.agent.providers.openai_api import (
