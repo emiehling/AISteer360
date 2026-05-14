@@ -25,6 +25,7 @@ def create_app(
     *,
     public_server_url: str | None = None,
     agent_command_name: str = DEFAULT_AGENT_COMMAND_NAME,
+    solo_mode: bool = False,
 ) -> FastAPI:
     """Build the FastAPI application.
 
@@ -34,6 +35,8 @@ def create_app(
         public_server_url: Base URL shown in the agent command hint (e.g. `https://steer.example`).
             Defaults to the request's own base URL.
         agent_command_name: Name of the CLI script (overridable for tests).
+        solo_mode: True when the server was started by the single-user CLI wrapper. When set, runs
+            with no compute config default to local dispatch instead of showing the manual modal.
     """
     resolved_root = resolve_data_root(data_root)
 
@@ -48,13 +51,18 @@ def create_app(
         app.state.data_root = resolved_root
         app.state.public_server_url = public_server_url
         app.state.agent_command_name = agent_command_name
-        logger.info("Workbench server up. data_root=%s", resolved_root)
+        app.state.solo_mode = solo_mode
+        logger.info("Workbench server up. data_root=%s solo_mode=%s", resolved_root, solo_mode)
         try:
             yield
         finally:
             await db.close()
 
     app = FastAPI(title="AISteer360 — Vector Calibration", lifespan=lifespan)
+
+    @app.get("/api/server-info")
+    async def server_info() -> dict:
+        return {"solo_mode": getattr(app.state, "solo_mode", False)}
 
     # route wiring (imports lazy so the module is importable before routes exist at boot)
     from .routes_agent import router as agent_router

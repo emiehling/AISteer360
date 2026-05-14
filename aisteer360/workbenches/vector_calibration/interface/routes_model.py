@@ -89,5 +89,20 @@ def probe_model(
         "model_type": config_data.get("model_type"),
         "source": "hf",
     }
+
+    _SUB_CONFIG_KEYS = ("text_config", "language_config", "llm_config", "decoder_config")
+    _ARCH_FIELDS = (
+        "num_hidden_layers", "hidden_size", "num_attention_heads",
+        "num_key_value_heads", "intermediate_size", "vocab_size",
+        "max_position_embeddings",
+    )
+    for field_name in _ARCH_FIELDS:
+        if payload[field_name] is None:
+            for sub_key in _SUB_CONFIG_KEYS:
+                sub = config_data.get(sub_key)
+                if isinstance(sub, dict) and sub.get(field_name) is not None:
+                    payload[field_name] = sub[field_name]
+                    break
+
     _PROBE_CACHE[model_id] = payload
     return ModelProbeResponse(**payload)

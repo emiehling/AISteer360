@@ -123,6 +123,8 @@ class RunCreateResponse(BaseModel):
     run: RunDetail
     agent_token: str
     agent_command: AgentCommand
+    dispatch_status: Literal["local", "ssh", "manual", "failed"] = "manual"
+    dispatch_error: str | None = None
 
 
 class RunListResponse(BaseModel):
@@ -132,6 +134,39 @@ class RunListResponse(BaseModel):
 class RegenerateTokenResponse(BaseModel):
     agent_token: str
     agent_command: AgentCommand
+
+
+# ── compute config ───────────────────────────────────────────────
+
+class ComputeConfig(BaseModel):
+    mode: Literal["local", "ssh"] = "local"
+    host: str | None = None
+    port: int = 22
+    username: str | None = None
+    auth_method: Literal["key", "password"] | None = None
+    credential: str | None = None
+    python_path: str = "python3"
+
+
+class ComputeConfigResponse(BaseModel):
+    """Compute config returned to the browser. Credentials are never sent back in plaintext."""
+    mode: Literal["local", "ssh"] = "local"
+    host: str | None = None
+    port: int = 22
+    username: str | None = None
+    auth_method: Literal["key", "password"] | None = None
+    credential_set: bool = False
+    python_path: str = "python3"
+
+
+class ComputeTestResponse(BaseModel):
+    ok: bool
+    error: str | None = None
+    device: str | None = None
+    device_name: str | None = None
+    device_count: int | None = None
+    server_reachable: bool | None = None
+    reachability_error: str | None = None
 
 
 # ── agent-facing schemas ─────────────────────────────────────────
@@ -229,4 +264,7 @@ __all__ = [
     "LogPost",
     "HeatmapResponse",
     "CellDetailResponse",
+    "ComputeConfig",
+    "ComputeConfigResponse",
+    "ComputeTestResponse",
 ]

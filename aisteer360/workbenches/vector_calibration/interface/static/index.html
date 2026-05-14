@@ -158,7 +158,50 @@
     border-top: 1px solid var(--line);
     justify-content: flex-end;
   }
-  .modal-foot .btn { width: auto; padding: 7px 14px; }
+  .modal-foot .btn { min-width: 90px; padding: 7px 14px; }
+
+  .key-row {
+    display: grid;
+    grid-template-columns: 90px 1fr 68px;
+    gap: 8px;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .key-row:last-child { border-bottom: none; }
+  .key-row .kr-label {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .key-row .kr-input {
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    padding: 5px 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    width: 100%;
+    outline: none;
+    text-align: right;
+  }
+  .key-row .kr-input:focus { border-color: var(--accent); }
+  .key-row .kr-pill {
+    text-align: center;
+    padding: 2px 6px;
+    border-radius: 2px;
+    border: 1px solid;
+    font-size: 9.5px;
+    font-family: var(--mono);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .key-row .kr-pill.ready   { color: var(--good);   border-color: var(--good); }
+  .key-row .kr-pill.not-set { color: #d4a055;        border-color: #d4a055; }
+  .key-row .kr-pill.invalid { color: var(--danger);  border-color: var(--danger); }
 
   /* ============ layout ============ */
   .app {
@@ -245,7 +288,8 @@
   }
   .colorbar .gradient {
     width: 140px; height: 8px;
-    border: 1px solid var(--line-2);
+    display: block;
+    box-shadow: inset 0 0 0 1px var(--line-2);
   }
 
   .hm-wrap {
@@ -1480,27 +1524,73 @@
 
 <!-- settings modal -->
 <div class="modal-scrim" id="settingsModal">
-  <div class="modal" role="dialog" aria-label="Serving settings" style="width: 560px;">
+  <div class="modal" role="dialog" aria-label="Serving settings" style="width: 640px;">
     <div class="modal-head">
       <span class="title">Settings</span>
       <button class="close" id="settingsClose">×</button>
     </div>
     <div class="modal-body">
-      <span class="field-label">Save directory:</span>
-      <label class="select">
-        <input id="sSaveDir" type="text" placeholder="./runs">
-      </label>
+      <div class="specs-block elevated">
+        <div class="sub-label"><span>API keys (encrypted)</span></div>
+        <div id="apiKeysBlock"></div>
+      </div>
 
-      <span class="field-label">Device map:</span>
-      <label class="select">
-        <input id="sDeviceMap" type="text" placeholder="auto">
-      </label>
-
-      <div class="specs-block elevated" style="margin-top: 10px;">
-        <div class="sub-label"><span>HF model kwargs</span><span class="hint">JSON</span></div>
-        <textarea id="sHfKwargs" rows="4" style="
-          width:100%;background:var(--panel);border:1px solid var(--line-2);color:var(--text);
-          padding:7px 10px;font-family:var(--mono);font-size:11px;border-radius:2px;outline:none;resize:both;"></textarea>
+      <div class="specs-block elevated">
+        <div class="sub-label"><span>Compute</span><span class="hint">where the agent runs</span></div>
+        <div class="field-row" style="gap:16px; margin-bottom:8px;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="radio" name="computeMode" value="local" id="computeModeLocal">
+            <span>Local (auto)</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="radio" name="computeMode" value="ssh" id="computeModeSsh">
+            <span>Remote (SSH)</span>
+          </label>
+        </div>
+        <div id="computeLocalInfo" class="field-row" style="margin-bottom:8px;">
+          <span class="k">device</span><span class="v dim" id="computeLocalDevice">—</span>
+        </div>
+        <div id="computeSshFields" style="display:none; padding:8px; border:1px solid var(--border); border-radius:4px;">
+          <div class="field-row" style="margin-bottom:6px;">
+            <span class="field-label" style="width:120px;">Host</span>
+            <input id="sshHost" type="text" class="kr-input" style="flex:1;" placeholder="gpu-box.example.edu">
+          </div>
+          <div class="field-row" style="margin-bottom:6px;">
+            <span class="field-label" style="width:120px;">Port</span>
+            <input id="sshPort" type="number" class="kr-input" style="flex:1;" value="22">
+          </div>
+          <div class="field-row" style="margin-bottom:6px;">
+            <span class="field-label" style="width:120px;">Username</span>
+            <input id="sshUsername" type="text" class="kr-input" style="flex:1;" placeholder="jsmith">
+          </div>
+          <div class="field-row" style="margin-bottom:6px;">
+            <span class="field-label" style="width:120px;">Auth</span>
+            <label style="display:flex; align-items:center; gap:6px; margin-right:10px;">
+              <input type="radio" name="sshAuthMethod" value="key" id="sshAuthKey" checked>
+              <span>Key</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:6px;">
+              <input type="radio" name="sshAuthMethod" value="password" id="sshAuthPassword">
+              <span>Password</span>
+            </label>
+          </div>
+          <div class="field-row" style="margin-bottom:6px;">
+            <span class="field-label" style="width:120px;" id="sshCredentialLabel">Key path / contents</span>
+            <input id="sshCredential" type="password" class="kr-input" style="flex:1;" autocomplete="off"
+                   placeholder="~/.ssh/id_ed25519 or paste key contents">
+          </div>
+          <div class="field-row" style="margin-bottom:8px;">
+            <span class="field-label" style="width:120px;">Python path</span>
+            <input id="sshPythonPath" type="text" class="kr-input" style="flex:1;" value="python3">
+          </div>
+          <div class="field-row" style="gap:10px; align-items:center;">
+            <button class="btn" id="btnTestCompute" type="button">Test connection</button>
+            <span id="computeTestStatus" class="hint" style="font-style:italic;"></span>
+          </div>
+          <div class="hint" style="margin-top:8px; font-style:italic; color:var(--text-dim); font-size:11px;">
+            The remote machine must have aisteer360 installed and network access back to this server.
+          </div>
+        </div>
       </div>
 
       <div class="specs-block elevated">
@@ -1509,39 +1599,14 @@
         <button class="catalog-add-btn" id="catalogAddBtn" type="button">+ Add model</button>
       </div>
 
-      <div class="specs-block elevated">
-        <div class="sub-label"><span>Provider status</span><span class="hint">ready when a key is set</span></div>
-        <div class="provider-status" id="providerStatus"></div>
-      </div>
+      <span class="field-label">Device map:</span>
+      <label class="select">
+        <input id="sDeviceMap" type="text" placeholder="auto">
+      </label>
 
-      <div class="specs-block elevated">
-        <div class="sub-label">
-          <span>API keys</span>
-          <span class="hint">encrypted on server, never displayed</span>
-        </div>
-        <div class="field-row" style="gap: 6px;">
-          <span class="k">HuggingFace</span>
-          <input id="sKeyHf" class="inline" type="password" autocomplete="off"
-                 placeholder="not set" style="flex: 1;">
-          <button class="icon-btn" data-clear-key="hf_token" title="Clear stored key" type="button">×</button>
-        </div>
-        <div class="field-row" style="gap: 6px;">
-          <span class="k">Anthropic</span>
-          <input id="sKeyAnthropic" class="inline" type="password" autocomplete="off"
-                 placeholder="not set" style="flex: 1;">
-          <button class="icon-btn" data-clear-key="anthropic_key" title="Clear stored key" type="button">×</button>
-        </div>
-        <div class="field-row" style="gap: 6px;">
-          <span class="k">OpenAI</span>
-          <input id="sKeyOpenai" class="inline" type="password" autocomplete="off"
-                 placeholder="not set" style="flex: 1;">
-          <button class="icon-btn" data-clear-key="openai_key" title="Clear stored key" type="button">×</button>
-        </div>
-        <p style="margin-top: 8px; color: var(--text-dim); font-size: 11px; line-height: 1.5;">
-          Keys are encrypted on the server and delivered to the agent at run time.
-          They are never displayed in the browser. Leave an input blank to keep the
-          existing stored value; use the <strong>×</strong> button to clear it.
-        </p>
+      <span class="field-label">Save directory <span class="hint" style="font-style:italic; color:var(--text-dim); font-size:10.5px;">(server path, read-only)</span></span>
+      <div class="field-row" style="margin-bottom:8px;">
+        <span class="v dim" id="sSaveDirDisplay" style="font-family:var(--mono); font-size:11px; color:var(--text-dim); word-break:break-all;">—</span>
       </div>
 
       <div class="specs-block">
@@ -1599,6 +1664,9 @@
       <button class="close" id="agentCmdClose">×</button>
     </div>
     <div class="modal-body">
+      <div id="agentCmdError" style="display:none; margin-bottom:10px; padding:8px 10px;
+           border:1px solid #b00; border-radius:4px; color:#b00; background:#fff5f5;
+           font-family:var(--mono); font-size:12px;"></div>
       <p style="margin-bottom: 10px; color: var(--text-soft);">
         Copy this command and run it on a machine with access to your steered model. The agent
         will claim the run, execute all three stages, and stream progress back here.
@@ -2727,6 +2795,7 @@
 
   // ── websocket ────────────────────────────────────────────────
   let currentWs = null;
+  let pendingDispatchWatchdog = null;
   function connectWebSocket() {
     if (currentWs) {
       try { currentWs.close(); } catch { /* ignore */ }
@@ -2738,6 +2807,10 @@
     const ws = new WebSocket(url);
     currentWs = ws;
     ws.onmessage = (e) => {
+      if (pendingDispatchWatchdog) {
+        clearTimeout(pendingDispatchWatchdog);
+        pendingDispatchWatchdog = null;
+      }
       const msg = JSON.parse(e.data);
       if (msg.event === "snapshot") {
         updatePhase(msg.status === "completed" ? "complete" : (msg.phase || msg.status));
@@ -2777,7 +2850,24 @@
       lastAgentCommand = resp.agent_command;
       await refreshRunsList();
       connectWebSocket();
-      showAgentCommandModal(resp.agent_command);
+      const status = resp.dispatch_status || "manual";
+      if (status === "local" || status === "ssh") {
+        // agent dispatched by the server; progress arrives via WebSocket.
+        if (pendingDispatchWatchdog) clearTimeout(pendingDispatchWatchdog);
+        pendingDispatchWatchdog = setTimeout(async () => {
+          pendingDispatchWatchdog = null;
+          try {
+            const run = await api(runPath(""));
+            if (run.status === "failed") {
+              updatePhase("error", { error: run.error || "unknown error" });
+            }
+          } catch (_) { /* ignore */ }
+        }, 10_000);
+      } else if (status === "failed") {
+        showAgentCommandModal(resp.agent_command, resp.dispatch_error);
+      } else {
+        showAgentCommandModal(resp.agent_command);
+      }
     } catch (e) {
       alert("Failed to create run: " + e.message);
     }
@@ -2896,33 +2986,82 @@
   }
 
   // ── settings modal ───────────────────────────────────────────
-  const SECRET_INPUTS = [
-    ["hf_token", "sKeyHf"],
-    ["anthropic_key", "sKeyAnthropic"],
-    ["openai_key", "sKeyOpenai"],
-  ];
+  const KEY_VALIDATORS = {
+    hf_token:      (v) => v.startsWith("hf_") && v.length > 10,
+    anthropic_key: (v) => v.startsWith("sk-ant-"),
+    openai_key:    (v) => v.startsWith("sk-") && !v.startsWith("sk-ant-"),
+  };
+
+  const KEY_LABELS = {
+    hf_token:      "HuggingFace",
+    anthropic_key: "Anthropic",
+    openai_key:    "OpenAI",
+  };
+
+  const KEY_ORDER = ["hf_token", "anthropic_key", "openai_key"];
+
+  let secretsStatus = { hf_token: false, anthropic_key: false, openai_key: false };
+
+  function pillStateForKey(keyName) {
+    const inputEl = document.querySelector(`[data-key-name="${keyName}"]`);
+    const typed = inputEl ? inputEl.value.trim() : "";
+    if (typed) {
+      return KEY_VALIDATORS[keyName](typed) ? "ready" : "invalid";
+    }
+    return secretsStatus[keyName] ? "ready" : "not-set";
+  }
+
+  function pillLabelForState(state) {
+    return { ready: "READY", "not-set": "NOT SET", invalid: "INVALID" }[state] || "NOT SET";
+  }
+
+  function renderApiKeys() {
+    const wrap = $("apiKeysBlock");
+    if (!wrap) return;
+    wrap.innerHTML = KEY_ORDER.map((keyName) => {
+      const state = pillStateForKey(keyName);
+      return `
+        <div class="key-row">
+          <span class="kr-label">${escapeHtml(KEY_LABELS[keyName])}</span>
+          <input class="kr-input" type="password" autocomplete="off"
+                 data-key-name="${keyName}"
+                 placeholder="${secretsStatus[keyName] ? "••••••••" : "not set"}">
+          <span class="kr-pill ${state}" data-pill-for="${keyName}">${pillLabelForState(state)}</span>
+        </div>
+      `;
+    }).join("");
+
+    wrap.querySelectorAll(".kr-input").forEach((input) => {
+      input.addEventListener("input", () => {
+        const keyName = input.dataset.keyName;
+        const pill = wrap.querySelector(`[data-pill-for="${keyName}"]`);
+        if (!pill) return;
+        const state = pillStateForKey(keyName);
+        pill.className = `kr-pill ${state}`;
+        pill.textContent = pillLabelForState(state);
+      });
+    });
+  }
 
   async function loadSecretStatus() {
-    let data = {};
     try {
-      data = await api("/api/secrets/status") || {};
-    } catch (e) {
-      /* leave all inputs as "not set" */
+      const data = await api("/api/secrets/status") || {};
+      secretsStatus = {
+        hf_token:      !!data.hf_token,
+        anthropic_key: !!data.anthropic_key,
+        openai_key:    !!data.openai_key,
+      };
+    } catch (_) {
+      secretsStatus = { hf_token: false, anthropic_key: false, openai_key: false };
     }
-    for (const [key, inputId] of SECRET_INPUTS) {
-      const input = $(inputId);
-      if (!input) continue;
-      input.value = "";
-      input.placeholder = data[key] ? "••••••••" : "not set";
-    }
+    renderApiKeys();
   }
 
   async function saveSecrets() {
     const payload = {};
-    for (const [key, inputId] of SECRET_INPUTS) {
-      const el = $(inputId);
-      if (el && el.value !== "") payload[key] = el.value;
-    }
+    document.querySelectorAll("#apiKeysBlock .kr-input").forEach((el) => {
+      if (el.value !== "") payload[el.dataset.keyName] = el.value;
+    });
     if (Object.keys(payload).length === 0) return;
     await api("/api/secrets", {
       method: "PUT",
@@ -2931,23 +3070,128 @@
     });
   }
 
-  async function clearStoredSecret(key) {
-    await api("/api/secrets", {
+  // ── compute config ───────────────────────────────────────────
+  let computeConfigState = { mode: "local", credential_set: false };
+  let soloMode = false;
+
+  function applyComputeUI() {
+    const isSsh = computeConfigState.mode === "ssh";
+    const localRadio = $("computeModeLocal");
+    const sshRadio = $("computeModeSsh");
+    if (localRadio) localRadio.checked = !isSsh;
+    if (sshRadio) sshRadio.checked = isSsh;
+    const fields = $("computeSshFields");
+    const localInfo = $("computeLocalInfo");
+    if (fields) fields.style.display = isSsh ? "" : "none";
+    if (localInfo) localInfo.style.display = isSsh ? "none" : "";
+
+    if (!isSsh) {
+      const info = (currentRun && currentRun.model_info) || {};
+      const dev = info.device || "—";
+      const name = info.model_name ? " · " + info.model_name : "";
+      $("computeLocalDevice").textContent = dev === "—" ? "(resolved on first run)" : `Local · ${dev}${name}`;
+    }
+
+    $("sshHost").value = computeConfigState.host || "";
+    $("sshPort").value = computeConfigState.port || 22;
+    $("sshUsername").value = computeConfigState.username || "";
+    const auth = computeConfigState.auth_method || "key";
+    $("sshAuthKey").checked = auth === "key";
+    $("sshAuthPassword").checked = auth === "password";
+    $("sshCredentialLabel").textContent = auth === "password" ? "Password" : "Key path / contents";
+    $("sshCredential").placeholder = computeConfigState.credential_set
+      ? "•••••••• (saved)"
+      : (auth === "password" ? "password" : "~/.ssh/id_ed25519 or paste key contents");
+    $("sshCredential").value = "";
+    $("sshPythonPath").value = computeConfigState.python_path || "python3";
+    $("computeTestStatus").textContent = "";
+  }
+
+  async function loadComputeConfig() {
+    try {
+      const data = await api("/api/compute/config");
+      computeConfigState = {
+        mode: data.mode || "local",
+        host: data.host || "",
+        port: data.port || 22,
+        username: data.username || "",
+        auth_method: data.auth_method || "key",
+        credential_set: !!data.credential_set,
+        python_path: data.python_path || "python3",
+      };
+    } catch (_) {
+      computeConfigState = { mode: "local", credential_set: false };
+    }
+    applyComputeUI();
+  }
+
+  function readComputeFromUI() {
+    const isSsh = $("computeModeSsh") && $("computeModeSsh").checked;
+    const cfg = {
+      mode: isSsh ? "ssh" : "local",
+      host: ($("sshHost").value || "").trim() || null,
+      port: parseInt($("sshPort").value || "22", 10) || 22,
+      username: ($("sshUsername").value || "").trim() || null,
+      auth_method: $("sshAuthKey").checked ? "key" : "password",
+      python_path: ($("sshPythonPath").value || "").trim() || "python3",
+    };
+    const cred = $("sshCredential").value;
+    if (cred !== "") cfg.credential = cred;  // omit to preserve existing
+    return cfg;
+  }
+
+  async function saveComputeConfig() {
+    const cfg = readComputeFromUI();
+    await api("/api/compute/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [key]: "" }),
+      body: JSON.stringify(cfg),
     });
+  }
+
+  async function testComputeConnection() {
+    const cfg = readComputeFromUI();
+    if (cfg.mode !== "ssh") {
+      $("computeTestStatus").textContent = "switch to Remote (SSH) to test";
+      return;
+    }
+    if (!cfg.host || !cfg.username) {
+      $("computeTestStatus").textContent = "host and username required";
+      return;
+    }
+    $("computeTestStatus").textContent = "testing…";
+    try {
+      const resp = await api("/api/compute/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cfg),
+      });
+      if (!resp.ok) {
+        $("computeTestStatus").textContent = "✗ " + (resp.error || "failed");
+        return;
+      }
+      const dev = resp.device_name || resp.device || "?";
+      const reach = resp.server_reachable
+        ? "server reachable"
+        : "✗ server unreachable: " + (resp.reachability_error || "unknown");
+      $("computeTestStatus").textContent = `✓ Connected · ${dev} · ${reach}`;
+    } catch (e) {
+      $("computeTestStatus").textContent = "✗ " + e.message;
+    }
   }
 
   async function openSettings() {
     const cfg = currentConfig || {};
-    $("sSaveDir").value = cfg.save_dir || "";
     $("sDeviceMap").value = cfg.device_map || "auto";
-    $("sHfKwargs").value = JSON.stringify(cfg.hf_model_kwargs || {}, null, 2);
     $("sHost").textContent = location.hostname || "—";
     $("sPort").textContent = location.port || "—";
+    try {
+      const rootData = await api("/api/data-root");
+      $("sSaveDirDisplay").textContent = (rootData && rootData.data_root) || "—";
+    } catch (_) { /* ignore */ }
     await refreshCatalog();
     await loadSecretStatus();
+    await loadComputeConfig();
     catalogModalOpen();
     $("settingsModal").classList.add("open");
   }
@@ -2955,18 +3199,9 @@
     $("settingsModal").classList.remove("open");
   }
   async function saveSettings() {
-    let kwargs = {};
-    try {
-      const raw = $("sHfKwargs").value.trim();
-      kwargs = raw ? JSON.parse(raw) : {};
-    } catch (e) {
-      alert("HF model kwargs is not valid JSON.");
-      return;
-    }
     const cfg = readConfigFromUI();
-    cfg.save_dir = $("sSaveDir").value || null;
     cfg.device_map = $("sDeviceMap").value || "auto";
-    cfg.hf_model_kwargs = kwargs;
+    cfg.hf_model_kwargs = (currentConfig && currentConfig.hf_model_kwargs) || {};
     let configOk = false;
     try {
       if (currentRunId) {
@@ -2990,6 +3225,12 @@
       await saveSecrets();
     } catch (e) {
       alert("Failed to save API keys: " + e.message);
+      configOk = false;
+    }
+    try {
+      await saveComputeConfig();
+    } catch (e) {
+      alert("Failed to save compute config: " + e.message);
       configOk = false;
     }
     if (configOk) closeSettings();
@@ -3218,7 +3459,6 @@
       _prevModelId: e.model_id,
     }));
     renderCatalogEditor();
-    renderProviderStatus();
   }
 
   function needsEndpoint(provider) {
@@ -3404,24 +3644,6 @@
     });
   }
 
-  function renderProviderStatus() {
-    const wrap = $("providerStatus");
-    wrap.innerHTML = "";
-    catalogProviders.forEach((p) => {
-      const st = providerStatusMap[p] || {};
-      let pill;
-      if (!st.wired) pill = `<span class="pill disabled">not wired</span>`;
-      else if (!st.env_var) pill = `<span class="pill ok">ready</span>`;
-      else pill = st.env_present
-        ? `<span class="pill ok">${escapeHtml(st.env_var)} ✓</span>`
-        : `<span class="pill miss">${escapeHtml(st.env_var)} missing</span>`;
-      const row = document.createElement("div");
-      row.className = "prow";
-      row.innerHTML = `<span class="name">${escapeHtml(p)}</span>${pill}`;
-      wrap.appendChild(row);
-    });
-  }
-
   async function saveCatalog() {
     const clean = catalogDraft
       .filter((e) => (e.model_id || "").trim())
@@ -3541,13 +3763,23 @@
     if (!heatmapData) renderEmptyHeatmap();
   }
 
-  function showAgentCommandModal(cmd) {
+  function showAgentCommandModal(cmd, errorMessage) {
     const modal = $("agentCmdModal");
     if (!modal) return;
     $("agentCmdText").textContent = cmd.command;
     $("agentCmdRunId").textContent = cmd.run_id;
     $("agentCmdServer").textContent = cmd.server;
     $("agentCmdToken").textContent = cmd.agent_token;
+    const errBox = $("agentCmdError");
+    if (errBox) {
+      if (errorMessage) {
+        errBox.style.display = "";
+        errBox.textContent = "Auto-dispatch failed: " + errorMessage + " — run the command manually as a fallback.";
+      } else {
+        errBox.style.display = "none";
+        errBox.textContent = "";
+      }
+    }
     modal.classList.add("open");
   }
 
@@ -3587,6 +3819,11 @@
   async function init() {
     $("cbGradient").style.background = cmapCssGradient(DELTA_COLORS, 13);
     $("fCopyright").textContent = `IBM Research, ${new Date().getFullYear()}`;
+
+    try {
+      const info = await api("/api/server-info");
+      soloMode = !!(info && info.solo_mode);
+    } catch (_) { soloMode = false; }
 
     await refreshCatalog();
     attachModelCombo("mcTarget", "target");
@@ -3663,20 +3900,24 @@
     $("settingsModal").addEventListener("click", (e) => {
       if (e.target.id === "settingsModal") closeSettings();
     });
-    $("settingsModal").addEventListener("click", async (e) => {
-      const btn = e.target.closest("[data-clear-key]");
-      if (!btn) return;
-      e.preventDefault();
-      const key = btn.dataset.clearKey;
-      try {
-        await clearStoredSecret(key);
-      } catch (err) {
-        alert("Failed to clear key: " + err.message);
-        return;
-      }
-      await loadSecretStatus();
-      try { await refreshCatalog(); renderProviderStatus(); } catch (err) { /* ignore */ }
+
+    // compute config UI
+    document.querySelectorAll("input[name='computeMode']").forEach((el) => {
+      el.addEventListener("change", () => {
+        computeConfigState.mode = el.value;
+        applyComputeUI();
+      });
     });
+    document.querySelectorAll("input[name='sshAuthMethod']").forEach((el) => {
+      el.addEventListener("change", () => {
+        computeConfigState.auth_method = el.value;
+        $("sshCredentialLabel").textContent = el.value === "password" ? "Password" : "Key path / contents";
+        $("sshCredential").placeholder = computeConfigState.credential_set
+          ? "•••••••• (saved)"
+          : (el.value === "password" ? "password" : "~/.ssh/id_ed25519 or paste key contents");
+      });
+    });
+    $("btnTestCompute").addEventListener("click", testComputeConnection);
 
     $("btnHelp").addEventListener("click", () => {
       renderHelpContent();

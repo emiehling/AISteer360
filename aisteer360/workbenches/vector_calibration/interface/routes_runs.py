@@ -24,9 +24,13 @@ from .db import (
     hash_agent_token,
     mint_agent_token,
 )
+from .dispatch import dispatch_local, dispatch_ssh, test_ssh
 from .schemas import (
     AgentCommand,
     CellDetailResponse,
+    ComputeConfig,
+    ComputeConfigResponse,
+    ComputeTestResponse,
     FullConfigSchema,
     HeatmapResponse,
     RegenerateTokenResponse,
@@ -94,6 +98,14 @@ def _result_from_checkpoint(path: Path) -> CalibrationResult:
     )
 
 
+# ── data root ────────────────────────────────────────────────────
+
+@router.get("/data-root")
+async def get_data_root(request: Request, _: OwnerTokenHash) -> dict:
+    root = str(request.app.state.data_root.resolve())
+    return {"data_root": root}
+
+
 # ── create / list / read ─────────────────────────────────────────
 
 @router.post("/runs", response_model=RunCreateResponse)
@@ -124,10 +136,46 @@ async def create_run(
         agent_token_hash=hash_agent_token(agent_token),
         run_dir=run_dir,
     )
+
+    cmd = _agent_command(request, run_id, agent_token)
+    name = getattr(request.app.state, "agent_command_name", "aisteer360-agent")
+    agent_argv = [
+        name,
+        "--server", cmd.server,
+        "--run-id", cmd.run_id,
+        "--agent-token", cmd.agent_token,
+    ]
+
+    compute = await db.get_compute_config(owner_hash)
+    mode = compute.get("mode") if compute else None
+    solo = getattr(request.app.state, "solo_mode", False)
+
+    dispatch_status = "manual"
+    dispatch_error: str | None = None
+
+    if mode == "ssh":
+        try:
+            dispatch_ssh(compute, agent_argv)
+            dispatch_status = "ssh"
+        except Exception as exc:
+            logger.warning("SSH dispatch failed for %s: %s", run_id, exc)
+            dispatch_status = "failed"
+            dispatch_error = str(exc)
+    elif mode == "local" or solo:
+        try:
+            dispatch_local(agent_argv)
+            dispatch_status = "local"
+        except Exception as exc:
+            logger.warning("Local dispatch failed for %s: %s", run_id, exc)
+            dispatch_status = "failed"
+            dispatch_error = str(exc)
+
     return RunCreateResponse(
         run=RunDetail(**run.to_detail()),
         agent_token=agent_token,
-        agent_command=_agent_command(request, run_id, agent_token),
+        agent_command=cmd,
+        dispatch_status=dispatch_status,
+        dispatch_error=dispatch_error,
     )
 
 
@@ -263,3 +311,56 @@ async def download_result(run: OwnerScopedRun) -> FileResponse:
     return FileResponse(
         path, filename="calibration_result.json", media_type="application/json"
     )
+
+
+# ── compute config ───────────────────────────────────────────────
+
+@router.get("/compute/config", response_model=ComputeConfigResponse)
+async def get_compute(
+    owner_hash: OwnerTokenHash,
+    db: Database = Depends(get_db),
+) -> ComputeConfigResponse:
+    config = await db.get_compute_config(owner_hash)
+    if config is None:
+        return ComputeConfigResponse(mode="local")
+    return ComputeConfigResponse(
+        mode=config.get("mode", "local"),
+        host=config.get("host"),
+        port=config.get("port", 22),
+        username=config.get("username"),
+        auth_method=config.get("auth_method"),
+        credential_set=bool(config.get("credential")),
+        python_path=config.get("python_path") or "python3",
+    )
+
+
+@router.put("/compute/config")
+async def put_compute(
+    body: ComputeConfig,
+    owner_hash: OwnerTokenHash,
+    db: Database = Depends(get_db),
+) -> dict[str, str]:
+    payload = body.model_dump()
+    # treat unset credential as "leave unchanged" by dropping the key entirely
+    if payload.get("credential") is None:
+        payload.pop("credential", None)
+    await db.upsert_compute_config(owner_hash, payload)
+    return {"status": "ok"}
+
+
+@router.post("/compute/test", response_model=ComputeTestResponse)
+async def test_compute(
+    body: ComputeConfig,
+    request: Request,
+    owner_hash: OwnerTokenHash,
+    db: Database = Depends(get_db),
+) -> ComputeTestResponse:
+    payload = body.model_dump()
+    # if the user typed a host but left credential blank, fall back to the stored one
+    if not payload.get("credential"):
+        existing = await db.get_compute_config(owner_hash)
+        if existing and existing.get("credential"):
+            payload["credential"] = existing["credential"]
+    server_url = _public_server_url(request)
+    result = test_ssh(payload, server_url)
+    return ComputeTestResponse(**result)

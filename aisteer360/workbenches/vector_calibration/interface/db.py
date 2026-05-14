@@ -53,6 +53,18 @@ CREATE TABLE IF NOT EXISTS owner_secrets (
   openai_key_enc    TEXT,
   updated_at        REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS owner_compute (
+  owner_token_hash      TEXT PRIMARY KEY,
+  compute_mode          TEXT NOT NULL DEFAULT 'local',
+  ssh_host              TEXT,
+  ssh_port              INTEGER NOT NULL DEFAULT 22,
+  ssh_username          TEXT,
+  ssh_auth_method       TEXT,
+  ssh_credential_enc    TEXT,
+  ssh_python_path       TEXT NOT NULL DEFAULT 'python3',
+  updated_at            REAL NOT NULL
+);
 """
 
 SECRET_FIELDS: tuple[str, ...] = ("hf_token", "anthropic_key", "openai_key")
@@ -402,6 +414,91 @@ class Database:
         row = await cur.fetchone()
         await cur.close()
         return row
+
+    # ── owner compute config ─────────────────────────────────────
+
+    async def get_compute_config(self, owner_hash: str) -> dict[str, Any] | None:
+        """Return compute config for an owner with credential decrypted, or None if unset."""
+        cur = await self.conn.execute(
+            "SELECT * FROM owner_compute WHERE owner_token_hash = ?",
+            (owner_hash,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        if row is None:
+            return None
+        credential = None
+        enc = row["ssh_credential_enc"]
+        if enc:
+            try:
+                credential = secrets_vault.decrypt(enc)
+            except Exception as exc:
+                logger.warning("Failed to decrypt SSH credential: %s", exc)
+        return {
+            "mode": row["compute_mode"],
+            "host": row["ssh_host"],
+            "port": row["ssh_port"],
+            "username": row["ssh_username"],
+            "auth_method": row["ssh_auth_method"],
+            "credential": credential,
+            "python_path": row["ssh_python_path"],
+        }
+
+    async def upsert_compute_config(self, owner_hash: str, config: dict[str, Any]) -> None:
+        """Persist compute config for an owner, encrypting the SSH credential at rest.
+
+        If `credential` is missing or None, the previously stored credential is preserved. An
+        explicit empty string clears it.
+        """
+        existing = await self.get_compute_config(owner_hash)
+        cred = config.get("credential")
+        if cred is None and existing is not None:
+            enc = await self._fetch_compute_credential_enc(owner_hash)
+        elif cred == "" or cred is None:
+            enc = None
+        else:
+            enc = secrets_vault.encrypt(cred)
+
+        now = time.time()
+        await self.conn.execute(
+            """
+            INSERT INTO owner_compute (
+                owner_token_hash, compute_mode, ssh_host, ssh_port, ssh_username,
+                ssh_auth_method, ssh_credential_enc, ssh_python_path, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_token_hash) DO UPDATE SET
+                compute_mode       = excluded.compute_mode,
+                ssh_host           = excluded.ssh_host,
+                ssh_port           = excluded.ssh_port,
+                ssh_username       = excluded.ssh_username,
+                ssh_auth_method    = excluded.ssh_auth_method,
+                ssh_credential_enc = excluded.ssh_credential_enc,
+                ssh_python_path    = excluded.ssh_python_path,
+                updated_at         = excluded.updated_at
+            """,
+            (
+                owner_hash,
+                config.get("mode", "local"),
+                config.get("host"),
+                int(config.get("port", 22) or 22),
+                config.get("username"),
+                config.get("auth_method"),
+                enc,
+                config.get("python_path") or "python3",
+                now,
+            ),
+        )
+        await self.conn.commit()
+
+    async def _fetch_compute_credential_enc(self, owner_hash: str) -> str | None:
+        cur = await self.conn.execute(
+            "SELECT ssh_credential_enc FROM owner_compute WHERE owner_token_hash = ?",
+            (owner_hash,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        return row["ssh_credential_enc"] if row else None
 
 
 def _row_to_run(row: aiosqlite.Row) -> Run:

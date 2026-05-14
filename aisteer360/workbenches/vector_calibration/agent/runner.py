@@ -80,17 +80,17 @@ class AgentRunner:
             openai_key=server_keys.get("openai_key"),
         )
 
-        cfg = from_server_config(raw_cfg)
-        self._gen_provider, self._judge_provider = build_from_config(raw_cfg, keys)
-
-        workbench = VectorCalibrationWorkbench(cfg)
-        workbench._run_dir = run_dir  # force the active run dir
-        self._workbench = workbench
-
-        self._poller = _CancelPoller(self.client)
-        self._poller.start()
-
         try:
+            cfg = from_server_config(raw_cfg)
+            self._gen_provider, self._judge_provider = build_from_config(raw_cfg, keys)
+
+            workbench = VectorCalibrationWorkbench(cfg)
+            workbench._run_dir = run_dir  # force the active run dir
+            self._workbench = workbench
+
+            self._poller = _CancelPoller(self.client)
+            self._poller.start()
+
             self._run_stage_generation(workbench, run_dir)
             if self._poller.is_cancelled():
                 raise _Cancelled()
@@ -105,13 +105,17 @@ class AgentRunner:
             self.client.error("cancelled by user")
         except Exception as exc:
             logger.exception("Run %s failed.", self.client.run_id)
-            self.client.error(str(exc))
+            try:
+                self.client.error(str(exc))
+            except Exception:
+                logger.warning("Failed to report error to server.")
             raise
         finally:
             if self._poller is not None:
                 self._poller.stop()
             self._release_providers()
-            workbench.cleanup()
+            if self._workbench is not None:
+                self._workbench.cleanup()
 
     # ── stages ───────────────────────────────────────────────────
 
