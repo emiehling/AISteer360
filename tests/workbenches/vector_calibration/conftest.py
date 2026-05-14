@@ -5,10 +5,13 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import json
+
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
+from aisteer360.workbenches.vector_calibration.interface import catalog as catalog_module
 from aisteer360.workbenches.vector_calibration.interface.app import create_app
 from aisteer360.workbenches.vector_calibration.interface.db import (
     Database,
@@ -34,6 +37,27 @@ def owner_token() -> str:
 @pytest.fixture
 def owner_header(owner_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {owner_token}"}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the catalog at a tmp file containing the synthetic test models.
+
+    Run creation now validates generator/judge models against this catalog, so tests need an
+    entry for the `test/model` id used by `minimal_config()`.
+    """
+    catalog_path = tmp_path / "model_catalog.json"
+    catalog_path.write_text(json.dumps([
+        {
+            "label": "Test Model",
+            "model_id": "test/model",
+            "provider": "hf",
+            "endpoint": None,
+            "roles": ["target", "generator", "judge"],
+        },
+    ]))
+    monkeypatch.setattr(catalog_module, "DEFAULT_CATALOG_PATH", catalog_path)
+    return catalog_path
 
 
 @pytest.fixture

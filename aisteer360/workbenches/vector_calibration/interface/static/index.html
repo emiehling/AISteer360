@@ -2283,6 +2283,27 @@
     return { provider, endpoint };
   }
 
+  function validateModelsAgainstCatalog(cfg) {
+    const errors = [];
+    const checkRole = (modelId, role, label) => {
+      if (!modelId) {
+        errors.push(`${label} model is not set.`);
+        return;
+      }
+      const entry = catalogEntries.find((e) => e.model_id === modelId);
+      if (!entry) {
+        errors.push(`${label} model "${modelId}" is not in your catalog. Add it via Settings → Model Catalog.`);
+        return;
+      }
+      if (!(entry.roles || []).includes(role)) {
+        errors.push(`${label} model "${modelId}" is not enabled for the ${role} role.`);
+      }
+    };
+    checkRole(cfg.generation && cfg.generation.generator_model, "generator", "Generator");
+    checkRole(cfg.calibration && cfg.calibration.judge && cfg.calibration.judge.model, "judge", "Judge");
+    return errors;
+  }
+
   function readConfigFromUI() {
     const cfg = JSON.parse(JSON.stringify(currentConfig || {}));
     cfg.steered_model = $("steeredModel").value;
@@ -2856,6 +2877,11 @@
       return;
     }
     const cfg = readConfigFromUI();
+    const catalogErrors = validateModelsAgainstCatalog(cfg);
+    if (catalogErrors.length) {
+      alert("Cannot start run:\n\n• " + catalogErrors.join("\n• "));
+      return;
+    }
     try {
       const resp = await api("/api/runs", {
         method: "POST",

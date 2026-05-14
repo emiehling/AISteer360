@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from aisteer360.workbenches.vector_calibration.results import CalibrationResult, CellResult
 
 from .auth import OwnerScopedRun, OwnerTokenHash, get_db
+from .catalog import load_catalog
 from .db import (
     ACTIVE_STATUSES,
     STATUS_CANCELLED,
@@ -47,6 +48,50 @@ router = APIRouter(tags=["runs"])
 
 
 # ── helpers ──────────────────────────────────────────────────────
+
+_CATALOG_PROVIDER_TO_WIRE = {
+    "hf": "hf",
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "openai_compatible": "openai",
+}
+
+
+def _validate_models_against_catalog(cfg: FullConfigSchema) -> None:
+    """Check generator and judge models against the user's catalog.
+
+    Both roles are picked from a curated catalog in the UI, so a model id that is missing or
+    mismatched against its declared provider almost always indicates a stale saved config (the
+    silent fallback in the UI used to coerce unknown ids to provider 'hf', which then sent
+    requests for API-only models to Hugging Face).
+    """
+    entries = {e.model_id: e for e in load_catalog()}
+
+    def _check(model_id: str, declared_provider: str, role: str) -> None:
+        entry = entries.get(model_id)
+        if entry is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"{role.capitalize()} model '{model_id}' is not in the model catalog. "
+                "Add it via Settings → Model Catalog.",
+            )
+        wire = _CATALOG_PROVIDER_TO_WIRE.get(entry.provider)
+        if wire != declared_provider:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"{role.capitalize()} model '{model_id}' is registered with provider "
+                f"'{entry.provider}' but the run requested '{declared_provider}'. "
+                "Update the catalog entry or pick a different model.",
+            )
+        if role not in entry.roles:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Model '{model_id}' is not enabled for the {role} role in the catalog.",
+            )
+
+    _check(cfg.generation.generator_model, cfg.generation.generator_provider, "generator")
+    _check(cfg.calibration.judge.model, cfg.calibration.judge.provider, "judge")
+
 
 def _public_server_url(request: Request) -> str:
     override = getattr(request.app.state, "public_server_url", None)
@@ -117,6 +162,7 @@ async def create_run(
 ) -> RunCreateResponse:
     """Create a new run and mint its agent token."""
     cfg = body.config
+    _validate_models_against_catalog(cfg)
     behavior = cfg.generation.behavior.strip() or "run"
     run_id = build_run_id(behavior)
     data_root: Path = request.app.state.data_root
