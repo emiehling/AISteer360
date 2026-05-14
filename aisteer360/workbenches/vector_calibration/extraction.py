@@ -1,5 +1,6 @@
 """Steering vector extraction from contrastive pairs."""
 import logging
+from typing import Callable
 
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
@@ -42,6 +43,7 @@ class SteeringVectorExtractor:
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizerBase,
         pairs: ContrastivePairs,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> SteeringVector:
         """Run extraction and return a `SteeringVector`.
 
@@ -49,6 +51,8 @@ class SteeringVectorExtractor:
             model: The steered model (hidden states are extracted from this).
             tokenizer: Corresponding tokenizer.
             pairs: Contrastive pairs from the generation stage.
+            on_progress: Optional `(completed, total)` callback fired as each forward-pass batch
+                finishes inside the underlying estimator.
 
         Returns:
             `SteeringVector` with one direction per extracted layer.
@@ -68,7 +72,7 @@ class SteeringVectorExtractor:
         )
 
         estimator = estimator_cls()
-        sv = estimator.fit(model, tokenizer, data=pairs, spec=spec)
+        sv = estimator.fit(model, tokenizer, data=pairs, spec=spec, on_progress=on_progress)
 
         # layer filtering
         if cfg.layers != "all":

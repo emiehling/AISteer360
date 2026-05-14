@@ -28,9 +28,32 @@
     --accent-soft: rgba(201,161,90,0.14);
     --good: #7cc17a;
     --danger: #d66b5b;
+    --primary-text: #1a1410;
+    --incoherent-cell: #2a2a30;
 
     --sans: 'IBM Plex Sans', system-ui, sans-serif;
     --mono: 'JetBrains Mono', monospace;
+  }
+  [data-theme="light"] {
+    --bg: #f4f3f0;
+    --panel: #ffffff;
+    --panel-2: #f0eeeb;
+    --panel-3: #e6e3de;
+    --line: rgba(0,0,0,0.07);
+    --line-2: rgba(0,0,0,0.12);
+    --line-3: rgba(0,0,0,0.22);
+    --text: #1a1a1a;
+    --text-soft: #3a3630;
+    --text-dim: #6b665f;
+    --text-dimmer: #9b9690;
+    --text-faint: #c8c4be;
+    --accent: #a07a2e;
+    --accent-hov: #8b6a28;
+    --accent-soft: rgba(160,122,46,0.12);
+    --good: #3a8a38;
+    --danger: #b94434;
+    --primary-text: #fcfaf6;
+    --incoherent-cell: #d8d4cd;
   }
   body {
     font-family: var(--sans);
@@ -1120,11 +1143,25 @@
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn.primary {
     background: var(--accent);
-    color: #1a1410;
+    color: var(--primary-text);
     border-color: var(--accent);
     font-weight: 700;
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
   }
-  .btn.primary:hover { background: var(--accent-hov); border-color: var(--accent-hov); color: #1a1410; }
+  .btn.primary:hover { background: var(--accent-hov); border-color: var(--accent-hov); color: var(--primary-text); }
+  .run-row .btn.primary::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--accent-hov);
+    transform: scaleX(var(--progress, 0));
+    transform-origin: left;
+    transition: transform 0.25s ease;
+    z-index: -1;
+    pointer-events: none;
+  }
   .btn + .btn { margin-top: 8px; }
 
   .mini-progress {
@@ -1464,6 +1501,10 @@
     <span class="name"><span class="sub">Vector Calibration Workbench</span></span>
   </div>
   <div class="spacer"></div>
+  <button class="icon-btn" id="themeToggle" title="Toggle light/dark mode" type="button">
+    <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round"></svg>
+  </button>
   <button class="icon-btn" id="btnHelp" title="How to use">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
          stroke-linecap="round" stroke-linejoin="round">
@@ -1636,10 +1677,6 @@
         <div class="bar"><div class="fill" id="progressFill"></div></div>
         <div class="lab"><span id="progressLabel">—</span><span id="progressPct">—</span></div>
       </div>
-      <div style="margin-top: 12px; display: flex; gap: 8px;">
-        <button class="btn" id="btnShowAgentCmd" type="button">Show agent command</button>
-        <button class="btn" id="btnRegenerateToken" type="button">Regenerate agent token</button>
-      </div>
     </div>
   </div>
 </div>
@@ -1708,7 +1745,7 @@
   </div>
 
   <!-- ============ RIGHT SIDEBAR ============ -->
-  <aside class="right">
+  <aside class="right" spellcheck="false">
 
     <!-- 0. Target model -->
     <div class="sec">
@@ -1838,6 +1875,10 @@
         <div class="specs-block">
           <div class="sub-label"><span>Layer extraction</span></div>
           <div class="field-row"><span class="k">batch size</span><input class="inline" id="batchSizeExt" type="number" min="1"></div>
+          <div class="field-row" title="Fraction of generated pairs used for extraction. The remainder are held back so their seed prompts feed calibration.">
+            <span class="k">extract / calibrate split</span>
+            <input class="inline" id="pairSplitRatio" type="number" min="0.1" max="1" step="0.05">
+          </div>
         </div>
 
         <div class="run-row">
@@ -2156,7 +2197,9 @@
   // ── color mapping ────────────────────────────────────────────
   function scoreColor(v, view, coherent) {
     if (v === null || v === undefined || Number.isNaN(v)) return "var(--panel-3)";
-    if (view === "score_delta" && coherent === false) return "#2a2a30";
+    if (view === "score_delta" && coherent === false) {
+      return getComputedStyle(document.documentElement).getPropertyValue("--incoherent-cell").trim() || "#2a2a30";
+    }
 
     if (view === "score_delta") {
       const bound = 3.0;
@@ -2205,6 +2248,7 @@
     setToggle($("tgCenter"), !!e.center);
     setToggle($("tgPerLayer"), !!e.per_layer_rescale);
     $("batchSizeExt").value = e.batch_size ?? 8;
+    $("pairSplitRatio").value = e.pair_split_ratio ?? 1.0;
 
     const c = cfg.calibration || {};
     $("judgeModel").value = (c.judge && c.judge.model) || "";
@@ -2296,6 +2340,8 @@
       generator_provider: catalogLookup($("generatorModel").value).provider,
       generator_base_url: catalogLookup($("generatorModel").value).endpoint,
     };
+    const splitRaw = parseFloat($("pairSplitRatio").value);
+    const splitRatio = Number.isFinite(splitRaw) && splitRaw > 0 && splitRaw <= 1 ? splitRaw : 1.0;
     cfg.extraction = {
       ...(cfg.extraction || {}),
       method: $("method").value,
@@ -2304,6 +2350,7 @@
       center: $("tgCenter").classList.contains("on"),
       per_layer_rescale: $("tgPerLayer").classList.contains("on"),
       batch_size: +$("batchSizeExt").value,
+      pair_split_ratio: splitRatio,
     };
     cfg.calibration = {
       ...(cfg.calibration || {}),
@@ -2351,6 +2398,8 @@
 
   // ── model info ───────────────────────────────────────────────
   function renderModelInfo(info) {
+    const specs = $("modelSpecs");
+    if (!specs) return;
     const rows = [
       ["layers", info.num_layers],
       ["d_model", info.hidden_size],
@@ -2359,15 +2408,21 @@
       ["ffn dim", info.intermediate_size],
       ["type", info.model_type],
     ];
-    const html = rows
+    const hasContent = rows.some(([, v]) => v !== null && v !== undefined);
+    if (!hasContent) {
+      // don't overwrite probe-sourced info with an empty live snapshot
+      if (specs.dataset.source === "probe") return;
+      specs.innerHTML = "";
+      specs.dataset.source = "";
+      return;
+    }
+    specs.innerHTML = rows
       .filter(([, v]) => v !== null && v !== undefined)
       .map(
         ([k, v]) =>
           `<div class="field-row"><span class="k">${k}</span><span class="v">${escapeHtml(String(v))}</span></div>`
       )
       .join("");
-    const specs = $("modelSpecs");
-    specs.innerHTML = html;
     specs.dataset.source = "live";
   }
 
@@ -2724,16 +2779,40 @@
       $("progressPct").textContent = "done";
       const ran = new Set((currentRun && currentRun.stages) || []);
       if (ran.has("calibration")) refreshHeatmap();
+      resetAllStageButtonProgress();
     }
     if (phase === "idle" || phase === "error" || phase === "cancelled") {
       $("progressFill").style.width = "0%";
       $("progressPct").textContent = "—";
       $("statusCounter").textContent = "";
+      resetAllStageButtonProgress();
     }
     if (phase === "complete") $("statusCounter").textContent = "";
     if (phase === "complete" || phase === "cancelled" || phase === "error") {
       refreshResumePanel();
     }
+  }
+
+  const STAGE_BUTTON_IDS = {
+    generation: "btnRunGen",
+    extraction: "btnRunExtract",
+    calibration: "btnRunCalibrate",
+  };
+
+  function setStageButtonProgress(phase, frac) {
+    const id = STAGE_BUTTON_IDS[phase];
+    if (!id) return;
+    const btn = $(id);
+    if (!btn) return;
+    const v = Math.max(0, Math.min(1, frac));
+    btn.style.setProperty("--progress", String(v));
+  }
+
+  function resetAllStageButtonProgress() {
+    Object.values(STAGE_BUTTON_IDS).forEach((id) => {
+      const btn = $(id);
+      if (btn) btn.style.setProperty("--progress", "0");
+    });
   }
 
   function updateProgress(msg) {
@@ -2746,6 +2825,7 @@
       if (msg.phase === "calibration") {
         $("runCells").textContent = `${msg.completed} / ${msg.total}`;
       }
+      setStageButtonProgress(msg.phase, msg.completed / msg.total);
     } else if (msg.phase) {
       $("progressLabel").textContent = msg.phase;
     }
@@ -2764,11 +2844,30 @@
   function setConfigEditable(editable) {
     const panel = document.querySelector("aside.right");
     if (!panel) return;
-    const inputs = panel.querySelectorAll("input, select, textarea");
-    inputs.forEach((el) => {
-      el.disabled = !editable;
-      el.style.opacity = editable ? "" : "0.5";
+    // generation/extraction lock with the run; calibration stays editable so the user
+    // can tweak settings and run calibration as a continuation of a terminal run.
+    const lockSections = [$("secGeneration"), $("secExtraction")];
+    lockSections.forEach((sec) => {
+      if (!sec) return;
+      sec.querySelectorAll("input, select, textarea").forEach((el) => {
+        el.disabled = !editable;
+        el.style.opacity = editable ? "" : "0.5";
+      });
     });
+    const calSection = $("secCalibration");
+    if (calSection) {
+      calSection.querySelectorAll("input, select, textarea").forEach((el) => {
+        el.disabled = false;
+        el.style.opacity = "";
+      });
+    }
+    // sections outside the three stages (target model, actions) follow the same rule as calibration:
+    // they should stay interactive (e.g. switching target model on a terminal run).
+    panel.querySelectorAll(":scope > .sec:not(.stage) input, :scope > .sec:not(.stage) select, :scope > .sec:not(.stage) textarea")
+      .forEach((el) => {
+        el.disabled = false;
+        el.style.opacity = "";
+      });
   }
 
   async function refreshStatus() {
@@ -2838,6 +2937,7 @@
       else if (msg.event === "stage_complete") {
         const stageKey = { generation: "Generation", extraction: "Extraction", calibration: "Calibration" }[msg.stage];
         if (stageKey) setStageDot(stageKey, "complete");
+        setStageButtonProgress(msg.stage, 1);
         if (msg.stage === "generation") {
           pairsFileData = null;
           $("pairsFilePath").value = "pairs.jsonl (this run)";
@@ -3275,6 +3375,7 @@
       alert("Failed to save compute config: " + e.message);
       configOk = false;
     }
+    await refreshCatalog();
     if (configOk) closeSettings();
   }
 
@@ -3835,8 +3936,44 @@
     }
   }
 
+  // ── theme ────────────────────────────────────────────────────
+  const THEME_STORAGE_KEY = "aisteer360_theme";
+  const SUN_ICON = '<circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.05" y2="7.05"/><line x1="16.95" y1="16.95" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.05" y2="16.95"/><line x1="16.95" y1="7.05" x2="19.07" y2="4.93"/>';
+  const MOON_ICON = '<path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>';
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem(THEME_STORAGE_KEY, theme); } catch (_) { /* ignore */ }
+    const logo = document.querySelector(".topbar .logo");
+    if (logo) {
+      logo.src = theme === "light" ? "/logo_lightmode.svg" : "/logo_darkmode.svg";
+    }
+    const icon = $("themeIcon");
+    if (icon) {
+      // sun icon means "click to go light"; moon means "click to go dark"
+      icon.innerHTML = theme === "light" ? MOON_ICON : SUN_ICON;
+    }
+    const grad = $("cbGradient");
+    if (grad) grad.style.background = cmapCssGradient(DELTA_COLORS, 13);
+    if (heatmapData) renderHeatmap(heatmapData, currentView);
+  }
+
+  function initTheme() {
+    let saved = "dark";
+    try { saved = localStorage.getItem(THEME_STORAGE_KEY) || "dark"; } catch (_) { /* ignore */ }
+    applyTheme(saved === "light" ? "light" : "dark");
+    const btn = $("themeToggle");
+    if (btn) {
+      btn.addEventListener("click", () => {
+        const current = document.documentElement.getAttribute("data-theme") || "dark";
+        applyTheme(current === "light" ? "dark" : "light");
+      });
+    }
+  }
+
   // ── init ─────────────────────────────────────────────────────
   async function init() {
+    initTheme();
     $("cbGradient").style.background = cmapCssGradient(DELTA_COLORS, 13);
     $("fCopyright").textContent = `IBM Research, ${new Date().getFullYear()}`;
 
@@ -4009,16 +4146,6 @@
     });
     // initial render in case config didn't provide one
     renderRatingScale();
-
-    // agent command modal triggers (within run-status modal)
-    $("btnShowAgentCmd").addEventListener("click", () => {
-      if (lastAgentCommand) {
-        showAgentCommandModal(lastAgentCommand);
-      } else {
-        alert("No agent command available. Regenerate the token to get a fresh one.");
-      }
-    });
-    $("btnRegenerateToken").addEventListener("click", regenerateAgentToken);
 
     $("agentCmdClose").addEventListener("click", () => $("agentCmdModal").classList.remove("open"));
     $("agentCmdDismiss").addEventListener("click", () => $("agentCmdModal").classList.remove("open"));

@@ -1,5 +1,7 @@
 """Mean difference estimator for CAA steering vectors."""
 import logging
+import math
+from typing import Callable
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -41,6 +43,7 @@ class MeanDifferenceEstimator(BaseEstimator[SteeringVector]):
         *,
         data: ContrastivePairs,
         spec: VectorTrainSpec,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> SteeringVector:
         """Extract steering vectors using mean difference.
 
@@ -49,6 +52,8 @@ class MeanDifferenceEstimator(BaseEstimator[SteeringVector]):
             tokenizer: Tokenizer for encoding the contrastive pairs.
             data: The positive/negative text pairs.
             spec: Training configuration (method, accumulate, batch_size).
+            on_progress: Optional `(completed, total)` callback fired as each forward-pass batch
+                finishes. `total` covers both positive and negative passes.
 
         Returns:
             SteeringVector with one direction per layer.
@@ -71,8 +76,20 @@ class MeanDifferenceEstimator(BaseEstimator[SteeringVector]):
 
         # extract hidden states
         logger.debug("Extracting hidden states with batch_size=%d", spec.batch_size)
-        hs_pos = _layerwise_tokenwise_hidden(model, enc_pos, batch_size=spec.batch_size)
-        hs_neg = _layerwise_tokenwise_hidden(model, enc_neg, batch_size=spec.batch_size)
+        n_pos = enc_pos["input_ids"].size(0)
+        n_neg = enc_neg["input_ids"].size(0)
+        total_batches = math.ceil(n_pos / spec.batch_size) + math.ceil(n_neg / spec.batch_size)
+        completed = {"n": 0}
+
+        def _tick() -> None:
+            completed["n"] += 1
+            if on_progress is not None:
+                on_progress(completed["n"], total_batches)
+
+        if on_progress is not None:
+            on_progress(0, total_batches)
+        hs_pos = _layerwise_tokenwise_hidden(model, enc_pos, batch_size=spec.batch_size, on_batch=_tick)
+        hs_neg = _layerwise_tokenwise_hidden(model, enc_neg, batch_size=spec.batch_size, on_batch=_tick)
 
         num_samples = len(pos_texts)
         num_layers = len(hs_pos)

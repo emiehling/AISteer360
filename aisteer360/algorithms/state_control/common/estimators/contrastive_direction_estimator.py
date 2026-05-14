@@ -1,6 +1,7 @@
 """Contrastive direction estimator using paired PCA."""
 import logging
-from typing import Sequence
+import math
+from typing import Callable, Sequence
 
 import torch
 from sklearn.decomposition import PCA
@@ -42,6 +43,7 @@ def _layerwise_tokenwise_hidden(
     model: PreTrainedModel,
     enc: dict[str, torch.Tensor],
     batch_size: int = 8,
+    on_batch: Callable[[], None] | None = None,
 ) -> dict[int, torch.Tensor]:
     """Extract hidden states from all layers for all tokens.
 
@@ -49,6 +51,8 @@ def _layerwise_tokenwise_hidden(
         model: The model to extract from.
         enc: Tokenized input with input_ids and attention_mask.
         batch_size: Batch size for forward passes.
+        on_batch: Optional callable invoked after each batch finishes. Used by callers to surface
+            progress to the UI.
 
     Returns:
         Dict mapping layer_id to tensor of shape [N, T, H] where N is total samples.
@@ -78,6 +82,9 @@ def _layerwise_tokenwise_hidden(
             if layer_idx not in all_hidden:
                 all_hidden[layer_idx] = []
             all_hidden[layer_idx].append(hs.cpu())
+
+        if on_batch is not None:
+            on_batch()
 
     # concatenate all batches
     result = {}
@@ -180,6 +187,7 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
         *,
         data: ContrastivePairs,
         spec: VectorTrainSpec,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> SteeringVector:
         """Extract contrastive direction vectors.
 
@@ -188,6 +196,8 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
             tokenizer: Tokenizer for encoding the contrastive pairs.
             data: The positive/negative text pairs.
             spec: Training configuration (method, accumulate, batch_size).
+            on_progress: Optional `(completed, total)` callback fired as each forward-pass batch
+                finishes. `total` covers both positive and negative passes.
 
         Returns:
             SteeringVector with one direction per layer.
@@ -217,8 +227,20 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
 
         # extract hidden states
         logger.debug("Extracting hidden states with batch_size=%d", spec.batch_size)
-        hs_pos = _layerwise_tokenwise_hidden(model, enc_pos, batch_size=spec.batch_size)
-        hs_neg = _layerwise_tokenwise_hidden(model, enc_neg, batch_size=spec.batch_size)
+        n_pos = enc_pos["input_ids"].size(0)
+        n_neg = enc_neg["input_ids"].size(0)
+        total_batches = math.ceil(n_pos / spec.batch_size) + math.ceil(n_neg / spec.batch_size)
+        completed = {"n": 0}
+
+        def _tick() -> None:
+            completed["n"] += 1
+            if on_progress is not None:
+                on_progress(completed["n"], total_batches)
+
+        if on_progress is not None:
+            on_progress(0, total_batches)
+        hs_pos = _layerwise_tokenwise_hidden(model, enc_pos, batch_size=spec.batch_size, on_batch=_tick)
+        hs_neg = _layerwise_tokenwise_hidden(model, enc_neg, batch_size=spec.batch_size, on_batch=_tick)
 
         # move encodings to CPU for span selection
         enc_pos_cpu = {k: v.cpu() for k, v in enc_pos.items()}

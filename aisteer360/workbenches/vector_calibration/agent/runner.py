@@ -166,8 +166,11 @@ class AgentRunner:
         stage = "extraction"
         self.client.stage_start(stage)
         self.client.post_progress(stage, completed=0, total=1)
-        workbench.run_extraction(run_dir=run_dir)
-        self.client.post_progress(stage, completed=1, total=1)
+
+        def report(done: int, total: int) -> None:
+            self.client.post_progress(stage, completed=done, total=total)
+
+        workbench.run_extraction(run_dir=run_dir, on_progress=report)
         self._post_model_info_if_loaded(workbench)
 
         svec_path = run_dir / f"{behavior}.svec"

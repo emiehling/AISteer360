@@ -40,8 +40,10 @@ class _FakeWorkbench:
             config={},
         )
 
-    def run_extraction(self, pairs=None, run_dir=None):
+    def run_extraction(self, pairs=None, run_dir=None, on_progress=None):
         (Path(run_dir) / f"{self.config.generation.behavior}.svec").write_text("{}")
+        if on_progress:
+            on_progress(1, 1)
         return object()
 
     def run_calibration(self, steering_vector=None, on_progress=None, run_dir=None, judge_provider=None):
