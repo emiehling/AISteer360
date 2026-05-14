@@ -122,7 +122,7 @@ def _check_prerequisites(run_dir: Path, stages: list[Stage], behavior: str) -> N
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 "Cannot run extraction: pairs.jsonl not found in run directory. "
-                "Run generation first.",
+                "Run generation first or upload a pairs file.",
             )
     if "calibration" in needs and "extraction" not in needs:
         svec = run_dir / f"{behavior}.svec"
@@ -132,6 +132,14 @@ def _check_prerequisites(run_dir: Path, stages: list[Stage], behavior: str) -> N
                 f"Cannot run calibration: {svec.name} not found in run directory. "
                 "Run extraction first.",
             )
+
+
+def _write_pairs_data(run_dir: Path, pairs_data: str | None) -> None:
+    """Write user-uploaded pairs jsonl content to the run directory."""
+    if not pairs_data:
+        return
+    text = pairs_data if pairs_data.endswith("\n") else pairs_data + "\n"
+    (run_dir / "pairs.jsonl").write_text(text, encoding="utf-8")
 
 
 def _public_server_url(request: Request) -> str:
@@ -240,12 +248,19 @@ async def create_run(
     db: Database = Depends(get_db),
 ) -> RunCreateResponse:
     """Create a new run and mint its agent token."""
+    if "generation" not in body.stages:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "New runs must include the generation stage. "
+            "To run extraction or calibration on an existing run, use the continue endpoint.",
+        )
     cfg = body.config
     _validate_for_stages(cfg, body.stages)
     behavior = cfg.generation.behavior.strip() or "run"
     run_id = build_run_id(behavior)
     data_root: Path = request.app.state.data_root
     run_dir = ensure_run_dir(data_root, run_id)
+    _write_pairs_data(run_dir, body.pairs_data)
 
     # persist save_dir hint so the workbench lands files in the right place
     cfg_dump = cfg.model_dump()
@@ -294,6 +309,7 @@ async def continue_run(
 
     cfg = body.config
     _validate_for_stages(cfg, body.stages)
+    _write_pairs_data(Path(run.run_dir), body.pairs_data)
     _check_prerequisites(Path(run.run_dir), body.stages, cfg.generation.behavior)
 
     cfg_dump = cfg.model_dump()

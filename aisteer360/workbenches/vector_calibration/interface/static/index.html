@@ -165,6 +165,7 @@
     height: 32px;
     box-sizing: border-box;
   }
+  .modal-foot .btn + .btn { margin-top: 0; }
 
   .key-row {
     display: grid;
@@ -1321,21 +1322,16 @@
     font-style: italic;
   }
   .catalog-row-roles {
-    display: flex; gap: 10px; align-items: center;
+    display: flex; gap: 12px; align-items: center;
+    flex-wrap: wrap;
+  }
+  .role-toggle-label {
     font-family: var(--sans);
     font-size: 10.5px;
     color: var(--text-dim);
-    flex-wrap: wrap;
+    margin-right: -6px;
   }
-  .catalog-row-roles label {
-    display: inline-flex; gap: 4px; align-items: center;
-    cursor: pointer;
-  }
-  .catalog-row-roles label.disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-  .catalog-row-roles input[type="checkbox"] { accent-color: var(--accent); }
+  .role-toggle-label.disabled { opacity: 0.4; }
   .catalog-add-btn {
     margin-top: 6px;
     width: 100%;
@@ -1444,29 +1440,7 @@
     font-size: 12px;
     margin-left: 4px;
   }
-  /* ── runs list + agent command modal ──────────────────────── */
-  .runs-list { display: flex; flex-direction: column; gap: 6px; max-height: 460px; overflow-y: auto; }
-  .runs-empty { color: var(--text-dim); font-style: italic; padding: 12px 0; }
-  .run-item {
-    border: 1px solid var(--line-2);
-    border-radius: 3px;
-    padding: 8px 10px;
-    cursor: pointer;
-    background: var(--panel-2);
-    transition: border-color 0.1s, background 0.1s;
-  }
-  .run-item:hover { border-color: var(--line-3); background: var(--panel-3); }
-  .run-item.selected { border-color: var(--accent); background: rgba(201,161,90,0.08); }
-  .run-item .run-id { font-family: var(--mono); font-size: 11px; color: var(--text); }
-  .run-item .run-meta { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
-  .run-item .run-sub { font-size: 10px; color: var(--text-dimmer); margin-top: 2px; }
-  .stale-badge {
-    color: var(--danger);
-    border: 1px solid var(--danger);
-    padding: 0 4px;
-    font-size: 9px;
-    border-radius: 2px;
-  }
+  /* ── agent command modal ──────────────────────── */
   .agent-cmd {
     font-family: var(--mono);
     font-size: 11px;
@@ -1490,17 +1464,6 @@
     <span class="name"><span class="sub">Vector Calibration Workbench</span></span>
   </div>
   <div class="spacer"></div>
-  <button class="icon-btn" id="btnRunsList" title="Runs list">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-         stroke-linecap="round" stroke-linejoin="round">
-      <line x1="8" y1="6" x2="21" y2="6"/>
-      <line x1="8" y1="12" x2="21" y2="12"/>
-      <line x1="8" y1="18" x2="21" y2="18"/>
-      <line x1="3" y1="6" x2="3.01" y2="6"/>
-      <line x1="3" y1="12" x2="3.01" y2="12"/>
-      <line x1="3" y1="18" x2="3.01" y2="18"/>
-    </svg>
-  </button>
   <button class="icon-btn" id="btnHelp" title="How to use">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
          stroke-linecap="round" stroke-linejoin="round">
@@ -1594,11 +1557,6 @@
         <button class="catalog-add-btn" id="catalogAddBtn" type="button">+ Add model</button>
       </div>
 
-      <span class="field-label">Device map:</span>
-      <label class="select">
-        <input id="sDeviceMap" type="text" placeholder="auto">
-      </label>
-
       <span class="field-label">Save directory <span class="hint" style="font-style:italic; color:var(--text-dim); font-size:10.5px;">(server path, read-only)</span></span>
       <div class="field-row" style="margin-bottom:8px;">
         <span class="v dim" id="sSaveDirDisplay" style="font-family:var(--mono); font-size:11px; color:var(--text-dim); word-break:break-all;">—</span>
@@ -1629,24 +1587,6 @@
     </div>
     <div class="modal-foot" style="justify-content:flex-end;">
       <button class="btn primary" id="helpDone">Got it</button>
-    </div>
-  </div>
-</div>
-
-<!-- runs-list modal -->
-<div class="modal-scrim" id="runsListModal">
-  <div class="modal" role="dialog" aria-label="Runs" style="width: 720px;">
-    <div class="modal-head">
-      <span class="title">Runs</span>
-      <button class="close" id="runsListClose">×</button>
-    </div>
-    <div class="modal-body">
-      <div id="runsList" class="runs-list"></div>
-      <div style="margin-top: 10px; display: flex; gap: 8px;">
-        <button class="btn" id="btnRefreshRuns" type="button">Refresh</button>
-        <button class="btn" id="btnShowAgentCmd" type="button">Show agent command</button>
-        <button class="btn" id="btnRegenerateToken" type="button">Regenerate agent token</button>
-      </div>
     </div>
   </div>
 </div>
@@ -1695,6 +1635,10 @@
       <div class="mini-progress">
         <div class="bar"><div class="fill" id="progressFill"></div></div>
         <div class="lab"><span id="progressLabel">—</span><span id="progressPct">—</span></div>
+      </div>
+      <div style="margin-top: 12px; display: flex; gap: 8px;">
+        <button class="btn" id="btnShowAgentCmd" type="button">Show agent command</button>
+        <button class="btn" id="btnRegenerateToken" type="button">Regenerate agent token</button>
       </div>
     </div>
   </div>
@@ -1850,6 +1794,15 @@
       </div>
 
       <div class="sec-body">
+        <span class="field-label">Contrastive pairs file:</span>
+        <label class="select" style="display:flex; align-items:center; gap:8px;">
+          <input id="pairsFilePath" type="text" placeholder="(run generation or upload)" style="flex:1;" readonly>
+          <label for="pairsFileUpload" title="Upload jsonl" style="cursor:pointer; color: var(--text-dimmer); padding: 0 4px; align-self:center;">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </label>
+          <input type="file" id="pairsFileUpload" accept=".jsonl,.json" style="display:none;">
+        </label>
+
         <span class="field-label">Method:</span>
         <label class="select active">
           <select id="method">
@@ -2000,6 +1953,7 @@
   let currentConfig = null;
   let genIndex = 0;
   let seedPromptsList = null;  // list[str] loaded client-side; when set, overrides the path field
+  let pairsFileData = null;    // raw jsonl content from a user upload; when set, sent inline to the server
 
   // catalog + probe state
   let catalogEntries = [];
@@ -2120,6 +2074,15 @@
     reader.readAsText(file);
   }
 
+  function loadPairsFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      pairsFileData = String(reader.result || "");
+      $("pairsFilePath").value = file.name;
+    };
+    reader.readAsText(file);
+  }
+
   function autoGrow(ta) {
     if (!ta || ta.classList.contains("manually-resized")) return;
     ta.style.height = "auto";
@@ -2183,7 +2146,6 @@
   // current run view state
   let currentRunId = null;
   let currentRun = null;        // full run detail payload
-  let runsList = [];            // last-fetched list of summaries
   let lastAgentCommand = null;  // last seen agent command (for copy-modal)
 
   function runPath(suffix) {
@@ -2715,9 +2677,14 @@
         }
       }
     } else if (phase === "complete") {
+      const requested = new Set((currentRun && currentRun.stages) || STAGE_IDS.map((s) => s.toLowerCase()));
       for (const s of STAGE_IDS) {
         const el = $(`dot${s}`);
-        if (el && !el.classList.contains("error")) setStageDot(s, "complete");
+        if (!el) continue;
+        const key = s.toLowerCase();
+        if (requested.has(key) && !el.classList.contains("error")) {
+          setStageDot(s, "complete");
+        }
       }
     } else if (phase === "error") {
       for (const s of STAGE_IDS) {
@@ -2755,8 +2722,8 @@
     if (phase === "complete") {
       $("progressFill").style.width = "100%";
       $("progressPct").textContent = "done";
-      refreshHeatmap();
-      refreshStatus();
+      const ran = new Set((currentRun && currentRun.stages) || []);
+      if (ran.has("calibration")) refreshHeatmap();
     }
     if (phase === "idle" || phase === "error" || phase === "cancelled") {
       $("progressFill").style.width = "0%";
@@ -2809,7 +2776,11 @@
     try {
       const s = await api(runPath(""));
       currentRun = s;
-      updatePhase(phaseForRun(s), s.status === "failed" ? { error: s.error } : undefined);
+      const newPhase = phaseForRun(s);
+      const currentPhase = $("statusDot").className.replace("dot ", "");
+      if (newPhase !== currentPhase) {
+        updatePhase(newPhase, s.status === "failed" ? { error: s.error } : undefined);
+      }
       setConfigEditable(!TERMINAL_STATUSES.includes(s.status));
       if (s.claimed_at && s.completed_at) {
         const wall = s.completed_at - s.claimed_at;
@@ -2864,7 +2835,14 @@
       else if (msg.event === "progress") updateProgress(msg);
       else if (msg.event === "cell_complete") fillHeatmapCell(msg.layer, msg.multiplier, msg);
       else if (msg.event === "model_info") renderModelInfo(msg);
-      else if (msg.event === "stage_complete") { /* noop for now */ }
+      else if (msg.event === "stage_complete") {
+        const stageKey = { generation: "Generation", extraction: "Extraction", calibration: "Calibration" }[msg.stage];
+        if (stageKey) setStageDot(stageKey, "complete");
+        if (msg.stage === "generation") {
+          pairsFileData = null;
+          $("pairsFilePath").value = "pairs.jsonl (this run)";
+        }
+      }
     };
     ws.onclose = () => {
       if (currentWs === ws) {
@@ -2895,18 +2873,25 @@
       alert("Cannot start run:\n\n• " + errors.join("\n• "));
       return;
     }
+    for (const s of STAGE_IDS) {
+      const btn = $(`btnRun${s === "Calibration" ? "Calibrate" : s === "Generation" ? "Gen" : "Extract"}`);
+      if (btn) btn.disabled = true;
+    }
     const continuing = shouldContinueRun(stages);
     const url = continuing ? `/api/runs/${currentRun.id}/continue` : "/api/runs";
+    const requestBody = { config: cfg, stages };
+    if (pairsFileData && (stages.includes("extraction") || stages.includes("calibration"))) {
+      requestBody.pairs_data = pairsFileData;
+    }
     try {
       const resp = await api(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: cfg, stages }),
+        body: JSON.stringify(requestBody),
       });
       currentRunId = resp.run.id;
       currentRun = resp.run;
       lastAgentCommand = resp.agent_command;
-      await refreshRunsList();
       connectWebSocket();
       const status = resp.dispatch_status || "manual";
       if (status === "local" || status === "ssh") {
@@ -2926,6 +2911,7 @@
         showAgentCommandModal(resp.agent_command);
       }
     } catch (e) {
+      setStageRunning(null);
       alert(`Failed to ${continuing ? "continue" : "create"} run: ${e.message}`);
     }
   }
@@ -3239,8 +3225,6 @@
   }
 
   async function openSettings() {
-    const cfg = currentConfig || {};
-    $("sDeviceMap").value = cfg.device_map || "auto";
     $("sHost").textContent = location.hostname || "—";
     $("sPort").textContent = location.port || "—";
     try {
@@ -3258,7 +3242,7 @@
   }
   async function saveSettings() {
     const cfg = readConfigFromUI();
-    cfg.device_map = $("sDeviceMap").value || "auto";
+    cfg.device_map = "auto";
     cfg.hf_model_kwargs = (currentConfig && currentConfig.hf_model_kwargs) || {};
     let configOk = false;
     try {
@@ -3565,11 +3549,9 @@
           <div class="catalog-row-roles">
             ${catalogRoles.map((r) => {
               const disabled = r === "target" && !isHf;
-              const checked = entry.roles.includes(r) && !disabled;
-              return `<label class="${disabled ? "disabled" : ""}">
-                <input type="checkbox" data-role="${r}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
-                ${r}
-              </label>`;
+              const on = entry.roles.includes(r) && !disabled;
+              return `<span class="role-toggle-label${disabled ? " disabled" : ""}">${r}</span>
+                <span class="toggle${on ? " on" : ""}${disabled ? " disabled" : ""}" data-role="${r}"></span>`;
             }).join("")}
           </div>
         </div>
@@ -3686,12 +3668,16 @@
           closeSuggestions();
         }
       });
-      row.querySelectorAll("[data-role]").forEach((el) => {
-        el.addEventListener("change", () => {
+      row.querySelectorAll(".toggle[data-role]").forEach((el) => {
+        el.addEventListener("click", (ev) => {
+          if (el.classList.contains("disabled")) return;
+          ev.stopPropagation();
+          el.classList.toggle("on");
           const role = el.dataset.role;
+          const isOn = el.classList.contains("on");
           const has = catalogDraft[idx].roles.includes(role);
-          if (el.checked && !has) catalogDraft[idx].roles.push(role);
-          if (!el.checked && has) catalogDraft[idx].roles = catalogDraft[idx].roles.filter((x) => x !== role);
+          if (isOn && !has) catalogDraft[idx].roles.push(role);
+          if (!isOn && has) catalogDraft[idx].roles = catalogDraft[idx].roles.filter((x) => x !== role);
         });
       });
       row.querySelector(".rm-btn").addEventListener("click", () => {
@@ -3760,44 +3746,14 @@
     return Math.max(...ratingScale.map((r) => r.label)) + 1;
   }
 
-  // ── runs list + agent-command modal ──────────────────────────
-  async function refreshRunsList() {
+  // ── run selection + agent-command modal ──────────────────────
+  async function fetchLatestRuns() {
     try {
       const data = await api("/api/runs");
-      runsList = Array.isArray(data.runs) ? data.runs : [];
-      renderRunsList();
+      return Array.isArray(data.runs) ? data.runs : [];
     } catch (e) {
-      runsList = [];
-      renderRunsList();
+      return [];
     }
-    return runsList;
-  }
-
-  function renderRunsList() {
-    const wrap = $("runsList");
-    if (!wrap) return;
-    if (!runsList.length) {
-      wrap.innerHTML = `<div class="runs-empty">no runs yet — fill the form and hit "Run Generation" to start</div>`;
-      return;
-    }
-    wrap.innerHTML = runsList
-      .map((r) => {
-        const selected = r.id === currentRunId ? " selected" : "";
-        const stale = r.stale
-          ? ` · <span class="stale-badge" title="No heartbeat in 5+ minutes — the agent may have crashed or lost its network connection.">stale</span>`
-          : "";
-        const phase = r.phase ? ` · ${escapeHtml(r.phase)}` : "";
-        return `
-          <div class="run-item${selected}" data-id="${escapeHtml(r.id)}">
-            <div class="run-id">${escapeHtml(r.id)}</div>
-            <div class="run-meta">${escapeHtml(r.status)}${phase}${stale}</div>
-            <div class="run-sub">${escapeHtml(r.behavior || "")} · ${escapeHtml(r.steered_model || "")}</div>
-          </div>`;
-      })
-      .join("");
-    wrap.querySelectorAll(".run-item").forEach((el) => {
-      el.addEventListener("click", () => selectRun(el.dataset.id));
-    });
   }
 
   async function selectRun(runId) {
@@ -3805,6 +3761,8 @@
     currentRunId = runId;
     selectedCell = null;
     heatmapData = null;
+    pairsFileData = null;
+    $("pairsFilePath").value = "";
     try {
       currentRun = await api(runPath(""));
     } catch (e) {
@@ -3817,7 +3775,9 @@
     updatePhase(phaseForRun(currentRun),
       currentRun.status === "failed" ? { error: currentRun.error } : undefined);
     setConfigEditable(!TERMINAL_STATUSES.includes(currentRun.status));
-    renderRunsList();
+    if (currentRun.has_pairs) {
+      $("pairsFilePath").value = "pairs.jsonl (this run)";
+    }
     connectWebSocket();
     await refreshHeatmap();
     if (!heatmapData) renderEmptyHeatmap();
@@ -3890,10 +3850,10 @@
     attachModelCombo("mcGenerator", "generator");
     attachModelCombo("mcJudge", "judge");
 
-    await refreshRunsList();
+    const initialRuns = await fetchLatestRuns();
     // auto-select: prefer most recently claimed; else first in list
-    const claimedRun = runsList.find((r) => r.claimed_at);
-    const autoSelect = claimedRun || runsList[0];
+    const claimedRun = initialRuns.find((r) => r.claimed_at);
+    const autoSelect = claimedRun || initialRuns[0];
     if (autoSelect) {
       await selectRun(autoSelect.id);
     } else {
@@ -3901,8 +3861,8 @@
       renderEmptyHeatmap();
       scheduleTargetProbe();
     }
-    // periodic run-list refresh so status pills stay fresh without a dedicated WS
-    setInterval(() => { refreshRunsList(); refreshStatus(); }, 5000);
+    // periodic status refresh so the run pill stays fresh
+    setInterval(() => { refreshStatus(); }, 5000);
 
     // artifact downloads
     $("lnkSvec").addEventListener("click", () => {
@@ -3929,6 +3889,11 @@
     });
     $("seedPromptsPath").addEventListener("input", () => {
       seedPromptsList = null;
+    });
+
+    $("pairsFileUpload").addEventListener("change", (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) loadPairsFile(f);
     });
 
     if (!$("seedPromptsPath").value.trim() && seedPromptsList === null) {
@@ -4045,16 +4010,7 @@
     // initial render in case config didn't provide one
     renderRatingScale();
 
-    // runs list + agent command modals
-    $("btnRunsList").addEventListener("click", async () => {
-      await refreshRunsList();
-      $("runsListModal").classList.add("open");
-    });
-    $("runsListClose").addEventListener("click", () => $("runsListModal").classList.remove("open"));
-    $("runsListModal").addEventListener("click", (e) => {
-      if (e.target.id === "runsListModal") $("runsListModal").classList.remove("open");
-    });
-    $("btnRefreshRuns").addEventListener("click", refreshRunsList);
+    // agent command modal triggers (within run-status modal)
     $("btnShowAgentCmd").addEventListener("click", () => {
       if (lastAgentCommand) {
         showAgentCommandModal(lastAgentCommand);

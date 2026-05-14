@@ -155,6 +155,7 @@ class Run:
         data = self.to_summary()
         data["config"] = self.config
         data["run_dir"] = self.run_dir
+        data["has_pairs"] = (Path(self.run_dir) / "pairs.jsonl").exists()
         return data
 
 

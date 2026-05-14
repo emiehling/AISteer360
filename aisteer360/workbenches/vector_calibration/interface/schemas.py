@@ -87,12 +87,14 @@ class RunCreateRequest(BaseModel):
     """Body for POST /api/runs."""
     config: FullConfigSchema
     stages: list[Stage]
+    pairs_data: str | None = None
 
 
 class RunContinueRequest(BaseModel):
     """Body for POST /api/runs/{id}/continue."""
     config: FullConfigSchema
     stages: list[Stage]
+    pairs_data: str | None = None
 
 
 class RunSummary(BaseModel):
@@ -120,6 +122,7 @@ class RunDetail(RunSummary):
 
     config: FullConfigSchema
     run_dir: str
+    has_pairs: bool = False
 
 
 class AgentCommand(BaseModel):
