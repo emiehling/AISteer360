@@ -134,14 +134,16 @@ class CalibrationSweep:
 
                 score_mean = _nan_mean(scores)
 
-                # Free generation KV-cache / Mamba state before the perplexity
-                # forward pass, which has a very different memory profile.
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
-                perplexity = self._compute_mean_perplexity(
-                    model, tokenizer, eval_prompts, steered_texts, batch_size=cfg.batch_size,
-                )
+                if cfg.compute_perplexity:
+                    # Free generation KV-cache / Mamba state before the perplexity
+                    # forward pass, which has a very different memory profile.
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    perplexity = self._compute_mean_perplexity(
+                        model, tokenizer, eval_prompts, steered_texts, batch_size=cfg.batch_size,
+                    )
+                else:
+                    perplexity = float("nan")
                 coherence = self._compute_coherence(
                     model, tokenizer, eval_prompts, steered_texts, baseline_texts
                 )
@@ -344,10 +346,12 @@ class CalibrationSweep:
         gate: QualityGate,
     ) -> bool:
         coh_ok = coherence >= gate.coherence_threshold
+        if not math.isfinite(perplexity):
+            return coh_ok
         ppl_ok = (
             perplexity <= baseline_ppl * gate.perplexity_max_ratio
             if baseline_ppl > 0 and math.isfinite(baseline_ppl)
-            else math.isfinite(perplexity)
+            else True
         )
         return coh_ok and ppl_ok
 
@@ -382,13 +386,15 @@ class CalibrationSweep:
         scores, _ = judge.score_batch(prompts=prompts, responses=baseline_texts)
         baseline_score = _nan_mean(scores)
 
-        # Free generation KV-cache / Mamba state before perplexity forward passes.
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        baseline_perplexity = self._compute_mean_perplexity(
-            model, tokenizer, prompts, baseline_texts, batch_size=cfg.batch_size,
-        )
+        if cfg.compute_perplexity:
+            # Free generation KV-cache / Mamba state before perplexity forward passes.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            baseline_perplexity = self._compute_mean_perplexity(
+                model, tokenizer, prompts, baseline_texts, batch_size=cfg.batch_size,
+            )
+        else:
+            baseline_perplexity = float("nan")
         return baseline_score, baseline_perplexity, baseline_texts
 
     # ── perplexity / coherence ───────────────────────────────────────

@@ -143,6 +143,8 @@ class CalibrationConfig:
         token_scope: Which tokens to steer during calibration generation.
         max_new_tokens: Max tokens per calibration generation.
         batch_size: Batch size for steered generation.
+        compute_perplexity: When True, compute response perplexity for each cell (and the baseline). When False,
+            perplexity is reported as NaN and the quality gate uses coherence only.
         eval_prompts: Held-out prompts for calibration evaluation. If a string, treated as a path. If None, a
             subset of the generation seed prompts is reserved.
         n_eval_prompts: Number of eval prompts to use per cell.
@@ -155,6 +157,7 @@ class CalibrationConfig:
     token_scope: Literal["all", "after_prompt", "last_k", "from_position"] = "all"
     max_new_tokens: int = 200
     batch_size: int = 8
+    compute_perplexity: bool = False
     eval_prompts: list[str] | str | None = None
     n_eval_prompts: int = 30
 

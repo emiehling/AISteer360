@@ -1944,6 +1944,12 @@
           <div class="field-row"><span class="k">Multiplier step</span><input class="inline" id="multStep" type="number" step="0.05"></div>
           <div class="field-row"><span class="k">Layer step</span><input class="inline" id="layerStep" type="number" min="1"></div>
           <div class="field-row"><span class="k">Coherence threshold</span><input class="inline" id="coherenceThr" type="number" step="0.01"></div>
+
+          <div class="sub-label" style="margin-top:10px;"><span>Additional metrics</span></div>
+          <div class="toggle-row">
+            <span class="k">Perplexity</span>
+            <span class="toggle" id="tgComputePpl"></span>
+          </div>
         </div>
 
         <div class="run-row">
@@ -2266,6 +2272,7 @@
     $("layerStep").value = sw.layer_step ?? 1;
     const qg = c.quality_gate || {};
     $("coherenceThr").value = qg.coherence_threshold ?? 0.95;
+    setToggle($("tgComputePpl"), !!c.compute_perplexity);
     $("maxNewTokensCal").value = c.max_new_tokens ?? 200;
     $("batchSizeCal").value = c.batch_size ?? 32;
     $("nEvalPrompts").value = c.n_eval_prompts ?? 30;
@@ -2381,6 +2388,7 @@
       token_scope: $("tokenScope").value,
       max_new_tokens: +$("maxNewTokensCal").value,
       batch_size: +$("batchSizeCal").value,
+      compute_perplexity: $("tgComputePpl").classList.contains("on"),
       n_eval_prompts: +$("nEvalPrompts").value,
     };
     return cfg;
