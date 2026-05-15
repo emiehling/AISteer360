@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_FILENAME = "calibration_checkpoint.json"
+_PPL_BATCH_CAP = 2  # Max batch size for perplexity forward passes (logits are [B, seq, vocab]).
 
 
 class CalibrationSweep:
@@ -132,6 +133,12 @@ class CalibrationSweep:
                 )
 
                 score_mean = _nan_mean(scores)
+
+                # Free generation KV-cache / Mamba state before the perplexity
+                # forward pass, which has a very different memory profile.
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
                 perplexity = self._compute_mean_perplexity(
                     model, tokenizer, eval_prompts, steered_texts, batch_size=cfg.batch_size,
                 )
@@ -174,6 +181,11 @@ class CalibrationSweep:
                             "elapsed_s": time.monotonic() - start_time,
                         }
                     )
+
+                # Release cached GPU memory between cells to prevent fragmentation
+                # from accumulating across hundreds of generate→perplexity cycles.
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         del judge
         if torch.cuda.is_available():
@@ -369,6 +381,11 @@ class CalibrationSweep:
 
         scores, _ = judge.score_batch(prompts=prompts, responses=baseline_texts)
         baseline_score = _nan_mean(scores)
+
+        # Free generation KV-cache / Mamba state before perplexity forward passes.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         baseline_perplexity = self._compute_mean_perplexity(
             model, tokenizer, prompts, baseline_texts, batch_size=cfg.batch_size,
         )
@@ -389,6 +406,14 @@ class CalibrationSweep:
 
         Computes per-response NLL on the response tokens only (prompt tokens are masked out of the loss).
         Processes prompt-response pairs in batches for efficiency.
+
+        Note: The effective batch size is capped at ``_PPL_BATCH_CAP`` (default 2) regardless of
+        the caller-supplied ``batch_size``, because perplexity computation materialises a
+        ``[batch, seq_len, vocab_size]`` logits tensor whose memory footprint is orders of
+        magnitude larger than the KV-cache used during generation.  Passing ``labels`` to the
+        model lets it compute the loss internally (avoiding an extra ``.contiguous()`` copy of
+        the shifted logits), but the logits themselves are still allocated during the forward
+        pass.
         """
         if not responses:
             return float("nan")
@@ -412,13 +437,17 @@ class CalibrationSweep:
         if not full_ids_list:
             return float("nan")
 
-        loss_fct = torch.nn.CrossEntropyLoss(reduction="sum", ignore_index=-100)
+        # Cap batch size: perplexity needs [B, seq, vocab] logits which is far larger than
+        # the KV-cache used during generation.  batch_size=2 keeps peak alloc manageable even
+        # for 128k-vocab models with long sequences.
+        ppl_bs = min(batch_size, _PPL_BATCH_CAP)
+
         total_nll = 0.0
         total_tokens = 0
 
-        for batch_start in range(0, len(full_ids_list), batch_size):
-            batch_ids = full_ids_list[batch_start: batch_start + batch_size]
-            batch_prompt_lens = prompt_lens[batch_start: batch_start + batch_size]
+        for batch_start in range(0, len(full_ids_list), ppl_bs):
+            batch_ids = full_ids_list[batch_start: batch_start + ppl_bs]
+            batch_prompt_lens = prompt_lens[batch_start: batch_start + ppl_bs]
             max_len = max(t.size(0) for t in batch_ids)
 
             input_ids = torch.full(
@@ -432,22 +461,34 @@ class CalibrationSweep:
                 attention_mask[i, :seq_len] = 1
                 labels[i, p_len:seq_len] = ids[p_len:]
 
+            # The model shifts labels internally: shift_labels = labels[..., 1:].
+            # Position 0 of every sequence is within the prompt (always -100), so the
+            # shift doesn't reduce the count of scoreable tokens.  The model's loss is
+            # the mean over count(shift_labels != -100) == count(labels != -100).
+            n_tokens = int((labels != -100).sum().item())
+            if n_tokens <= 0:
+                continue
+
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)
             labels = labels.to(device)
 
-            out = model(input_ids=input_ids, attention_mask=attention_mask)
-            logits = out.logits
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            nll = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
+            # Pass labels so the model computes cross-entropy internally.  This avoids
+            # pulling out.logits into Python and calling .contiguous() on the shifted slice,
+            # which would allocate a second [B, seq-1, vocab] tensor and double peak memory.
+            # The model returns the mean loss over all non-(-100) label tokens.
+            out = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
             )
-            n_tokens = int((shift_labels != -100).sum().item())
-            if n_tokens <= 0:
-                continue
-            total_nll += float(nll)
+            batch_nll = float(out.loss) * n_tokens
+            # Free the output (and its logits tensor) immediately.
+            del out
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            total_nll += batch_nll
             total_tokens += n_tokens
 
         if total_tokens == 0:

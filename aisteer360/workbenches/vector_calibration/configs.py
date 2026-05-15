@@ -64,7 +64,7 @@ class ExtractionConfig:
     center: bool = True
     per_layer_rescale: bool = False
     layers: list[int] | Literal["all"] = "all"
-    batch_size: int = 8
+    batch_size: int = 2
 
 
 @dataclass
@@ -154,7 +154,7 @@ class CalibrationConfig:
     transform: Literal["additive", "norm_preserving"] = "additive"
     token_scope: Literal["all", "after_prompt", "last_k", "from_position"] = "all"
     max_new_tokens: int = 200
-    batch_size: int = 32
+    batch_size: int = 8
     eval_prompts: list[str] | str | None = None
     n_eval_prompts: int = 30
 

@@ -2,6 +2,7 @@
 import logging
 from typing import Callable
 
+import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.state_control.common.estimators import (
@@ -65,17 +66,10 @@ class SteeringVectorExtractor:
                 f"Unknown estimator '{cfg.method}'. Available: {list(ESTIMATOR_REGISTRY)}"
             )
 
-        spec = VectorTrainSpec(
-            method=cfg.method,
-            accumulate=cfg.accumulate,
-            batch_size=cfg.batch_size,
-        )
-
         if on_progress:
             on_progress(0, 2)
 
-        estimator = estimator_cls()
-        sv = estimator.fit(model, tokenizer, data=pairs, spec=spec)
+        sv = self._fit_with_oom_retry(estimator_cls, model, tokenizer, pairs, cfg)
 
         if on_progress:
             on_progress(1, 2)
@@ -111,3 +105,46 @@ class SteeringVectorExtractor:
             on_progress(2, 2)
 
         return sv
+
+    @staticmethod
+    def _fit_with_oom_retry(
+        estimator_cls,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizerBase,
+        pairs: ContrastivePairs,
+        cfg: ExtractionConfig,
+    ) -> SteeringVector:
+        """Run ``estimator.fit()``, halving ``batch_size`` on CUDA OOM until it succeeds.
+
+        Extraction calls the model with ``output_hidden_states=True``, which forces every
+        layer's hidden state to be materialised simultaneously.  For hybrid architectures
+        (e.g. Mamba-2/Transformer) this can require vastly more memory than normal
+        inference, so the configured ``batch_size`` may be too large even when generation
+        at the same batch size succeeds.
+        """
+        batch_size = cfg.batch_size
+
+        while batch_size >= 1:
+            spec = VectorTrainSpec(
+                method=cfg.method,
+                accumulate=cfg.accumulate,
+                batch_size=batch_size,
+            )
+            try:
+                estimator = estimator_cls()
+                return estimator.fit(model, tokenizer, data=pairs, spec=spec)
+            except torch.cuda.OutOfMemoryError:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                if batch_size <= 1:
+                    raise
+                new_bs = max(1, batch_size // 2)
+                logger.warning(
+                    "Extraction OOM at batch_size=%d; retrying with batch_size=%d.",
+                    batch_size,
+                    new_bs,
+                )
+                batch_size = new_bs
+
+        # unreachable, but keeps the type checker happy
+        raise RuntimeError("Extraction failed.")

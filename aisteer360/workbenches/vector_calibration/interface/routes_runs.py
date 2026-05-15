@@ -248,10 +248,10 @@ async def create_run(
     db: Database = Depends(get_db),
 ) -> RunCreateResponse:
     """Create a new run and mint its agent token."""
-    if "generation" not in body.stages:
+    if "generation" not in body.stages and not body.pairs_data:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "New runs must include the generation stage. "
+            "New runs must include the generation stage (or upload a pairs file to skip it). "
             "To run extraction or calibration on an existing run, use the continue endpoint.",
         )
     cfg = body.config
@@ -363,7 +363,7 @@ async def update_config(
     run: OwnerScopedRun,
     db: Database = Depends(get_db),
 ) -> dict[str, str]:
-    if run.status not in (STATUS_CREATED, STATUS_CLAIMED):
+    if run.status not in (STATUS_CREATED, STATUS_CLAIMED, STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"Cannot update config while status={run.status}.",
