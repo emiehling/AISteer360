@@ -56,9 +56,6 @@ class ExtractionConfig:
         per_layer_rescale: Rescale each layer's direction by its explained variance (only meaningful for PCA).
         layers: Which layers to extract. `"all"` extracts every layer; a list of ints keeps only those layers.
         batch_size: Batch size for the extraction forward passes.
-        pair_split_ratio: Fraction of generated pairs reserved for extraction. The remainder are held back so their
-            seed prompts can be reused as calibration eval prompts. `1.0` (the default) sends every pair to
-            extraction and reverts to the legacy behaviour where calibration samples its own eval prompts.
     """
 
     method: Literal["mean_diff", "pca_pairwise"] = "mean_diff"
@@ -68,13 +65,6 @@ class ExtractionConfig:
     per_layer_rescale: bool = False
     layers: list[int] | Literal["all"] = "all"
     batch_size: int = 8
-    pair_split_ratio: float = 1.0
-
-    def __post_init__(self) -> None:
-        if not 0.0 < self.pair_split_ratio <= 1.0:
-            raise ValueError(
-                f"pair_split_ratio must satisfy 0 < ratio <= 1; got {self.pair_split_ratio!r}."
-            )
 
 
 @dataclass

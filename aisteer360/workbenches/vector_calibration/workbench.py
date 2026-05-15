@@ -216,34 +216,9 @@ class VectorCalibrationWorkbench:
                 )
             pairs = GenerationResult.load(active_run_dir / "pairs.jsonl").pairs
 
-        extraction_pairs = pairs
-        ratio = self.config.extraction.pair_split_ratio
-        if 0.0 < ratio < 1.0:
-            n = len(pairs.positives)
-            split_idx = max(1, min(n - 1, int(round(n * ratio))))
-            extraction_pairs = ContrastivePairs(
-                positives=list(pairs.positives[:split_idx]),
-                negatives=list(pairs.negatives[:split_idx]),
-                prompts=list(pairs.prompts[:split_idx]) if pairs.prompts is not None else None,
-            )
-            held_out_prompts: list[str] = []
-            if pairs.prompts is not None:
-                held_out_prompts = [p for p in pairs.prompts[split_idx:] if isinstance(p, str) and p]
-            if active_run_dir is not None:
-                cal_prompts_path = active_run_dir / "calibration_prompts.json"
-                cal_prompts_path.write_text(json.dumps(held_out_prompts, indent=2))
-            logger.info(
-                "Splitting %d pairs: %d for extraction, %d held out for calibration eval prompts.",
-                n, split_idx, n - split_idx,
-            )
-        elif active_run_dir is not None:
-            cal_prompts_path = active_run_dir / "calibration_prompts.json"
-            if cal_prompts_path.exists():
-                cal_prompts_path.unlink()
-
         self._ensure_steered_model()
         extractor = SteeringVectorExtractor(self.config.extraction)
-        sv = extractor.extract(self._model, self._tokenizer, extraction_pairs, on_progress=on_progress)
+        sv = extractor.extract(self._model, self._tokenizer, pairs, on_progress=on_progress)
 
         if active_run_dir is not None:
             sv.save(str(active_run_dir / f"{self.config.generation.behavior}.svec"))
@@ -354,18 +329,6 @@ class VectorCalibrationWorkbench:
                 raw = json.loads(text)
                 return [p if isinstance(p, str) else p["prompt"] for p in raw]
             return list(cfg.eval_prompts)
-
-        if self._run_dir:
-            held_out_path = self._run_dir / "calibration_prompts.json"
-            if held_out_path.exists():
-                try:
-                    held_out = json.loads(held_out_path.read_text())
-                except json.JSONDecodeError:
-                    held_out = []
-                prompts = [p for p in held_out if isinstance(p, str) and p]
-                if prompts:
-                    n = min(cfg.n_eval_prompts, len(prompts))
-                    return prompts[:n]
 
         if self._run_dir and (self._run_dir / "pairs.jsonl").exists():
             gen = GenerationResult.load(self._run_dir / "pairs.jsonl")

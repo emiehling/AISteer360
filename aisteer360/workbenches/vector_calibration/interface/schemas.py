@@ -31,7 +31,6 @@ class ExtractionConfigSchema(BaseModel):
     per_layer_rescale: bool = False
     layers: list[int] | Literal["all"] = "all"
     batch_size: int = 8
-    pair_split_ratio: float = Field(default=1.0, gt=0.0, le=1.0)
 
 
 class JudgeConfigSchema(BaseModel):
