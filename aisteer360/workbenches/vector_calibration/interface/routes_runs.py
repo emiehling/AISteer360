@@ -318,6 +318,14 @@ async def continue_run(
     await db.update_stages(run_id, list(body.stages))
     await db.reset_for_continue(run_id)
 
+    # clear stale calibration artifacts so the agent starts a fresh sweep with the new grid
+    if "calibration" in body.stages:
+        run_path = Path(run.run_dir)
+        for stale_file in ("calibration_checkpoint.json", "calibration_result.json"):
+            p = run_path / stale_file
+            if p.exists():
+                p.unlink()
+
     agent_token = await db.regenerate_agent_token(run_id)
     cmd = _agent_command(request, run_id, agent_token)
     dispatch_status, dispatch_error = await _dispatch_agent(
@@ -440,7 +448,22 @@ async def get_cell_detail(
     multiplier: float,
     run: OwnerScopedRun,
 ) -> CellDetailResponse:
-    cal = _load_calibration_result(Path(run.run_dir))
+    run_dir = Path(run.run_dir)
+
+    # checkpoint preserves generations; the result file strips them to keep JSON small
+    checkpoint = run_dir / "calibration_checkpoint.json"
+    if checkpoint.exists():
+        try:
+            data = json.loads(checkpoint.read_text())
+            for d in data:
+                if d.get("layer") == layer and abs(d.get("multiplier", 0) - multiplier) < 1e-6:
+                    return CellDetailResponse(**{
+                        k: v for k, v in d.items() if k != "n_generations"
+                    })
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    cal = _load_calibration_result(run_dir)
     for cell in cal.cells:
         if cell.layer == layer and abs(cell.multiplier - multiplier) < 1e-6:
             return CellDetailResponse(**asdict(cell))

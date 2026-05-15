@@ -413,12 +413,13 @@
     font-size: 0;
     cursor: pointer;
     position: relative;
-    transition: transform 0.08s, box-shadow 0.08s;
+    transition: box-shadow 0.08s;
   }
   .hm-cell:hover {
-    transform: scale(2.6);
     z-index: 10;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.7), 0 0 0 2px var(--accent);
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+    box-shadow: 0 0 8px rgba(201,161,90,0.4);
   }
   .hm-cell.incoherent { background: #2a2a30 !important; }
   .hm-cell.selected {
@@ -2969,6 +2970,10 @@
       const btn = $(`btnRun${s === "Calibration" ? "Calibrate" : s === "Generation" ? "Gen" : "Extract"}`);
       if (btn) btn.disabled = true;
     }
+    $("progressFill").style.width = "0%";
+    $("progressPct").textContent = "—";
+    $("statusCounter").textContent = "";
+    resetAllStageButtonProgress();
     const continuing = shouldContinueRun(stages);
     const url = continuing ? `/api/runs/${currentRun.id}/continue` : "/api/runs";
     const requestBody = { config: cfg, stages };
