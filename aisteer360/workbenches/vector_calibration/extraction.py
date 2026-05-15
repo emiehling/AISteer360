@@ -51,8 +51,8 @@ class SteeringVectorExtractor:
             model: The steered model (hidden states are extracted from this).
             tokenizer: Corresponding tokenizer.
             pairs: Contrastive pairs from the generation stage.
-            on_progress: Optional `(completed, total)` callback fired as each forward-pass batch
-                finishes inside the underlying estimator.
+            on_progress: Optional `(completed, total)` callback fired at coarse stage boundaries
+                (fit start, fit complete, post-processing complete).
 
         Returns:
             `SteeringVector` with one direction per extracted layer.
@@ -71,8 +71,14 @@ class SteeringVectorExtractor:
             batch_size=cfg.batch_size,
         )
 
+        if on_progress:
+            on_progress(0, 2)
+
         estimator = estimator_cls()
-        sv = estimator.fit(model, tokenizer, data=pairs, spec=spec, on_progress=on_progress)
+        sv = estimator.fit(model, tokenizer, data=pairs, spec=spec)
+
+        if on_progress:
+            on_progress(1, 2)
 
         # layer filtering
         if cfg.layers != "all":
@@ -100,5 +106,8 @@ class SteeringVectorExtractor:
                 "per_layer_rescale requested but no explained variances available (method=%s); skipping.",
                 cfg.method,
             )
+
+        if on_progress:
+            on_progress(2, 2)
 
         return sv

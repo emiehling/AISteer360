@@ -116,10 +116,14 @@ class VectorCalibrationWorkbench:
         logger.info("Loading steered model: %s", self.config.steered_model)
         self._tokenizer = AutoTokenizer.from_pretrained(self.config.steered_model)
         self._tokenizer = ensure_pad_token(self._tokenizer)
+
+        load_kwargs = dict(self.config.hf_model_kwargs)
+        load_kwargs.setdefault("torch_dtype", "auto")
+
         self._model = AutoModelForCausalLM.from_pretrained(
             self.config.steered_model,
             device_map=self.config.device_map,
-            **self.config.hf_model_kwargs,
+            **load_kwargs,
         )
 
     # ── stage 1 ──────────────────────────────────────────────────────
