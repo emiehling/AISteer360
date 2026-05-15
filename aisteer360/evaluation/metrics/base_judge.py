@@ -133,6 +133,7 @@ class LLMJudgeMetric(Metric):
         batch_size: int = 8,
         max_retries: int = 5,
         gen_kwargs: dict[str, Any] | None = None,
+        skip_format_instructions: bool = False,
     ):
         super().__init__()
 
@@ -172,6 +173,7 @@ class LLMJudgeMetric(Metric):
         self.base_prompt_template = prompt_template.strip()
         self.batch_size = batch_size
         self.max_retries = max_retries
+        self.skip_format_instructions = skip_format_instructions
 
     def _wrap(self, prompt: str) -> str:
         """Wrap prompt with appropriate formatting for the model.
@@ -283,7 +285,10 @@ class LLMJudgeMetric(Metric):
                 fields["prompt"] = prompts[i]
 
             prompt_core = self.base_prompt_template.format(**fields)
-            prompt_formatted = self._wrap(prompt_core + "\n\n" + self.format_instructions)
+            if self.skip_format_instructions:
+                prompt_formatted = self._wrap(prompt_core)
+            else:
+                prompt_formatted = self._wrap(prompt_core + "\n\n" + self.format_instructions)
             prompts_list.append(prompt_formatted)
 
         # generate

@@ -85,6 +85,7 @@ class JudgeConfig:
 
     model: str
     criteria: str = ""
+    system_prompt: str = ""
     rating_scale: list[tuple[int, str]] | None = None
     scale: tuple[int, int] = (1, 5)
     batch_size: int = 32

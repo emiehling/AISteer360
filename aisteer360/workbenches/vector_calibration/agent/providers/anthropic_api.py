@@ -121,6 +121,8 @@ class AnthropicJudgeProvider(JudgeProvider):
             raise ValueError("prompts and responses must be the same length")
         scores: list[float] = [float("nan")] * len(responses)
 
+        skip_fmt = '"score"' in template and '"reason"' in template
+
         def one(idx: int) -> None:
             rubric = template.format(
                 response=responses[idx],
@@ -132,7 +134,7 @@ class AnthropicJudgeProvider(JudgeProvider):
                 lower_bound=scale[0],
                 upper_bound=scale[1],
             )
-            user_text = rubric + "\n\n" + fmt
+            user_text = rubric if skip_fmt else rubric + "\n\n" + fmt
             try:
                 resp = self._client.messages.create(
                     model=self.model_id,

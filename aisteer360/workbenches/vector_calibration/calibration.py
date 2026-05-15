@@ -133,7 +133,7 @@ class CalibrationSweep:
 
                 score_mean = _nan_mean(scores)
                 perplexity = self._compute_mean_perplexity(
-                    model, tokenizer, eval_prompts, steered_texts
+                    model, tokenizer, eval_prompts, steered_texts, batch_size=cfg.batch_size,
                 )
                 coherence = self._compute_coherence(
                     model, tokenizer, eval_prompts, steered_texts, baseline_texts
@@ -370,7 +370,7 @@ class CalibrationSweep:
         scores, _ = judge.score_batch(prompts=prompts, responses=baseline_texts)
         baseline_score = _nan_mean(scores)
         baseline_perplexity = self._compute_mean_perplexity(
-            model, tokenizer, prompts, baseline_texts
+            model, tokenizer, prompts, baseline_texts, batch_size=cfg.batch_size,
         )
         return baseline_score, baseline_perplexity, baseline_texts
 
@@ -383,37 +383,72 @@ class CalibrationSweep:
         tokenizer: PreTrainedTokenizerBase,
         prompts: list[str],
         responses: list[str],
+        batch_size: int = 8,
     ) -> float:
         """Mean perplexity of `responses` conditioned on their prompts.
 
         Computes per-response NLL on the response tokens only (prompt tokens are masked out of the loss).
+        Processes prompt-response pairs in batches for efficiency.
         """
         if not responses:
             return float("nan")
 
         device = next(model.parameters()).device
-        total_nll = 0.0
-        total_tokens = 0
+        pad_id = tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = tokenizer.eos_token_id
 
+        full_ids_list: list[torch.Tensor] = []
+        prompt_lens: list[int] = []
         for prompt, response in zip(prompts, responses):
             prompt_ids = _tokenize_chat(tokenizer, [prompt])["input_ids"][0]
             full_text = tokenizer.decode(prompt_ids, skip_special_tokens=False) + response
             full_ids = tokenizer(full_text, return_tensors="pt").input_ids[0]
-
             if full_ids.size(0) <= prompt_ids.size(0):
                 continue
-            labels = full_ids.clone()
-            labels[: prompt_ids.size(0)] = -100
+            full_ids_list.append(full_ids)
+            prompt_lens.append(int(prompt_ids.size(0)))
 
-            input_ids = full_ids.unsqueeze(0).to(device)
-            labels = labels.unsqueeze(0).to(device)
+        if not full_ids_list:
+            return float("nan")
 
-            out = model(input_ids=input_ids, labels=labels)
-            n_resp_tokens = (labels != -100).sum().item() - 1
-            if n_resp_tokens <= 0:
+        loss_fct = torch.nn.CrossEntropyLoss(reduction="sum", ignore_index=-100)
+        total_nll = 0.0
+        total_tokens = 0
+
+        for batch_start in range(0, len(full_ids_list), batch_size):
+            batch_ids = full_ids_list[batch_start: batch_start + batch_size]
+            batch_prompt_lens = prompt_lens[batch_start: batch_start + batch_size]
+            max_len = max(t.size(0) for t in batch_ids)
+
+            input_ids = torch.full(
+                (len(batch_ids), max_len), pad_id, dtype=torch.long
+            )
+            attention_mask = torch.zeros((len(batch_ids), max_len), dtype=torch.long)
+            labels = torch.full((len(batch_ids), max_len), -100, dtype=torch.long)
+            for i, (ids, p_len) in enumerate(zip(batch_ids, batch_prompt_lens)):
+                seq_len = ids.size(0)
+                input_ids[i, :seq_len] = ids
+                attention_mask[i, :seq_len] = 1
+                labels[i, p_len:seq_len] = ids[p_len:]
+
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+            labels = labels.to(device)
+
+            out = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = out.logits
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            nll = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+            )
+            n_tokens = int((shift_labels != -100).sum().item())
+            if n_tokens <= 0:
                 continue
-            total_nll += float(out.loss) * n_resp_tokens
-            total_tokens += n_resp_tokens
+            total_nll += float(nll)
+            total_tokens += n_tokens
 
         if total_tokens == 0:
             return float("nan")
@@ -510,14 +545,32 @@ def _render_judge_prompt(config: JudgeConfig) -> str:
     """Build the judge prompt template from `rating_scale` rows, or fall back to `criteria`."""
     if not config.rating_scale:
         return config.criteria
+
     lines = [f"{int(label)}: {description.strip()}" for label, description in config.rating_scale]
     lo, hi = config.scale
-    return (
-        f"Rate the response on the integer scale {lo} to {hi} using the rubric below. "
-        f"Respond with only the numeric rating.\n"
-        f"\nRubric:\n" + "\n".join(lines) +
-        f"\n\nResponse:\n{{response}}"
+
+    parts: list[str] = []
+
+    system_prompt = getattr(config, "system_prompt", "") or ""
+    if system_prompt.strip():
+        parts.append(system_prompt.strip())
+        parts.append("")
+
+    parts.append(
+        "If the response is incoherent, nonsensical, or unreadable, respond with:\n"
+        '{{"score": -1, "reason": "incoherent"}}\n'
+        "Otherwise, rate on this scale:"
     )
+    parts.append("")
+    parts.extend(lines)
+    parts.append("")
+    parts.append(
+        f'Respond with JSON only: {{{{"score": <{lo}-{hi}>, "reason": "<one sentence>"}}}}'
+    )
+    parts.append("")
+    parts.append("Response:\n{response}")
+
+    return "\n".join(parts)
 
 
 class _Judge:

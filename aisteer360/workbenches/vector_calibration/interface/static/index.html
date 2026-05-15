@@ -1576,7 +1576,7 @@
           </div>
           <div class="field-row" style="margin-bottom:6px;">
             <span class="field-label" style="width:120px;" id="sshCredentialLabel">Key path / contents</span>
-            <input id="sshCredential" type="password" autocomplete="off"
+            <input id="sshCredential" type="password" autocomplete="new-password"
                    placeholder="~/.ssh/id_ed25519 or paste key contents">
           </div>
           <div class="field-row" style="margin-bottom:8px;">
@@ -1873,11 +1873,6 @@
           </div>
         </div>
 
-        <div class="specs-block">
-          <div class="sub-label"><span>Layer extraction</span></div>
-          <div class="field-row"><span class="k">batch size</span><input class="inline" id="batchSizeExt" type="number" min="1"></div>
-        </div>
-
         <div class="run-row">
           <button class="btn primary" id="btnRunExtract">Run Extraction</button>
           <button class="btn" id="btnCancelExtract" disabled>Cancel</button>
@@ -1924,39 +1919,31 @@
             </div>
             <div class="mc-dropdown"></div>
           </div>
+          <span class="field-label">System prompt:</span>
+          <textarea id="judgeSystemPrompt" rows="3" placeholder="e.g. You are an expert evaluating..." style="width:100%; resize:vertical;"></textarea>
           <span class="field-label">Rating scale:</span>
           <div id="ratingScaleBlock" style="margin-top: 0;">
             <div class="rating-scale-list" id="ratingScaleList"></div>
             <button class="catalog-add-btn" id="ratingScaleAddBtn" type="button">+ Add rating</button>
           </div>
+          <div class="field-row"><span class="k">Max new tokens</span><input class="inline" id="maxNewTokensCal" type="number" min="1"></div>
+          <div class="field-row"><span class="k">Batch size</span><input class="inline" id="batchSizeCal" type="number" min="1"></div>
+          <div class="field-row"><span class="k">Eval prompts</span><input class="inline" id="nEvalPrompts" type="number" min="1"></div>
         </div>
 
         <div class="specs-block">
           <div class="sub-label"><span>Sweep grid</span></div>
-
-          <div class="range-label"><span>multipliers</span></div>
-          <div class="range-row">
-            <input class="num-input" id="multRangeLo" type="number" step="0.1">
-            <span class="dash">→</span>
-            <input class="num-input" id="multRangeHi" type="number" step="0.1">
+          <div class="field-row">
+            <span class="k">Multiplier range</span>
+            <span style="display:flex; align-items:center; gap:4px; margin-left:auto;">
+              <input class="inline" id="multRangeLo" type="number" step="0.1" style="width:70px;">
+              <span>→</span>
+              <input class="inline" id="multRangeHi" type="number" step="0.1" style="width:70px;">
+            </span>
           </div>
-          <div class="field-row"><span class="k">step</span><input class="inline" id="multStep" type="number" step="0.05"></div>
-
-          <div class="range-label" style="margin-top:8px;"><span>layers</span></div>
-          <div class="field-row"><span class="k">step</span><input class="inline" id="layerStep" type="number" min="1"></div>
-        </div>
-
-        <div class="specs-block">
-          <div class="sub-label"><span>Quality gate</span></div>
-          <div class="field-row"><span class="k">coherence min</span><input class="inline" id="coherenceThr" type="number" step="0.01"></div>
-          <div class="field-row"><span class="k">ppl max ratio</span><input class="inline" id="pplMaxRatio" type="number" step="0.1"></div>
-        </div>
-
-        <div class="specs-block">
-          <div class="sub-label"><span>Execution</span></div>
-          <div class="field-row"><span class="k">max new tokens</span><input class="inline" id="maxNewTokensCal" type="number" min="1"></div>
-          <div class="field-row"><span class="k">batch size</span><input class="inline" id="batchSizeCal" type="number" min="1"></div>
-          <div class="field-row"><span class="k">eval prompts</span><input class="inline" id="nEvalPrompts" type="number" min="1"></div>
+          <div class="field-row"><span class="k">Multiplier step</span><input class="inline" id="multStep" type="number" step="0.05"></div>
+          <div class="field-row"><span class="k">Layer step</span><input class="inline" id="layerStep" type="number" min="1"></div>
+          <div class="field-row"><span class="k">Coherence threshold</span><input class="inline" id="coherenceThr" type="number" step="0.01"></div>
         </div>
 
         <div class="run-row">
@@ -2069,6 +2056,20 @@
   function escapeHtml(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  function formatRunPairsLabel(run) {
+    const runDir = (run && run.run_dir) || "";
+    const folder = runDir.split("/").filter(Boolean).pop() || "";
+    if (!folder) return "pairs.jsonl";
+    const maxFolderLen = 28;
+    let display = folder;
+    if (folder.length > maxFolderLen) {
+      const head = folder.slice(0, 8);
+      const tail = folder.slice(-12);
+      display = `${head}...${tail}`;
+    }
+    return `${display}/pairs.jsonl`;
   }
 
   function parseSeedPromptsText(text) {
@@ -2244,10 +2245,10 @@
     setToggle($("tgNormalize"), !!e.normalize);
     setToggle($("tgCenter"), !!e.center);
     setToggle($("tgPerLayer"), !!e.per_layer_rescale);
-    $("batchSizeExt").value = e.batch_size ?? 8;
 
     const c = cfg.calibration || {};
     $("judgeModel").value = (c.judge && c.judge.model) || "";
+    $("judgeSystemPrompt").value = (c.judge && c.judge.system_prompt) || "";
     if (c.judge && Array.isArray(c.judge.rating_scale) && c.judge.rating_scale.length) {
       ratingScale = c.judge.rating_scale.map((row) => {
         if (Array.isArray(row)) return { label: Number(row[0]) || 0, description: String(row[1] || "") };
@@ -2265,7 +2266,6 @@
     $("layerStep").value = sw.layer_step ?? 1;
     const qg = c.quality_gate || {};
     $("coherenceThr").value = qg.coherence_threshold ?? 0.95;
-    $("pplMaxRatio").value = qg.perplexity_max_ratio ?? 2.0;
     $("maxNewTokensCal").value = c.max_new_tokens ?? 200;
     $("batchSizeCal").value = c.batch_size ?? 32;
     $("nEvalPrompts").value = c.n_eval_prompts ?? 30;
@@ -2343,7 +2343,7 @@
       normalize: $("tgNormalize").classList.contains("on"),
       center: $("tgCenter").classList.contains("on"),
       per_layer_rescale: $("tgPerLayer").classList.contains("on"),
-      batch_size: +$("batchSizeExt").value,
+      batch_size: 8,
     };
     cfg.calibration = {
       ...(cfg.calibration || {}),
@@ -2359,6 +2359,7 @@
         return {
           ...prev,
           model: $("judgeModel").value,
+          system_prompt: $("judgeSystemPrompt").value,
           rating_scale: scaleRows,
           scale,
           criteria: prev.criteria || "",
@@ -2374,7 +2375,7 @@
       },
       quality_gate: {
         coherence_threshold: +$("coherenceThr").value,
-        perplexity_max_ratio: +$("pplMaxRatio").value,
+        perplexity_max_ratio: 2.0,
       },
       transform: $("transform").value,
       token_scope: $("tokenScope").value,
@@ -2933,7 +2934,7 @@
         setStageButtonProgress(msg.stage, 1);
         if (msg.stage === "generation") {
           pairsFileData = null;
-          $("pairsFilePath").value = "pairs.jsonl (this run)";
+          $("pairsFilePath").value = formatRunPairsLabel(currentRun);
         }
       }
     };
@@ -3159,12 +3160,13 @@
   function renderApiKeys() {
     const wrap = $("apiKeysBlock");
     if (!wrap) return;
-    wrap.innerHTML = KEY_ORDER.map((keyName) => {
+    const decoy = '<input type="text" name="prevent_autofill" style="display:none;" tabindex="-1" autocomplete="username">';
+    wrap.innerHTML = decoy + KEY_ORDER.map((keyName) => {
       const state = pillStateForKey(keyName);
       return `
         <div class="key-row">
           <span class="kr-label">${escapeHtml(KEY_LABELS[keyName])}</span>
-          <input class="kr-input" type="password" autocomplete="off"
+          <input class="kr-input" type="password" autocomplete="new-password"
                  data-key-name="${keyName}"
                  placeholder="${secretsStatus[keyName] ? "••••••••" : "not set"}">
           <span class="kr-pill ${state}" data-pill-for="${keyName}">${pillLabelForState(state)}</span>
@@ -3874,7 +3876,7 @@
       currentRun.status === "failed" ? { error: currentRun.error } : undefined);
     setConfigEditable(!TERMINAL_STATUSES.includes(currentRun.status));
     if (currentRun.has_pairs) {
-      $("pairsFilePath").value = "pairs.jsonl (this run)";
+      $("pairsFilePath").value = formatRunPairsLabel(currentRun);
     }
     connectWebSocket();
     await refreshHeatmap();

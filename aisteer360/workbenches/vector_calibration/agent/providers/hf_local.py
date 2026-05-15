@@ -139,11 +139,13 @@ class HFJudgeProvider(JudgeProvider):
             return self._metric
         logger.info("Loading HF judge: %s", self.config["model"])
         batch_size = int(self.config.get("batch_size", 8))
+        skip_fmt = '"score"' in template and '"reason"' in template
         self._metric = LLMJudgeMetric(
             model_or_id=self.config["model"],
             prompt_template=template,
             scale=scale,
             batch_size=batch_size,
+            skip_format_instructions=skip_fmt,
         )
         return self._metric
 
@@ -159,6 +161,7 @@ class HFJudgeProvider(JudgeProvider):
         # re-render the template-bound internals if the template changed between calls
         if metric.base_prompt_template != template.strip():
             metric.base_prompt_template = template.strip()
+            metric.skip_format_instructions = '"score"' in template and '"reason"' in template
         return metric.compute(responses=responses, prompts=prompts)
 
     def close(self) -> None:

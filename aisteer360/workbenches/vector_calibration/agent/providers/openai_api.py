@@ -115,6 +115,8 @@ class OpenAIJudgeProvider(JudgeProvider):
             raise ValueError("prompts and responses must be the same length")
         scores: list[float] = [float("nan")] * len(responses)
 
+        skip_fmt = '"score"' in template and '"reason"' in template
+
         def one(idx: int) -> None:
             try:
                 rubric = template.format(
@@ -127,11 +129,12 @@ class OpenAIJudgeProvider(JudgeProvider):
                     lower_bound=scale[0],
                     upper_bound=scale[1],
                 )
+                user_text = rubric if skip_fmt else rubric + "\n\n" + fmt
                 resp = self._client.chat.completions.create(
                     model=self.model_id,
                     max_tokens=128,
                     temperature=0.0,
-                    messages=[{"role": "user", "content": rubric + "\n\n" + fmt}],
+                    messages=[{"role": "user", "content": user_text}],
                 )
                 text = (resp.choices[0].message.content or "").strip()
                 scores[idx] = parse(text, scale)
