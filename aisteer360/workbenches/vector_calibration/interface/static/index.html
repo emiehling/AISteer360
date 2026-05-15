@@ -29,7 +29,7 @@
     --good: #7cc17a;
     --danger: #d66b5b;
     --primary-text: #1a1410;
-    --incoherent-cell: #2a2a30;
+    --incoherent-cell: #5a5a62;
 
     --sans: 'IBM Plex Sans', system-ui, sans-serif;
     --mono: 'JetBrains Mono', monospace;
@@ -421,7 +421,7 @@
     outline-offset: -1px;
     box-shadow: 0 0 8px rgba(201,161,90,0.4);
   }
-  .hm-cell.incoherent { background: #2a2a30 !important; }
+  .hm-cell.incoherent { background: var(--incoherent-cell) !important; }
   .hm-cell.selected {
     outline: 2px solid var(--accent);
     z-index: 5;
@@ -2202,7 +2202,7 @@
   function scoreColor(v, view, coherent) {
     if (v === null || v === undefined || Number.isNaN(v)) return "var(--panel-3)";
     if (view === "score_delta" && coherent === false) {
-      return getComputedStyle(document.documentElement).getPropertyValue("--incoherent-cell").trim() || "#2a2a30";
+      return getComputedStyle(document.documentElement).getPropertyValue("--incoherent-cell").trim() || "#5a5a62";
     }
 
     if (view === "score_delta") {
@@ -2628,10 +2628,6 @@
       {
         label: "baseline",
         valHtml: `<span class="val">${fmt(baseline)}<span class="delta">ppl ${fmt(basePpl, 1)}</span></span>`,
-      },
-      {
-        label: "gate",
-        valHtml: `<span class="val ${cell.coherent ? "good" : "bad"}">${cell.coherent ? "pass" : "fail"}</span>`,
       },
     ];
     $("insMetrics").innerHTML = metrics
