@@ -64,7 +64,7 @@ class CalibrationConfigSchema(BaseModel):
     transform: Literal["additive", "norm_preserving"] = "additive"
     token_scope: Literal["all", "after_prompt", "last_k", "from_position"] = "all"
     max_new_tokens: int = 200
-    batch_size: int = 32
+    batch_size: int = 8
     compute_perplexity: bool = False
     eval_prompts: list[str] | str | None = None
     n_eval_prompts: int = 30

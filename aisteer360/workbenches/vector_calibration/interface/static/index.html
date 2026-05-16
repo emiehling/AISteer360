@@ -30,6 +30,9 @@
     --danger: #d66b5b;
     --primary-text: #1a1410;
     --incoherent-cell: #5a5a62;
+    --bg-inset: #030305;
+    --inset-shadow-1: rgba(0,0,0,0.75);
+    --inset-shadow-2: rgba(0,0,0,0.45);
 
     --sans: 'IBM Plex Sans', system-ui, sans-serif;
     --mono: 'JetBrains Mono', monospace;
@@ -54,6 +57,9 @@
     --danger: #b94434;
     --primary-text: #fcfaf6;
     --incoherent-cell: #d8d4cd;
+    --bg-inset: #d8d4cc;
+    --inset-shadow-1: rgba(0,0,0,0.18);
+    --inset-shadow-2: rgba(0,0,0,0.10);
   }
   body {
     font-family: var(--sans);
@@ -64,6 +70,19 @@
   }
   button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
   input, textarea, select { font-family: inherit; color: inherit; }
+
+  /* ============ scrollbars ============ */
+  * { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-2);
+    border-radius: 2px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dimmer); background-clip: padding-box; }
+  ::-webkit-scrollbar-corner { background: transparent; }
 
   /* ============ top bar ============ */
   .topbar {
@@ -270,26 +289,39 @@
 
   /* ============ heatmap section ============ */
   .heatmap-section {
-    padding: 14px 16px 10px;
+    padding: 14px 28px 10px 16px;
     display: flex; flex-direction: column;
     min-height: 0;
+    background: var(--bg-inset);
+    box-shadow:
+      inset 3px 3px 8px var(--inset-shadow-1),
+      inset -3px -3px 8px var(--inset-shadow-2);
   }
   .hm-head {
-    display: flex; align-items: center; gap: 20px;
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    column-gap: 2px;
+    align-items: center;
     margin-bottom: 16px;
+  }
+  .hm-head .hm-head-row {
+    grid-column: 2;
+    display: flex; align-items: center; gap: 20px;
     flex-wrap: wrap;
+    padding-left: 24px;  /* matches .hm-yticks min-width(20px) + padding-right(4px) */
   }
   .hm-head h2 {
     font-family: var(--sans);
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 400;
+    font-style: italic;
     letter-spacing: -0.005em;
-    color: var(--text);
+    color: var(--text-soft);
   }
   .hm-head h2 em {
-    font-style: normal;
-    font-weight: 600;
-    color: var(--text);
+    font-style: italic;
+    font-weight: 400;
+    color: var(--text-soft);
   }
   .hm-head .meta {
     display: flex; align-items: center; gap: 14px;
@@ -557,13 +589,16 @@
   .gen-col.steered .col-head .tag { color: var(--text); }
   .gen-col .prompt {
     font-family: var(--sans);
-    font-size: 11.5px;
-    font-style: italic;
-    color: var(--text-dim);
-    margin-bottom: 8px;
-    padding-left: 10px;
-    border-left: 2px solid var(--line-2);
+    font-size: 12px;
+    color: var(--text);
+    margin: 0;
     white-space: pre-wrap;
+    line-height: 1.5;
+  }
+  .gen-col .prompt-divider {
+    border: none;
+    border-top: 1px solid var(--line-2);
+    margin: 10px 0 10px;
   }
   .gen-col .body {
     font-family: var(--sans);
@@ -978,6 +1013,11 @@
     margin-top: 10px;
     padding: 10px 0 0;
     border-top: 1px dashed var(--line-2);
+  }
+  .sec-body > .specs-block:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
   }
   .specs-block:empty { margin: 0; padding: 0; border-top: none; }
   .specs-block.collapsible .collapsible-head { cursor: pointer; user-select: none; }
@@ -1531,7 +1571,7 @@
     </div>
     <div class="modal-body">
       <div class="specs-block elevated">
-        <div class="sub-label"><span>API keys (encrypted)</span></div>
+        <div class="sub-label"><span>API keys</span></div>
         <div id="apiKeysBlock"></div>
       </div>
 
@@ -1599,15 +1639,10 @@
         <button class="catalog-add-btn" id="catalogAddBtn" type="button">+ Add model</button>
       </div>
 
-      <span class="field-label">Save directory <span class="hint" style="font-style:italic; color:var(--text-dim); font-size:10.5px;">(server path, read-only)</span></span>
-      <div class="field-row" style="margin-bottom:8px;">
-        <span class="v dim" id="sSaveDirDisplay" style="font-family:var(--mono); font-size:11px; color:var(--text-dim); word-break:break-all;">—</span>
-      </div>
-
       <div class="specs-block">
-        <div class="sub-label"><span>Endpoint</span></div>
         <div class="field-row"><span class="k">host</span><span class="v dim" id="sHost">—</span></div>
         <div class="field-row"><span class="k">port</span><span class="v dim" id="sPort">—</span></div>
+        <div class="field-row"><span class="k">save directory</span><span class="v dim" id="sSaveDirDisplay" style="font-family:var(--mono); font-size:11px; word-break:break-all; white-space:normal; text-align:right;">—</span></div>
       </div>
     </div>
     <div class="modal-foot">
@@ -1662,22 +1697,19 @@
 
 <!-- run-status modal -->
 <div class="modal-scrim" id="runModal">
-  <div class="modal" role="dialog" aria-label="Current run">
+  <div class="modal" role="dialog" aria-label="Status">
     <div class="modal-head">
-      <span class="title">Current run</span>
+      <span class="title">Status</span>
       <button class="close" id="runModalClose">×</button>
     </div>
     <div class="modal-body">
       <div class="field-row"><span class="k">phase</span><span class="v" id="runStateLabel">idle</span></div>
-      <div class="field-row"><span class="k">cells evaluated</span><span class="v" id="runCells">—</span></div>
-      <div class="field-row"><span class="k">coherent</span><span class="v" id="runCoherent">—</span></div>
-      <div class="field-row"><span class="k">peak Δ</span><span class="v accent" id="runPeakDelta">—</span></div>
-      <div class="field-row"><span class="k">peak location</span><span class="v" id="runPeakLoc">—</span></div>
+      <textarea id="runActivityLog" readonly tabindex="-1" rows="14"
+        style="width:100%; margin-top:8px; font-family:var(--mono); font-size:11px; line-height:1.45;
+               resize:none; background:#ffffff; color:#1a1a1a; caret-color:transparent;
+               border:1px solid var(--line-2); border-radius:2px; padding:8px; outline:none;
+               white-space:pre-wrap; word-break:break-word;"></textarea>
       <div class="field-row"><span class="k">wall time</span><span class="v" id="runWall">—</span></div>
-      <div class="mini-progress">
-        <div class="bar"><div class="fill" id="progressFill"></div></div>
-        <div class="lab"><span id="progressLabel">—</span><span id="progressPct">—</span></div>
-      </div>
     </div>
   </div>
 </div>
@@ -1687,12 +1719,14 @@
     <!-- ============ HEATMAP ============ -->
     <section class="heatmap-section">
       <div class="hm-head">
-        <h2 id="hmTitle">dimension: <em id="hmDimension">—</em>, baseline: <em id="hmBaseline">—</em></h2>
-        <span class="spacer"></span>
-        <div class="colorbar">
-          <span id="cbLo">−</span>
-          <span id="cbGradient" class="gradient"></span>
-          <span id="cbHi">+</span>
+        <div class="hm-head-row">
+          <h2 id="hmTitle">dimension: <em id="hmDimension">—</em>, baseline: <em id="hmBaseline">—</em></h2>
+          <span class="spacer"></span>
+          <div class="colorbar">
+            <span id="cbLo">−</span>
+            <span id="cbGradient" class="gradient"></span>
+            <span id="cbHi">+</span>
+          </div>
         </div>
       </div>
 
@@ -1919,8 +1953,10 @@
             </div>
             <div class="mc-dropdown"></div>
           </div>
-          <span class="field-label">System prompt:</span>
-          <textarea id="judgeSystemPrompt" rows="3" placeholder="e.g. You are an expert evaluating..." style="width:100%; resize:vertical;"></textarea>
+          <span class="field-label judge">System prompt:</span>
+          <div class="prompt-btn judge">
+            <textarea id="judgeSystemPrompt" rows="3" placeholder="e.g. You are an expert evaluating..."></textarea>
+          </div>
           <span class="field-label">Rating scale:</span>
           <div id="ratingScaleBlock" style="margin-top: 0;">
             <div class="rating-scale-list" id="ratingScaleList"></div>
@@ -1935,10 +1971,10 @@
           <div class="sub-label"><span>Sweep grid</span></div>
           <div class="field-row">
             <span class="k">Multiplier range</span>
-            <span style="display:flex; align-items:center; gap:4px; margin-left:auto;">
-              <input class="inline" id="multRangeLo" type="number" step="0.1" style="width:70px;">
-              <span>→</span>
-              <input class="inline" id="multRangeHi" type="number" step="0.1" style="width:70px;">
+            <span style="display:flex; align-items:center; gap:3px; margin-left:auto; width:90px;">
+              <input class="inline" id="multRangeLo" type="number" step="0.1" style="width:36px; padding:3px 4px;">
+              <span style="color:var(--text-dim); font-size:10px; flex:1; text-align:center;">→</span>
+              <input class="inline" id="multRangeHi" type="number" step="0.1" style="width:36px; padding:3px 4px;">
             </span>
           </div>
           <div class="field-row"><span class="k">Multiplier step</span><input class="inline" id="multStep" type="number" step="0.05"></div>
@@ -2274,7 +2310,7 @@
     $("coherenceThr").value = qg.coherence_threshold ?? 0.95;
     setToggle($("tgComputePpl"), !!c.compute_perplexity);
     $("maxNewTokensCal").value = c.max_new_tokens ?? 200;
-    $("batchSizeCal").value = c.batch_size ?? 32;
+    $("batchSizeCal").value = c.batch_size ?? 8;
     $("nEvalPrompts").value = c.n_eval_prompts ?? 30;
 
 
@@ -2654,7 +2690,7 @@
     $("promptCounter2").textContent = $("promptCounter").textContent;
 
     const promptHtml = g.prompt
-      ? `<div class="prompt">"${escapeHtml(g.prompt)}"</div>`
+      ? `<div class="prompt">${escapeHtml(g.prompt)}</div><hr class="prompt-divider">`
       : "";
 
     const baseBody = g.baseline_text !== undefined ? g.baseline_text : (g.baseline || "");
@@ -2666,12 +2702,10 @@
     `;
 
     let judgeBlock = "";
-    if (g.judge_score !== undefined && g.judge_score !== null) {
-      const scaleHi = (currentConfig && currentConfig.calibration && currentConfig.calibration.judge && currentConfig.calibration.judge.scale) ? currentConfig.calibration.judge.scale[1] : 5;
+    if (g.judge_reason) {
       judgeBlock = `
         <div class="judge">
-          <div class="score">${fmt(g.judge_score, 1)}<sub>/ ${scaleHi}</sub></div>
-          <div class="reason">${escapeHtml(g.judge_reason || "")}</div>
+          <div class="reason">${escapeHtml(g.judge_reason)}</div>
         </div>
       `;
     }
@@ -2759,12 +2793,10 @@
     $("statusDot").className = "dot " + phase;
     $("runStateLabel").textContent = label;
     $("runStateLabel").className = "sec-action" + (phase === "complete" ? " good" : phase === "error" ? " bad" : "");
-    $("progressLabel").textContent = label + (extra && extra.error ? ` · ${extra.error}` : "");
 
     if (phase === "error" && extra && extra.error) {
       $("statusText").textContent = "failed";
       $("statusDot").className = "dot error";
-      $("progressLabel").textContent = extra.error;
     }
 
     applyPhaseToDots(phase);
@@ -2773,15 +2805,11 @@
     setStageRunning(runningStage);
 
     if (phase === "complete") {
-      $("progressFill").style.width = "100%";
-      $("progressPct").textContent = "done";
       const ran = new Set((currentRun && currentRun.stages) || []);
       if (ran.has("calibration")) refreshHeatmap();
       resetAllStageButtonProgress();
     }
     if (phase === "idle" || phase === "error" || phase === "cancelled") {
-      $("progressFill").style.width = "0%";
-      $("progressPct").textContent = "—";
       $("statusCounter").textContent = "";
       resetAllStageButtonProgress();
     }
@@ -2813,19 +2841,84 @@
     });
   }
 
+  // ── activity log ─────────────────────────────────────────────
+  const ACTIVITY_LOG_MAX_LINES = 2000;
+  function appendActivityLine(line) {
+    const el = $("runActivityLog");
+    if (!el) return;
+    const ts = new Date().toLocaleTimeString([], { hour12: false });
+    const next = el.value ? el.value + "\n" : "";
+    el.value = next + `[${ts}] ${line}`;
+    const lines = el.value.split("\n");
+    if (lines.length > ACTIVITY_LOG_MAX_LINES) {
+      el.value = lines.slice(lines.length - ACTIVITY_LOG_MAX_LINES).join("\n");
+    }
+    el.scrollTop = el.scrollHeight;
+  }
+  function logActivity(msg) {
+    if (!msg || !msg.event) return;
+    let line;
+    switch (msg.event) {
+      case "snapshot":
+        line = `snapshot · status=${msg.status || "?"}${msg.phase ? ` · phase=${msg.phase}` : ""}${msg.error ? ` · error=${msg.error}` : ""}`;
+        break;
+      case "phase":
+        line = `phase · ${msg.phase}${msg.error ? ` · ${msg.error}` : ""}`;
+        break;
+      case "progress":
+        line = msg.total
+          ? `progress · ${msg.phase} ${msg.completed}/${msg.total}`
+          : `progress · ${msg.phase || ""}`;
+        break;
+      case "cell_complete":
+        line = `cell · L${msg.layer} m=${msg.multiplier}${msg.score_delta != null ? ` Δ=${msg.score_delta}` : ""}${msg.coherent === false ? " · incoherent" : ""}`;
+        break;
+      case "stage_complete":
+        line = `stage_complete · ${msg.stage}`;
+        break;
+      case "model_info":
+        line = `model_info · ${msg.name || msg.model || "model"}`;
+        break;
+      default:
+        line = `${msg.event}${msg.message ? ` · ${msg.message}` : ""}`;
+    }
+    appendActivityLine(line);
+  }
+
+  // ── wall-clock ticker ────────────────────────────────────────
+  let wallTimer = null;
+  function fmtWall(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return "—";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  }
+  function tickWallClock() {
+    if (!currentRun) return;
+    const start = currentRun.claimed_at || currentRun.created_at;
+    if (!start) return;
+    const end = currentRun.completed_at || (Date.now() / 1000);
+    $("runWall").textContent = fmtWall(end - start);
+  }
+  function startWallClockTicker() {
+    tickWallClock();
+    if (wallTimer) return;
+    wallTimer = setInterval(() => {
+      if (!currentRun) return;
+      if (TERMINAL_STATUSES && TERMINAL_STATUSES.includes(currentRun.status)) {
+        tickWallClock();
+        clearInterval(wallTimer);
+        wallTimer = null;
+        return;
+      }
+      tickWallClock();
+    }, 1000);
+  }
+
   function updateProgress(msg) {
     if (msg.total && msg.total > 0) {
-      const pct = Math.round((msg.completed / msg.total) * 100);
-      $("progressFill").style.width = pct + "%";
-      $("progressLabel").textContent = `${msg.phase} · ${msg.completed}/${msg.total}`;
-      $("progressPct").textContent = pct + "%";
       $("statusCounter").textContent = `(${msg.completed}/${msg.total})`;
-      if (msg.phase === "calibration") {
-        $("runCells").textContent = `${msg.completed} / ${msg.total}`;
-      }
       setStageButtonProgress(msg.phase, msg.completed / msg.total);
-    } else if (msg.phase) {
-      $("progressLabel").textContent = msg.phase;
     }
   }
 
@@ -2879,12 +2972,7 @@
         updatePhase(newPhase, s.status === "failed" ? { error: s.error } : undefined);
       }
       setConfigEditable(!TERMINAL_STATUSES.includes(s.status));
-      if (s.claimed_at && s.completed_at) {
-        const wall = s.completed_at - s.claimed_at;
-        const m = Math.floor(wall / 60);
-        const sec = Math.round(wall % 60);
-        $("runWall").textContent = m > 0 ? `${m}m ${sec}s` : `${sec}s`;
-      }
+      startWallClockTicker();
       renderModelInfo(s.model_info || {});
     } catch (e) { /* ignore */ }
   }
@@ -2894,15 +2982,9 @@
     try {
       heatmapData = await api(runPath("/results/heatmap"));
       renderHeatmap(heatmapData, currentView);
-      if (heatmapData.peak) {
-        $("runPeakDelta").textContent = fmtSigned(heatmapData.peak.score_delta);
-        $("runPeakLoc").textContent = `L${heatmapData.peak.layer} · ${fmtSigned(heatmapData.peak.multiplier)}`;
-        if (!selectedCell) {
-          selectCell(heatmapData.peak.layer, heatmapData.peak.multiplier);
-        }
+      if (heatmapData.peak && !selectedCell) {
+        selectCell(heatmapData.peak.layer, heatmapData.peak.multiplier);
       }
-      const nCells = heatmapData.layers.length * heatmapData.multipliers.length;
-      $("runCells").textContent = String(nCells);
     } catch (e) { /* no result yet */ }
   }
 
@@ -2925,7 +3007,10 @@
         pendingDispatchWatchdog = null;
       }
       const msg = JSON.parse(e.data);
+      logActivity(msg);
       if (msg.event === "snapshot") {
+        currentRun = { ...currentRun, ...msg };
+        startWallClockTicker();
         updatePhase(phaseForRun(msg), msg.status === "failed" ? { error: msg.error } : undefined);
         setConfigEditable(!TERMINAL_STATUSES.includes(msg.status));
       } else if (msg.event === "phase") updatePhase(msg.phase, msg);
@@ -2975,10 +3060,18 @@
       const btn = $(`btnRun${s === "Calibration" ? "Calibrate" : s === "Generation" ? "Gen" : "Extract"}`);
       if (btn) btn.disabled = true;
     }
-    $("progressFill").style.width = "0%";
-    $("progressPct").textContent = "—";
     $("statusCounter").textContent = "";
     resetAllStageButtonProgress();
+    // optimistic: flip the requested stage(s) to running immediately so the user
+    // sees feedback between click and the agent claim/ws snapshot
+    const firstStage = stages[0];
+    const stageCap = firstStage ? firstStage.charAt(0).toUpperCase() + firstStage.slice(1) : null;
+    if (stageCap) setStageDot(stageCap, "running");
+    if (firstStage) updatePhase(firstStage);
+    const logEl = $("runActivityLog");
+    if (logEl) logEl.value = "";
+    $("runWall").textContent = "—";
+    appendActivityLine(`run requested · stages=${stages.join(",")}`);
     const continuing = shouldContinueRun(stages);
     const url = continuing ? `/api/runs/${currentRun.id}/continue` : "/api/runs";
     const requestBody = { config: cfg, stages };
@@ -3014,6 +3107,8 @@
       }
     } catch (e) {
       setStageRunning(null);
+      if (stageCap) setStageDot(stageCap, "idle");
+      updatePhase("idle");
       alert(`Failed to ${continuing ? "continue" : "create"} run: ${e.message}`);
     }
   }

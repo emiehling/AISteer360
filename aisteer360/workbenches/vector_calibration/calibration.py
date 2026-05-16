@@ -604,7 +604,9 @@ def _render_judge_prompt(config: JudgeConfig) -> str:
         parts.append("")
 
     parts.append(
-        "If the response is incoherent, nonsensical, or unreadable, respond with:\n"
+        "If the response is incoherent, nonsensical, unreadable, or consists of "
+        "repeated/looping tokens, words, or phrases (even if individually well-formed), "
+        "respond with:\n"
         '{{"score": -1, "reason": "incoherent"}}\n'
         "Otherwise, rate on this scale:"
     )
