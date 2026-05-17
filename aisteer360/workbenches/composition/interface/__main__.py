@@ -1,9 +1,9 @@
-"""Solo-dev convenience wrapper.
+"""Solo-dev convenience wrapper for the composition workbench.
 
-`python -m aisteer360.workbenches.vector_calibration.interface` starts the coordination server,
-prints the dashboard URL with an owner token, and waits. When the user creates a run from the
-browser, the server itself dispatches the agent — locally by default, or over SSH if the user
-configured a remote machine in settings.
+`python -m aisteer360.workbenches.composition.interface` starts the coordination server, prints
+the dashboard URL with an owner token, and waits. When the user creates a session, the server
+dispatches a long-lived `SessionRunner` agent — locally by default, or over SSH if compute is
+configured.
 """
 from __future__ import annotations
 
@@ -16,7 +16,11 @@ import time
 
 import uvicorn
 
-from aisteer360.workbenches.common.interface.db import mint_owner_token, resolve_data_root, sha256_hex
+from aisteer360.workbenches.common.interface.db import (
+    mint_owner_token,
+    resolve_data_root,
+    sha256_hex,
+)
 
 from .app import create_app
 
@@ -36,10 +40,10 @@ def _run_uvicorn(app, host: str, port: int, log_level: str) -> uvicorn.Server:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Calibration dashboard")
+    parser = argparse.ArgumentParser(description="Composition workbench dashboard")
     parser.add_argument("--save-dir", default=None, help="Artefact directory (defaults to ./runs)")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8360)
+    parser.add_argument("--port", type=int, default=8361)
     parser.add_argument("--log-level", default="info")
     parser.add_argument(
         "--no-agent",
@@ -62,7 +66,7 @@ def main() -> int:
 
     base_url = f"http://{args.host}:{args.port}"
     browser_url = f"{base_url}/?owner_token={owner_token}"
-    print(f"\n[dashboard] {browser_url}\n", flush=True)
+    print(f"\n[composition] {browser_url}\n", flush=True)
 
     stop = threading.Event()
 

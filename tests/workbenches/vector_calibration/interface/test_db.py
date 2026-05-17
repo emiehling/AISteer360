@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from aisteer360.workbenches.vector_calibration.interface.db import (
+from aisteer360.workbenches.common.interface.db import (
     Database,
     STATUS_CLAIMED,
     STATUS_CREATED,

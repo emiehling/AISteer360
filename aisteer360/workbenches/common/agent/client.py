@@ -1,7 +1,12 @@
 """HTTP client wrapping the agent-facing API surface.
 
-A thin synchronous httpx client; matches the synchronous nature of the workbench's per-stage
-calls. The agent keeps one long-lived client and reuses its connection pool.
+A thin synchronous httpx client; matches the synchronous nature of the per-stage / per-request
+agent calls. The agent keeps one long-lived client and reuses its connection pool.
+
+Both run-driven workbenches (vector calibration) and session-driven workbenches (composition) use
+the same client. The run-aware methods POST to `/api/agent/runs/{run_id}/*`; the session-aware
+methods POST to `/api/agent/sessions/{session_id}/*`. Whether you use one set or the other
+depends on which runner is driving the client.
 """
 from __future__ import annotations
 
@@ -25,7 +30,12 @@ class AgentServerError(RuntimeError):
 
 
 class ServerClient:
-    """HTTP client for the agent-facing `/api/agent/runs/{id}/*` endpoints."""
+    """HTTP client for the agent-facing endpoints.
+
+    The client is parameterized by `run_id` (legacy positional arg, used by the VC workbench).
+    For session-driven workbenches, `session_id` aliases to the same field — only the endpoint
+    paths differ.
+    """
 
     def __init__(
         self,
@@ -43,6 +53,10 @@ class ServerClient:
             timeout=timeout,
         )
 
+    @property
+    def session_id(self) -> str:
+        return self.run_id
+
     # ── lifecycle ────────────────────────────────────────────────
 
     def close(self) -> None:
@@ -54,7 +68,7 @@ class ServerClient:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
-    # ── agent API ────────────────────────────────────────────────
+    # ── run-driven API (vector calibration) ──────────────────────
 
     def claim(self) -> dict[str, Any]:
         return self._post(f"/api/agent/runs/{self.run_id}/claim").json()
@@ -112,6 +126,52 @@ class ServerClient:
 
     def post_logs(self, lines: list[str]) -> None:
         self._post(f"/api/agent/runs/{self.run_id}/logs", json={"lines": lines})
+
+    # ── session-driven API (composition workbench) ───────────────
+
+    def session_claim(self) -> dict[str, Any]:
+        return self._post(f"/api/agent/sessions/{self.session_id}/claim").json()
+
+    def session_ready(self, model_info: dict[str, Any] | None = None) -> None:
+        self._post(
+            f"/api/agent/sessions/{self.session_id}/ready",
+            json={"model_info": model_info or {}},
+        )
+
+    def session_poll(self, timeout_s: float = 30.0) -> dict[str, Any] | None:
+        """Long-poll for the next request or close signal.
+
+        Returns the raw payload from the server, which has shape `{"request": {...}}` for an
+        inference request, `{"close": true}` for a graceful shutdown signal, or
+        `{"request": null, "close": false}` on timeout (Python None).
+        """
+        resp = self._get(
+            f"/api/agent/sessions/{self.session_id}/poll",
+            params={"timeout": timeout_s},
+            timeout=timeout_s + 5,
+        )
+        data = resp.json()
+        if not data.get("request") and not data.get("close"):
+            return None
+        return data
+
+    def session_result(self, request_id: str, result: dict[str, Any]) -> None:
+        self._post(
+            f"/api/agent/sessions/{self.session_id}/result",
+            json={"request_id": request_id, **result},
+        )
+
+    def session_heartbeat(self) -> None:
+        self._post(f"/api/agent/sessions/{self.session_id}/heartbeat")
+
+    def session_error(self, message: str) -> None:
+        self._post(
+            f"/api/agent/sessions/{self.session_id}/error",
+            json={"message": message},
+        )
+
+    def session_close(self) -> None:
+        self._post(f"/api/agent/sessions/{self.session_id}/close")
 
     # ── low-level helpers ────────────────────────────────────────
 

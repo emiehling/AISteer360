@@ -10,7 +10,7 @@ import httpx
 import pytest
 import uvicorn
 
-from aisteer360.workbenches.vector_calibration.agent.client import ServerClient
+from aisteer360.workbenches.common.agent.client import ServerClient
 from aisteer360.workbenches.vector_calibration.agent.runner import AgentRunner
 from aisteer360.workbenches.vector_calibration.interface.app import create_app
 

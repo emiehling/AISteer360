@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, WebSocket, status
 
-from .db import Database, Run, sha256_hex, verify_agent_token
+from .db import Database, Run, Session, sha256_hex, verify_agent_token
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,41 @@ async def agent_scoped_run(
 AgentScopedRun = Annotated[Run, Depends(agent_scoped_run)]
 
 
+async def owner_scoped_session(
+    session_id: str,
+    db: Annotated[Database, Depends(get_db)],
+    owner_hash: OwnerTokenHash,
+) -> Session:
+    """Load a session and verify its `owner_token_hash` matches the caller. 404 when not owned."""
+    session = await db.get_session(session_id)
+    if not session or session.owner_token_hash != owner_hash:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found.")
+    return session
+
+
+OwnerScopedSession = Annotated[Session, Depends(owner_scoped_session)]
+
+
+async def agent_scoped_session(
+    session_id: str,
+    request: Request,
+    db: Annotated[Database, Depends(get_db)],
+) -> Session:
+    """Validate a session-scoped agent token and refresh heartbeat."""
+    raw = _extract_bearer(request.headers.get("authorization"))
+    if not raw:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing agent token.")
+    session = await db.get_session(session_id)
+    if not session or not verify_agent_token(raw, session.agent_token_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid agent token.")
+    await db.session_heartbeat(session_id)
+    refreshed = await db.get_session(session_id)
+    return refreshed or session
+
+
+AgentScopedSession = Annotated[Session, Depends(agent_scoped_session)]
+
+
 async def authorise_ws_owner(
     run_id: str,
     websocket: WebSocket,
@@ -107,6 +142,28 @@ async def authorise_ws_owner(
     return run
 
 
+async def authorise_ws_session_owner(
+    session_id: str,
+    websocket: WebSocket,
+    db: Database,
+) -> Session | None:
+    """Validate a browser WebSocket connection against the session owner token query param.
+
+    Returns the session on success. On failure, closes the socket with code 4401 and returns None.
+    """
+    token = websocket.query_params.get("token") or _extract_bearer(
+        websocket.headers.get("authorization")
+    )
+    if not token:
+        await websocket.close(code=4401, reason="missing token")
+        return None
+    session = await db.get_session(session_id)
+    if not session or session.owner_token_hash != sha256_hex(token):
+        await websocket.close(code=4401, reason="unauthorized")
+        return None
+    return session
+
+
 __all__ = [
     "get_db",
     "owner_token_hash",
@@ -115,5 +172,10 @@ __all__ = [
     "OwnerScopedRun",
     "agent_scoped_run",
     "AgentScopedRun",
+    "owner_scoped_session",
+    "OwnerScopedSession",
+    "agent_scoped_session",
+    "AgentScopedSession",
     "authorise_ws_owner",
+    "authorise_ws_session_owner",
 ]

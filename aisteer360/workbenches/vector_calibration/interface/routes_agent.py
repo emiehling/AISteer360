@@ -8,8 +8,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 
-from .auth import AgentScopedRun, get_db
-from .db import (
+from aisteer360.workbenches.common.interface.auth import AgentScopedRun, get_db
+from aisteer360.workbenches.common.interface.db import (
     ACTIVE_STATUSES,
     STATUS_CANCELLED,
     STATUS_CLAIMED,
@@ -19,7 +19,7 @@ from .db import (
     STATUS_RUNNING,
     Database,
 )
-from .relay import ProgressRelay
+from aisteer360.workbenches.common.interface.relay import ProgressRelay
 from .schemas import (
     CancelCheckResponse,
     ClaimResponse,

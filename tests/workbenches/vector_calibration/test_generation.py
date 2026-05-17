@@ -5,7 +5,7 @@ from typing import Callable
 
 import pytest
 
-from aisteer360.workbenches.vector_calibration.agent.providers.base import GenerationProvider
+from aisteer360.workbenches.common.agent.providers.base import GenerationProvider
 from aisteer360.workbenches.vector_calibration.configs import GenerationConfig
 from aisteer360.workbenches.vector_calibration.generation import ContrastivePairGenerator
 

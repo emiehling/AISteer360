@@ -63,7 +63,7 @@ def openai_stub(monkeypatch):
 
 def test_generation_forwards_kwargs(openai_stub) -> None:
     openai_stub["outputs"] = ["A", "B"]
-    from aisteer360.workbenches.vector_calibration.agent.providers.openai_api import (
+    from aisteer360.workbenches.common.agent.providers.openai_api import (
         OpenAIGenerationProvider,
     )
     p = OpenAIGenerationProvider(model_id="gpt-x", api_key="sk-...", base_url="http://vllm")
@@ -84,7 +84,7 @@ def test_generation_forwards_kwargs(openai_stub) -> None:
 
 def test_generation_logs_api_errors(openai_stub, caplog) -> None:
     openai_stub["outputs"] = ["unused"]
-    from aisteer360.workbenches.vector_calibration.agent.providers.openai_api import (
+    from aisteer360.workbenches.common.agent.providers.openai_api import (
         OpenAIGenerationProvider,
     )
     p = OpenAIGenerationProvider(model_id="gpt-x", api_key="sk-...")
@@ -110,7 +110,7 @@ def test_generation_logs_api_errors(openai_stub, caplog) -> None:
 
 def test_judge_round_trip(openai_stub) -> None:
     openai_stub["outputs"] = ['{"score": 3}']
-    from aisteer360.workbenches.vector_calibration.agent.providers.openai_api import (
+    from aisteer360.workbenches.common.agent.providers.openai_api import (
         OpenAIJudgeProvider,
     )
     p = OpenAIJudgeProvider(model_id="gpt-x", api_key="sk-...")

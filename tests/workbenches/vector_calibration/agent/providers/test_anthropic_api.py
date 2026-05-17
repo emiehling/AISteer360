@@ -54,7 +54,7 @@ def anthropic_stub(monkeypatch):
 
 def test_generation_batch_hits_api(anthropic_stub) -> None:
     anthropic_stub["outputs"] = ["warm-A", "warm-B"]
-    from aisteer360.workbenches.vector_calibration.agent.providers.anthropic_api import (
+    from aisteer360.workbenches.common.agent.providers.anthropic_api import (
         AnthropicGenerationProvider,
     )
     p = AnthropicGenerationProvider(model_id="claude-test", api_key="k")
@@ -75,7 +75,7 @@ def test_generation_batch_hits_api(anthropic_stub) -> None:
 
 def test_generation_uses_top_p_when_temperature_default(anthropic_stub) -> None:
     anthropic_stub["outputs"] = ["ok"]
-    from aisteer360.workbenches.vector_calibration.agent.providers.anthropic_api import (
+    from aisteer360.workbenches.common.agent.providers.anthropic_api import (
         AnthropicGenerationProvider,
     )
     p = AnthropicGenerationProvider(model_id="claude-test", api_key="k")
@@ -93,7 +93,7 @@ def test_generation_uses_top_p_when_temperature_default(anthropic_stub) -> None:
 
 def test_generation_uses_temperature_when_non_default(anthropic_stub) -> None:
     anthropic_stub["outputs"] = ["ok"]
-    from aisteer360.workbenches.vector_calibration.agent.providers.anthropic_api import (
+    from aisteer360.workbenches.common.agent.providers.anthropic_api import (
         AnthropicGenerationProvider,
     )
     p = AnthropicGenerationProvider(model_id="claude-test", api_key="k")
@@ -111,7 +111,7 @@ def test_generation_uses_temperature_when_non_default(anthropic_stub) -> None:
 
 def test_generation_logs_api_errors(anthropic_stub, caplog) -> None:
     anthropic_stub["outputs"] = ["unused"]
-    from aisteer360.workbenches.vector_calibration.agent.providers.anthropic_api import (
+    from aisteer360.workbenches.common.agent.providers.anthropic_api import (
         AnthropicGenerationProvider,
     )
     p = AnthropicGenerationProvider(model_id="claude-test", api_key="k")
@@ -139,7 +139,7 @@ def test_generation_logs_api_errors(anthropic_stub, caplog) -> None:
 
 def test_judge_parses_score(anthropic_stub) -> None:
     anthropic_stub["outputs"] = ['```json\n{"score": 4.2}\n```']
-    from aisteer360.workbenches.vector_calibration.agent.providers.anthropic_api import (
+    from aisteer360.workbenches.common.agent.providers.anthropic_api import (
         AnthropicJudgeProvider,
     )
     p = AnthropicJudgeProvider(model_id="claude-test", api_key="k")
@@ -155,7 +155,7 @@ def test_judge_parses_score(anthropic_stub) -> None:
 
 def test_judge_clamps_to_scale(anthropic_stub) -> None:
     anthropic_stub["outputs"] = ['```json\n{"score": 10}\n```']
-    from aisteer360.workbenches.vector_calibration.agent.providers.anthropic_api import (
+    from aisteer360.workbenches.common.agent.providers.anthropic_api import (
         AnthropicJudgeProvider,
     )
     p = AnthropicJudgeProvider(model_id="claude-test", api_key="k")

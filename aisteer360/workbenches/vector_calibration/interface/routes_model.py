@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from .auth import OwnerTokenHash
+from aisteer360.workbenches.common.interface.auth import OwnerTokenHash
 
 logger = logging.getLogger(__name__)
 

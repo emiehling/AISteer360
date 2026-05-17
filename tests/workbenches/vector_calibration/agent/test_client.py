@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import uvicorn
 
-from aisteer360.workbenches.vector_calibration.agent.client import (
+from aisteer360.workbenches.common.agent.client import (
     AgentServerError,
     ServerClient,
 )

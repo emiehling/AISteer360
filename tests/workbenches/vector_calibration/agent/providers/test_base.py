@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from aisteer360.workbenches.vector_calibration.agent.providers.base import (
+from aisteer360.workbenches.common.agent.providers.base import (
     ProviderKeys,
     build_generation_provider,
     build_judge_provider,

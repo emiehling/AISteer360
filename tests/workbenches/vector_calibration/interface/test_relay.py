@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from aisteer360.workbenches.vector_calibration.interface.relay import ProgressRelay
+from aisteer360.workbenches.common.interface.relay import ProgressRelay
 
 
 @pytest.mark.asyncio

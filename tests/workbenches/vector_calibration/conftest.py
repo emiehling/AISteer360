@@ -11,9 +11,9 @@ import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
-from aisteer360.workbenches.vector_calibration.interface import catalog as catalog_module
+from aisteer360.workbenches.common.interface import catalog as catalog_module
 from aisteer360.workbenches.vector_calibration.interface.app import create_app
-from aisteer360.workbenches.vector_calibration.interface.db import (
+from aisteer360.workbenches.common.interface.db import (
     Database,
     hash_agent_token,
     mint_agent_token,

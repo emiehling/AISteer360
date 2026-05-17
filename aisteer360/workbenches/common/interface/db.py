@@ -80,8 +80,34 @@ STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
 
+# session-only states (composition workbench)
+STATUS_READY = "ready"
+STATUS_CLOSING = "closing"
+STATUS_CLOSED = "closed"
+
 ACTIVE_STATUSES = (STATUS_CLAIMED, STATUS_RUNNING)
+ACTIVE_SESSION_STATUSES = (STATUS_CLAIMED, STATUS_READY)
+TERMINAL_SESSION_STATUSES = (STATUS_CLOSED, STATUS_FAILED, STATUS_CANCELLED)
 STALE_THRESHOLD_S = 300.0
+
+SESSIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sessions (
+  id                TEXT PRIMARY KEY,
+  model_name        TEXT NOT NULL,
+  config_json       TEXT NOT NULL DEFAULT '{}',
+  status            TEXT NOT NULL,
+  owner_token_hash  TEXT NOT NULL,
+  agent_token_hash  TEXT NOT NULL,
+  model_info_json   TEXT,
+  error             TEXT,
+  created_at        REAL NOT NULL,
+  updated_at        REAL NOT NULL,
+  last_heartbeat    REAL,
+  idle_timeout_s    REAL NOT NULL DEFAULT 600.0
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(owner_token_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+"""
 
 
 @dataclass
@@ -157,6 +183,54 @@ class Run:
         data["run_dir"] = self.run_dir
         data["has_pairs"] = (Path(self.run_dir) / "pairs.jsonl").exists()
         return data
+
+
+@dataclass
+class Session:
+    """In-memory representation of a session row (composition workbench)."""
+
+    id: str
+    model_name: str
+    config_json: str
+    status: str
+    owner_token_hash: str
+    agent_token_hash: str
+    model_info_json: str | None
+    error: str | None
+    created_at: float
+    updated_at: float
+    last_heartbeat: float | None
+    idle_timeout_s: float
+
+    @property
+    def config(self) -> dict[str, Any]:
+        return json.loads(self.config_json) if self.config_json else {}
+
+    @property
+    def model_info(self) -> dict[str, Any]:
+        return json.loads(self.model_info_json) if self.model_info_json else {}
+
+    def is_stale(self, now: float | None = None, threshold: float = STALE_THRESHOLD_S) -> bool:
+        if self.status not in ACTIVE_SESSION_STATUSES:
+            return False
+        if self.last_heartbeat is None:
+            return False
+        now = now if now is not None else time.time()
+        return (now - self.last_heartbeat) > threshold
+
+    def to_summary(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "model_name": self.model_name,
+            "status": self.status,
+            "model_info": self.model_info,
+            "error": self.error,
+            "stale": self.is_stale(),
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "last_heartbeat": self.last_heartbeat,
+            "idle_timeout_s": self.idle_timeout_s,
+        }
 
 
 # ── hashing helpers ──────────────────────────────────────────────
@@ -565,11 +639,132 @@ class Database:
         await cur.close()
         return row["ssh_credential_enc"] if row else None
 
+    # ── sessions (composition workbench) ─────────────────────────
+
+    async def install_sessions_schema(self) -> None:
+        """Create the `sessions` table if it doesn't exist.
+
+        Workbenches that use sessions register this via the `extend_schema` hook on
+        `create_workbench_app`. The base `runs` schema is unaffected.
+        """
+        await self.conn.executescript(SESSIONS_SCHEMA)
+        await self.conn.commit()
+
+    async def fail_orphaned_sessions(self) -> int:
+        """Mark any non-terminal sessions as failed. Called once after install_sessions_schema."""
+        now = time.time()
+        cur = await self.conn.execute(
+            """
+            UPDATE sessions SET status = ?, error = ?, updated_at = ?
+            WHERE status NOT IN (?, ?, ?)
+            """,
+            (
+                STATUS_FAILED, "server restarted while session was active", now,
+                STATUS_CLOSED, STATUS_FAILED, STATUS_CANCELLED,
+            ),
+        )
+        await self.conn.commit()
+        count = cur.rowcount
+        await cur.close()
+        if count:
+            logger.info("Marked %d orphaned session(s) as failed.", count)
+        return count
+
+    async def create_session(
+        self,
+        *,
+        session_id: str,
+        model_name: str,
+        config: dict[str, Any],
+        owner_token_hash: str,
+        agent_token_hash: str,
+        idle_timeout_s: float = 600.0,
+    ) -> "Session":
+        now = time.time()
+        await self.conn.execute(
+            """
+            INSERT INTO sessions (id, model_name, config_json, status,
+                                  owner_token_hash, agent_token_hash,
+                                  created_at, updated_at, idle_timeout_s)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id, model_name, json.dumps(config), STATUS_CREATED,
+                owner_token_hash, agent_token_hash, now, now, idle_timeout_s,
+            ),
+        )
+        await self.conn.commit()
+        session = await self.get_session(session_id)
+        assert session is not None
+        return session
+
+    async def get_session(self, session_id: str) -> "Session | None":
+        cur = await self.conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        await cur.close()
+        return _row_to_session(row) if row else None
+
+    async def list_sessions_for_owner(self, owner_token_hash: str) -> list["Session"]:
+        cur = await self.conn.execute(
+            "SELECT * FROM sessions WHERE owner_token_hash = ? ORDER BY created_at DESC",
+            (owner_token_hash,),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return [_row_to_session(r) for r in rows]
+
+    async def update_session_status(
+        self,
+        session_id: str,
+        *,
+        status: str | None = None,
+        error: str | None = None,
+        model_info: dict[str, Any] | None = None,
+    ) -> None:
+        fields: dict[str, Any] = {}
+        if status is not None:
+            fields["status"] = status
+        if error is not None:
+            fields["error"] = error
+        if model_info is not None:
+            fields["model_info_json"] = json.dumps(model_info)
+        if not fields:
+            return
+        fields["updated_at"] = time.time()
+        assignments = ", ".join(f"{k} = ?" for k in fields)
+        params = list(fields.values()) + [session_id]
+        await self.conn.execute(
+            f"UPDATE sessions SET {assignments} WHERE id = ?", params,
+        )
+        await self.conn.commit()
+
+    async def session_heartbeat(self, session_id: str) -> None:
+        now = time.time()
+        await self.conn.execute(
+            "UPDATE sessions SET last_heartbeat = ?, updated_at = ? WHERE id = ?",
+            (now, now, session_id),
+        )
+        await self.conn.commit()
+
+    async def claim_session(self, session_id: str) -> None:
+        now = time.time()
+        await self.conn.execute(
+            """
+            UPDATE sessions SET status = ?, last_heartbeat = ?, updated_at = ? WHERE id = ?
+            """,
+            (STATUS_CLAIMED, now, now, session_id),
+        )
+        await self.conn.commit()
+
 
 def _row_to_run(row: aiosqlite.Row) -> Run:
     data = dict(row)
     data["cancel_requested"] = bool(data.get("cancel_requested", 0))
     return Run(**data)
+
+
+def _row_to_session(row: aiosqlite.Row) -> "Session":
+    return Session(**dict(row))
 
 
 # ── run-dir helpers ──────────────────────────────────────────────
@@ -600,8 +795,13 @@ def ensure_run_dir(data_root: Path, run_id: str) -> Path:
     return run_dir
 
 
+def mint_session_id() -> str:
+    return f"sess-{secrets.token_hex(8)}"
+
+
 __all__ = [
     "Run",
+    "Session",
     "Database",
     "SECRET_FIELDS",
     "STATUS_CREATED",
@@ -610,13 +810,19 @@ __all__ = [
     "STATUS_COMPLETED",
     "STATUS_FAILED",
     "STATUS_CANCELLED",
+    "STATUS_READY",
+    "STATUS_CLOSING",
+    "STATUS_CLOSED",
     "ACTIVE_STATUSES",
+    "ACTIVE_SESSION_STATUSES",
+    "TERMINAL_SESSION_STATUSES",
     "STALE_THRESHOLD_S",
     "sha256_hex",
     "hash_agent_token",
     "verify_agent_token",
     "mint_owner_token",
     "mint_agent_token",
+    "mint_session_id",
     "build_run_id",
     "resolve_data_root",
     "ensure_run_dir",

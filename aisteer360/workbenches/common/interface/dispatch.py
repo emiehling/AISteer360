@@ -24,16 +24,30 @@ def dispatch_local(argv: list[str]) -> subprocess.Popen:
 
 def _extract_run_id(agent_argv: list[str]) -> str:
     for i, arg in enumerate(agent_argv):
-        if arg == "--run-id" and i + 1 < len(agent_argv):
+        if arg in ("--run-id", "--session-id") and i + 1 < len(agent_argv):
             return agent_argv[i + 1]
     return "unknown"
 
 
-def dispatch_ssh(config: dict[str, Any], agent_argv: list[str]) -> None:
+def dispatch_ssh(
+    config: dict[str, Any],
+    agent_argv: list[str],
+    *,
+    remote_module: str = "aisteer360.workbenches.vector_calibration.agent",
+    log_label: str = "aisteer360-agent",
+) -> None:
     """Start the agent on a remote machine via system SSH.
 
     Uses setsid for clean detachment and a per-run log file so concurrent runs don't stomp on
     each other.
+
+    Args:
+        config: Owner compute config (host, port, username, python_path, auth_method, credential).
+        agent_argv: Local CLI argv as it would have been spawned with `dispatch_local`. The leading
+            argv[0] (the script name) is dropped; the remote runs the module specified by
+            `remote_module` directly.
+        remote_module: Dotted Python module path to execute on the remote (passed to `python -m`).
+        log_label: Filename prefix for the per-run log on the remote (`/tmp/<label>-<id>.log`).
     """
     host = config["host"]
     port = config.get("port", 22)
@@ -44,12 +58,11 @@ def dispatch_ssh(config: dict[str, Any], agent_argv: list[str]) -> None:
         raise RuntimeError("SSH dispatch requires host and username")
 
     run_id = _extract_run_id(agent_argv)
-    log_path = f"/tmp/aisteer360-agent-{run_id}.log"
+    log_path = f"/tmp/{log_label}-{run_id}.log"
 
-    # Drop the leading argv[0] (the CLI script name); the remote runs the module directly.
     remote_args = shlex.join(agent_argv[1:])
     remote_cmd = (
-        f"setsid {shlex.quote(python)} -m aisteer360.workbenches.vector_calibration.agent"
+        f"setsid {shlex.quote(python)} -m {remote_module}"
         f" {remote_args} > {shlex.quote(log_path)} 2>&1 &"
     )
 

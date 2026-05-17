@@ -13,15 +13,16 @@ from typing import Any
 from aisteer360.workbenches.vector_calibration import VectorCalibrationWorkbench
 from aisteer360.workbenches.vector_calibration.configs import CalibrationBuilderConfig
 
-from .client import ServerClient
-from .config_loader import from_server_config
-from .providers.base import (
+from aisteer360.workbenches.common.agent.client import ServerClient
+from aisteer360.workbenches.common.agent.providers.base import (
     GenerationProvider,
     JudgeProvider,
     ProviderKeys,
     build_generation_provider,
     build_judge_provider,
 )
+
+from .config_loader import from_server_config
 
 logger = logging.getLogger(__name__)
 

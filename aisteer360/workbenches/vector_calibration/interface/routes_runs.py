@@ -12,9 +12,9 @@ from fastapi.responses import FileResponse
 
 from aisteer360.workbenches.vector_calibration.results import CalibrationResult, CellResult
 
-from .auth import OwnerScopedRun, OwnerTokenHash, get_db
-from .catalog import load_catalog
-from .db import (
+from aisteer360.workbenches.common.interface.auth import OwnerScopedRun, OwnerTokenHash, get_db
+from aisteer360.workbenches.common.interface.catalog import load_catalog
+from aisteer360.workbenches.common.interface.db import (
     ACTIVE_STATUSES,
     STATUS_CANCELLED,
     STATUS_COMPLETED,
@@ -27,7 +27,7 @@ from .db import (
     hash_agent_token,
     mint_agent_token,
 )
-from .dispatch import dispatch_local, dispatch_ssh, test_ssh
+from aisteer360.workbenches.common.interface.dispatch import dispatch_local, dispatch_ssh, test_ssh
 from .schemas import (
     AgentCommand,
     CellDetailResponse,
