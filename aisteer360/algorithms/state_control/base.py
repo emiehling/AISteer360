@@ -57,6 +57,7 @@ class StateControl(ABC):
     """
 
     Args: Type[BaseArgs] | None = None
+    RUNTIME_KWARGS_SCHEMA: list[dict] = []
 
     enabled: bool = True
     supports_batching: bool = False

@@ -111,10 +111,12 @@ def create_workbench_app(
         return {"solo_mode": getattr(app.state, "solo_mode", False)}
 
     from .routes_catalog import router as catalog_router
+    from .routes_methods import router as methods_router
     from .routes_secrets import router as secrets_router
     from .ws import router as ws_router
 
     app.include_router(catalog_router, prefix="/api")
+    app.include_router(methods_router, prefix="/api")
     app.include_router(secrets_router, prefix="/api")
     app.include_router(ws_router)
 

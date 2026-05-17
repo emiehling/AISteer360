@@ -121,6 +121,18 @@
   $("fCopyright").textContent = `IBM Research, ${new Date().getFullYear()}`;
   setStatus("idle", "no session");
 
+  // bridge the chrome's settings button + status pill to the React canvas via custom events
+  const btnSettings = $("btnSettings");
+  if (btnSettings) {
+    btnSettings.addEventListener("click", () => {
+      window.dispatchEvent(new CustomEvent("aisteer-open-session"));
+    });
+  }
+  window.addEventListener("aisteer-status", (e) => {
+    const detail = (e && e.detail) || {};
+    setStatus(detail.state || "idle", detail.label || "");
+  });
+
   // load the React canvas bundle. Owner token is in localStorage by this point.
   const script = document.createElement("script");
   script.src = "/canvas/pipeline-canvas.js";

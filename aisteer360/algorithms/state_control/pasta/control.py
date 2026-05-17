@@ -53,6 +53,14 @@ class PASTA(StateControl):
     """
 
     Args = PASTAArgs
+    RUNTIME_KWARGS_SCHEMA = [
+        {
+            "name": "substrings",
+            "type": "list[str]",
+            "required": True,
+            "help": "Substrings whose attention should be steered. Required at inference time.",
+        },
+    ]
 
     supports_batching: bool = True
 

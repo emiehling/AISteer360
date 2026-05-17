@@ -82,11 +82,17 @@ class SessionListResponse(BaseModel):
 
 
 class InferenceRequest(BaseModel):
-    """Body for POST /api/sessions/{id}/infer."""
+    """Body for POST /api/sessions/{id}/infer.
+
+    `runtime_kwargs` carries per-inference parameters consumed by individual controls (e.g.,
+    PASTA's `substrings`). The dict is forwarded as-is to `SteeringPipeline.generate`. Excluded
+    from `hash_pipeline` since it does not change pipeline identity.
+    """
 
     pipeline: PipelineDefinition
     prompt: str
     gen_kwargs: dict[str, Any] = Field(default_factory=dict)
+    runtime_kwargs: dict[str, Any] = Field(default_factory=dict)
     request_id: str | None = None
 
 

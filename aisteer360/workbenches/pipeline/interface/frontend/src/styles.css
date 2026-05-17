@@ -242,9 +242,462 @@
   user-select: none;
   cursor: default;
 }
+.library-pill[draggable="true"] {
+  cursor: grab;
+}
+.library-pill[draggable="true"]:active {
+  cursor: grabbing;
+}
 .library-empty {
   font-family: var(--mono);
   font-size: 10px;
   color: var(--text-dimmer);
   font-style: italic;
+}
+
+/* ── canvas-and-panel layout ─────────────────────────────────────── */
+.canvas-and-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.canvas-stack {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── control nodes ───────────────────────────────────────────────── */
+.control-node {
+  position: relative;
+  width: 140px;
+  min-height: 56px;
+  background: var(--col-fill, var(--panel-2));
+  border: 1px solid var(--col-border, var(--line-3));
+  border-radius: 5px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: box-shadow 0.12s, transform 0.12s;
+}
+.control-node[data-category="input_control"]      { --col-fill: var(--cat-input-fill);      --col-border: var(--cat-input-border);      --col-soft: var(--cat-input-soft); }
+.control-node[data-category="structural_control"] { --col-fill: var(--cat-structural-fill); --col-border: var(--cat-structural-border); --col-soft: var(--cat-structural-soft); }
+.control-node[data-category="state_control"]      { --col-fill: var(--cat-state-fill);      --col-border: var(--cat-state-border);      --col-soft: var(--cat-state-soft); }
+.control-node[data-category="output_control"] {
+  --col-fill: var(--cat-output-fill);
+  --col-border: var(--cat-output-border);
+  --col-soft: var(--cat-output-soft);
+  width: 165px;
+}
+.control-node.selected {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.control-header {
+  background: var(--col-soft);
+  color: var(--col-border);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--col-soft);
+}
+.control-body {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  padding: 8px 10px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.control-delete {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: var(--primary-text);
+  font-size: 12px;
+  line-height: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  z-index: 3;
+}
+.control-node:hover .control-delete,
+.control-node.selected .control-delete {
+  display: flex;
+}
+
+.canvas-area .control-node .react-flow__handle {
+  border-color: var(--col-border);
+}
+
+/* ── pipeline edges ──────────────────────────────────────────────── */
+.canvas-area .react-flow__edge .pipeline-edge {
+  stroke: var(--text-dimmer);
+  stroke-width: 1.5;
+  fill: none;
+}
+.canvas-area .react-flow__edge .pipeline-edge.selected,
+.canvas-area .react-flow__edge.selected .pipeline-edge {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.canvas-area .react-flow__edge:hover .pipeline-edge {
+  stroke: var(--text);
+  stroke-dasharray: 4 3;
+  animation: edge-march 0.6s linear infinite;
+}
+@keyframes edge-march {
+  to { stroke-dashoffset: -7; }
+}
+.pipeline-edge-chevron {
+  position: absolute;
+  pointer-events: none;
+  color: var(--text-dimmer);
+  font-size: 0;
+  line-height: 0;
+}
+.canvas-area .react-flow__edge:hover .pipeline-edge-chevron,
+.canvas-area .react-flow__edge.selected .pipeline-edge-chevron {
+  color: var(--accent);
+}
+
+/* erase mode: edges become click-targets with a crosshair */
+.canvas-area[data-active-tool="erase"] .react-flow__edge {
+  cursor: crosshair;
+}
+
+/* ── canvas toolbar ──────────────────────────────────────────────── */
+.canvas-toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+.toolbar-btn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.toolbar-btn:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+.toolbar-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.toolbar-btn svg {
+  width: 16px;
+  height: 16px;
+}
+.toolbar-divider {
+  height: 1px;
+  background: var(--line-2);
+  margin: 4px 2px;
+}
+
+/* ── hint bar ────────────────────────────────────────────────────── */
+.hint-bar {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  padding: 5px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dimmer);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+.hint-bar.visible {
+  opacity: 1;
+}
+
+/* ── parameter panel ─────────────────────────────────────────────── */
+.parameter-panel {
+  width: 0;
+  flex: 0 0 auto;
+  overflow: hidden;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  transition: width 0.18s ease;
+}
+.parameter-panel.open {
+  width: 280px;
+}
+.panel-placeholder {
+  padding: 24px 18px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dimmer);
+  font-style: italic;
+}
+.panel-head {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.panel-head-method {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+}
+.panel-head-category {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.panel-section {
+  border-bottom: 1px solid var(--line);
+}
+.panel-section-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--panel-2);
+  border: none;
+  text-align: left;
+}
+.panel-section-arrow {
+  color: var(--text-dimmer);
+  font-size: 10px;
+  width: 10px;
+  text-align: center;
+}
+.panel-section-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.panel-section-body {
+  padding: 10px 14px 14px;
+  overflow-y: auto;
+}
+.panel-empty {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dimmer);
+  font-style: italic;
+}
+.panel-field {
+  margin-bottom: 12px;
+}
+.panel-field-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+.panel-field-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+}
+.panel-field-type {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--text-dimmer);
+}
+.panel-field-help {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  line-height: 1.35;
+}
+
+/* ── widgets ─────────────────────────────────────────────────────── */
+.widget-input,
+.widget-textarea {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  outline: none;
+}
+.widget-input:focus,
+.widget-textarea:focus {
+  border-color: var(--accent);
+}
+.widget-textarea {
+  resize: vertical;
+  min-height: 28px;
+  font-family: var(--mono);
+}
+.widget-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+}
+.widget-json {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.widget-json-error {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--danger);
+}
+
+/* ── session modal ───────────────────────────────────────────────── */
+.session-modal-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.session-modal {
+  width: 460px;
+  max-width: 92vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+.session-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.session-modal-head .title {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.session-modal-head .close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.session-modal-head .close:hover {
+  color: var(--accent);
+}
+.session-modal-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.session-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-field span {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.session-info {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.session-info code {
+  color: var(--text);
+}
+.session-btn {
+  padding: 8px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  align-self: flex-start;
+}
+.session-btn:hover {
+  border-color: var(--accent);
+}
+.session-btn.primary {
+  background: var(--accent);
+  color: var(--primary-text);
+  border-color: var(--accent);
+}
+.session-btn.primary:hover {
+  background: var(--accent-hov);
+}
+.session-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.session-error {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--danger);
+  word-break: break-word;
+}
+.session-output {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 2px;
 }

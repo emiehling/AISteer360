@@ -130,12 +130,17 @@ class SessionRunner:
         request_id = request["request_id"]
         prompt = request.get("prompt") or ""
         gen_kwargs = dict(request.get("gen_kwargs") or {})
+        runtime_kwargs = dict(request.get("runtime_kwargs") or {})
         definition = PipelineDefinition.model_validate(request["pipeline"])
 
         self._ensure_pipeline(definition)
 
         t0 = time.perf_counter()
-        text = self._pipeline.generate_text(prompts=prompt, **gen_kwargs)
+        text = self._pipeline.generate_text(
+            prompts=prompt,
+            runtime_kwargs=runtime_kwargs,
+            **gen_kwargs,
+        )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
         if isinstance(text, list):
