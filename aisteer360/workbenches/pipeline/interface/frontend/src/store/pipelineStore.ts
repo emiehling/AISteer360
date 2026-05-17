@@ -93,6 +93,9 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       method,
       args: {},
       runtimeKwargs: {},
+      label: method,
+      status: "",
+      params: [],
     };
     const node: Node<ControlNodeData> = {
       id,
@@ -120,11 +123,16 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
 
   updateNodeArgs: (id, args) => {
     set({
-      nodes: get().nodes.map((n) =>
-        n.id === id && isControlNode(n)
-          ? { ...n, data: { ...(n.data as ControlNodeData), args: { ...(n.data as ControlNodeData).args, ...args } } }
-          : n,
-      ),
+      nodes: get().nodes.map((n) => {
+        if (n.id !== id || !isControlNode(n)) return n;
+        const data = n.data as ControlNodeData;
+        const merged = { ...data.args, ...args };
+        const params = Object.entries(merged)
+          .filter(([, v]) => v != null)
+          .slice(0, 3)
+          .map(([k, v]) => ({ label: k, value: String(v) }));
+        return { ...n, data: { ...data, args: merged, params } };
+      }),
     });
   },
 

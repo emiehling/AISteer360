@@ -7,26 +7,54 @@ interface AnchorNodeData {
   variant: AnchorVariant;
 }
 
+const handleStyle = {
+  position: "relative" as const,
+  transform: "none",
+  top: "auto",
+  right: "auto",
+  left: "auto",
+  bottom: "auto",
+  width: 8,
+  height: 8,
+  border: "1.5px solid var(--text-dim)",
+  background: "transparent",
+  flexShrink: 0,
+};
+
 function AnchorNodeImpl({ data }: NodeProps<AnchorNodeData>) {
   const isPrompt = data.variant === "prompt";
-  return (
-    <div className="anchor-node" data-variant={data.variant}>
-      <div className="anchor-label">{isPrompt ? "prompt" : "response"}</div>
-      {isPrompt ? (
+
+  const body = (
+    <div className="anchor-body">
+      <span className="anchor-label">{isPrompt ? "prompt" : "response"}</span>
+    </div>
+  );
+
+  if (isPrompt) {
+    return (
+      <div className="anchor-wrap">
+        {body}
+        <div className="anchor-stem" aria-hidden />
         <Handle
           type="source"
           position={Position.Right}
           id="out"
-          className="port port-source"
+          style={{ ...handleStyle, borderRadius: "50%" }}
         />
-      ) : (
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="in"
-          className="port port-target"
-        />
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="anchor-wrap">
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="in"
+        style={{ ...handleStyle, borderRadius: 1 }}
+      />
+      <div className="anchor-stem" aria-hidden />
+      {body}
     </div>
   );
 }

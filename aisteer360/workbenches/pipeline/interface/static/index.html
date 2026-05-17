@@ -9,6 +9,57 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/common/common.css" />
 <link rel="stylesheet" href="/canvas/pipeline-canvas.css" />
+<style>
+  /* settings modal styles (mirrored from vector calibration workbench) */
+  .key-row { display:grid; grid-template-columns:90px 1fr 68px; gap:8px; align-items:center; padding:5px 0; border-bottom:1px solid var(--line); }
+  .key-row:last-child { border-bottom:none; }
+  .key-row .kr-label { font-family:var(--sans); font-size:11.5px; font-weight:500; color:var(--text); }
+  .key-row .kr-input { background:var(--panel-2); border:1px solid var(--line-2); border-radius:2px; padding:5px 8px; font-family:var(--mono); font-size:11px; color:var(--text); width:100%; outline:none; text-align:right; }
+  .key-row .kr-input:focus { border-color:var(--accent); }
+  .key-row .kr-pill { text-align:center; padding:2px 6px; border-radius:2px; border:1px solid; font-size:9.5px; font-family:var(--mono); letter-spacing:.05em; text-transform:uppercase; white-space:nowrap; }
+  .key-row .kr-pill.ready   { color:var(--good);   border-color:var(--good); }
+  .key-row .kr-pill.not-set { color:#d4a055;        border-color:#d4a055; }
+  .key-row .kr-pill.invalid { color:var(--danger);  border-color:var(--danger); }
+  .specs-block { margin-top:10px; padding:10px 0 0; border-top:1px dashed var(--line-2); }
+  .specs-block:first-child { margin-top:0; padding-top:0; border-top:none; }
+  .specs-block.elevated { margin-top:14px; padding:10px 12px 12px; background:var(--panel-2); border:1px solid var(--line-2); border-radius:3px; }
+  .specs-block.elevated .sub-label { font-size:10.5px; font-weight:600; color:var(--text-soft); text-transform:none; letter-spacing:0; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid var(--line); }
+  .sub-label { font-family:var(--sans); font-size:9.5px; font-weight:600; color:var(--text-dimmer); text-transform:uppercase; letter-spacing:.1em; margin-bottom:6px; display:flex; justify-content:space-between; }
+  .field-row { display:flex; justify-content:space-between; align-items:center; font-size:11px; padding:5px 0; gap:8px; }
+  .field-row .k { font-family:var(--sans); color:var(--text-dim); font-weight:400; flex-shrink:0; }
+  .field-row .v { font-family:var(--mono); color:var(--text); font-weight:500; text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .field-row .v.dim { color:var(--text-dim); font-weight:400; }
+  .field-label { display:block; font-family:var(--sans); font-size:11px; font-weight:500; color:var(--text-soft); margin:6px 0 5px; }
+  .modal-foot .btn { min-width:90px; width:auto; padding:7px 14px; height:32px; box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line-2); background:transparent; color:var(--text); font-family:var(--sans); font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; border-radius:2px; cursor:pointer; transition:all .12s; }
+  .modal-foot .btn:hover { border-color:var(--accent); color:var(--accent); }
+  .modal-foot .btn.primary { background:var(--accent); color:var(--primary-text); border-color:var(--accent); font-weight:700; }
+  .modal-foot .btn.primary:hover { background:var(--accent-hov); border-color:var(--accent-hov); }
+  #computeSshFields input[type="text"], #computeSshFields input[type="number"], #computeSshFields input[type="password"] { background:var(--panel); border:1px solid var(--line-2); border-radius:2px; padding:4px 7px; font-family:var(--mono); font-size:11px; color:var(--text); outline:none; flex:1; }
+  #computeSshFields input:focus { border-color:var(--accent); }
+  .catalog-list { display:flex; flex-direction:column; gap:8px; margin-top:6px; }
+  .catalog-row { border:1px solid var(--line-2); border-radius:2px; background:var(--panel-2); padding:8px 10px; display:flex; flex-direction:column; gap:6px; }
+  .catalog-row-head { display:flex; align-items:center; gap:8px; }
+  .catalog-row-field { display:flex; align-items:center; gap:8px; }
+  .cat-field-label { font-family:var(--sans); font-size:10.5px; color:var(--text-dim); width:64px; flex-shrink:0; text-align:right; }
+  .cat-field-input { flex:1; background:var(--panel); border:1px solid var(--line-2); border-radius:2px; padding:4px 7px; font-family:var(--mono); font-size:11px; color:var(--text); outline:none; }
+  .cat-field-input:focus { border-color:var(--accent); }
+  select.cat-field-input { appearance:none; -webkit-appearance:none; }
+  .catalog-row-head .rm-btn { border:1px solid var(--line-2); color:var(--text-dim); padding:2px 8px; font-family:var(--mono); font-size:12px; border-radius:2px; background:transparent; cursor:pointer; }
+  .catalog-row-head .rm-btn:hover { border-color:var(--danger); color:var(--danger); }
+  .catalog-row-roles { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .role-toggle-label { font-family:var(--sans); font-size:10.5px; color:var(--text-dim); margin-right:-6px; }
+  .role-toggle-label.disabled { opacity:.4; }
+  .toggle { width:26px; height:14px; background:var(--panel-3); border:1px solid var(--line-2); border-radius:100px; position:relative; cursor:pointer; transition:background .12s, border-color .12s; flex-shrink:0; }
+  .toggle::after { content:''; position:absolute; top:1px; left:1px; width:10px; height:10px; background:var(--text-dim); border-radius:50%; transition:transform .16s, background .12s; }
+  .toggle.on { background:var(--accent-soft); border-color:var(--accent); }
+  .toggle.on::after { transform:translateX(12px); background:var(--accent); }
+  .toggle.disabled { opacity:.4; cursor:not-allowed; pointer-events:none; }
+  .catalog-add-btn { margin-top:6px; width:100%; padding:6px; border:1px dashed var(--line-2); border-radius:2px; color:var(--text-dim); background:transparent; font-family:var(--sans); font-size:10.5px; cursor:pointer; }
+  .catalog-add-btn:hover { border-color:var(--accent); color:var(--accent); }
+  .hint { font-family:var(--sans); font-style:italic; color:var(--text-dim); font-size:11px; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; padding:6px 14px; border:1px solid var(--line-2); background:transparent; color:var(--text); font-family:var(--sans); font-size:10px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; border-radius:2px; cursor:pointer; transition:all .12s; }
+  .btn:hover { border-color:var(--accent); color:var(--accent); }
+</style>
 </head>
 <body>
 
@@ -19,25 +70,77 @@
   </div>
   <div class="spacer"></div>
   <button class="icon-btn" id="themeToggle" title="Toggle light/dark mode" type="button">
-    <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-         stroke-linecap="round" stroke-linejoin="round"></svg>
+    <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
   </button>
   <button class="icon-btn" id="btnHelp" title="How to use">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-         stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="12" cy="12" r="10"/>
-      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
-      <line x1="12" y1="17" x2="12.01" y2="17"/>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
     </svg>
   </button>
   <button class="icon-btn" id="btnSettings" title="Settings">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-         stroke-linecap="round" stroke-linejoin="round">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="3"/>
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
     </svg>
   </button>
 </nav>
+
+<!-- settings modal (matches vector calibration workbench) -->
+<div class="modal-scrim" id="settingsModal">
+  <div class="modal" role="dialog" aria-label="Settings" style="width:640px;">
+    <div class="modal-head">
+      <span class="title">Settings</span>
+      <button class="close" id="settingsClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="specs-block elevated">
+        <div class="sub-label"><span>API keys</span></div>
+        <div id="apiKeysBlock"></div>
+      </div>
+      <div class="specs-block elevated">
+        <div class="sub-label"><span>Compute</span></div>
+        <div class="field-row" style="gap:16px;margin-bottom:8px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="computeMode" value="local" id="computeModeLocal"><span>Local (auto)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="computeMode" value="ssh" id="computeModeSsh"><span>Remote (SSH)</span>
+          </label>
+        </div>
+        <div id="computeLocalInfo" class="field-row" style="margin-bottom:8px;">
+          <span class="k">device</span><span class="v dim" id="computeLocalDevice">—</span>
+        </div>
+        <div id="computeSshFields" style="display:none;padding:8px;border:1px solid var(--line-2);border-radius:4px;">
+          <div class="field-row" style="margin-bottom:6px;"><span class="field-label" style="width:120px;">Host</span><input id="sshHost" type="text" placeholder="gpu-box.example.edu"></div>
+          <div class="field-row" style="margin-bottom:6px;"><span class="field-label" style="width:120px;">Port</span><input id="sshPort" type="number" value="22"></div>
+          <div class="field-row" style="margin-bottom:6px;"><span class="field-label" style="width:120px;">Username</span><input id="sshUsername" type="text" placeholder="jsmith"></div>
+          <div class="field-row" style="margin-bottom:6px;">
+            <span class="field-label" style="width:120px;">Auth</span>
+            <label style="display:flex;align-items:center;gap:6px;margin-right:10px;"><input type="radio" name="sshAuthMethod" value="key" id="sshAuthKey" checked><span>Key</span></label>
+            <label style="display:flex;align-items:center;gap:6px;"><input type="radio" name="sshAuthMethod" value="password" id="sshAuthPassword"><span>Password</span></label>
+          </div>
+          <div class="field-row" style="margin-bottom:6px;"><span class="field-label" style="width:120px;" id="sshCredentialLabel">Key path / contents</span><input id="sshCredential" type="password" autocomplete="new-password" placeholder="~/.ssh/id_ed25519 or paste key contents"></div>
+          <div class="field-row" style="margin-bottom:8px;"><span class="field-label" style="width:120px;">Python path</span><input id="sshPythonPath" type="text" value="python3"></div>
+          <div class="field-row" style="gap:10px;align-items:center;"><button class="btn" id="btnTestCompute" type="button">Test connection</button><span id="computeTestStatus" class="hint"></span></div>
+          <div class="hint" style="margin-top:8px;">The remote machine must have aisteer360 installed and network access back to this server.</div>
+        </div>
+      </div>
+      <div class="specs-block elevated">
+        <div class="sub-label"><span>Model catalog</span></div>
+        <div class="catalog-list" id="catalogList"></div>
+        <button class="catalog-add-btn" id="catalogAddBtn" type="button">+ Add model</button>
+      </div>
+      <div class="specs-block">
+        <div class="field-row"><span class="k">host</span><span class="v dim" id="sHost">—</span></div>
+        <div class="field-row"><span class="k">port</span><span class="v dim" id="sPort">—</span></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="settingsCancel">Cancel</button>
+      <button class="btn primary" id="settingsSave">Save</button>
+    </div>
+  </div>
+</div>
 
 <div class="workspace">
   <div class="workspace-inset">
@@ -57,87 +160,133 @@
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
+  function escapeHtml(s) {
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  }
 
-  // theme toggle
+  // ── theme ──────────────────────────────────────────────────
   const THEME_KEY = "aisteer360-theme";
-  const SUN_ICON = '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4l1.4-1.4M17 7l1.4-1.4"/>';
-  const MOON_ICON = '<path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>';
-
-  function applyTheme(theme) {
-    document.documentElement.setAttribute("data-theme", theme);
-    try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
-    const logo = document.querySelector(".topbar .brand .logo");
-    if (logo) {
-      logo.src = theme === "light" ? "/static/common/logo_lightmode.svg" : "/static/common/logo_darkmode.svg";
-    }
-    const icon = $("themeIcon");
-    if (icon) {
-      icon.innerHTML = theme === "light" ? MOON_ICON : SUN_ICON;
-    }
+  const SUN = '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4l1.4-1.4M17 7l1.4-1.4"/>';
+  const MOON = '<path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>';
+  function applyTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    try { localStorage.setItem(THEME_KEY, t); } catch(_){}
+    const l = document.querySelector(".topbar .brand .logo");
+    if (l) l.src = t==="light" ? "/static/common/logo_lightmode.svg" : "/static/common/logo_darkmode.svg";
+    const i = $("themeIcon"); if (i) i.innerHTML = t==="light" ? MOON : SUN;
   }
-
   function initTheme() {
-    let saved = "dark";
-    try { saved = localStorage.getItem(THEME_KEY) || "dark"; } catch (_) {}
-    applyTheme(saved === "light" ? "light" : "dark");
-    const btn = $("themeToggle");
-    if (btn) {
-      btn.addEventListener("click", () => {
-        const current = document.documentElement.getAttribute("data-theme") || "dark";
-        applyTheme(current === "light" ? "dark" : "light");
-      });
-    }
-  }
-
-  // owner token: ?owner_token=… → localStorage; bail with a static message if missing.
-  // The React canvas bundle reads localStorage["aisteer360-owner-token"] directly when it loads.
-  const tokenKey = "aisteer360-owner-token";
-  const params = new URLSearchParams(window.location.search);
-  let ownerToken = params.get("owner_token");
-  if (ownerToken) {
-    try { localStorage.setItem(tokenKey, ownerToken); } catch (_) {}
-    params.delete("owner_token");
-    const newSearch = params.toString();
-    window.history.replaceState({}, document.title,
-      window.location.pathname + (newSearch ? "?" + newSearch : ""));
-  } else {
-    try { ownerToken = localStorage.getItem(tokenKey); } catch (_) {}
-  }
-  if (!ownerToken) {
-    document.body.innerHTML =
-      '<div style="padding:40px;font-family:monospace;color:#aaa">' +
-      'Missing owner token. Reopen the dashboard via the URL printed by the server.' +
-      '</div>';
-    return;
-  }
-
-  // status pill
-  function setStatus(state, label) {
-    $("statusDot").className = "dot " + (state || "idle");
-    $("statusText").textContent = label || state || "idle";
-  }
-
-  initTheme();
-  $("fCopyright").textContent = `IBM Research, ${new Date().getFullYear()}`;
-  setStatus("idle", "no session");
-
-  // bridge the chrome's settings button + status pill to the React canvas via custom events
-  const btnSettings = $("btnSettings");
-  if (btnSettings) {
-    btnSettings.addEventListener("click", () => {
-      window.dispatchEvent(new CustomEvent("aisteer-open-session"));
+    let s = "dark"; try { s = localStorage.getItem(THEME_KEY)||"dark"; } catch(_){}
+    applyTheme(s==="light"?"light":"dark");
+    $("themeToggle").addEventListener("click", () => {
+      applyTheme((document.documentElement.getAttribute("data-theme")||"dark")==="light"?"dark":"light");
     });
   }
-  window.addEventListener("aisteer-status", (e) => {
-    const detail = (e && e.detail) || {};
-    setStatus(detail.state || "idle", detail.label || "");
-  });
 
-  // load the React canvas bundle. Owner token is in localStorage by this point.
-  const script = document.createElement("script");
-  script.src = "/canvas/pipeline-canvas.js";
-  script.defer = true;
-  document.body.appendChild(script);
+  // ── owner token ────────────────────────────────────────────
+  const TK = "aisteer360-owner-token";
+  const ps = new URLSearchParams(window.location.search);
+  let ot = ps.get("owner_token");
+  if (ot) { try{localStorage.setItem(TK,ot);}catch(_){} ps.delete("owner_token"); window.history.replaceState({},document.title,window.location.pathname+(ps.toString()?"?"+ps.toString():"")); }
+  else { try{ot=localStorage.getItem(TK);}catch(_){} }
+  if (!ot) { document.body.innerHTML='<div style="padding:40px;font-family:monospace;color:#aaa">Missing owner token. Reopen the dashboard via the URL printed by the server.</div>'; return; }
+
+  async function api(path,opts) {
+    const o={...(opts||{})}; o.headers={...(o.headers||{}),Authorization:"Bearer "+ot};
+    const r=await fetch(path,o); if(!r.ok)throw new Error(path+" → "+r.status); if(r.status===204)return null; return r.json();
+  }
+
+  function setStatus(s,l) { $("statusDot").className="dot "+(s||"idle"); $("statusText").textContent=l||s||"idle"; }
+
+  // ── API keys ───────────────────────────────────────────────
+  const KV={hf_token:v=>v.startsWith("hf_")&&v.length>10, anthropic_key:v=>v.startsWith("sk-ant-"), openai_key:v=>v.startsWith("sk-")&&!v.startsWith("sk-ant-")};
+  const KL={hf_token:"HuggingFace",anthropic_key:"Anthropic",openai_key:"OpenAI"};
+  const KO=["hf_token","anthropic_key","openai_key"];
+  let ss={hf_token:false,anthropic_key:false,openai_key:false};
+  function pst(k){const e=document.querySelector('[data-key-name="'+k+'"]');const v=e?e.value.trim():"";if(v)return KV[k](v)?"ready":"invalid";return ss[k]?"ready":"not-set";}
+  function plb(s){return{ready:"READY","not-set":"NOT SET",invalid:"INVALID"}[s]||"NOT SET";}
+  function renderApiKeys(){
+    const w=$("apiKeysBlock"); if(!w)return;
+    w.innerHTML=KO.map(k=>{const s=pst(k);return'<div class="key-row"><span class="kr-label">'+escapeHtml(KL[k])+'</span><input class="kr-input" type="password" autocomplete="new-password" data-key-name="'+k+'" placeholder="'+(ss[k]?"••••••••":"not set")+'"><span class="kr-pill '+s+'" data-pill-for="'+k+'">'+plb(s)+'</span></div>';}).join("");
+    w.querySelectorAll(".kr-input").forEach(i=>{i.addEventListener("input",()=>{const k=i.dataset.keyName;const p=w.querySelector('[data-pill-for="'+k+'"]');if(!p)return;const s=pst(k);p.className="kr-pill "+s;p.textContent=plb(s);});});
+  }
+  async function loadSecretStatus(){try{const d=await api("/api/secrets/status")||{};ss={hf_token:!!d.hf_token,anthropic_key:!!d.anthropic_key,openai_key:!!d.openai_key};}catch(_){}renderApiKeys();}
+  async function saveSecrets(){const p={};document.querySelectorAll("#apiKeysBlock .kr-input").forEach(e=>{if(e.value!=="")p[e.dataset.keyName]=e.value;});if(!Object.keys(p).length)return;await api("/api/secrets",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});}
+
+  // ── compute ────────────────────────────────────────────────
+  let cc={mode:"local",credential_set:false};
+  function applyComputeUI(){
+    const ssh=cc.mode==="ssh"; $("computeModeLocal").checked=!ssh; $("computeModeSsh").checked=ssh;
+    $("computeSshFields").style.display=ssh?"":"none"; $("computeLocalInfo").style.display=ssh?"none":"";
+    if(!ssh)$("computeLocalDevice").textContent="(resolved on first run)";
+    $("sshHost").value=cc.host||""; $("sshPort").value=cc.port||22; $("sshUsername").value=cc.username||"";
+    const a=cc.auth_method||"key"; $("sshAuthKey").checked=a==="key"; $("sshAuthPassword").checked=a==="password";
+    $("sshCredentialLabel").textContent=a==="password"?"Password":"Key path / contents";
+    $("sshCredential").placeholder=cc.credential_set?"•••••••• (saved)":(a==="password"?"password":"~/.ssh/id_ed25519 or paste key contents");
+    $("sshCredential").value=""; $("sshPythonPath").value=cc.python_path||"python3"; $("computeTestStatus").textContent="";
+  }
+  async function loadComputeConfig(){try{const d=await api("/api/compute/config");cc={mode:d.mode||"local",host:d.host||"",port:d.port||22,username:d.username||"",auth_method:d.auth_method||"key",credential_set:!!d.credential_set,python_path:d.python_path||"python3"};}catch(_){cc={mode:"local",credential_set:false};}applyComputeUI();}
+  function readCompute(){const ssh=$("computeModeSsh")&&$("computeModeSsh").checked;const c={mode:ssh?"ssh":"local",host:($("sshHost").value||"").trim()||null,port:parseInt($("sshPort").value||"22",10)||22,username:($("sshUsername").value||"").trim()||null,auth_method:$("sshAuthKey").checked?"key":"password",python_path:($("sshPythonPath").value||"").trim()||"python3"};const cr=$("sshCredential").value;if(cr!=="")c.credential=cr;return c;}
+  async function saveCompute(){await api("/api/compute/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(readCompute())});}
+  async function testCompute(){const c=readCompute();if(c.mode!=="ssh"){$("computeTestStatus").textContent="switch to SSH to test";return;}if(!c.host||!c.username){$("computeTestStatus").textContent="host and username required";return;}$("computeTestStatus").textContent="testing…";try{const r=await api("/api/compute/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(c)});if(!r.ok){$("computeTestStatus").textContent="✗ "+(r.error||"failed");return;}$("computeTestStatus").textContent="✓ Connected · "+(r.device_name||r.device||"?")+" · "+(r.server_reachable?"server reachable":"✗ unreachable");}catch(e){$("computeTestStatus").textContent="✗ "+e.message;}}
+
+  // ── catalog ────────────────────────────────────────────────
+  let catEntries=[],catDraft=[];
+  const PROVIDERS=["hf","anthropic","openai","openai_compatible"], ROLES=["target","generator","judge"];
+  async function refreshCatalog(){try{const d=await api("/api/catalog");catEntries=Array.isArray(d.entries)?d.entries:[];}catch(_){}}
+  function catalogOpen(){catDraft=catEntries.map(e=>({label:e.label,model_id:e.model_id,provider:e.provider||"hf",endpoint:e.endpoint||"",roles:Array.isArray(e.roles)?[...e.roles]:["target","generator","judge"]}));renderCatalog();}
+  function renderCatalog(){
+    const list=$("catalogList"); list.innerHTML="";
+    catDraft.forEach((entry,idx)=>{
+      const isHf=entry.provider==="hf";
+      const row=document.createElement("div"); row.className="catalog-row";
+      row.innerHTML='<div class="catalog-row-head"><span class="cat-field-label">Provider</span><select data-k="provider" class="cat-field-input">'+PROVIDERS.map(p=>'<option value="'+p+'"'+(p===entry.provider?" selected":"")+'>'+p+'</option>').join("")+'</select><button class="rm-btn" type="button" title="Remove">×</button></div><div class="catalog-row-field"><span class="cat-field-label">Model ID</span><input type="text" data-k="model_id" class="cat-field-input" value="'+escapeHtml(entry.model_id)+'" placeholder="e.g. ibm-granite/granite-3.3-2b-instruct"></div><div class="catalog-row-field"><span class="cat-field-label">Display</span><input type="text" data-k="label" class="cat-field-input" value="'+escapeHtml(entry.label)+'" placeholder="display name"></div><div class="catalog-row-field"><span class="cat-field-label">Roles</span><div class="catalog-row-roles">'+ROLES.map(r=>{const dis=r==="target"&&!isHf;const on=entry.roles.includes(r)&&!dis;return'<span class="role-toggle-label'+(dis?" disabled":"")+'">'+r+'</span><span class="toggle'+(on?" on":"")+(dis?" disabled":"")+'" data-role="'+r+'"></span>';}).join("")+'</div></div>';
+      row.querySelectorAll("[data-k]").forEach(el=>{el.addEventListener("input",()=>{catDraft[idx][el.dataset.k]=el.value;if(el.dataset.k==="provider")renderCatalog();});});
+      row.querySelectorAll(".toggle[data-role]").forEach(el=>{el.addEventListener("click",()=>{if(el.classList.contains("disabled"))return;el.classList.toggle("on");const r=el.dataset.role;const on=el.classList.contains("on");if(on&&!catDraft[idx].roles.includes(r))catDraft[idx].roles.push(r);if(!on)catDraft[idx].roles=catDraft[idx].roles.filter(x=>x!==r);});});
+      row.querySelector(".rm-btn").addEventListener("click",()=>{catDraft.splice(idx,1);renderCatalog();});
+      list.appendChild(row);
+    });
+  }
+  async function saveCatalog(){const clean=catDraft.filter(e=>(e.model_id||"").trim()).map(e=>({label:(e.label||"").trim()||e.model_id,model_id:e.model_id.trim(),provider:e.provider||"hf",endpoint:(e.endpoint||"").trim()||null,roles:e.roles.length?e.roles:["generator","judge"]}));const u=await api("/api/catalog",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(clean)});catEntries=u.entries||[];}
+
+  // ── settings modal ─────────────────────────────────────────
+  async function openSettings(){
+    $("sHost").textContent=location.hostname||"—"; $("sPort").textContent=location.port||"—";
+    await refreshCatalog(); await loadSecretStatus(); await loadComputeConfig(); catalogOpen();
+    $("settingsModal").classList.add("open");
+  }
+  function closeSettings(){$("settingsModal").classList.remove("open");}
+  async function saveSettings(){
+    try{await saveCatalog();}catch(e){alert("Failed to save catalog: "+e.message);}
+    try{await saveSecrets();}catch(e){alert("Failed to save API keys: "+e.message);}
+    try{await saveCompute();}catch(e){alert("Failed to save compute config: "+e.message);}
+    closeSettings();
+  }
+
+  // ── init ───────────────────────────────────────────────────
+  initTheme();
+  $("fCopyright").textContent="IBM Research, "+new Date().getFullYear();
+  setStatus("idle","no session");
+
+  // settings button → settings modal (API keys, compute, catalog)
+  $("btnSettings").addEventListener("click", openSettings);
+  $("settingsClose").addEventListener("click", closeSettings);
+  $("settingsCancel").addEventListener("click", closeSettings);
+  $("settingsSave").addEventListener("click", saveSettings);
+  $("settingsModal").addEventListener("click", e => { if(e.target.id==="settingsModal") closeSettings(); });
+
+  // compute UI events
+  document.querySelectorAll("input[name='computeMode']").forEach(el=>{el.addEventListener("change",()=>{cc.mode=el.value;applyComputeUI();});});
+  document.querySelectorAll("input[name='sshAuthMethod']").forEach(el=>{el.addEventListener("change",()=>{cc.auth_method=el.value;$("sshCredentialLabel").textContent=el.value==="password"?"Password":"Key path / contents";});});
+  $("btnTestCompute").addEventListener("click", testCompute);
+  $("catalogAddBtn").addEventListener("click", ()=>{catDraft.push({label:"",model_id:"",provider:"hf",endpoint:"",roles:["generator","judge"]});renderCatalog();});
+
+  // status button in footer → open session modal (React)
+  $("statusBtn").addEventListener("click", () => { window.dispatchEvent(new CustomEvent("aisteer-open-session")); });
+  window.addEventListener("aisteer-status", e => { const d=(e&&e.detail)||{}; setStatus(d.state||"idle",d.label||""); });
+
+  // load React canvas bundle
+  const script=document.createElement("script"); script.src="/canvas/pipeline-canvas.js"; script.defer=true; document.body.appendChild(script);
 })();
 </script>
 

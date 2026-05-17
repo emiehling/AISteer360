@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, type DragEvent } from "react";
 import ReactFlow, {
-  Background,
-  BackgroundVariant,
-  Controls,
   type Edge,
   type Node,
   type OnSelectionChangeParams,
@@ -18,9 +15,9 @@ import { makeIsValidConnection } from "./canvas/validation";
 import { DRAG_MIME } from "./panels/LibraryPanel";
 import type { ControlCategory } from "./types";
 
-const ANCHOR_LEFT_X = 80;
-const ANCHOR_RIGHT_X = 820;
-const MODEL_X = 410;
+const ANCHOR_LEFT_X = 40;
+const ANCHOR_RIGHT_X = 1100;
+const MODEL_X = 500;
 const ROW_Y = 220;
 
 function buildInitialNodes(modelNameOrPath: string): Node[] {
@@ -38,7 +35,12 @@ function buildInitialNodes(modelNameOrPath: string): Node[] {
       id: "model",
       type: "target_model",
       position: { x: MODEL_X, y: ROW_Y - 18 },
-      data: { modelNameOrPath },
+      data: {
+        modelId: modelNameOrPath,
+        loaded: false,
+        params: [],
+        onChangeModel: undefined,
+      },
       deletable: false,
     },
     {
@@ -147,14 +149,16 @@ function CanvasInner() {
         isValidConnection={isValidConnection}
         defaultEdgeOptions={{ type: "pipeline" }}
         proOptions={{ hideAttribution: true }}
-        minZoom={0.5}
-        maxZoom={2}
+        zoomOnScroll={false}
+        zoomOnPinch={false}
+        zoomOnDoubleClick={false}
+        panOnDrag={false}
+        panOnScroll={false}
+        minZoom={1}
+        maxZoom={1}
         fitView
         fitViewOptions={{ padding: 0.18 }}
-      >
-        <Background variant={BackgroundVariant.Dots} gap={18} size={1} />
-        <Controls position="bottom-left" showInteractive={false} />
-      </ReactFlow>
+      />
     </div>
   );
 }

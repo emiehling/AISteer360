@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 export type ControlCategory =
   | "input_control"
   | "structural_control"
@@ -38,9 +40,20 @@ export interface MethodsResponse {
 
 export type ToolMode = "select" | "connect" | "erase";
 
+export interface ControlNodeParam {
+  icon?: ReactNode;
+  label: string;
+  value: string;
+}
+
 export interface ControlNodeData {
   category: ControlCategory;
   method: string;
   args: Record<string, unknown>;
   runtimeKwargs: Record<string, unknown>;
+  label?: string;
+  status?: string;
+  params?: ControlNodeParam[];
+  onSettings?: () => void;
+  onClose?: () => void;
 }
