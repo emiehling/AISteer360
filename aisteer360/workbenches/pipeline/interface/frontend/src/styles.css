@@ -1,0 +1,250 @@
+/* Pipeline canvas — React Flow + node + library styles.
+   Mounts inside the workbench's .workspace-inset; expects common.css design tokens to be defined
+   on :root by the host page (loaded via /static/common/common.css). */
+
+:root {
+  --cat-input-fill:       rgba(140, 200, 150, 0.14);
+  --cat-input-border:     #6fb37e;
+  --cat-input-soft:       rgba(140, 200, 150, 0.22);
+  --cat-structural-fill:  rgba(140, 180, 220, 0.14);
+  --cat-structural-border:#6f9bc7;
+  --cat-structural-soft:  rgba(140, 180, 220, 0.22);
+  --cat-state-fill:       rgba(220, 200, 130, 0.14);
+  --cat-state-border:     #c7a94f;
+  --cat-state-soft:       rgba(220, 200, 130, 0.22);
+  --cat-output-fill:      rgba(220, 140, 140, 0.14);
+  --cat-output-border:    #c77878;
+  --cat-output-soft:      rgba(220, 140, 140, 0.22);
+}
+
+[data-theme="light"] {
+  --cat-input-fill:       rgba(110, 170, 125, 0.18);
+  --cat-input-border:     #4f9061;
+  --cat-input-soft:       rgba(110, 170, 125, 0.30);
+  --cat-structural-fill:  rgba(95, 145, 195, 0.18);
+  --cat-structural-border:#3f78a8;
+  --cat-structural-soft:  rgba(95, 145, 195, 0.30);
+  --cat-state-fill:       rgba(195, 165, 70, 0.20);
+  --cat-state-border:     #9e7e2a;
+  --cat-state-soft:       rgba(195, 165, 70, 0.30);
+  --cat-output-fill:      rgba(195, 95, 95, 0.18);
+  --cat-output-border:    #a05050;
+  --cat-output-soft:      rgba(195, 95, 95, 0.30);
+}
+
+/* ── mount point + canvas-region: occupy workspace-inset ─────────── */
+#pipeline-canvas-root {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.canvas-region {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.canvas-area {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  background: var(--bg-inset);
+  box-shadow:
+    inset 3px 3px 8px var(--inset-shadow-1),
+    inset -3px -3px 8px var(--inset-shadow-2);
+}
+
+.canvas-area .react-flow {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+/* ── React Flow theming ──────────────────────────────────────────── */
+.canvas-area .react-flow__background {
+  background-color: transparent;
+}
+.canvas-area .react-flow__background-pattern {
+  color: var(--line);
+}
+
+.canvas-area .react-flow__node {
+  font-family: var(--mono);
+  color: var(--text);
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+.canvas-area .react-flow__handle {
+  width: 10px;
+  height: 10px;
+  background: transparent;
+  border: 1px solid var(--line-3);
+  box-shadow: none;
+}
+.canvas-area .react-flow__handle.port-source {
+  border-radius: 50%;
+}
+.canvas-area .react-flow__handle.port-target {
+  border-radius: 1px;
+}
+
+.canvas-area .react-flow__attribution {
+  display: none;
+}
+
+/* react-flow controls: re-skin to match common.css tokens */
+.canvas-area .react-flow__controls {
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.canvas-area .react-flow__controls-button {
+  background: var(--panel-2);
+  border: none;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-dim);
+  width: 26px;
+  height: 26px;
+  transition: color 0.12s, background 0.12s;
+}
+.canvas-area .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+.canvas-area .react-flow__controls-button:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+.canvas-area .react-flow__controls-button svg {
+  fill: currentColor;
+  max-width: 14px;
+  max-height: 14px;
+}
+
+/* ── anchor nodes ────────────────────────────────────────────────── */
+.anchor-node {
+  width: 110px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  position: relative;
+}
+.anchor-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dimmer);
+  letter-spacing: 0.02em;
+}
+
+/* ── target model node ───────────────────────────────────────────── */
+.model-node {
+  width: 200px;
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  position: relative;
+}
+.model-header {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--accent-soft);
+}
+.model-body {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  padding: 10px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── library row ─────────────────────────────────────────────────── */
+.library-row {
+  flex: 0 0 auto;
+  height: 110px;
+  display: flex;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.library-column {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+}
+.library-column:last-child {
+  border-right: none;
+}
+.library-column[data-category="input_control"]      { --col-fill: var(--cat-input-fill);      --col-border: var(--cat-input-border);      --col-soft: var(--cat-input-soft); }
+.library-column[data-category="structural_control"] { --col-fill: var(--cat-structural-fill); --col-border: var(--cat-structural-border); --col-soft: var(--cat-structural-soft); }
+.library-column[data-category="state_control"]      { --col-fill: var(--cat-state-fill);      --col-border: var(--cat-state-border);      --col-soft: var(--cat-state-soft); }
+.library-column[data-category="output_control"]     { --col-fill: var(--cat-output-fill);     --col-border: var(--cat-output-border);     --col-soft: var(--cat-output-soft); }
+
+.library-header {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+}
+.library-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--col-border);
+}
+.library-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+.library-body {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px;
+  padding: 10px 12px;
+  overflow-y: auto;
+}
+.library-pill {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  background: var(--col-fill);
+  border: 1px solid var(--col-border);
+  border-radius: 3px;
+  padding: 4px 9px;
+  user-select: none;
+  cursor: default;
+}
+.library-empty {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dimmer);
+  font-style: italic;
+}

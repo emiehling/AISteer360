@@ -8,6 +8,7 @@
 /.venv/
 /backend/venv
 *.lock
+!**/package-lock.json
 /notes
 /scripts
 /examples/notebooks/wrapper_mergekit/mergekit_models/*
