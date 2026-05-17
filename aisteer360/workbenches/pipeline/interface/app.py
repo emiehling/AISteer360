@@ -1,4 +1,4 @@
-"""FastAPI application factory for the composition workbench.
+"""FastAPI application factory for the pipeline workbench.
 
 Like vector calibration, the server is inert: it persists session metadata in SQLite, relays
 inference requests browser↔agent, and never loads a model. All compute lives in the agent.
@@ -16,7 +16,7 @@ from aisteer360.workbenches.common.interface.db import Database
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_AGENT_COMMAND_NAME = "aisteer360-compose-agent"
+DEFAULT_AGENT_COMMAND_NAME = "aisteer360-pipeline-agent"
 
 
 async def _install_sessions(db: Database) -> None:
@@ -31,9 +31,9 @@ def create_app(
     agent_command_name: str = DEFAULT_AGENT_COMMAND_NAME,
     solo_mode: bool = False,
 ) -> FastAPI:
-    """Build the composition-workbench FastAPI app."""
+    """Build the pipeline-workbench FastAPI app."""
     app = create_workbench_app(
-        title="AISteer360 — Composition Workbench",
+        title="AISteer360 — Pipeline Workbench",
         data_root=data_root,
         public_server_url=public_server_url,
         agent_command_name=agent_command_name,

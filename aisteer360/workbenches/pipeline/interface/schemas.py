@@ -1,4 +1,4 @@
-"""Pydantic models for the composition workbench API."""
+"""Pydantic models for the pipeline workbench API."""
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class ControlNode(BaseModel):
-    """A single control in the composition canvas.
+    """A single control in the pipeline canvas.
 
     `id` is a client-generated UUID used for edge connections and for diffing across edits.
     `category` is one of the four steering categories (`input_control`, `structural_control`,
@@ -24,7 +24,7 @@ class ControlNode(BaseModel):
 
 
 class PipelineDefinition(BaseModel):
-    """Full composition state — what the agent needs to build a SteeringPipeline."""
+    """Full pipeline state — what the agent needs to build a SteeringPipeline."""
 
     model_config = {"protected_namespaces": ()}
 

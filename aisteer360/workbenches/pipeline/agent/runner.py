@@ -24,9 +24,9 @@ import time
 from typing import Any
 
 from aisteer360.workbenches.common.agent.client import AgentServerError, ServerClient
-from aisteer360.workbenches.composition.interface.schemas import PipelineDefinition
-from aisteer360.workbenches.composition.workbench import (
-    CompositionWorkbench,
+from aisteer360.workbenches.pipeline.interface.schemas import PipelineDefinition
+from aisteer360.workbenches.pipeline.workbench import (
+    PipelineWorkbench,
     hash_pipeline,
 )
 
@@ -39,7 +39,7 @@ class SessionRunner:
     def __init__(self, client: ServerClient, *, poll_timeout_s: float = 30.0):
         self.client = client
         self.poll_timeout_s = poll_timeout_s
-        self.workbench = CompositionWorkbench()
+        self.workbench = PipelineWorkbench()
 
         self._pipeline: Any | None = None
         self._pipeline_hash: str | None = None

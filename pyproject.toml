@@ -94,8 +94,8 @@ dev = [
 
 [project.scripts]
 aisteer360-agent = "aisteer360.workbenches.vector_calibration.agent.__main__:main"
-aisteer360-compose-agent = "aisteer360.workbenches.composition.agent.__main__:main"
-aisteer360-compose = "aisteer360.workbenches.composition.interface.__main__:main"
+aisteer360-pipeline-agent = "aisteer360.workbenches.pipeline.agent.__main__:main"
+aisteer360-pipeline = "aisteer360.workbenches.pipeline.interface.__main__:main"
 
 # tools
 [tool.pytest.ini_options]

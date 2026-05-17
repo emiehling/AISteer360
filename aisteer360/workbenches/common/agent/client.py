@@ -3,7 +3,7 @@
 A thin synchronous httpx client; matches the synchronous nature of the per-stage / per-request
 agent calls. The agent keeps one long-lived client and reuses its connection pool.
 
-Both run-driven workbenches (vector calibration) and session-driven workbenches (composition) use
+Both run-driven workbenches (vector calibration) and session-driven workbenches (pipeline) use
 the same client. The run-aware methods POST to `/api/agent/runs/{run_id}/*`; the session-aware
 methods POST to `/api/agent/sessions/{session_id}/*`. Whether you use one set or the other
 depends on which runner is driving the client.
@@ -127,7 +127,7 @@ class ServerClient:
     def post_logs(self, lines: list[str]) -> None:
         self._post(f"/api/agent/runs/{self.run_id}/logs", json={"lines": lines})
 
-    # ── session-driven API (composition workbench) ───────────────
+    # ── session-driven API (pipeline workbench) ──────────────────
 
     def session_claim(self) -> dict[str, Any]:
         return self._post(f"/api/agent/sessions/{self.session_id}/claim").json()

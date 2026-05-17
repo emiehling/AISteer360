@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["sessions"])
 
-_REMOTE_AGENT_MODULE = "aisteer360.workbenches.composition.agent"
-_LOG_LABEL = "aisteer360-compose"
+_REMOTE_AGENT_MODULE = "aisteer360.workbenches.pipeline.agent"
+_LOG_LABEL = "aisteer360-pipeline"
 
 
 def _public_server_url(request: Request) -> str:
@@ -52,7 +52,7 @@ def _public_server_url(request: Request) -> str:
 
 
 def _agent_command(request: Request, session_id: str, agent_token: str) -> AgentCommand:
-    name = getattr(request.app.state, "agent_command_name", "aisteer360-compose-agent")
+    name = getattr(request.app.state, "agent_command_name", "aisteer360-pipeline-agent")
     server = _public_server_url(request)
     parts = [name, "--server", server, "--session-id", session_id, "--agent-token", agent_token]
     command = " ".join(shlex.quote(p) for p in parts)
@@ -69,7 +69,7 @@ async def _dispatch_agent(
     cmd: AgentCommand,
     owner_hash: str,
 ) -> tuple[str, str | None]:
-    name = getattr(request.app.state, "agent_command_name", "aisteer360-compose-agent")
+    name = getattr(request.app.state, "agent_command_name", "aisteer360-pipeline-agent")
     agent_argv = [
         name,
         "--server", cmd.server,

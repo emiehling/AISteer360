@@ -52,7 +52,7 @@ def create_workbench_app(
         solo_mode: True when started from the per-workbench solo-dev launcher. When set, runs and
             sessions with no compute config default to local dispatch.
         extend_schema: Optional async hook invoked after the database connects. Use this to add
-            workbench-specific tables (e.g. the `sessions` table for the composition workbench).
+            workbench-specific tables (e.g. the `sessions` table for the pipeline workbench).
         on_startup: Optional async hook invoked once the database is connected, the relays are on
             `app.state`, and orphan-cleanup has run.
         on_shutdown: Optional async hook invoked before the database closes on shutdown. Local

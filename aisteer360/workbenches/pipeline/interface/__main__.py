@@ -1,6 +1,6 @@
-"""Solo-dev convenience wrapper for the composition workbench.
+"""Solo-dev convenience wrapper for the pipeline workbench.
 
-`python -m aisteer360.workbenches.composition.interface` starts the coordination server, prints
+`python -m aisteer360.workbenches.pipeline.interface` starts the coordination server, prints
 the dashboard URL with an owner token, and waits. When the user creates a session, the server
 dispatches a long-lived `SessionRunner` agent — locally by default, or over SSH if compute is
 configured.
@@ -40,7 +40,7 @@ def _run_uvicorn(app, host: str, port: int, log_level: str) -> uvicorn.Server:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Composition workbench dashboard")
+    parser = argparse.ArgumentParser(description="Pipeline workbench dashboard")
     parser.add_argument("--save-dir", default=None, help="Artefact directory (defaults to ./runs)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8361)
@@ -66,7 +66,7 @@ def main() -> int:
 
     base_url = f"http://{args.host}:{args.port}"
     browser_url = f"{base_url}/?owner_token={owner_token}"
-    print(f"\n[composition] {browser_url}\n", flush=True)
+    print(f"\n[pipeline] {browser_url}\n", flush=True)
 
     stop = threading.Event()
 

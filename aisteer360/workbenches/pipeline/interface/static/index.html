@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AI Steerability 360 — Pipeline Workbench</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/common/common.css" />
+<style>
+  .pipeline-split {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .canvas-row {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+    background: var(--bg-inset);
+    box-shadow:
+      inset 3px 3px 8px var(--inset-shadow-1),
+      inset -3px -3px 8px var(--inset-shadow-2);
+  }
+
+  .canvas-surface {
+    position: absolute;
+    inset: 0;
+    overflow: auto;
+    background:
+      radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0);
+    background-size: 18px 18px;
+  }
+
+  .canvas-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dimmer);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+
+  .tool-palette {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    border-radius: 3px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    user-select: none;
+  }
+  .tool-palette.dragging {
+    opacity: 0.92;
+    box-shadow: 0 8px 18px rgba(0,0,0,0.35);
+  }
+  .palette-head {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 22px;
+    padding: 0 4px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    cursor: grab;
+  }
+  .tool-palette.locked .palette-head { cursor: default; }
+  .tool-palette.dragging .palette-head { cursor: grabbing; }
+  .palette-grip {
+    flex: 1;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    color: var(--text-dimmer);
+    padding-left: 4px;
+  }
+  .palette-grip span {
+    width: 2px; height: 2px; border-radius: 50%;
+    background: currentColor;
+    display: block;
+  }
+  .palette-icon-btn {
+    width: 18px; height: 18px;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-radius: 2px;
+    padding: 0;
+  }
+  .palette-icon-btn:hover { color: var(--text); background: var(--panel-2); }
+  .palette-icon-btn.active { color: var(--accent); }
+  .palette-icon-btn svg { width: 12px; height: 12px; }
+  .palette-body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 6px;
+  }
+  .tool-palette.minimized .palette-body { display: none; }
+  .tool-btn {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .tool-btn:hover {
+    background: var(--panel);
+    color: var(--text);
+    border-color: var(--line-2);
+  }
+  .tool-btn.active {
+    background: var(--panel);
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .tool-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .library-row {
+    flex: 0 0 38%;
+    min-height: 180px;
+    display: flex;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .library-section {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--line);
+  }
+  .library-section:last-child {
+    border-right: none;
+  }
+  .library-header {
+    height: 28px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+  .library-items {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .library-item {
+    padding: 6px 10px;
+    background: var(--panel-2);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: grab;
+    user-select: none;
+  }
+  .library-item:hover {
+    border-color: var(--accent);
+  }
+</style>
+</head>
+<body>
+
+<nav class="topbar">
+  <div class="brand">
+    <img class="logo" src="/static/common/logo_darkmode.svg" alt="AI Steerability 360" />
+    <span class="name"><span class="sub">Pipeline Workbench</span></span>
+  </div>
+  <div class="spacer"></div>
+  <button class="icon-btn" id="themeToggle" title="Toggle light/dark mode" type="button">
+    <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round"></svg>
+  </button>
+  <button class="icon-btn" id="btnHelp" title="How to use">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+      <line x1="12" y1="17" x2="12.01" y2="17"/>
+    </svg>
+  </button>
+  <button class="icon-btn" id="btnSettings" title="Settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+  </button>
+</nav>
+
+<div class="workspace">
+  <div class="workspace-inset">
+    <div class="pipeline-split">
+      <div class="canvas-row" id="canvasRow">
+        <div class="canvas-surface" id="canvasSurface">
+          <div class="canvas-empty">Drag controls from the library to build a pipeline.</div>
+        </div>
+        <div class="tool-palette" id="toolPalette" aria-label="Canvas tools">
+          <div class="palette-head" id="paletteHead">
+            <div class="palette-grip" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <button class="palette-icon-btn" id="paletteLock" title="Lock position" aria-label="Lock palette position" type="button">
+              <svg id="paletteLockIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round"></svg>
+            </button>
+            <button class="palette-icon-btn" id="paletteMin" title="Minimize" aria-label="Minimize palette" type="button">
+              <svg id="paletteMinIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round"></svg>
+            </button>
+          </div>
+          <div class="palette-body">
+            <button class="tool-btn" id="toolConnect" title="Connect blocks" aria-label="Connect blocks" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="6" cy="12" r="2.5"/>
+                <circle cx="18" cy="12" r="2.5"/>
+                <path d="M8.5 12 H15.5"/>
+              </svg>
+            </button>
+            <button class="tool-btn" id="toolErase" title="Erase connections" aria-label="Erase connections" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <path d="M16 3 L21 8 L9 20 L4 20 L4 15 Z"/>
+                <path d="M11 6 L18 13"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="library-row">
+        <div class="library-section" data-category="input_control">
+          <div class="library-header">Input Controls</div>
+          <div class="library-items" id="libInput"></div>
+        </div>
+        <div class="library-section" data-category="structural_control">
+          <div class="library-header">Structural Controls</div>
+          <div class="library-items" id="libStructural"></div>
+        </div>
+        <div class="library-section" data-category="state_control">
+          <div class="library-header">State Controls</div>
+          <div class="library-items" id="libState"></div>
+        </div>
+        <div class="library-section" data-category="output_control">
+          <div class="library-header">Output Controls</div>
+          <div class="library-items" id="libOutput"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="footer">
+  <span id="fCopyright"></span>
+  <span class="spacer"></span>
+  <button class="status" id="statusBtn" title="Session status" type="button">
+    <span id="statusDot" class="dot idle"></span>
+    <span id="statusText">no session</span>
+  </button>
+</footer>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  // theme toggle
+  const THEME_KEY = "aisteer360-theme";
+  const SUN_ICON = '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4l1.4-1.4M17 7l1.4-1.4"/>';
+  const MOON_ICON = '<path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>';
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
+    const logo = document.querySelector(".topbar .brand .logo");
+    if (logo) {
+      logo.src = theme === "light" ? "/static/common/logo_lightmode.svg" : "/static/common/logo_darkmode.svg";
+    }
+    const icon = $("themeIcon");
+    if (icon) {
+      icon.innerHTML = theme === "light" ? MOON_ICON : SUN_ICON;
+    }
+  }
+
+  function initTheme() {
+    let saved = "dark";
+    try { saved = localStorage.getItem(THEME_KEY) || "dark"; } catch (_) {}
+    applyTheme(saved === "light" ? "light" : "dark");
+    const btn = $("themeToggle");
+    if (btn) {
+      btn.addEventListener("click", () => {
+        const current = document.documentElement.getAttribute("data-theme") || "dark";
+        applyTheme(current === "light" ? "dark" : "light");
+      });
+    }
+  }
+
+  // owner token
+  const tokenKey = "aisteer360-owner-token";
+  const params = new URLSearchParams(window.location.search);
+  let ownerToken = params.get("owner_token");
+  if (ownerToken) {
+    try { localStorage.setItem(tokenKey, ownerToken); } catch (_) {}
+    params.delete("owner_token");
+    const newSearch = params.toString();
+    window.history.replaceState({}, document.title,
+      window.location.pathname + (newSearch ? "?" + newSearch : ""));
+  } else {
+    try { ownerToken = localStorage.getItem(tokenKey); } catch (_) {}
+  }
+  if (!ownerToken) {
+    document.body.innerHTML =
+      '<div style="padding:40px;font-family:monospace;color:#aaa">' +
+      'Missing owner token. Reopen the dashboard via the URL printed by the server.' +
+      '</div>';
+    return;
+  }
+
+  // status pill
+  function setStatus(state, label) {
+    $("statusDot").className = "dot " + (state || "idle");
+    $("statusText").textContent = label || state || "idle";
+  }
+
+  // controls library (placeholders; real catalog is wired in a later pass)
+  const LIBRARY = {
+    libInput: ["few_shot"],
+    libStructural: ["dpo", "mergekit"],
+    libState: ["pasta", "cast"],
+    libOutput: ["deal", "rad"],
+  };
+  function populateLibrary() {
+    for (const [id, items] of Object.entries(LIBRARY)) {
+      const el = $(id);
+      if (!el) continue;
+      for (const name of items) {
+        const div = document.createElement("div");
+        div.className = "library-item";
+        div.draggable = true;
+        div.textContent = name;
+        el.appendChild(div);
+      }
+    }
+  }
+
+  // tool palette: visual selection only — wiring the connect/erase tools is out of scope for now
+  function initToolButtons() {
+    const buttons = [$("toolConnect"), $("toolErase")];
+    for (const btn of buttons) {
+      if (!btn) continue;
+      btn.addEventListener("click", () => {
+        const wasActive = btn.classList.contains("active");
+        for (const other of buttons) other && other.classList.remove("active");
+        if (!wasActive) btn.classList.add("active");
+      });
+    }
+  }
+
+  // tool palette: drag / lock / minimize
+  const PALETTE_POS_KEY = "aisteer360-pipeline-palette-pos";
+  const PALETTE_LOCK_KEY = "aisteer360-pipeline-palette-locked";
+  const PALETTE_MIN_KEY = "aisteer360-pipeline-palette-minimized";
+
+  const LOCK_OPEN_ICON =
+    '<rect x="3" y="11" width="18" height="11" rx="2"/>' +
+    '<path d="M7 11V7a5 5 0 0 1 9.9-1"/>';
+  const LOCK_CLOSED_ICON =
+    '<rect x="3" y="11" width="18" height="11" rx="2"/>' +
+    '<path d="M7 11V7a5 5 0 0 1 10 0v4"/>';
+  const MIN_ICON = '<path d="M5 18h14"/>';
+  const RESTORE_ICON = '<rect x="5" y="5" width="14" height="14" rx="1"/>';
+
+  function clampPaletteToCanvas(palette, canvas) {
+    const cRect = canvas.getBoundingClientRect();
+    const pRect = palette.getBoundingClientRect();
+    const maxLeft = Math.max(0, cRect.width - pRect.width - 4);
+    const maxTop = Math.max(0, cRect.height - pRect.height - 4);
+    const curLeft = parseFloat(palette.style.left) || 0;
+    const curTop = parseFloat(palette.style.top) || 0;
+    palette.style.left = Math.min(Math.max(0, curLeft), maxLeft) + "px";
+    palette.style.top = Math.min(Math.max(0, curTop), maxTop) + "px";
+  }
+
+  function initPalette() {
+    const palette = $("toolPalette");
+    const head = $("paletteHead");
+    const canvas = $("canvasRow");
+    const lockBtn = $("paletteLock");
+    const lockIcon = $("paletteLockIcon");
+    const minBtn = $("paletteMin");
+    const minIcon = $("paletteMinIcon");
+
+    // initial position: anchored top-right by CSS — convert to absolute px so we can drag
+    const cRect = canvas.getBoundingClientRect();
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(PALETTE_POS_KEY) || "null"); } catch (_) {}
+    if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+      palette.style.left = saved.left + "px";
+      palette.style.top = saved.top + "px";
+    } else {
+      const pRect = palette.getBoundingClientRect();
+      palette.style.left = Math.max(0, cRect.width - pRect.width - 14) + "px";
+      palette.style.top = "14px";
+    }
+    palette.style.right = "auto";
+
+    // initial lock + minimize
+    let locked = false;
+    let minimized = false;
+    try { locked = localStorage.getItem(PALETTE_LOCK_KEY) === "1"; } catch (_) {}
+    try { minimized = localStorage.getItem(PALETTE_MIN_KEY) === "1"; } catch (_) {}
+    function renderLock() {
+      palette.classList.toggle("locked", locked);
+      lockBtn.classList.toggle("active", locked);
+      lockBtn.title = locked ? "Unlock position" : "Lock position";
+      lockIcon.innerHTML = locked ? LOCK_CLOSED_ICON : LOCK_OPEN_ICON;
+    }
+    function renderMin() {
+      palette.classList.toggle("minimized", minimized);
+      minBtn.title = minimized ? "Restore" : "Minimize";
+      minIcon.innerHTML = minimized ? RESTORE_ICON : MIN_ICON;
+      clampPaletteToCanvas(palette, canvas);
+    }
+    renderLock();
+    renderMin();
+
+    lockBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      locked = !locked;
+      try { localStorage.setItem(PALETTE_LOCK_KEY, locked ? "1" : "0"); } catch (_) {}
+      renderLock();
+    });
+    minBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      minimized = !minimized;
+      try { localStorage.setItem(PALETTE_MIN_KEY, minimized ? "1" : "0"); } catch (_) {}
+      renderMin();
+    });
+
+    // drag from header
+    let dragging = false;
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+    head.addEventListener("pointerdown", (e) => {
+      if (locked) return;
+      if (e.target.closest(".palette-icon-btn")) return;
+      dragging = true;
+      palette.classList.add("dragging");
+      startX = e.clientX; startY = e.clientY;
+      startLeft = parseFloat(palette.style.left) || 0;
+      startTop = parseFloat(palette.style.top) || 0;
+      head.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    head.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const cRect2 = canvas.getBoundingClientRect();
+      const pRect2 = palette.getBoundingClientRect();
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      const maxLeft = Math.max(0, cRect2.width - pRect2.width - 4);
+      const maxTop = Math.max(0, cRect2.height - pRect2.height - 4);
+      const left = Math.min(Math.max(0, startLeft + dx), maxLeft);
+      const top = Math.min(Math.max(0, startTop + dy), maxTop);
+      palette.style.left = left + "px";
+      palette.style.top = top + "px";
+    });
+    function endDrag(e) {
+      if (!dragging) return;
+      dragging = false;
+      palette.classList.remove("dragging");
+      try { head.releasePointerCapture(e.pointerId); } catch (_) {}
+      const left = parseFloat(palette.style.left) || 0;
+      const top = parseFloat(palette.style.top) || 0;
+      try { localStorage.setItem(PALETTE_POS_KEY, JSON.stringify({ left, top })); } catch (_) {}
+    }
+    head.addEventListener("pointerup", endDrag);
+    head.addEventListener("pointercancel", endDrag);
+
+    window.addEventListener("resize", () => clampPaletteToCanvas(palette, canvas));
+  }
+
+  // init
+  initTheme();
+  populateLibrary();
+  initToolButtons();
+  initPalette();
+  $("fCopyright").textContent = `IBM Research, ${new Date().getFullYear()}`;
+  setStatus("idle", "no session");
+})();
+</script>
+
+</body>
+</html>

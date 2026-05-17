@@ -6,7 +6,7 @@ subscribed to `/ws/runs/{id}` (or `/ws/sessions/{id}`) receives the event. Event
 (not buffered) when no subscriber is listening — the checkpoint files on disk are the source of
 truth for replay.
 
-`RequestRelay` is the browser-to-agent direction used by the composition workbench: the browser
+`RequestRelay` is the browser-to-agent direction used by the pipeline workbench: the browser
 POSTs an inference request, the server enqueues it on a single-slot per-session queue, and the
 agent long-polls. New requests supersede any pending request — the slot only holds the latest.
 """

@@ -1,7 +1,7 @@
-"""Command-line entry point for the composition workbench agent.
+"""Command-line entry point for the pipeline workbench agent.
 
-`python -m aisteer360.workbenches.composition.agent --server <url> --session-id <id>
-                                                    --agent-token <sk-run-...>`
+`python -m aisteer360.workbenches.pipeline.agent --server <url> --session-id <id>
+                                                 --agent-token <sk-run-...>`
 """
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="aisteer360-compose-agent",
-        description="Run a single composition workbench session against a coordination server.",
+        prog="aisteer360-pipeline-agent",
+        description="Run a single pipeline workbench session against a coordination server.",
     )
     p.add_argument("--server", required=True, help="Base URL of the server (e.g. http://host:port)")
     p.add_argument("--session-id", required=True, help="Session id returned by the dashboard")

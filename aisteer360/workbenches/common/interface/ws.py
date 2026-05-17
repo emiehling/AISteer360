@@ -67,7 +67,7 @@ async def ws_run(websocket: WebSocket, run_id: str) -> None:
 
 @router.websocket("/ws/sessions/{session_id}")
 async def ws_session(websocket: WebSocket, session_id: str) -> None:
-    """Subscribe the browser to events for one composition session.
+    """Subscribe the browser to events for one pipeline session.
 
     Used to deliver `inference_result`, `model_info`, and lifecycle status events. Auth follows
     the same pattern as `/ws/runs/{id}`.

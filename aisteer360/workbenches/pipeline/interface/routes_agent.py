@@ -1,4 +1,4 @@
-"""Agent-facing endpoints under `/api/agent/sessions/{id}/*` for the composition workbench."""
+"""Agent-facing endpoints under `/api/agent/sessions/{id}/*` for the pipeline workbench."""
 from __future__ import annotations
 
 import logging

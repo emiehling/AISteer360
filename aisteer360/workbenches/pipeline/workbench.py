@@ -1,4 +1,4 @@
-"""Composition workbench: build a `SteeringPipeline` from a `PipelineDefinition`.
+"""Pipeline workbench: build a `SteeringPipeline` from a `PipelineDefinition`.
 
 Lives entirely on the agent side. The server only stores opaque session config; per-request
 pipeline definitions are sent inline by the browser and consumed here.
@@ -61,7 +61,7 @@ def _resolve_control(node: ControlNode):
     return method.control_cls(**(node.args or {}))
 
 
-class CompositionWorkbench:
+class PipelineWorkbench:
     """Agent-side helper for turning `PipelineDefinition`s into `SteeringPipeline`s."""
 
     def build_pipeline(
@@ -104,4 +104,4 @@ class CompositionWorkbench:
         return old.model_name_or_path != new.model_name_or_path
 
 
-__all__ = ["CompositionWorkbench", "hash_pipeline"]
+__all__ = ["PipelineWorkbench", "hash_pipeline"]

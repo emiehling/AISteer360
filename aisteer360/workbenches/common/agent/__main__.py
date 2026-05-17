@@ -1,9 +1,9 @@
 """Generic agent entry point that dispatches to a workbench-specific runner.
 
 `python -m aisteer360.workbenches.common.agent --workbench vector_calibration --run-id ...`
-`python -m aisteer360.workbenches.common.agent --workbench composition       --session-id ...`
+`python -m aisteer360.workbenches.common.agent --workbench pipeline           --session-id ...`
 
-Workbenches keep their own console scripts (`aisteer360-agent`, `aisteer360-compose-agent`) which
+Workbenches keep their own console scripts (`aisteer360-agent`, `aisteer360-pipeline-agent`) which
 stay as the documented entry points; those scripts are thin wrappers around their per-workbench
 `__main__.main()`. This module is for cases that prefer a single dispatch surface (e.g. SSH
 remote invocation when both workbenches are installed).
@@ -20,7 +20,7 @@ from .client import AgentServerError, ServerClient
 logger = logging.getLogger(__name__)
 
 
-_WORKBENCHES = ("vector_calibration", "composition")
+_WORKBENCHES = ("vector_calibration", "pipeline")
 _MODES = ("run", "session")
 
 
@@ -38,7 +38,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--server", required=True, help="Base URL of the server.")
     p.add_argument("--run-id", help="Run id (for --workbench vector_calibration).")
-    p.add_argument("--session-id", help="Session id (for --workbench composition).")
+    p.add_argument("--session-id", help="Session id (for --workbench pipeline).")
     p.add_argument("--agent-token", required=True)
     p.add_argument("--device", default=None, help="Device override (cuda, mps, cpu).")
     p.add_argument("--log-level", default="INFO")
@@ -75,8 +75,8 @@ def main(argv: list[str] | None = None) -> int:
                     AgentRunner,
                 )
                 AgentRunner(client).run()
-            elif args.workbench == "composition":
-                from aisteer360.workbenches.composition.agent.runner import SessionRunner
+            elif args.workbench == "pipeline":
+                from aisteer360.workbenches.pipeline.agent.runner import SessionRunner
                 SessionRunner(client).run()
             else:
                 logger.error("Unsupported workbench: %s", args.workbench)

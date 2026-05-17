@@ -1,4 +1,4 @@
-"""Composition workbench configs.
+"""Pipeline workbench configs.
 
 Stub. Today, the only persisted config a session needs is the model name and the load-time
 kwargs; the per-request `PipelineDefinition` is sent inline with each inference request and is

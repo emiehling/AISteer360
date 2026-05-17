@@ -80,7 +80,7 @@ STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
 
-# session-only states (composition workbench)
+# session-only states (pipeline workbench)
 STATUS_READY = "ready"
 STATUS_CLOSING = "closing"
 STATUS_CLOSED = "closed"
@@ -187,7 +187,7 @@ class Run:
 
 @dataclass
 class Session:
-    """In-memory representation of a session row (composition workbench)."""
+    """In-memory representation of a session row (pipeline workbench)."""
 
     id: str
     model_name: str
@@ -639,7 +639,7 @@ class Database:
         await cur.close()
         return row["ssh_credential_enc"] if row else None
 
-    # ── sessions (composition workbench) ─────────────────────────
+    # ── sessions (pipeline workbench) ────────────────────────────
 
     async def install_sessions_schema(self) -> None:
         """Create the `sessions` table if it doesn't exist.
