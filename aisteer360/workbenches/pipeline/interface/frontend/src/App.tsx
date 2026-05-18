@@ -33,15 +33,15 @@ export function App() {
 
   return (
     <div className="canvas-region">
-      <div className="canvas-and-panel">
-        <div className="canvas-stack">
-          <PipelineCanvas />
-          <CanvasToolbar />
-          <HintBar />
-        </div>
+      <div className="canvas-stack">
+        <PipelineCanvas />
+        <CanvasToolbar />
+        <HintBar />
+      </div>
+      <div className="palette">
+        <LibraryPanel />
         <ParameterPanel />
       </div>
-      <LibraryPanel />
       <SessionStub />
     </div>
   );

@@ -43,6 +43,7 @@ interface PipelineStoreState {
   sessionId: string | null;
 
   setNodes: (nodes: Node[]) => void;
+  setEdges: (edges: Edge[]) => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
@@ -77,6 +78,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   sessionId: null,
 
   setNodes: (nodes) => set({ nodes }),
+  setEdges: (edges) => set({ edges }),
   onNodesChange: (changes) => {
     set({ nodes: applyNodeChanges(changes, get().nodes) });
   },

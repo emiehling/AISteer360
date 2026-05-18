@@ -68,29 +68,31 @@ export function ParameterPanel() {
     : undefined;
 
   return (
-    <aside className={`parameter-panel${data ? " open" : ""}`} aria-label="Parameter panel">
+    <aside className="parameter-panel" aria-label="Parameter panel">
       {!data ? (
         <div className="panel-placeholder">select a control to edit parameters</div>
       ) : (
         <>
           <header className="panel-head">
-            <div className="panel-head-method">{data.method}</div>
-            <div className="panel-head-category">{data.category}</div>
+            <span className="panel-head-method">{data.method}</span>
+            <span className="panel-head-category">{data.category}</span>
           </header>
-          <PanelSection
-            title="Fixed parameters"
-            fields={spec?.args ?? []}
-            values={data.args}
-            onChange={(name, next) => updateNodeArgs(node!.id, { [name]: next })}
-            emptyHint="no fixed parameters"
-          />
-          <PanelSection
-            title="Runtime kwargs"
-            fields={spec?.runtime_kwargs ?? []}
-            values={data.runtimeKwargs}
-            onChange={(name, next) => updateNodeRuntimeKwargs(node!.id, { [name]: next })}
-            emptyHint="no runtime kwargs for this control"
-          />
+          <div className="panel-scroll">
+            <PanelSection
+              title="Fixed parameters"
+              fields={spec?.args ?? []}
+              values={data.args}
+              onChange={(name, next) => updateNodeArgs(node!.id, { [name]: next })}
+              emptyHint="no fixed parameters"
+            />
+            <PanelSection
+              title="Runtime kwargs"
+              fields={spec?.runtime_kwargs ?? []}
+              values={data.runtimeKwargs}
+              onChange={(name, next) => updateNodeRuntimeKwargs(node!.id, { [name]: next })}
+              emptyHint="no runtime kwargs for this control"
+            />
+          </div>
         </>
       )}
     </aside>

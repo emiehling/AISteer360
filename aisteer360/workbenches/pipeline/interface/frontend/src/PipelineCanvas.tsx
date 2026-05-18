@@ -24,7 +24,10 @@ const ROW_Y = 220;
 function computeFixtureLayout(canvasWidth: number) {
   const promptX = EDGE_BUFFER;
   const responseX = Math.max(EDGE_BUFFER, canvasWidth - EDGE_BUFFER - ANCHOR_TOTAL_WIDTH);
-  const modelX = Math.max(promptX + ANCHOR_TOTAL_WIDTH, canvasWidth / 2 - MODEL_WIDTH / 2);
+  // 4/5 of the way from prompt anchor's right edge to response anchor's left edge
+  const promptRight = promptX + ANCHOR_TOTAL_WIDTH;
+  const targetCenter = promptRight + (responseX - promptRight) * 0.8;
+  const modelX = Math.max(promptRight, Math.min(responseX - MODEL_WIDTH, targetCenter - MODEL_WIDTH / 2));
   return { promptX, modelX, responseX };
 }
 
@@ -39,6 +42,27 @@ function probeToParams(probe: ModelProbe | null) {
   if (probe.num_hidden_layers != null) rows.push({ label: "layers", value: String(probe.num_hidden_layers) });
   if (probe.hidden_size != null) rows.push({ label: "hidden dim", value: String(probe.hidden_size) });
   return rows;
+}
+
+function buildInitialEdges(): Edge[] {
+  return [
+    {
+      id: "default-prompt-model",
+      source: "anchor-prompt",
+      sourceHandle: "out",
+      target: "model",
+      targetHandle: "input",
+      type: "pipeline",
+    },
+    {
+      id: "default-model-response",
+      source: "model",
+      sourceHandle: "output",
+      target: "anchor-response",
+      targetHandle: "in",
+      type: "pipeline",
+    },
+  ];
 }
 
 function buildInitialNodes(
@@ -89,6 +113,7 @@ function CanvasInner() {
   const onEdgesChange = usePipelineStore((s) => s.onEdgesChange);
   const onConnect = usePipelineStore((s) => s.onConnect);
   const setNodes = usePipelineStore((s) => s.setNodes);
+  const setEdges = usePipelineStore((s) => s.setEdges);
   const addControlNode = usePipelineStore((s) => s.addControlNode);
   const removeEdge = usePipelineStore((s) => s.removeEdge);
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId);
@@ -107,6 +132,9 @@ function CanvasInner() {
     if (usePipelineStore.getState().nodes.length === 0) {
       const width = wrapper.clientWidth || 1100;
       setNodes(buildInitialNodes(modelNameOrPath, width, catalogTargetEntries));
+      if (usePipelineStore.getState().edges.length === 0) {
+        setEdges(buildInitialEdges());
+      }
     }
 
     const observer = new ResizeObserver((entries) => {
@@ -254,6 +282,8 @@ function CanvasInner() {
         panOnDrag={false}
         panOnScroll={false}
         preventScrolling={false}
+        autoPanOnNodeDrag={false}
+        autoPanOnConnect={false}
         minZoom={1}
         maxZoom={1}
         defaultViewport={{ x: 0, y: 0, zoom: 1 }}

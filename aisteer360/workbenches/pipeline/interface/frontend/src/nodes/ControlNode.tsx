@@ -10,7 +10,7 @@ const CATEGORY_FOOTER_LABEL: Record<string, string> = {
   output_control: "output control",
 };
 
-const GRIP_DOT_COUNT = 24;
+const GRIP_DOT_COUNT = 12;
 
 function GripDots() {
   return (
