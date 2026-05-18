@@ -1,188 +1,139 @@
-import { useMemo, useState, type DragEvent } from "react";
-import type { ControlCategory } from "../types";
+import { useMemo, type DragEvent } from "react";
+import type { ControlCategory, ControlNodeParam } from "../types";
 import { usePipelineStore } from "../store/pipelineStore";
-
-const CATEGORIES: { value: ControlCategory; label: string }[] = [
-  { value: "input_control", label: "Input" },
-  { value: "structural_control", label: "Structural" },
-  { value: "state_control", label: "State" },
-  { value: "output_control", label: "Output" },
-];
+import { StagingChip } from "./StagingChip";
 
 export const DRAG_MIME = "application/x-aisteer-control";
 
-interface DraggableChipProps {
-  category: ControlCategory;
-  method: string;
-  label: string;
-  onAfterDrop: () => void;
+const CATEGORY_LABEL: Record<ControlCategory, string> = {
+  input_control: "Input",
+  structural_control: "Structural",
+  state_control: "State",
+  output_control: "Output",
+};
+
+function paramsFromArgs(args: Record<string, unknown>): ControlNodeParam[] {
+  return Object.entries(args)
+    .filter(([, v]) => v != null && v !== "")
+    .slice(0, 3)
+    .map(([k, v]) => ({ label: k, value: String(v) }));
 }
 
-function DraggableChip({ category, method, label, onAfterDrop }: DraggableChipProps) {
-  const onDragStart = (event: DragEvent<HTMLDivElement>) => {
-    event.dataTransfer.setData(DRAG_MIME, JSON.stringify({ category, method }));
-    event.dataTransfer.effectAllowed = "copy";
-  };
-  const onDragEnd = (event: DragEvent<HTMLDivElement>) => {
-    if (event.dataTransfer.dropEffect !== "none") {
-      onAfterDrop();
-    }
-  };
+function ModeToggle() {
+  const stagingMode = usePipelineStore((s) => s.stagingMode);
+  const setStagingMode = usePipelineStore((s) => s.setStagingMode);
   return (
-    <div
-      className="palette-chip"
-      data-category={category}
-      draggable
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-      title="drag onto canvas"
-    >
-      <span className="palette-chip-dot" />
-      <span className="palette-chip-cat">
-        {CATEGORIES.find((c) => c.value === category)?.label}
-      </span>
-      <span className="palette-chip-sep">·</span>
-      <span className="palette-chip-method">{label}</span>
+    <div className="palette-mode-toggle" role="tablist">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={stagingMode === "new"}
+        className={`palette-mode-btn${stagingMode === "new" ? " active" : ""}`}
+        onClick={() => setStagingMode("new")}
+      >
+        new
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={stagingMode === "load"}
+        className={`palette-mode-btn${stagingMode === "load" ? " active" : ""}`}
+        onClick={() => setStagingMode("load")}
+      >
+        load
+      </button>
     </div>
   );
 }
 
-function AddNewControlSection() {
+function LoadModeDropdown() {
   const methods = usePipelineStore((s) => s.methods);
-  const [category, setCategory] = useState<ControlCategory | "">("");
-  const [method, setMethod] = useState<string>("");
+  const stagingMethod = usePipelineStore((s) => s.stagingMethod);
+  const setStagingMethod = usePipelineStore((s) => s.setStagingMethod);
 
-  const methodOptions = useMemo(
-    () => (category ? methods.filter((m) => m.category === category) : []),
-    [category, methods],
+  const sorted = useMemo(
+    () =>
+      [...methods].sort((a, b) =>
+        a.category === b.category
+          ? a.method.localeCompare(b.method)
+          : a.category.localeCompare(b.category),
+      ),
+    [methods],
   );
 
-  const reset = () => {
-    setCategory("");
-    setMethod("");
-  };
-
-  const ready = Boolean(category && method);
-
   return (
-    <div className="palette-section">
-      <div className="palette-section-head">Add registered control</div>
-      <div className="palette-section-body">
-        <label className="palette-field">
-          <span className="palette-field-label">category</span>
-          <select
-            className="palette-input"
-            value={category}
-            onChange={(e) => {
-              const next = e.target.value as ControlCategory | "";
-              setCategory(next);
-              setMethod("");
-            }}
-          >
-            <option value="">— select —</option>
-            {CATEGORIES.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="palette-field">
-          <span className="palette-field-label">method</span>
-          <select
-            className="palette-input"
-            value={method}
-            onChange={(e) => setMethod(e.target.value)}
-            disabled={!category}
-          >
-            <option value="">{category ? "— select —" : "select category first"}</option>
-            {methodOptions.map((m) => (
-              <option key={m.method} value={m.method}>
-                {m.method}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="palette-chip-slot">
-          {ready ? (
-            <DraggableChip
-              category={category as ControlCategory}
-              method={method}
-              label={method}
-              onAfterDrop={reset}
-            />
-          ) : (
-            <div className="palette-chip-empty">configure both fields, then drag</div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CustomControlSection() {
-  const [category, setCategory] = useState<ControlCategory | "">("");
-  const [name, setName] = useState<string>("");
-
-  const reset = () => {
-    setCategory("");
-    setName("");
-  };
-
-  const trimmed = name.trim();
-  const ready = Boolean(category && trimmed);
-
-  return (
-    <div className="palette-section">
-      <div className="palette-section-head">Add custom control</div>
-      <div className="palette-section-body">
-        <label className="palette-field">
-          <span className="palette-field-label">category</span>
-          <select
-            className="palette-input"
-            value={category}
-            onChange={(e) => setCategory(e.target.value as ControlCategory | "")}
-          >
-            <option value="">— select —</option>
-            {CATEGORIES.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="palette-field">
-          <span className="palette-field-label">name</span>
-          <input
-            className="palette-input"
-            type="text"
-            value={name}
-            placeholder="my_control"
-            onChange={(e) => setName(e.target.value)}
-          />
-        </label>
-        <div className="palette-chip-slot">
-          {ready ? (
-            <DraggableChip
-              category={category as ControlCategory}
-              method={trimmed}
-              label={trimmed}
-              onAfterDrop={reset}
-            />
-          ) : (
-            <div className="palette-chip-empty">configure both fields, then drag</div>
-          )}
-        </div>
-      </div>
-    </div>
+    <label className="palette-field">
+      <span className="palette-field-label">control</span>
+      <select
+        className="palette-input"
+        value={stagingMethod ?? ""}
+        onChange={(e) => setStagingMethod(e.target.value || null)}
+      >
+        <option value="">— select —</option>
+        {sorted.map((m) => (
+          <option key={`${m.category}:${m.method}`} value={m.method}>
+            {`◆ ${CATEGORY_LABEL[m.category]} · ${m.method}`}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
 export function LibraryPanel() {
+  const stagingMode = usePipelineStore((s) => s.stagingMode);
+  const stagingMethod = usePipelineStore((s) => s.stagingMethod);
+  const stagingCategory = usePipelineStore((s) => s.stagingCategory);
+  const stagingName = usePipelineStore((s) => s.stagingName);
+  const stagingArgs = usePipelineStore((s) => s.stagingArgs);
+  const resetStaging = usePipelineStore((s) => s.resetStaging);
+
+  const ready =
+    stagingMode === "load"
+      ? Boolean(stagingMethod && stagingCategory)
+      : Boolean(stagingCategory && stagingName.trim());
+
+  const onDragStart = (event: DragEvent<HTMLDivElement>) => {
+    if (!ready || !stagingCategory) return;
+    const method =
+      stagingMode === "load" ? stagingMethod ?? stagingName.trim() : stagingName.trim();
+    const payload = {
+      category: stagingCategory,
+      method,
+      args: stagingArgs,
+    };
+    event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
+    event.dataTransfer.effectAllowed = "copy";
+  };
+
+  const onDragEnd = (event: DragEvent<HTMLDivElement>) => {
+    if (event.dataTransfer.dropEffect !== "none") {
+      resetStaging();
+    }
+  };
+
+  const chipCategory: ControlCategory | "neutral" =
+    stagingCategory ?? (stagingMode === "new" ? "neutral" : "neutral");
+  const chipTitle = stagingMode === "new" ? stagingName.trim() : stagingMethod ?? "";
+  const chipParams = paramsFromArgs(stagingArgs);
+
   return (
-    <div className="library-row" role="region" aria-label="Steering controls library">
-      <AddNewControlSection />
-      <CustomControlSection />
+    <div className="palette-section add-control-section" role="region" aria-label="Add control">
+      <div className="palette-section-head">Add control</div>
+      <div className="palette-section-body">
+        <ModeToggle />
+        {stagingMode === "load" && <LoadModeDropdown />}
+        <div className="palette-stage" aria-label="Control staging area">
+          <StagingChip
+            category={chipCategory}
+            title={chipTitle}
+            params={chipParams}
+            draggable={ready}
+            onDragStart={onDragStart}
+            onDragEnd={onDragEnd}
+          />
+        </div>
+      </div>
     </div>
   );
 }

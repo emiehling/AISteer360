@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, type DragEvent } from "react";
 import ReactFlow, {
   type Edge,
+  MarkerType,
   type Node,
   type OnSelectionChangeParams,
   ReactFlowProvider,
@@ -18,17 +19,21 @@ import type { ControlCategory, ModelProbe } from "./types";
 
 const EDGE_BUFFER = 56;
 const ANCHOR_TOTAL_WIDTH = 124;  // 100px body + 24px stem
+const ANCHOR_BODY_HEIGHT = 34;
 const MODEL_WIDTH = 310;
-const ROW_Y = 220;
+const MODEL_HEIGHT = 160;  // approximate; used only for vertical centering
 
-function computeFixtureLayout(canvasWidth: number) {
+function computeFixtureLayout(canvasWidth: number, canvasHeight: number) {
   const promptX = EDGE_BUFFER;
   const responseX = Math.max(EDGE_BUFFER, canvasWidth - EDGE_BUFFER - ANCHOR_TOTAL_WIDTH);
   // 4/5 of the way from prompt anchor's right edge to response anchor's left edge
   const promptRight = promptX + ANCHOR_TOTAL_WIDTH;
   const targetCenter = promptRight + (responseX - promptRight) * 0.8;
   const modelX = Math.max(promptRight, Math.min(responseX - MODEL_WIDTH, targetCenter - MODEL_WIDTH / 2));
-  return { promptX, modelX, responseX };
+  const midY = Math.max(0, canvasHeight / 2);
+  const anchorY = midY - ANCHOR_BODY_HEIGHT / 2;
+  const modelY = midY - MODEL_HEIGHT / 2;
+  return { promptX, modelX, responseX, anchorY, modelY };
 }
 
 function modelNodeOnChange(modelId: string) {
@@ -44,6 +49,8 @@ function probeToParams(probe: ModelProbe | null) {
   return rows;
 }
 
+const EDGE_ARROW_MARKER = { type: MarkerType.Arrow, width: 16, height: 16 };
+
 function buildInitialEdges(): Edge[] {
   return [
     {
@@ -53,6 +60,7 @@ function buildInitialEdges(): Edge[] {
       target: "model",
       targetHandle: "input",
       type: "pipeline",
+      markerEnd: EDGE_ARROW_MARKER,
     },
     {
       id: "default-model-response",
@@ -61,6 +69,7 @@ function buildInitialEdges(): Edge[] {
       target: "anchor-response",
       targetHandle: "in",
       type: "pipeline",
+      markerEnd: EDGE_ARROW_MARKER,
     },
   ];
 }
@@ -68,14 +77,18 @@ function buildInitialEdges(): Edge[] {
 function buildInitialNodes(
   modelNameOrPath: string,
   canvasWidth: number,
+  canvasHeight: number,
   entries: { label: string; model_id: string }[],
 ): Node[] {
-  const { promptX, modelX, responseX } = computeFixtureLayout(canvasWidth);
+  const { promptX, modelX, responseX, anchorY, modelY } = computeFixtureLayout(
+    canvasWidth,
+    canvasHeight,
+  );
   return [
     {
       id: "anchor-prompt",
       type: "prompt_anchor",
-      position: { x: promptX, y: ROW_Y + 6 },
+      position: { x: promptX, y: anchorY },
       data: { variant: "prompt" },
       draggable: false,
       selectable: false,
@@ -84,7 +97,7 @@ function buildInitialNodes(
     {
       id: "model",
       type: "target_model",
-      position: { x: modelX, y: ROW_Y - 18 },
+      position: { x: modelX, y: modelY },
       data: {
         modelId: modelNameOrPath,
         loaded: false,
@@ -97,7 +110,7 @@ function buildInitialNodes(
     {
       id: "anchor-response",
       type: "response_anchor",
-      position: { x: responseX, y: ROW_Y + 6 },
+      position: { x: responseX, y: anchorY },
       data: { variant: "response" },
       draggable: false,
       selectable: false,
@@ -131,7 +144,8 @@ function CanvasInner() {
 
     if (usePipelineStore.getState().nodes.length === 0) {
       const width = wrapper.clientWidth || 1100;
-      setNodes(buildInitialNodes(modelNameOrPath, width, catalogTargetEntries));
+      const height = wrapper.clientHeight || 600;
+      setNodes(buildInitialNodes(modelNameOrPath, width, height, catalogTargetEntries));
       if (usePipelineStore.getState().edges.length === 0) {
         setEdges(buildInitialEdges());
       }
@@ -140,13 +154,13 @@ function CanvasInner() {
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      const width = entry.contentRect.width;
-      const { promptX, modelX, responseX } = computeFixtureLayout(width);
+      const { width, height } = entry.contentRect;
+      const { promptX, modelX, responseX, anchorY, modelY } = computeFixtureLayout(width, height);
       const current = usePipelineStore.getState().nodes;
       const next = current.map((n) => {
-        if (n.id === "anchor-prompt") return { ...n, position: { x: promptX, y: n.position.y } };
-        if (n.id === "model") return { ...n, position: { x: modelX, y: n.position.y } };
-        if (n.id === "anchor-response") return { ...n, position: { x: responseX, y: n.position.y } };
+        if (n.id === "anchor-prompt") return { ...n, position: { x: promptX, y: anchorY } };
+        if (n.id === "model") return { ...n, position: { x: modelX, y: modelY } };
+        if (n.id === "anchor-response") return { ...n, position: { x: responseX, y: anchorY } };
         return n;
       });
       setNodes(next);
@@ -241,14 +255,17 @@ function CanvasInner() {
       const raw = event.dataTransfer.getData(DRAG_MIME);
       if (!raw) return;
       event.preventDefault();
-      let parsed: { category: ControlCategory; method: string };
+      let parsed: { category: ControlCategory; method: string; args?: Record<string, unknown> };
       try {
         parsed = JSON.parse(raw);
       } catch {
         return;
       }
       const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      addControlNode(parsed.category, parsed.method, position);
+      const id = addControlNode(parsed.category, parsed.method, position);
+      if (parsed.args && Object.keys(parsed.args).length > 0) {
+        usePipelineStore.getState().updateNodeArgs(id, parsed.args);
+      }
     },
     [addControlNode, screenToFlowPosition],
   );
@@ -274,7 +291,7 @@ function CanvasInner() {
         nodesConnectable={activeTool === "connect"}
         connectOnClick={false}
         isValidConnection={isValidConnection}
-        defaultEdgeOptions={{ type: "pipeline" }}
+        defaultEdgeOptions={{ type: "pipeline", markerEnd: EDGE_ARROW_MARKER }}
         proOptions={{ hideAttribution: true }}
         zoomOnScroll={false}
         zoomOnPinch={false}

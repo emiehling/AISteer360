@@ -61,6 +61,14 @@
   --model-bar-btn-border: #5F5E5A;
   --model-dot-on:         #639922;
   --model-dot-off:        #5F5E5A;
+
+  /* neutral (placeholder) control chip */
+  --cat-neutral-border:    #6a665e;
+  --cat-neutral-bar-bg:    #2a2a2e;
+  --cat-neutral-bar-text:  #b4b2a9;
+  --cat-neutral-btn-border:#5f5e5a;
+  --cat-neutral-icon:      #888880;
+  --cat-neutral-footer:    #6a665e;
 }
 
 [data-theme="light"] {
@@ -122,6 +130,14 @@
   --model-bar-btn-border: #6a665d;
   --model-dot-on:         #4f9061;
   --model-dot-off:        #b0aaa0;
+
+  /* neutral (placeholder) control chip — light mode */
+  --cat-neutral-border:    #8a857a;
+  --cat-neutral-bar-bg:    #4a4742;
+  --cat-neutral-bar-text:  #e0ddd6;
+  --cat-neutral-btn-border:#8a857a;
+  --cat-neutral-icon:      #8a857a;
+  --cat-neutral-footer:    #4a4742;
 }
 
 /* ── mount point + canvas-region: occupy workspace-inset ─────────── */
@@ -197,31 +213,47 @@
   flex-direction: column;
 }
 
-/* ── bottom palette: library left, parameters right ──────────────── */
+/* ── bottom palette: Add control left, Control settings right ────── */
 .palette {
   flex: 0 0 auto;
-  height: 220px;
   display: flex;
   background: var(--panel);
-  border-top: 1px solid var(--line);
   min-height: 0;
 }
 
-.library-row {
-  flex: 1 1 50%;
-  min-width: 0;
-  display: flex;
-  border-right: 1px solid var(--line);
+.palette-splitter {
+  flex: 0 0 auto;
+  height: 5px;
+  background: var(--line);
+  cursor: row-resize;
+  position: relative;
+  user-select: none;
 }
-.palette-section {
-  flex: 1 1 0;
+.palette-splitter:hover,
+.palette-splitter:active {
+  background: var(--accent);
+}
+.palette-splitter-grip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 1px;
+  background: var(--text-dimmer);
+  opacity: 0.5;
+}
+
+.add-control-section {
+  flex: 0 0 300px;
   min-width: 0;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--line);
 }
-.palette-section:last-child {
-  border-right: none;
+.palette-section {
+  display: flex;
+  flex-direction: column;
 }
 .palette-section-head {
   height: 22px;
@@ -513,6 +545,7 @@
 .ctrl-node[data-category="structural_control"] { --col-border: var(--cat-structural-border); --col-bar-bg: var(--cat-structural-bar-bg); --col-bar-text: var(--cat-structural-bar-text); --col-btn-border: var(--cat-structural-btn-border); --col-icon: var(--cat-structural-icon); --col-footer: var(--cat-structural-footer); }
 .ctrl-node[data-category="state_control"]      { --col-border: var(--cat-state-border);      --col-bar-bg: var(--cat-state-bar-bg);      --col-bar-text: var(--cat-state-bar-text);      --col-btn-border: var(--cat-state-btn-border);      --col-icon: var(--cat-state-icon);      --col-footer: var(--cat-state-footer); }
 .ctrl-node[data-category="output_control"]     { --col-border: var(--cat-output-border);     --col-bar-bg: var(--cat-output-bar-bg);     --col-bar-text: var(--cat-output-bar-text);     --col-btn-border: var(--cat-output-btn-border);     --col-icon: var(--cat-output-icon);     --col-footer: var(--cat-output-footer); }
+.ctrl-node[data-category="neutral"]            { --col-border: var(--cat-neutral-border);    --col-bar-bg: var(--cat-neutral-bar-bg);    --col-bar-text: var(--cat-neutral-bar-text);    --col-btn-border: var(--cat-neutral-btn-border);    --col-icon: var(--cat-neutral-icon);    --col-footer: var(--cat-neutral-footer); }
 .ctrl-node.selected { box-shadow: 0 0 0 2px var(--accent); }
 
 .ctrl-bar {
@@ -640,16 +673,13 @@
 @keyframes edge-march {
   to { stroke-dashoffset: -7; }
 }
-.pipeline-edge-chevron {
-  position: absolute;
-  pointer-events: none;
-  color: var(--text-dimmer);
-  font-size: 0;
-  line-height: 0;
-}
-.canvas-area .react-flow__edge:hover .pipeline-edge-chevron,
-.canvas-area .react-flow__edge.selected .pipeline-edge-chevron {
-  color: var(--accent);
+
+/* arrow marker — match edge stroke color */
+.canvas-area .react-flow__arrowhead polyline,
+.canvas-area .react-flow__arrowhead path {
+  stroke: var(--text-dimmer);
+  fill: none;
+  stroke-width: 1.5;
 }
 
 /* erase mode: edges become click-targets with a crosshair */
@@ -726,9 +756,9 @@
   opacity: 1;
 }
 
-/* ── parameter panel (inline, right half of bottom palette) ──────── */
+/* ── parameter panel (right side of bottom palette) ──────────────── */
 .parameter-panel {
-  flex: 1 1 50%;
+  flex: 1 1 auto;
   min-width: 0;
   background: var(--panel);
   display: flex;
@@ -982,4 +1012,147 @@
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 2px;
+}
+
+/* ── add control: mode toggle ────────────────────────────────────── */
+.palette-mode-toggle {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--panel-2);
+}
+.palette-mode-btn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 4px 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.palette-mode-btn + .palette-mode-btn {
+  border-left: 1px solid var(--line-2);
+}
+.palette-mode-btn:hover {
+  color: var(--text);
+}
+.palette-mode-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ── add control: staging area (rectangular inset) ───────────────── */
+.palette-stage {
+  margin-top: 4px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: var(--canvas-bg);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  box-shadow:
+    inset 2px 2px 6px var(--inset-shadow-1),
+    inset -2px -2px 6px var(--inset-shadow-2);
+}
+
+/* staging chip — derived from .ctrl-node, but smaller and standalone */
+.staging-chip {
+  width: 150px;
+  cursor: default;
+  user-select: none;
+}
+.staging-chip.draggable {
+  cursor: grab;
+}
+.staging-chip.draggable:active {
+  cursor: grabbing;
+}
+
+/* ── control settings header ─────────────────────────────────────── */
+.control-settings-bar {
+  flex: 0 0 auto;
+}
+.control-settings-head {
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  align-items: stretch;
+  padding: 8px 14px;
+}
+.control-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.control-settings-field:first-child {
+  flex: 1 1 auto;
+}
+.control-settings-field:last-child {
+  flex: 0 0 140px;
+}
+.control-settings-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* shared static panel-section-head (non-collapsible variant) */
+.panel-section-head.static {
+  cursor: default;
+}
+
+/* ── free-form parameter editor ──────────────────────────────────── */
+.free-form-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.free-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 22px;
+  gap: 6px;
+  align-items: center;
+}
+.free-form-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.free-form-btn:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.free-form-add {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 4px 10px;
+  background: var(--panel-2);
+  border: 1px dashed var(--line-2);
+  border-radius: 2px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.free-form-add:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }

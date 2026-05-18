@@ -6,6 +6,7 @@ import {
   type Connection,
   type Edge,
   type EdgeChange,
+  MarkerType,
   type Node,
   type NodeChange,
   type XYPosition,
@@ -23,6 +24,10 @@ import type {
 
 const FIXTURE_NODE_TYPES = new Set(["prompt_anchor", "response_anchor", "target_model"]);
 
+const PALETTE_HEIGHT_DEFAULT = 220;
+const PALETTE_HEIGHT_MIN = 140;
+const PALETTE_HEIGHT_MAX = 500;
+
 function isControlNode(n: Node): boolean {
   return n.type === "control";
 }
@@ -30,6 +35,8 @@ function isControlNode(n: Node): boolean {
 function uuid(): string {
   return crypto.randomUUID();
 }
+
+export type StagingMode = "new" | "load";
 
 interface PipelineStoreState {
   nodes: Node[];
@@ -41,6 +48,13 @@ interface PipelineStoreState {
   selectedNodeId: string | null;
   activeTool: ToolMode;
   sessionId: string | null;
+  paletteHeight: number;
+
+  stagingMode: StagingMode;
+  stagingMethod: string | null;
+  stagingCategory: ControlCategory | null;
+  stagingName: string;
+  stagingArgs: Record<string, unknown>;
 
   setNodes: (nodes: Node[]) => void;
   setEdges: (edges: Edge[]) => void;
@@ -54,6 +68,14 @@ interface PipelineStoreState {
   setSelectedNodeId: (id: string | null) => void;
   setActiveTool: (mode: ToolMode) => void;
   setSessionId: (id: string | null) => void;
+  setPaletteHeight: (px: number) => void;
+
+  setStagingMode: (mode: StagingMode) => void;
+  setStagingMethod: (method: string | null) => void;
+  setStagingCategory: (category: ControlCategory | null) => void;
+  setStagingName: (name: string) => void;
+  setStagingArgs: (args: Record<string, unknown>) => void;
+  resetStaging: () => void;
 
   addControlNode: (category: ControlCategory, method: string, position: XYPosition) => string;
   removeNode: (id: string) => void;
@@ -76,6 +98,13 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   selectedNodeId: null,
   activeTool: "select",
   sessionId: null,
+  paletteHeight: PALETTE_HEIGHT_DEFAULT,
+
+  stagingMode: "new",
+  stagingMethod: null,
+  stagingCategory: null,
+  stagingName: "",
+  stagingArgs: {},
 
   setNodes: (nodes) => set({ nodes }),
   setEdges: (edges) => set({ edges }),
@@ -87,7 +116,14 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   },
   onConnect: (connection) => {
     set({
-      edges: addEdge({ ...connection, type: "pipeline" }, get().edges),
+      edges: addEdge(
+        {
+          ...connection,
+          type: "pipeline",
+          markerEnd: { type: MarkerType.Arrow, width: 16, height: 16 },
+        },
+        get().edges,
+      ),
     });
   },
   setModelNameOrPath: (value) => set({ modelNameOrPath: value }),
@@ -97,6 +133,47 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
   setActiveTool: (mode) => set({ activeTool: mode }),
   setSessionId: (id) => set({ sessionId: id }),
+  setPaletteHeight: (px) => {
+    const clamped = Math.max(PALETTE_HEIGHT_MIN, Math.min(PALETTE_HEIGHT_MAX, px));
+    set({ paletteHeight: clamped });
+  },
+
+  setStagingMode: (mode) => {
+    set({
+      stagingMode: mode,
+      stagingMethod: null,
+      stagingCategory: null,
+      stagingName: "",
+      stagingArgs: {},
+    });
+  },
+  setStagingMethod: (method) => {
+    if (method === null) {
+      set({ stagingMethod: null, stagingCategory: null, stagingName: "", stagingArgs: {} });
+      return;
+    }
+    const spec = get().methods.find((m) => m.method === method);
+    if (!spec) {
+      set({ stagingMethod: method });
+      return;
+    }
+    const defaults: Record<string, unknown> = {};
+    for (const f of spec.args) {
+      if (f.default !== undefined) defaults[f.name] = f.default;
+    }
+    set({
+      stagingMethod: method,
+      stagingCategory: spec.category,
+      stagingName: method,
+      stagingArgs: defaults,
+    });
+  },
+  setStagingCategory: (category) => set({ stagingCategory: category }),
+  setStagingName: (name) => set({ stagingName: name }),
+  setStagingArgs: (args) => set({ stagingArgs: args }),
+  resetStaging: () => {
+    set({ stagingMethod: null, stagingCategory: null, stagingName: "", stagingArgs: {} });
+  },
 
   addControlNode: (category, method, position) => {
     const id = uuid();

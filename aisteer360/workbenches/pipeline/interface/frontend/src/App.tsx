@@ -6,6 +6,7 @@ import { ParameterPanel } from "./panels/ParameterPanel";
 import { PipelineCanvas } from "./PipelineCanvas";
 import { CanvasToolbar } from "./toolbar/CanvasToolbar";
 import { HintBar } from "./toolbar/HintBar";
+import { PaletteSplitter } from "./toolbar/PaletteSplitter";
 import { SessionStub } from "./session/SessionStub";
 import { usePipelineStore } from "./store/pipelineStore";
 
@@ -13,6 +14,7 @@ export function App() {
   const setMethods = usePipelineStore((s) => s.setMethods);
   const setCatalogTargetEntries = usePipelineStore((s) => s.setCatalogTargetEntries);
   const setModelNameOrPath = usePipelineStore((s) => s.setModelNameOrPath);
+  const paletteHeight = usePipelineStore((s) => s.paletteHeight);
   useEffect(() => {
     fetchMethods()
       .then(setMethods)
@@ -38,7 +40,8 @@ export function App() {
         <CanvasToolbar />
         <HintBar />
       </div>
-      <div className="palette">
+      <PaletteSplitter />
+      <div className="palette" style={{ height: paletteHeight }}>
         <LibraryPanel />
         <ParameterPanel />
       </div>
