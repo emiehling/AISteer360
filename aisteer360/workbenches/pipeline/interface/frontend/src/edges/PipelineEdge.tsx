@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { getBezierPath, type EdgeProps } from "reactflow";
+import { getSmoothStepPath, type EdgeProps } from "reactflow";
 
 function PipelineEdgeImpl(props: EdgeProps) {
   const {
@@ -15,13 +15,14 @@ function PipelineEdgeImpl(props: EdgeProps) {
     markerEnd,
   } = props;
 
-  const [path] = getBezierPath({
+  const [path] = getSmoothStepPath({
     sourceX,
     sourceY,
     sourcePosition,
     targetX,
     targetY,
     targetPosition,
+    borderRadius: 5,
   });
 
   return (

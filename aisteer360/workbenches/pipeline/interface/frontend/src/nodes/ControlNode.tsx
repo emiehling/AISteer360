@@ -67,8 +67,10 @@ function ControlNodeImpl({ id, data, selected }: NodeProps<ControlNodeData>) {
       className={`ctrl-node${selected ? " selected" : ""}`}
       data-category={data.category}
     >
-      <Handle type="target" position={Position.Left} id="in" />
-      <Handle type="source" position={Position.Right} id="out" />
+      <Handle type="source" position={Position.Left} id="left" />
+      <Handle type="source" position={Position.Right} id="right" />
+      <Handle type="source" position={Position.Top} id="top" />
+      <Handle type="source" position={Position.Bottom} id="bottom" />
 
       <div className="ctrl-bar">
         <span className="ctrl-bar-title" title={title}>

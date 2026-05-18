@@ -68,8 +68,10 @@ function ModelNodeImpl({ data }: NodeProps<ModelNodeData>) {
 
   return (
     <div className="model-wrap">
-      <Handle type="target" position={Position.Left} id="input" />
-      <Handle type="source" position={Position.Right} id="output" />
+      <Handle type="source" position={Position.Left} id="left" />
+      <Handle type="source" position={Position.Right} id="right" />
+      <Handle type="source" position={Position.Top} id="top" />
+      <Handle type="source" position={Position.Bottom} id="bottom" />
 
       <div className="model-face">
         <div className="model-bar">

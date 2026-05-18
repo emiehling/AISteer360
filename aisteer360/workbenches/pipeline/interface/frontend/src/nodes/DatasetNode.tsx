@@ -58,8 +58,10 @@ function DatasetNodeImpl({ id, data, selected }: NodeProps<DatasetNodeData>) {
 
   return (
     <div className={`dataset-node${selected ? " selected" : ""}`}>
-      <Handle type="target" position={Position.Left} id="in" />
-      <Handle type="source" position={Position.Right} id="out" />
+      <Handle type="source" position={Position.Left} id="left" />
+      <Handle type="source" position={Position.Right} id="right" />
+      <Handle type="source" position={Position.Top} id="top" />
+      <Handle type="source" position={Position.Bottom} id="bottom" />
 
       <div className="dataset-bar">
         <span className="dataset-bar-title" title={data.name}>

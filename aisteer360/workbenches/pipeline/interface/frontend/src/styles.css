@@ -427,10 +427,13 @@
 .model-wrap {
   position: relative;
   width: 340px;
+  height: 240px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
 }
 .model-face {
   position: relative;
+  height: 100%;
+  box-sizing: border-box;
   background: var(--node-face-bg);
   border: 1px solid var(--model-border);
   border-radius: 6px;

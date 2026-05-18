@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import ReactFlow, {
+  ConnectionMode,
   type Edge,
   MarkerType,
   type Node,
@@ -19,16 +20,17 @@ import { DRAG_MIME } from "./panels/LibraryPanel";
 import { probeModel } from "./api/model";
 import type { ControlCategory, ModelProbe } from "./types";
 
-const EDGE_BUFFER = 56;
+const EDGE_BUFFER = 32;
 const ANCHOR_BODY_WIDTH = 100;
 const ANCHOR_STEM_WIDTH = 24;
 const ANCHOR_TOTAL_WIDTH = ANCHOR_BODY_WIDTH + ANCHOR_STEM_WIDTH;  // 124
 const ANCHOR_BODY_HEIGHT = 34;
-const MODEL_WIDTH = 310;
-const MODEL_HEIGHT_FALLBACK = 200;
+const MODEL_WIDTH = 340;
+const MODEL_HEIGHT_FALLBACK = 240;
 
 const SNAP_GRID: [number, number] = [20, 20];
 const GRID_SIZE = SNAP_GRID[0];
+const RAIL_BUFFER = 3 * GRID_SIZE;
 
 const NODE_BOUNDS_FALLBACK = { width: 150, height: 100 };
 const DATASET_FALLBACK = { width: 220, height: 130 };
@@ -123,14 +125,14 @@ function buildInitialEdges(): Edge[] {
       source: "anchor-prompt",
       sourceHandle: "out",
       target: "model",
-      targetHandle: "input",
+      targetHandle: "left",
       type: "pipeline",
       markerEnd: EDGE_ARROW_MARKER,
     },
     {
       id: "default-model-response",
       source: "model",
-      sourceHandle: "output",
+      sourceHandle: "right",
       target: "anchor-response",
       targetHandle: "in",
       type: "pipeline",
@@ -248,10 +250,12 @@ function CanvasInner() {
   const getBoundsFor = useCallback(
     (nodeWidth: number, nodeHeight: number) => {
       const geom = geometry ?? computeGeometryNow();
-      const minX = geom.promptStemMidX;
-      const maxX = Math.max(minX, geom.responseStemMidX - nodeWidth);
+      const minX = geom.promptStemMidX + RAIL_BUFFER;
+      const maxX = Math.max(minX, geom.responseStemMidX - RAIL_BUFFER - nodeWidth);
       const railY = geom.centerY - nodeHeight / 2;
-      return { minX, maxX, railY };
+      const minY = GRID_SIZE;
+      const maxY = Math.max(minY, geom.height - nodeHeight - GRID_SIZE);
+      return { minX, maxX, minY, maxY, railY };
     },
     [geometry, computeGeometryNow],
   );
@@ -261,54 +265,49 @@ function CanvasInner() {
       const current = usePipelineStore.getState().nodes;
       const byId = new Map(current.map((n) => [n.id, n]));
 
-      // detect dimension events: model height drives geometry; control/dataset
-      // nodes use measured height to land their handles on the centerline.
+      // model height drives canvas geometry; control/dataset nodes are free
+      // on the grid once placed, so their dimension events don't re-center.
       let modelHeightChanged = false;
-      const railHeights = new Map<string, number>();
       for (const change of changes) {
         if (change.type !== "dimensions" || !change.dimensions) continue;
-        const node = byId.get(change.id);
-        if (!node) continue;
+        if (change.id !== "model") continue;
         const newHeight = change.dimensions.height;
         if (!newHeight) continue;
-        if (change.id === "model") {
-          if (Math.abs(newHeight - measuredModelHeightRef.current) > 0.5) {
-            measuredModelHeightRef.current = newHeight;
-            modelHeightChanged = true;
-          }
-          continue;
-        }
-        if (node.type === "control" || node.type === "dataset") {
-          railHeights.set(change.id, newHeight);
+        if (Math.abs(newHeight - measuredModelHeightRef.current) > 0.5) {
+          measuredModelHeightRef.current = newHeight;
+          modelHeightChanged = true;
         }
       }
 
-      // clamp position changes for movable nodes: snap X to grid, lock Y to the rail.
+      // clamp position changes for movable nodes. Control/dataset are 2D-free
+      // within bounds; the model snaps so its handle (vertical center) lands on
+      // a grid line, keeping edges to anchors straight.
       const clamped = changes.map((change): NodeChange => {
         if (change.type !== "position" || !change.position) return change;
         const node = byId.get(change.id);
         if (!node) return change;
+        if (node.id === "model") {
+          const modelHeight = measuredModelHeightRef.current;
+          const { minX, maxX, minY, maxY } = getBoundsFor(MODEL_WIDTH, modelHeight);
+          const x = Math.min(maxX, Math.max(minX, change.position.x));
+          const y = Math.min(maxY, Math.max(minY, change.position.y));
+          return { ...change, position: { x, y } };
+        }
         if (node.type !== "control" && node.type !== "dataset") return change;
         const { width, height } = sizeForNode(node);
-        const { minX, maxX, railY } = getBoundsFor(width, height);
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
         const x = Math.min(maxX, Math.max(minX, change.position.x));
-        return { ...change, position: { x, y: railY } };
+        const y = Math.min(maxY, Math.max(minY, change.position.y));
+        return { ...change, position: { x, y } };
       });
       onNodesChangeStore(clamped);
 
-      if (modelHeightChanged || railHeights.size > 0) {
-        const geom = modelHeightChanged ? computeGeometryNow() : geometry ?? computeGeometryNow();
-        if (modelHeightChanged) setGeometry(geom);
-        const next = usePipelineStore.getState().nodes.map((n) => {
-          if (n.id === "model" && modelHeightChanged) {
-            return { ...n, position: { x: geom.modelX, y: geom.modelY } };
-          }
-          const h = railHeights.get(n.id);
-          if (h != null) {
-            return { ...n, position: { x: n.position.x, y: geom.centerY - h / 2 } };
-          }
-          return n;
-        });
+      if (modelHeightChanged) {
+        const geom = computeGeometryNow();
+        setGeometry(geom);
+        const next = usePipelineStore.getState().nodes.map((n) =>
+          n.id === "model" ? { ...n, position: { x: geom.modelX, y: geom.modelY } } : n,
+        );
         setNodes(next);
       }
     },
@@ -480,6 +479,7 @@ function CanvasInner() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         nodesConnectable={activeTool === "connect"}
+        connectionMode={ConnectionMode.Loose}
         connectOnClick={false}
         isValidConnection={isValidConnection}
         defaultEdgeOptions={{ type: "pipeline", markerEnd: EDGE_ARROW_MARKER }}
