@@ -86,6 +86,11 @@ export interface ControlNodeData {
   label?: string;
   status?: string;
   params?: ControlNodeParam[];
-  onSettings?: () => void;
+  onClose?: () => void;
+}
+
+export interface DatasetNodeData {
+  name: string;
+  rowCount?: number | null;
   onClose?: () => void;
 }

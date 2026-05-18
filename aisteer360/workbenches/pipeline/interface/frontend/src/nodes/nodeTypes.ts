@@ -1,6 +1,7 @@
 import type { NodeTypes } from "reactflow";
 import { AnchorNode } from "./AnchorNode";
 import { ControlNode } from "./ControlNode";
+import { DatasetNode } from "./DatasetNode";
 import { ModelNode } from "./ModelNode";
 
 export const nodeTypes: NodeTypes = {
@@ -8,4 +9,5 @@ export const nodeTypes: NodeTypes = {
   response_anchor: AnchorNode,
   target_model: ModelNode,
   control: ControlNode,
+  dataset: DatasetNode,
 };

@@ -53,6 +53,8 @@
 
   /* pipeline canvas background (lighter than bg-inset so model shadow is visible) */
   --canvas-bg:            #1e1e24;
+  --canvas-grid-dot:      rgba(255, 255, 255, 0.10);
+  --canvas-grid-divider:  rgba(255, 255, 255, 0.08);
 
   /* model node — dark mode */
   --model-border:         #444441;
@@ -69,6 +71,15 @@
   --cat-neutral-btn-border:#5f5e5a;
   --cat-neutral-icon:      #888880;
   --cat-neutral-footer:    #6a665e;
+
+  /* dataset node — dark mode */
+  --dataset-border:        #6a665e;
+  --dataset-bar-bg:        #2a2a2e;
+  --dataset-bar-text:      #d8d4c8;
+  --dataset-btn-border:    #5f5e5a;
+  --dataset-icon:          #b4b2a9;
+  --dataset-disk-fill:     #2a2a2e;
+  --dataset-footer:        #6a665e;
 }
 
 [data-theme="light"] {
@@ -122,6 +133,8 @@
 
   /* pipeline canvas background */
   --canvas-bg:            #d8d4cc;
+  --canvas-grid-dot:      rgba(0, 0, 0, 0.18);
+  --canvas-grid-divider:  rgba(0, 0, 0, 0.12);
 
   /* model node — light mode */
   --model-border:         #5b574e;
@@ -138,6 +151,15 @@
   --cat-neutral-btn-border:#8a857a;
   --cat-neutral-icon:      #8a857a;
   --cat-neutral-footer:    #4a4742;
+
+  /* dataset node — light mode */
+  --dataset-border:        #8a857a;
+  --dataset-bar-bg:        #4a4742;
+  --dataset-bar-text:      #e8e4dc;
+  --dataset-btn-border:    #8a857a;
+  --dataset-icon:          #5b574e;
+  --dataset-disk-fill:     #ffffff;
+  --dataset-footer:        #4a4742;
 }
 
 /* ── mount point + canvas-region: occupy workspace-inset ─────────── */
@@ -168,6 +190,20 @@
   width: 100%;
   height: 100%;
   background: transparent;
+  position: relative;
+  z-index: 1;
+}
+
+.canvas-grid-overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image: radial-gradient(circle, var(--canvas-grid-dot) 1px, transparent 1.4px);
+  background-size: 20px 20px;
+  border-left: 1px solid var(--canvas-grid-divider);
+  border-right: 1px solid var(--canvas-grid-divider);
 }
 
 /* ── React Flow theming ──────────────────────────────────────────── */
@@ -256,18 +292,18 @@
   flex-direction: column;
 }
 .palette-section-head {
-  height: 22px;
+  height: 24px;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   padding: 0 12px;
   background: var(--panel-2);
   border-bottom: 1px solid var(--line);
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  color: var(--text-dim);
-  text-transform: uppercase;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
 }
 .palette-section-body {
   flex: 1;
@@ -400,7 +436,6 @@
   border-radius: 6px;
   overflow: hidden;
   z-index: 1;
-  box-shadow: 8px 10px 18px rgba(0, 0, 0, 0.45);
 }
 .model-bar {
   display: flex;
@@ -547,6 +582,10 @@
 .ctrl-node[data-category="output_control"]     { --col-border: var(--cat-output-border);     --col-bar-bg: var(--cat-output-bar-bg);     --col-bar-text: var(--cat-output-bar-text);     --col-btn-border: var(--cat-output-btn-border);     --col-icon: var(--cat-output-icon);     --col-footer: var(--cat-output-footer); }
 .ctrl-node[data-category="neutral"]            { --col-border: var(--cat-neutral-border);    --col-bar-bg: var(--cat-neutral-bar-bg);    --col-bar-text: var(--cat-neutral-bar-text);    --col-btn-border: var(--cat-neutral-btn-border);    --col-icon: var(--cat-neutral-icon);    --col-footer: var(--cat-neutral-footer); }
 .ctrl-node.selected { box-shadow: 0 0 0 2px var(--accent); }
+.ctrl-node .react-flow__handle {
+  opacity: 0;
+  pointer-events: auto;
+}
 
 .ctrl-bar {
   display: flex;
@@ -652,6 +691,108 @@
   text-align: right;
   border-top: 1px solid var(--col-footer);
   letter-spacing: 0.03em;
+}
+
+/* ── dataset node ────────────────────────────────────────────────── */
+.dataset-node {
+  position: relative;
+  width: 220px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
+  background: var(--node-face-bg);
+  border: 1.5px solid var(--dataset-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.dataset-node.selected { box-shadow: 0 0 0 2px var(--accent); }
+.dataset-node .react-flow__handle {
+  opacity: 0;
+  pointer-events: auto;
+}
+.dataset-bar {
+  display: flex;
+  align-items: center;
+  padding: 3px 4px 3px 8px;
+  background: var(--dataset-bar-bg);
+}
+.dataset-bar-title {
+  color: var(--dataset-bar-text);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  flex-shrink: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dataset-bar-spacer { flex: 1; }
+.dataset-bar-btn {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--dataset-btn-border);
+  border-radius: 2px;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dataset-bar-text);
+  flex-shrink: 0;
+}
+.dataset-bar-btn:hover { background: rgba(255, 255, 255, 0.06); }
+.dataset-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  color: var(--dataset-icon);
+}
+.dataset-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dataset-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--node-face-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dataset-rowcount {
+  font-size: 10.5px;
+  color: var(--node-card-value-text);
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+}
+.dataset-rowcount.muted { font-style: italic; }
+.dataset-footer {
+  padding: 3px 7px;
+  font-size: 9.5px;
+  color: var(--dataset-footer);
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  text-align: right;
+  border-top: 1px solid var(--dataset-footer);
+  letter-spacing: 0.03em;
+}
+
+/* "+ dataset" button in palette */
+.palette-dataset-btn {
+  align-self: flex-start;
+  padding: 5px 12px;
+  background: var(--panel-2);
+  border: 1px dashed var(--line-2);
+  border-radius: 2px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.palette-dataset-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* ── pipeline edges ──────────────────────────────────────────────── */
@@ -818,11 +959,11 @@
   text-align: center;
 }
 .panel-section-title {
-  font-family: var(--mono);
-  font-size: 9.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-dim);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
 }
 .panel-section-body {
   padding: 8px 14px 12px;
@@ -833,31 +974,49 @@
   color: var(--text-dimmer);
   font-style: italic;
 }
-.panel-field {
-  margin-bottom: 12px;
+.panel-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px 14px;
 }
-.panel-field-label {
+.panel-field-row {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 4px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.panel-field-label-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 0 0 38%;
+  min-width: 0;
 }
 .panel-field-name {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel-field-required {
+  color: var(--danger);
+  margin-left: 2px;
 }
 .panel-field-type {
   font-family: var(--mono);
   font-size: 9.5px;
   color: var(--text-dimmer);
 }
-.panel-field-help {
-  font-family: var(--sans);
-  font-size: 10.5px;
-  color: var(--text-dim);
-  margin-bottom: 4px;
-  line-height: 1.35;
+.panel-field-row > .widget-input,
+.panel-field-row > .widget-checkbox,
+.panel-field-row > .widget-json {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.panel-field-row > .widget-json .widget-textarea {
+  width: 100%;
 }
 
 /* ── widgets ─────────────────────────────────────────────────────── */
@@ -1014,6 +1173,22 @@
   border-radius: 2px;
 }
 
+/* ── confirm dialog ──────────────────────────────────────────────── */
+.confirm-modal {
+  width: 360px;
+}
+.confirm-message {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.4;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* ── add control: mode toggle ────────────────────────────────────── */
 .palette-mode-toggle {
   display: inline-flex;
@@ -1049,8 +1224,9 @@
 /* ── add control: staging area (rectangular inset) ───────────────── */
 .palette-stage {
   margin-top: 4px;
-  flex: 1;
-  min-height: 0;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1101,10 +1277,17 @@
 }
 .control-settings-label {
   font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 10px;
   color: var(--text-dim);
+}
+.control-settings-method-id {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--text-dimmer);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* shared static panel-section-head (non-collapsible variant) */

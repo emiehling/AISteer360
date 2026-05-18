@@ -15,6 +15,13 @@ const CATEGORIES: { value: ControlCategory; label: string }[] = [
   { value: "output_control", label: "Output" },
 ];
 
+function sortedFields(fields: MethodFieldSpec[]): MethodFieldSpec[] {
+  return [...fields].sort((a, b) => {
+    if (a.required !== b.required) return a.required ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
 interface SectionProps {
   title: string;
   fields: MethodFieldSpec[];
@@ -25,6 +32,7 @@ interface SectionProps {
 
 function PanelSection({ title, fields, values, onChange, emptyHint }: SectionProps) {
   const [open, setOpen] = useState(true);
+  const ordered = sortedFields(fields);
   return (
     <div className={`panel-section${open ? " open" : " collapsed"}`}>
       <button
@@ -38,26 +46,31 @@ function PanelSection({ title, fields, values, onChange, emptyHint }: SectionPro
       </button>
       {open && (
         <div className="panel-section-body">
-          {fields.length === 0 ? (
+          {ordered.length === 0 ? (
             <div className="panel-empty">{emptyHint}</div>
           ) : (
-            fields.map((f) => {
-              const value = values[f.name] === undefined ? f.default : values[f.name];
-              return (
-                <div className="panel-field" key={f.name}>
-                  <label className="panel-field-label" title={f.help ?? undefined}>
-                    <span className="panel-field-name">{f.name}</span>
-                    <span className="panel-field-type">{f.type}</span>
-                  </label>
-                  {f.help && <div className="panel-field-help">{f.help}</div>}
-                  <FieldWidget
-                    spec={f}
-                    value={value}
-                    onChange={(next) => onChange(f.name, next)}
-                  />
-                </div>
-              );
-            })
+            <div className="panel-fields-grid">
+              {ordered.map((f) => {
+                const value = values[f.name] === undefined ? f.default : values[f.name];
+                return (
+                  <div className="panel-field-row" key={f.name} title={f.help ?? undefined}>
+                    <label className="panel-field-label-inline">
+                      <span className="panel-field-name">
+                        {f.name}
+                        {f.required ? <span className="panel-field-required">*</span> : null}
+                      </span>
+                      <span className="panel-field-type">{f.type}</span>
+                    </label>
+                    <FieldWidget
+                      spec={f}
+                      value={value}
+                      placeholder={f.help ?? undefined}
+                      onChange={(next) => onChange(f.name, next)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}
@@ -151,6 +164,7 @@ interface HeaderProps {
   category: ControlCategory | null;
   nameDisabled: boolean;
   categoryDisabled: boolean;
+  methodSubtitle?: string | null;
   onNameChange?: (next: string) => void;
   onCategoryChange?: (next: ControlCategory | null) => void;
 }
@@ -160,6 +174,7 @@ function ControlHeader({
   category,
   nameDisabled,
   categoryDisabled,
+  methodSubtitle,
   onNameChange,
   onCategoryChange,
 }: HeaderProps) {
@@ -175,6 +190,11 @@ function ControlHeader({
           disabled={nameDisabled}
           onChange={(e) => onNameChange?.(e.target.value)}
         />
+        {methodSubtitle ? (
+          <span className="control-settings-method-id" title={`method: ${methodSubtitle}`}>
+            method: {methodSubtitle}
+          </span>
+        ) : null}
       </div>
       <div className="control-settings-field">
         <span className="control-settings-label">category</span>
@@ -200,32 +220,36 @@ function SelectedNodePanel({ node }: { node: { id: string; data: ControlNodeData
   const methods = usePipelineStore((s) => s.methods);
   const updateNodeArgs = usePipelineStore((s) => s.updateNodeArgs);
   const updateNodeRuntimeKwargs = usePipelineStore((s) => s.updateNodeRuntimeKwargs);
+  const updateNodeLabel = usePipelineStore((s) => s.updateNodeLabel);
 
   const data = node.data;
   const spec: MethodSpec | undefined = methods.find(
     (m) => m.category === data.category && m.method === data.method,
   );
+  const displayName = data.label ?? data.method;
 
   return (
     <>
       <ControlHeader
-        name={data.method}
+        name={displayName}
         category={data.category}
-        nameDisabled
+        nameDisabled={false}
         categoryDisabled
+        methodSubtitle={data.method}
+        onNameChange={(next) => updateNodeLabel(node.id, next)}
       />
       <div className="panel-scroll">
         {spec ? (
           <>
             <PanelSection
-              title="Fixed parameters"
+              title="Fixed Parameters"
               fields={spec.args}
               values={data.args}
               onChange={(name, next) => updateNodeArgs(node.id, { [name]: next })}
               emptyHint="no fixed parameters"
             />
             <PanelSection
-              title="Runtime kwargs"
+              title="Runtime Kwargs"
               fields={spec.runtime_kwargs}
               values={data.runtimeKwargs}
               onChange={(name, next) => updateNodeRuntimeKwargs(node.id, { [name]: next })}
@@ -283,8 +307,9 @@ function StagingPanel() {
       <ControlHeader
         name={stagingName}
         category={stagingCategory}
-        nameDisabled={isLoad}
+        nameDisabled={false}
         categoryDisabled={isLoad}
+        methodSubtitle={isLoad ? stagingMethod : null}
         onNameChange={setStagingName}
         onCategoryChange={setStagingCategory}
       />
@@ -292,7 +317,7 @@ function StagingPanel() {
         {spec ? (
           <>
             <PanelSection
-              title="Fixed parameters"
+              title="Fixed Parameters"
               fields={spec.args}
               values={stagingArgs}
               onChange={(name, next) =>
@@ -301,7 +326,7 @@ function StagingPanel() {
               emptyHint="no fixed parameters"
             />
             <PanelSection
-              title="Runtime kwargs"
+              title="Runtime Kwargs"
               fields={spec.runtime_kwargs}
               values={{}}
               onChange={() => {}}
@@ -333,7 +358,7 @@ export function ParameterPanel() {
 
   return (
     <aside className="parameter-panel" aria-label="Control settings">
-      <div className="palette-section-head control-settings-bar">Control settings</div>
+      <div className="palette-section-head control-settings-bar">Control Settings</div>
       {isControl && selected ? (
         <SelectedNodePanel
           node={{ id: selected.id, data: selected.data as ControlNodeData }}

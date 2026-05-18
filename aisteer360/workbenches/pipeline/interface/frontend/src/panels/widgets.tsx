@@ -5,6 +5,7 @@ interface FieldWidgetProps {
   spec: MethodFieldSpec;
   value: unknown;
   onChange: (next: unknown) => void;
+  placeholder?: string;
 }
 
 function isLiteral(type: string): string[] | null {
@@ -24,13 +25,14 @@ function widgetKindFor(type: string): "text" | "number" | "checkbox" | "select" 
   return "json";
 }
 
-function TextWidget({ value, onChange }: FieldWidgetProps) {
+function TextWidget({ value, onChange, placeholder }: FieldWidgetProps) {
   const v = value === null || value === undefined ? "" : String(value);
   return (
     <input
       className="widget-input"
       type="text"
       value={v}
+      placeholder={placeholder}
       onChange={(e: ChangeEvent<HTMLInputElement>) =>
         onChange(e.target.value === "" ? null : e.target.value)
       }
@@ -38,7 +40,7 @@ function TextWidget({ value, onChange }: FieldWidgetProps) {
   );
 }
 
-function NumberWidget({ spec, value, onChange }: FieldWidgetProps) {
+function NumberWidget({ spec, value, onChange, placeholder }: FieldWidgetProps) {
   const stripped = spec.type.replace(/\s*\|\s*None\s*$/, "").trim();
   const isInt = stripped === "int";
   const v = value === null || value === undefined ? "" : String(value);
@@ -48,6 +50,7 @@ function NumberWidget({ spec, value, onChange }: FieldWidgetProps) {
       type="number"
       step={isInt ? 1 : "any"}
       value={v}
+      placeholder={placeholder}
       onChange={(e: ChangeEvent<HTMLInputElement>) => {
         const raw = e.target.value;
         if (raw === "") {
@@ -93,7 +96,7 @@ function SelectWidget({ spec, value, onChange }: FieldWidgetProps) {
   );
 }
 
-function JsonWidget({ value, onChange }: FieldWidgetProps) {
+function JsonWidget({ value, onChange, placeholder }: FieldWidgetProps) {
   const initial = value === undefined ? "" : JSON.stringify(value, null, 2);
   const [draft, setDraft] = useState(initial);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +126,7 @@ function JsonWidget({ value, onChange }: FieldWidgetProps) {
       <textarea
         className="widget-textarea"
         value={draft}
+        placeholder={placeholder}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         rows={Math.min(8, Math.max(2, draft.split("\n").length))}

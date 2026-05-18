@@ -87,6 +87,7 @@ export function LibraryPanel() {
   const stagingName = usePipelineStore((s) => s.stagingName);
   const stagingArgs = usePipelineStore((s) => s.stagingArgs);
   const resetStaging = usePipelineStore((s) => s.resetStaging);
+  const addDatasetNode = usePipelineStore((s) => s.addDatasetNode);
 
   const ready =
     stagingMode === "load"
@@ -97,10 +98,12 @@ export function LibraryPanel() {
     if (!ready || !stagingCategory) return;
     const method =
       stagingMode === "load" ? stagingMethod ?? stagingName.trim() : stagingName.trim();
+    const label = stagingName.trim() || method;
     const payload = {
       category: stagingCategory,
       method,
       args: stagingArgs,
+      label,
     };
     event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
     event.dataTransfer.effectAllowed = "copy";
@@ -114,12 +117,17 @@ export function LibraryPanel() {
 
   const chipCategory: ControlCategory | "neutral" =
     stagingCategory ?? (stagingMode === "new" ? "neutral" : "neutral");
-  const chipTitle = stagingMode === "new" ? stagingName.trim() : stagingMethod ?? "";
+  const chipTitle = stagingName.trim() || (stagingMode === "load" ? stagingMethod ?? "" : "");
   const chipParams = paramsFromArgs(stagingArgs);
+
+  const onAddDataset = () => {
+    // Position somewhere reasonable; the canvas will clamp it within bounds.
+    addDatasetNode("dataset", { x: 240, y: 140 });
+  };
 
   return (
     <div className="palette-section add-control-section" role="region" aria-label="Add control">
-      <div className="palette-section-head">Add control</div>
+      <div className="palette-section-head">Add Control</div>
       <div className="palette-section-body">
         <ModeToggle />
         {stagingMode === "load" && <LoadModeDropdown />}
@@ -133,6 +141,9 @@ export function LibraryPanel() {
             onDragEnd={onDragEnd}
           />
         </div>
+        <button type="button" className="palette-dataset-btn" onClick={onAddDataset}>
+          + dataset
+        </button>
       </div>
     </div>
   );

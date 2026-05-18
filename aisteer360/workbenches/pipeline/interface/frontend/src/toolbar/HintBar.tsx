@@ -1,7 +1,6 @@
 import { usePipelineStore } from "../store/pipelineStore";
 
 const HINTS: Record<string, string> = {
-  connect: "drag from a port to another port to wire them together",
   erase: "click an edge to remove it",
 };
 

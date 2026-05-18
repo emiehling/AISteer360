@@ -24,9 +24,10 @@ import type {
 
 const FIXTURE_NODE_TYPES = new Set(["prompt_anchor", "response_anchor", "target_model"]);
 
-const PALETTE_HEIGHT_DEFAULT = 220;
-const PALETTE_HEIGHT_MIN = 140;
-const PALETTE_HEIGHT_MAX = 500;
+const PALETTE_HEIGHT_DEFAULT = 440;
+const PALETTE_HEIGHT_MIN = 440;
+const PALETTE_HEIGHT_MAX = 720;
+const PALETTE_HEIGHT_STEP = 20;
 
 function isControlNode(n: Node): boolean {
   return n.type === "control";
@@ -56,6 +57,8 @@ interface PipelineStoreState {
   stagingName: string;
   stagingArgs: Record<string, unknown>;
 
+  pendingDeleteNodeId: string | null;
+
   setNodes: (nodes: Node[]) => void;
   setEdges: (edges: Edge[]) => void;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -77,11 +80,21 @@ interface PipelineStoreState {
   setStagingArgs: (args: Record<string, unknown>) => void;
   resetStaging: () => void;
 
-  addControlNode: (category: ControlCategory, method: string, position: XYPosition) => string;
+  addControlNode: (
+    category: ControlCategory,
+    method: string,
+    position: XYPosition,
+    label?: string,
+  ) => string;
+  addDatasetNode: (name: string, position: XYPosition) => string;
   removeNode: (id: string) => void;
   removeEdge: (id: string) => void;
   updateNodeArgs: (id: string, args: Record<string, unknown>) => void;
   updateNodeRuntimeKwargs: (id: string, kwargs: Record<string, unknown>) => void;
+  updateNodeLabel: (id: string, label: string) => void;
+  requestDeleteNode: (id: string) => void;
+  confirmDeleteNode: () => void;
+  cancelDeleteNode: () => void;
   resetCanvas: () => void;
 
   toPipelineDefinition: () => PipelineDefinition;
@@ -105,6 +118,8 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   stagingCategory: null,
   stagingName: "",
   stagingArgs: {},
+
+  pendingDeleteNodeId: null,
 
   setNodes: (nodes) => set({ nodes }),
   setEdges: (edges) => set({ edges }),
@@ -134,7 +149,8 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   setActiveTool: (mode) => set({ activeTool: mode }),
   setSessionId: (id) => set({ sessionId: id }),
   setPaletteHeight: (px) => {
-    const clamped = Math.max(PALETTE_HEIGHT_MIN, Math.min(PALETTE_HEIGHT_MAX, px));
+    const snapped = Math.round(px / PALETTE_HEIGHT_STEP) * PALETTE_HEIGHT_STEP;
+    const clamped = Math.max(PALETTE_HEIGHT_MIN, Math.min(PALETTE_HEIGHT_MAX, snapped));
     set({ paletteHeight: clamped });
   },
 
@@ -175,14 +191,14 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     set({ stagingMethod: null, stagingCategory: null, stagingName: "", stagingArgs: {} });
   },
 
-  addControlNode: (category, method, position) => {
+  addControlNode: (category, method, position, label) => {
     const id = uuid();
     const data: ControlNodeData = {
       category,
       method,
       args: {},
       runtimeKwargs: {},
-      label: method,
+      label: label && label.trim() ? label.trim() : method,
       status: "",
       params: [],
     };
@@ -191,6 +207,18 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       type: "control",
       position,
       data,
+    };
+    set({ nodes: [...get().nodes, node] });
+    return id;
+  },
+
+  addDatasetNode: (name, position) => {
+    const id = uuid();
+    const node: Node = {
+      id,
+      type: "dataset",
+      position,
+      data: { name: name && name.trim() ? name.trim() : "dataset", rowCount: null },
     };
     set({ nodes: [...get().nodes, node] });
     return id;
@@ -224,6 +252,34 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       }),
     });
   },
+
+  updateNodeLabel: (id, label) => {
+    set({
+      nodes: get().nodes.map((n) =>
+        n.id === id && isControlNode(n)
+          ? { ...n, data: { ...(n.data as ControlNodeData), label } }
+          : n,
+      ),
+    });
+  },
+
+  requestDeleteNode: (id) => set({ pendingDeleteNodeId: id }),
+  confirmDeleteNode: () => {
+    const id = get().pendingDeleteNodeId;
+    if (!id) return;
+    const node = get().nodes.find((n) => n.id === id);
+    if (node && FIXTURE_NODE_TYPES.has(node.type ?? "")) {
+      set({ pendingDeleteNodeId: null });
+      return;
+    }
+    set({
+      nodes: get().nodes.filter((n) => n.id !== id),
+      edges: get().edges.filter((e) => e.source !== id && e.target !== id),
+      selectedNodeId: get().selectedNodeId === id ? null : get().selectedNodeId,
+      pendingDeleteNodeId: null,
+    });
+  },
+  cancelDeleteNode: () => set({ pendingDeleteNodeId: null }),
 
   updateNodeRuntimeKwargs: (id, kwargs) => {
     set({
