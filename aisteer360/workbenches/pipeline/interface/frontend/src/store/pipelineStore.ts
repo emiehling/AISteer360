@@ -33,6 +33,15 @@ function isControlNode(n: Node): boolean {
   return n.type === "control";
 }
 
+function pruneLockedGroups(groups: string[][], removedId: string): string[][] {
+  const next: string[][] = [];
+  for (const group of groups) {
+    const filtered = group.filter((id) => id !== removedId);
+    if (filtered.length >= 2) next.push(filtered);
+  }
+  return next;
+}
+
 function uuid(): string {
   return crypto.randomUUID();
 }
@@ -58,6 +67,7 @@ interface PipelineStoreState {
   stagingArgs: Record<string, unknown>;
 
   pendingDeleteNodeId: string | null;
+  lockedGroups: string[][];
 
   setNodes: (nodes: Node[]) => void;
   setEdges: (edges: Edge[]) => void;
@@ -99,6 +109,11 @@ interface PipelineStoreState {
 
   toPipelineDefinition: () => PipelineDefinition;
   getRuntimeKwargs: () => Record<string, unknown>;
+
+  getGroupOf: (id: string) => string[] | null;
+  mergeLockGroups: (idA: string, idB: string) => void;
+  removeFromLockGroup: (id: string) => void;
+  splitLockGroup: (leftIds: string[], rightIds: string[]) => void;
 }
 
 export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
@@ -120,6 +135,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   stagingArgs: {},
 
   pendingDeleteNodeId: null,
+  lockedGroups: [],
 
   setNodes: (nodes) => set({ nodes }),
   setEdges: (edges) => set({ edges }),
@@ -231,6 +247,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       nodes: get().nodes.filter((n) => n.id !== id),
       edges: get().edges.filter((e) => e.source !== id && e.target !== id),
       selectedNodeId: get().selectedNodeId === id ? null : get().selectedNodeId,
+      lockedGroups: pruneLockedGroups(get().lockedGroups, id),
     });
   },
 
@@ -277,6 +294,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       edges: get().edges.filter((e) => e.source !== id && e.target !== id),
       selectedNodeId: get().selectedNodeId === id ? null : get().selectedNodeId,
       pendingDeleteNodeId: null,
+      lockedGroups: pruneLockedGroups(get().lockedGroups, id),
     });
   },
   cancelDeleteNode: () => set({ pendingDeleteNodeId: null }),
@@ -302,7 +320,40 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       nodes: get().nodes.filter((n) => FIXTURE_NODE_TYPES.has(n.type ?? "")),
       edges: [],
       selectedNodeId: null,
+      lockedGroups: [],
     });
+  },
+
+  getGroupOf: (id) => {
+    const group = get().lockedGroups.find((g) => g.includes(id));
+    return group ?? null;
+  },
+  mergeLockGroups: (idA, idB) => {
+    const groups = get().lockedGroups;
+    const groupA = groups.find((g) => g.includes(idA));
+    const groupB = groups.find((g) => g.includes(idB));
+    if (groupA && groupA === groupB) return;
+    const members = new Set<string>();
+    if (groupA) groupA.forEach((m) => members.add(m));
+    else members.add(idA);
+    if (groupB) groupB.forEach((m) => members.add(m));
+    else members.add(idB);
+    const next = groups.filter((g) => g !== groupA && g !== groupB);
+    next.push(Array.from(members));
+    set({ lockedGroups: next });
+  },
+  removeFromLockGroup: (id) => {
+    set({ lockedGroups: pruneLockedGroups(get().lockedGroups, id) });
+  },
+  splitLockGroup: (leftIds, rightIds) => {
+    const groups = get().lockedGroups;
+    const all = new Set<string>([...leftIds, ...rightIds]);
+    const containing = groups.find((g) => g.some((id) => all.has(id)));
+    if (!containing) return;
+    const next = groups.filter((g) => g !== containing);
+    if (leftIds.length >= 2) next.push([...leftIds]);
+    if (rightIds.length >= 2) next.push([...rightIds]);
+    set({ lockedGroups: next });
   },
 
   toPipelineDefinition: () => {

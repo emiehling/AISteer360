@@ -206,6 +206,30 @@
   border-right: 1px solid var(--canvas-grid-divider);
 }
 
+.lock-seam {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2, #2a2a32);
+  color: var(--text-dim, #c0c0c8);
+  border: 1px solid var(--line-2, #444);
+  border-radius: 3px;
+  pointer-events: auto;
+  z-index: 5;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.lock-seam:hover {
+  background: var(--panel, #34343c);
+  color: var(--text, #f0f0f0);
+  border-color: var(--accent, #6d8aff);
+}
+
 /* ── React Flow theming ──────────────────────────────────────────── */
 .canvas-area .react-flow__background {
   display: none;

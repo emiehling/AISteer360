@@ -31,6 +31,7 @@ const MODEL_HEIGHT_FALLBACK = 240;
 const SNAP_GRID: [number, number] = [20, 20];
 const GRID_SIZE = SNAP_GRID[0];
 const RAIL_BUFFER = 3 * GRID_SIZE;
+const MARRY_THRESHOLD = 2 * GRID_SIZE;
 
 const NODE_BOUNDS_FALLBACK = { width: 150, height: 100 };
 const DATASET_FALLBACK = { width: 220, height: 130 };
@@ -182,6 +183,69 @@ function buildInitialNodes(
   ];
 }
 
+interface SeamIndicatorsProps {
+  nodes: Node[];
+  lockedGroups: string[][];
+  sizeForNode: (node: Node) => { width: number; height: number };
+}
+
+function SeamIndicators({ nodes, lockedGroups, sizeForNode }: SeamIndicatorsProps) {
+  const items: {
+    key: string;
+    left: number;
+    top: number;
+    leftIds: string[];
+    rightIds: string[];
+  }[] = [];
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  for (const group of lockedGroups) {
+    const members = group
+      .map((id) => byId.get(id))
+      .filter((n): n is Node => Boolean(n) && n.type === "control");
+    if (members.length < 2) continue;
+    const sorted = [...members].sort((a, b) => a.position.x - b.position.x);
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const a = sorted[i];
+      const b = sorted[i + 1];
+      const aSize = sizeForNode(a);
+      const bSize = sizeForNode(b);
+      const aRight = a.position.x + aSize.width;
+      const bLeft = b.position.x;
+      if (Math.abs(bLeft - aRight) > 4) continue;
+      const seamX = (aRight + bLeft) / 2;
+      const seamY = (a.position.y + aSize.height / 2 + b.position.y + bSize.height / 2) / 2;
+      const leftIds = sorted.slice(0, i + 1).map((n) => n.id);
+      const rightIds = sorted.slice(i + 1).map((n) => n.id);
+      items.push({ key: `${a.id}-${b.id}`, left: seamX, top: seamY, leftIds, rightIds });
+    }
+  }
+  if (items.length === 0) return null;
+  const onSeamClick = (event: React.MouseEvent, leftIds: string[], rightIds: string[]) => {
+    event.stopPropagation();
+    usePipelineStore.getState().splitLockGroup(leftIds, rightIds);
+  };
+  return (
+    <>
+      {items.map((it) => (
+        <button
+          key={it.key}
+          type="button"
+          className="lock-seam"
+          style={{ left: it.left, top: it.top }}
+          onClick={(e) => onSeamClick(e, it.leftIds, it.rightIds)}
+          aria-label="Break locked pair"
+          title="click to break (or alt+drag)"
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10 14a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+            <path d="M14 10a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+          </svg>
+        </button>
+      ))}
+    </>
+  );
+}
+
 interface GridOverlayProps {
   geometry: CanvasGeometry | null;
 }
@@ -226,11 +290,20 @@ function CanvasInner() {
   const modelNameOrPath = usePipelineStore((s) => s.modelNameOrPath);
   const catalogTargetEntries = usePipelineStore((s) => s.catalogTargetEntries);
   const modelProbe = usePipelineStore((s) => s.modelProbe);
+  const lockedGroups = usePipelineStore((s) => s.lockedGroups);
 
   const { screenToFlowPosition } = useReactFlow();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [geometry, setGeometry] = useState<CanvasGeometry | null>(null);
   const measuredModelHeightRef = useRef<number>(MODEL_HEIGHT_FALLBACK);
+  // group-drag bookkeeping: when a locked-group member is dragged, we keep
+  // the per-member offset relative to the dragged node so groupmates follow.
+  const dragGroupRef = useRef<{
+    leaderId: string;
+    offsets: Map<string, { dx: number; dy: number }>;
+    leaderStart: { x: number; y: number };
+    suppressLock: boolean;  // true when alt-drag breaks lock for this drag
+  } | null>(null);
 
   const computeGeometryNow = useCallback((): CanvasGeometry => {
     const wrapper = wrapperRef.current;
@@ -282,24 +355,59 @@ function CanvasInner() {
       // clamp position changes for movable nodes. Control/dataset are 2D-free
       // within bounds; the model snaps so its handle (vertical center) lands on
       // a grid line, keeping edges to anchors straight.
-      const clamped = changes.map((change): NodeChange => {
-        if (change.type !== "position" || !change.position) return change;
+      const clamped: NodeChange[] = [];
+      const dragGroup = dragGroupRef.current;
+      for (const change of changes) {
+        if (change.type !== "position" || !change.position) {
+          clamped.push(change);
+          continue;
+        }
         const node = byId.get(change.id);
-        if (!node) return change;
+        if (!node) {
+          clamped.push(change);
+          continue;
+        }
+        let clampedPos = change.position;
         if (node.id === "model") {
           const modelHeight = measuredModelHeightRef.current;
           const { minX, maxX, minY, maxY } = getBoundsFor(MODEL_WIDTH, modelHeight);
-          const x = Math.min(maxX, Math.max(minX, change.position.x));
-          const y = Math.min(maxY, Math.max(minY, change.position.y));
-          return { ...change, position: { x, y } };
+          clampedPos = {
+            x: Math.min(maxX, Math.max(minX, change.position.x)),
+            y: Math.min(maxY, Math.max(minY, change.position.y)),
+          };
+        } else if (node.type === "control" || node.type === "dataset") {
+          const { width, height } = sizeForNode(node);
+          const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
+          clampedPos = {
+            x: Math.min(maxX, Math.max(minX, change.position.x)),
+            y: Math.min(maxY, Math.max(minY, change.position.y)),
+          };
         }
-        if (node.type !== "control" && node.type !== "dataset") return change;
-        const { width, height } = sizeForNode(node);
-        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
-        const x = Math.min(maxX, Math.max(minX, change.position.x));
-        const y = Math.min(maxY, Math.max(minY, change.position.y));
-        return { ...change, position: { x, y } };
-      });
+        clamped.push({ ...change, position: clampedPos });
+
+        // synthesize matching position changes for locked groupmates
+        if (
+          dragGroup &&
+          !dragGroup.suppressLock &&
+          dragGroup.leaderId === change.id &&
+          dragGroup.offsets.size > 0
+        ) {
+          for (const [memberId, offset] of dragGroup.offsets) {
+            const member = byId.get(memberId);
+            if (!member || member.type !== "control") continue;
+            const { width, height } = sizeForNode(member);
+            const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
+            const x = Math.min(maxX, Math.max(minX, clampedPos.x + offset.dx));
+            const y = Math.min(maxY, Math.max(minY, clampedPos.y + offset.dy));
+            clamped.push({
+              id: memberId,
+              type: "position",
+              position: { x, y },
+              dragging: change.dragging,
+            });
+          }
+        }
+      }
       onNodesChangeStore(clamped);
 
       if (modelHeightChanged) {
@@ -428,6 +536,162 @@ function CanvasInner() {
     }
   }, []);
 
+  const onNodeDragStart = useCallback(
+    (event: React.MouseEvent, node: Node) => {
+      if (node.type !== "control") {
+        dragGroupRef.current = null;
+        return;
+      }
+      const altPressed = event.altKey;
+      if (altPressed) {
+        // alt-drag: break this node out of any group, drag it solo
+        usePipelineStore.getState().removeFromLockGroup(node.id);
+        dragGroupRef.current = {
+          leaderId: node.id,
+          offsets: new Map(),
+          leaderStart: { x: node.position.x, y: node.position.y },
+          suppressLock: true,
+        };
+        return;
+      }
+      const group = usePipelineStore.getState().getGroupOf(node.id);
+      if (!group || group.length < 2) {
+        dragGroupRef.current = {
+          leaderId: node.id,
+          offsets: new Map(),
+          leaderStart: { x: node.position.x, y: node.position.y },
+          suppressLock: false,
+        };
+        return;
+      }
+      const offsets = new Map<string, { dx: number; dy: number }>();
+      const allNodes = usePipelineStore.getState().nodes;
+      for (const memberId of group) {
+        if (memberId === node.id) continue;
+        const member = allNodes.find((n) => n.id === memberId);
+        if (!member) continue;
+        offsets.set(memberId, {
+          dx: member.position.x - node.position.x,
+          dy: member.position.y - node.position.y,
+        });
+      }
+      dragGroupRef.current = {
+        leaderId: node.id,
+        offsets,
+        leaderStart: { x: node.position.x, y: node.position.y },
+        suppressLock: false,
+      };
+    },
+    [],
+  );
+
+  const onNodeDragStop = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      const dragGroup = dragGroupRef.current;
+      dragGroupRef.current = null;
+      if (node.type !== "control") return;
+      if (dragGroup?.suppressLock) return;
+
+      const allNodes = usePipelineStore.getState().nodes;
+      const dragged = allNodes.find((n) => n.id === node.id);
+      if (!dragged) return;
+      const draggedCategory = (dragged.data as { category?: string } | undefined)?.category;
+      if (!draggedCategory) return;
+
+      const movedGroupIds = dragGroup?.offsets
+        ? new Set<string>([dragged.id, ...dragGroup.offsets.keys()])
+        : new Set<string>([dragged.id]);
+
+      // group bounding box uses leftmost / rightmost outer edges
+      const movedNodes = allNodes.filter((n) => movedGroupIds.has(n.id));
+      let groupLeft = Infinity;
+      let groupRight = -Infinity;
+      for (const m of movedNodes) {
+        const { width } = sizeForNode(m);
+        if (m.position.x < groupLeft) groupLeft = m.position.x;
+        if (m.position.x + width > groupRight) groupRight = m.position.x + width;
+      }
+      const draggedSize = sizeForNode(dragged);
+      const draggedY = dragged.position.y;
+      const draggedH = draggedSize.height;
+
+      // find best snap candidate: same-category control NOT in the moved group,
+      // whose right or left outer edge is within MARRY_THRESHOLD of the group's
+      // outer edge, AND vertical overlap is significant (top/bottom within MARRY_THRESHOLD).
+      type Candidate = {
+        otherId: string;
+        deltaX: number;  // dx to apply to entire moved group
+        deltaY: number;
+      };
+      let best: Candidate | null = null;
+      let bestScore = Infinity;
+      for (const other of allNodes) {
+        if (movedGroupIds.has(other.id)) continue;
+        if (other.type !== "control") continue;
+        const otherCat = (other.data as { category?: string } | undefined)?.category;
+        if (otherCat !== draggedCategory) continue;
+        const otherSize = sizeForNode(other);
+        const otherLeft = other.position.x;
+        const otherRight = other.position.x + otherSize.width;
+        const otherTop = other.position.y;
+        // vertical overlap test: dragged node's top within threshold of other's top.
+        const dy = otherTop - draggedY;
+        if (Math.abs(dy) > MARRY_THRESHOLD) continue;
+        // horizontal vertical overlap (must overlap or be near in Y axis):
+        const verticalOverlap =
+          Math.min(draggedY + draggedH, otherTop + otherSize.height) -
+          Math.max(draggedY, otherTop);
+        if (verticalOverlap < draggedH * 0.5) continue;
+
+        // case 1: snap group's right edge to other's left edge
+        const dxLeftOfOther = otherLeft - groupRight;
+        if (Math.abs(dxLeftOfOther) <= MARRY_THRESHOLD) {
+          const score = Math.abs(dxLeftOfOther) + Math.abs(dy);
+          if (score < bestScore) {
+            bestScore = score;
+            best = { otherId: other.id, deltaX: dxLeftOfOther, deltaY: dy };
+          }
+        }
+        // case 2: snap group's left edge to other's right edge
+        const dxRightOfOther = otherRight - groupLeft;
+        if (Math.abs(dxRightOfOther) <= MARRY_THRESHOLD) {
+          const score = Math.abs(dxRightOfOther) + Math.abs(dy);
+          if (score < bestScore) {
+            bestScore = score;
+            best = { otherId: other.id, deltaX: dxRightOfOther, deltaY: dy };
+          }
+        }
+      }
+
+      if (!best) return;
+
+      // verify the snap keeps the moved group within bounds
+      let snapOk = true;
+      const snapped: { id: string; x: number; y: number }[] = [];
+      for (const m of movedNodes) {
+        const { width, height } = sizeForNode(m);
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
+        const x = m.position.x + best.deltaX;
+        const y = m.position.y + best.deltaY;
+        if (x < minX - 0.5 || x > maxX + 0.5 || y < minY - 0.5 || y > maxY + 0.5) {
+          snapOk = false;
+          break;
+        }
+        snapped.push({ id: m.id, x, y });
+      }
+      if (!snapOk) return;
+
+      const moveMap = new Map(snapped.map((s) => [s.id, { x: s.x, y: s.y }]));
+      const next = allNodes.map((n) => {
+        const upd = moveMap.get(n.id);
+        return upd ? { ...n, position: { x: upd.x, y: upd.y } } : n;
+      });
+      setNodes(next);
+      usePipelineStore.getState().mergeLockGroups(dragged.id, best.otherId);
+    },
+    [getBoundsFor, setNodes, sizeForNode],
+  );
+
   const onDrop = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
       const raw = event.dataTransfer.getData(DRAG_MIME);
@@ -468,12 +732,15 @@ function CanvasInner() {
       onDrop={onDrop}
     >
       <GridOverlay geometry={geometry} />
+      <SeamIndicators nodes={nodes} lockedGroups={lockedGroups} sizeForNode={sizeForNode} />
       <ReactFlow
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onNodeDragStart={onNodeDragStart}
+        onNodeDragStop={onNodeDragStop}
         onSelectionChange={onSelectionChange}
         onEdgeClick={onEdgeClick}
         nodeTypes={nodeTypes}
