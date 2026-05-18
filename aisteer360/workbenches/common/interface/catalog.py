@@ -18,11 +18,12 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 Provider = Literal["hf", "openai", "openai_compatible", "anthropic", "custom"]
-Role = Literal["target", "generator", "judge"]
+Role = Literal["target", "inference"]
 
 WIRED_PROVIDERS: set[str] = {"hf", "openai", "openai_compatible", "anthropic"}
 ALL_PROVIDERS: tuple[str, ...] = ("hf", "openai", "openai_compatible", "anthropic", "custom")
-ALL_ROLES: tuple[str, ...] = ("target", "generator", "judge")
+ALL_ROLES: tuple[str, ...] = ("target", "inference")
+LEGACY_ROLE_MAP: dict[str, str] = {"generator": "inference", "judge": "inference"}
 
 PROVIDER_ENV: dict[str, str | None] = {
     "hf": None,
@@ -51,10 +52,16 @@ class CatalogEntry:
     model_id: str
     provider: str = "hf"
     endpoint: str | None = None
-    roles: list[str] = field(default_factory=lambda: ["target", "generator", "judge"])
+    roles: list[str] = field(default_factory=lambda: list(ALL_ROLES))
 
     def sanitized(self) -> "CatalogEntry":
-        roles = [r for r in self.roles if r in ALL_ROLES]
+        # remap legacy role names from older catalog files before filtering
+        remapped: list[str] = []
+        for r in self.roles:
+            mapped = LEGACY_ROLE_MAP.get(r, r)
+            if mapped in ALL_ROLES and mapped not in remapped:
+                remapped.append(mapped)
+        roles = remapped
         if self.provider != "hf":
             roles = [r for r in roles if r != "target"]
         return CatalogEntry(
@@ -62,7 +69,7 @@ class CatalogEntry:
             model_id=self.model_id.strip(),
             provider=self.provider if self.provider in ALL_PROVIDERS else "hf",
             endpoint=(self.endpoint or "").strip() or None,
-            roles=roles or ["generator", "judge"],
+            roles=roles or ["inference"],
         )
 
 

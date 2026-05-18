@@ -27,13 +27,10 @@ from aisteer360.workbenches.common.interface.db import (
     hash_agent_token,
     mint_agent_token,
 )
-from aisteer360.workbenches.common.interface.dispatch import dispatch_local, dispatch_ssh, test_ssh
+from aisteer360.workbenches.common.interface.dispatch import dispatch_local, dispatch_ssh
 from .schemas import (
     AgentCommand,
     CellDetailResponse,
-    ComputeConfig,
-    ComputeConfigResponse,
-    ComputeTestResponse,
     FullConfigSchema,
     HeatmapResponse,
     RegenerateTokenResponse,
@@ -97,7 +94,7 @@ def _validate_for_stages(cfg: FullConfigSchema, stages: list[Stage]) -> None:
         if not (cfg.generation.behavior or "").strip():
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Behavior label is required.")
         _check_catalog_entry(
-            entries, cfg.generation.generator_model, cfg.generation.generator_provider, "generator"
+            entries, cfg.generation.generator_model, cfg.generation.generator_provider, "inference"
         )
 
     if needs & {"extraction", "calibration"}:
@@ -110,7 +107,7 @@ def _validate_for_stages(cfg: FullConfigSchema, stages: list[Stage]) -> None:
 
     if "calibration" in needs:
         _check_catalog_entry(
-            entries, cfg.calibration.judge.model, cfg.calibration.judge.provider, "judge"
+            entries, cfg.calibration.judge.model, cfg.calibration.judge.provider, "inference"
         )
 
 
@@ -499,56 +496,3 @@ async def download_result(run: OwnerScopedRun) -> FileResponse:
     return FileResponse(
         path, filename="calibration_result.json", media_type="application/json"
     )
-
-
-# ── compute config ───────────────────────────────────────────────
-
-@router.get("/compute/config", response_model=ComputeConfigResponse)
-async def get_compute(
-    owner_hash: OwnerTokenHash,
-    db: Database = Depends(get_db),
-) -> ComputeConfigResponse:
-    config = await db.get_compute_config(owner_hash)
-    if config is None:
-        return ComputeConfigResponse(mode="local")
-    return ComputeConfigResponse(
-        mode=config.get("mode", "local"),
-        host=config.get("host"),
-        port=config.get("port", 22),
-        username=config.get("username"),
-        auth_method=config.get("auth_method"),
-        credential_set=bool(config.get("credential")),
-        python_path=config.get("python_path") or "python3",
-    )
-
-
-@router.put("/compute/config")
-async def put_compute(
-    body: ComputeConfig,
-    owner_hash: OwnerTokenHash,
-    db: Database = Depends(get_db),
-) -> dict[str, str]:
-    payload = body.model_dump()
-    # treat unset credential as "leave unchanged" by dropping the key entirely
-    if payload.get("credential") is None:
-        payload.pop("credential", None)
-    await db.upsert_compute_config(owner_hash, payload)
-    return {"status": "ok"}
-
-
-@router.post("/compute/test", response_model=ComputeTestResponse)
-async def test_compute(
-    body: ComputeConfig,
-    request: Request,
-    owner_hash: OwnerTokenHash,
-    db: Database = Depends(get_db),
-) -> ComputeTestResponse:
-    payload = body.model_dump()
-    # if the user typed a host but left credential blank, fall back to the stored one
-    if not payload.get("credential"):
-        existing = await db.get_compute_config(owner_hash)
-        if existing and existing.get("credential"):
-            payload["credential"] = existing["credential"]
-    server_url = _public_server_url(request)
-    result = test_ssh(payload, server_url)
-    return ComputeTestResponse(**result)

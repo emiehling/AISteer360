@@ -1,5 +1,6 @@
-import { memo, type MouseEvent } from "react";
+import { memo, useEffect, useRef, useState, type MouseEvent } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
+import type { CatalogTargetEntry } from "../types";
 
 interface ModelNodeParam {
   label: string;
@@ -10,7 +11,8 @@ interface ModelNodeData {
   modelId: string;
   loaded: boolean;
   params: ModelNodeParam[];
-  onChangeModel?: () => void;
+  entries?: CatalogTargetEntry[];
+  onChangeModel?: (modelId: string) => void;
 }
 
 function SwapIcon() {
@@ -35,25 +37,51 @@ function SwapIcon() {
 
 function ModelNodeImpl({ data }: NodeProps<ModelNodeData>) {
   const display = data.modelId || "‹ select model ›";
+  const [open, setOpen] = useState(false);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: globalThis.MouseEvent) => {
+      const target = event.target as Node | null;
+      if (popoverRef.current?.contains(target as Node)) return;
+      if (buttonRef.current?.contains(target as Node)) return;
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
   const onSwap = (event: MouseEvent) => {
     event.stopPropagation();
-    data.onChangeModel?.();
+    setOpen((prev) => !prev);
   };
+
+  const onPick = (event: MouseEvent, modelId: string) => {
+    event.stopPropagation();
+    data.onChangeModel?.(modelId);
+    setOpen(false);
+  };
+
+  const entries = data.entries ?? [];
 
   return (
     <div className="model-wrap">
       <Handle type="target" position={Position.Left} id="input" />
       <Handle type="source" position={Position.Right} id="output" />
 
-      <div className="model-shadow" aria-hidden />
       <div className="model-face">
         <div className="model-bar">
           <span className="model-bar-title">target model</span>
           <button
+            ref={buttonRef}
             type="button"
             className="model-bar-btn"
             onClick={onSwap}
-            aria-label="Select model from Hugging Face"
+            aria-label="Select model from catalog"
+            aria-haspopup="listbox"
+            aria-expanded={open}
             title="change model"
           >
             <SwapIcon />
@@ -82,6 +110,38 @@ function ModelNodeImpl({ data }: NodeProps<ModelNodeData>) {
           </div>
         ) : null}
       </div>
+
+      {open ? (
+        <div
+          ref={popoverRef}
+          className="model-picker-popover"
+          role="listbox"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {entries.length === 0 ? (
+            <div className="model-picker-empty">no target-eligible models in catalog</div>
+          ) : (
+            entries.map((entry) => {
+              const selected = entry.model_id === data.modelId;
+              return (
+                <button
+                  key={entry.model_id}
+                  type="button"
+                  className={`model-picker-row${selected ? " selected" : ""}`}
+                  role="option"
+                  aria-selected={selected}
+                  onClick={(e) => onPick(e, entry.model_id)}
+                >
+                  <span className="model-picker-label">{entry.label}</span>
+                  <span className="model-picker-id" title={entry.model_id}>
+                    {entry.model_id}
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

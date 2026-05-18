@@ -232,9 +232,9 @@
 
   // ── catalog ────────────────────────────────────────────────
   let catEntries=[],catDraft=[];
-  const PROVIDERS=["hf","anthropic","openai","openai_compatible"], ROLES=["target","generator","judge"];
+  const PROVIDERS=["hf","anthropic","openai","openai_compatible"], ROLES=["target","inference"];
   async function refreshCatalog(){try{const d=await api("/api/catalog");catEntries=Array.isArray(d.entries)?d.entries:[];}catch(_){}}
-  function catalogOpen(){catDraft=catEntries.map(e=>({label:e.label,model_id:e.model_id,provider:e.provider||"hf",endpoint:e.endpoint||"",roles:Array.isArray(e.roles)?[...e.roles]:["target","generator","judge"]}));renderCatalog();}
+  function catalogOpen(){catDraft=catEntries.map(e=>({label:e.label,model_id:e.model_id,provider:e.provider||"hf",endpoint:e.endpoint||"",roles:Array.isArray(e.roles)?[...e.roles]:["target","inference"]}));renderCatalog();}
   function renderCatalog(){
     const list=$("catalogList"); list.innerHTML="";
     catDraft.forEach((entry,idx)=>{
@@ -247,7 +247,7 @@
       list.appendChild(row);
     });
   }
-  async function saveCatalog(){const clean=catDraft.filter(e=>(e.model_id||"").trim()).map(e=>({label:(e.label||"").trim()||e.model_id,model_id:e.model_id.trim(),provider:e.provider||"hf",endpoint:(e.endpoint||"").trim()||null,roles:e.roles.length?e.roles:["generator","judge"]}));const u=await api("/api/catalog",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(clean)});catEntries=u.entries||[];}
+  async function saveCatalog(){const clean=catDraft.filter(e=>(e.model_id||"").trim()).map(e=>({label:(e.label||"").trim()||e.model_id,model_id:e.model_id.trim(),provider:e.provider||"hf",endpoint:(e.endpoint||"").trim()||null,roles:e.roles.length?e.roles:["inference"]}));const u=await api("/api/catalog",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(clean)});catEntries=u.entries||[];}
 
   // ── settings modal ─────────────────────────────────────────
   async function openSettings(){
@@ -279,7 +279,7 @@
   document.querySelectorAll("input[name='computeMode']").forEach(el=>{el.addEventListener("change",()=>{cc.mode=el.value;applyComputeUI();});});
   document.querySelectorAll("input[name='sshAuthMethod']").forEach(el=>{el.addEventListener("change",()=>{cc.auth_method=el.value;$("sshCredentialLabel").textContent=el.value==="password"?"Password":"Key path / contents";});});
   $("btnTestCompute").addEventListener("click", testCompute);
-  $("catalogAddBtn").addEventListener("click", ()=>{catDraft.push({label:"",model_id:"",provider:"hf",endpoint:"",roles:["generator","judge"]});renderCatalog();});
+  $("catalogAddBtn").addEventListener("click", ()=>{catDraft.push({label:"",model_id:"",provider:"hf",endpoint:"",roles:["inference"]});renderCatalog();});
 
   // status button in footer → open session modal (React)
   $("statusBtn").addEventListener("click", () => { window.dispatchEvent(new CustomEvent("aisteer-open-session")); });

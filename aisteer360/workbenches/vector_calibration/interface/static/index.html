@@ -1820,7 +1820,7 @@
   // catalog + probe state
   let catalogEntries = [];
   let catalogProviders = [];
-  let catalogRoles = ["target", "generator", "judge"];
+  let catalogRoles = ["target", "inference"];
   let providerStatusMap = {};
   let targetModelProbe = null;  // { num_hidden_layers, hidden_size, ... }
   let probeInFlight = null;
@@ -2141,13 +2141,13 @@
       }
     };
     if (needs.has("generation")) {
-      checkRole(cfg.generation && cfg.generation.generator_model, "generator", "Generator");
+      checkRole(cfg.generation && cfg.generation.generator_model, "inference", "Generator");
     }
     if (needs.has("extraction") || needs.has("calibration")) {
       checkRole(cfg.steered_model, "target", "Target");
     }
     if (needs.has("calibration")) {
-      checkRole(cfg.calibration && cfg.calibration.judge && cfg.calibration.judge.model, "judge", "Judge");
+      checkRole(cfg.calibration && cfg.calibration.judge && cfg.calibration.judge.model, "inference", "Judge");
     }
     return errors;
   }
@@ -3278,7 +3278,7 @@
       const data = await api("/api/catalog");
       catalogEntries = Array.isArray(data.entries) ? data.entries : [];
       catalogProviders = ["hf", "anthropic", "openai"];
-      catalogRoles = Array.isArray(data.roles) ? data.roles : ["target", "generator", "judge"];
+      catalogRoles = Array.isArray(data.roles) ? data.roles : ["target", "inference"];
     } catch (e) { /* leave defaults */ }
     try {
       const st = await api("/api/catalog/providers/status");
@@ -3301,16 +3301,16 @@
 
   function renderAllModelCombos() {
     renderModelCombo("mcTarget", "target", $("steeredModel"));
-    renderModelCombo("mcGenerator", "generator", $("generatorModel"));
-    renderModelCombo("mcJudge", "judge", $("judgeModel"));
+    renderModelCombo("mcGenerator", "inference", $("generatorModel"));
+    renderModelCombo("mcJudge", "inference", $("judgeModel"));
     updateRolePlaceholders();
   }
 
   function updateRolePlaceholders() {
     const pairs = [
       ["target", $("steeredModel")],
-      ["generator", $("generatorModel")],
-      ["judge", $("judgeModel")],
+      ["inference", $("generatorModel")],
+      ["inference", $("judgeModel")],
     ];
     for (const [role, input] of pairs) {
       if (!input) continue;
@@ -3491,7 +3491,7 @@
       model_id: e.model_id,
       provider: e.provider || "hf",
       endpoint: e.endpoint || "",
-      roles: Array.isArray(e.roles) ? [...e.roles] : ["target", "generator", "judge"],
+      roles: Array.isArray(e.roles) ? [...e.roles] : ["target", "inference"],
       _prevModelId: e.model_id,
     }));
     renderCatalogEditor();
@@ -3690,7 +3690,7 @@
         model_id: e.model_id.trim(),
         provider: e.provider || "hf",
         endpoint: (e.endpoint || "").trim() || null,
-        roles: Array.isArray(e.roles) && e.roles.length ? e.roles : ["generator", "judge"],
+        roles: Array.isArray(e.roles) && e.roles.length ? e.roles : ["inference"],
       }));
     try {
       const updated = await api("/api/catalog", {
@@ -4026,7 +4026,7 @@
         model_id: "",
         provider: "hf",
         endpoint: "",
-        roles: ["generator", "judge"],
+        roles: ["inference"],
         _prevModelId: "",
       });
       renderCatalogEditor();

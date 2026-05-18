@@ -48,12 +48,10 @@ def create_app(
     )
 
     from .routes_agent import router as agent_router
-    from .routes_model import router as model_router
     from .routes_runs import router as runs_router
 
     app.include_router(runs_router, prefix="/api")
     app.include_router(agent_router, prefix="/api")
-    app.include_router(model_router, prefix="/api")
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():

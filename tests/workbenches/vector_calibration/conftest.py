@@ -53,7 +53,7 @@ def _isolated_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             "model_id": "test/model",
             "provider": "hf",
             "endpoint": None,
-            "roles": ["target", "generator", "judge"],
+            "roles": ["target", "inference"],
         },
     ]))
     monkeypatch.setattr(catalog_module, "DEFAULT_CATALOG_PATH", catalog_path)

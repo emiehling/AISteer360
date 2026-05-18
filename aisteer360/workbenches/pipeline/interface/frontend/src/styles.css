@@ -313,24 +313,14 @@
 /* ── target model node ───────────────────────────────────────────── */
 .model-wrap {
   position: relative;
-  width: 310px;
+  width: 340px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
-}
-.model-shadow {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  width: 100%;
-  height: 100%;
-  background: var(--model-shadow);
-  border-radius: 3px;
-  z-index: 0;
 }
 .model-face {
   position: relative;
   background: var(--node-face-bg);
-  border: 2px solid var(--model-border);
-  border-radius: 3px;
+  border: 1px solid var(--model-border);
+  border-radius: 6px;
   overflow: hidden;
   z-index: 1;
 }
@@ -338,21 +328,22 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
+  padding: 8px 12px;
   background: var(--model-bar-bg);
+  border-bottom: 1px solid var(--node-card-border);
 }
 .model-bar-title {
   flex: 1;
-  font-size: 10.5px;
-  font-weight: 500;
+  font-size: 11px;
+  font-weight: 400;
   color: var(--model-bar-text);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
 .model-bar-btn {
-  width: 18px;
+  width: 22px;
   height: 18px;
   border: 1px solid var(--model-bar-btn-border);
-  border-radius: 2px;
+  border-radius: 10px;
   padding: 0;
   background: transparent;
   cursor: pointer;
@@ -373,39 +364,92 @@
 .model-bar-dot.loaded   { background: var(--model-dot-on); }
 .model-bar-dot.unloaded { background: var(--model-dot-off); }
 .model-id-row {
-  padding: 8px 10px 6px;
-  font-size: 13px;
-  font-weight: 500;
+  padding: 14px 14px 12px;
+  font-size: 16px;
+  font-weight: 700;
   color: var(--node-face-text);
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .model-params {
-  padding: 4px 10px 8px;
+  padding: 0 14px 6px;
 }
 .model-param-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 0;
-  border-top: 0.5px solid var(--node-card-border);
+  padding: 8px 0;
+  border-top: 1px solid var(--node-card-border);
 }
 .model-param-label {
-  font-size: 10.5px;
+  font-size: 12px;
+  font-weight: 400;
   color: var(--node-card-value-text);
 }
 .model-param-value {
-  font-size: 11px;
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 12px;
   color: var(--node-face-text);
-  font-weight: 500;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 200px;
+  text-align: right;
+}
+
+/* ── model picker popover ────────────────────────────────────────── */
+.model-picker-popover {
+  position: absolute;
+  top: 32px;
+  right: 8px;
+  z-index: 20;
+  min-width: 240px;
+  max-width: 360px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--node-face-bg);
+  border: 1px solid var(--model-bar-btn-border);
+  border-radius: 3px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+}
+.model-picker-empty {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--node-card-value-text);
+  font-style: italic;
+}
+.model-picker-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--node-face-text);
+}
+.model-picker-row:hover { background: rgba(255, 255, 255, 0.05); }
+.model-picker-row.selected { background: rgba(255, 255, 255, 0.08); }
+.model-picker-label {
+  font-size: 12px;
+  font-weight: 500;
+}
+.model-picker-id {
+  font-size: 10.5px;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  color: var(--node-card-value-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 /* ── control node (themed floating panel) ────────────────────────── */

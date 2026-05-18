@@ -38,6 +38,38 @@ export interface MethodsResponse {
   methods: MethodSpec[];
 }
 
+export interface CatalogEntry {
+  label: string;
+  model_id: string;
+  provider: string;
+  endpoint: string | null;
+  roles: string[];
+}
+
+export interface CatalogResponse {
+  entries: CatalogEntry[];
+  providers: string[];
+  roles: string[];
+}
+
+export interface CatalogTargetEntry {
+  label: string;
+  model_id: string;
+}
+
+export interface ModelProbe {
+  model_id: string;
+  num_hidden_layers: number | null;
+  hidden_size: number | null;
+  num_attention_heads: number | null;
+  num_key_value_heads: number | null;
+  intermediate_size: number | null;
+  vocab_size: number | null;
+  max_position_embeddings: number | null;
+  model_type: string | null;
+  source: string;
+}
+
 export type ToolMode = "select" | "connect" | "erase";
 
 export interface ControlNodeParam {

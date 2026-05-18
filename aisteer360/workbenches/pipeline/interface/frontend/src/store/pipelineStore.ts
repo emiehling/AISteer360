@@ -11,10 +11,12 @@ import {
   type XYPosition,
 } from "reactflow";
 import type {
+  CatalogTargetEntry,
   ControlCategory,
   ControlNode,
   ControlNodeData,
   MethodSpec,
+  ModelProbe,
   PipelineDefinition,
   ToolMode,
 } from "../types";
@@ -34,6 +36,8 @@ interface PipelineStoreState {
   edges: Edge[];
   modelNameOrPath: string;
   methods: MethodSpec[];
+  catalogTargetEntries: CatalogTargetEntry[];
+  modelProbe: ModelProbe | null;
   selectedNodeId: string | null;
   activeTool: ToolMode;
   sessionId: string | null;
@@ -44,6 +48,8 @@ interface PipelineStoreState {
   onConnect: (connection: Connection) => void;
   setModelNameOrPath: (value: string) => void;
   setMethods: (methods: MethodSpec[]) => void;
+  setCatalogTargetEntries: (entries: CatalogTargetEntry[]) => void;
+  setModelProbe: (probe: ModelProbe | null) => void;
   setSelectedNodeId: (id: string | null) => void;
   setActiveTool: (mode: ToolMode) => void;
   setSessionId: (id: string | null) => void;
@@ -64,6 +70,8 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   edges: [],
   modelNameOrPath: "",
   methods: [],
+  catalogTargetEntries: [],
+  modelProbe: null,
   selectedNodeId: null,
   activeTool: "select",
   sessionId: null,
@@ -82,6 +90,8 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   },
   setModelNameOrPath: (value) => set({ modelNameOrPath: value }),
   setMethods: (methods) => set({ methods }),
+  setCatalogTargetEntries: (entries) => set({ catalogTargetEntries: entries }),
+  setModelProbe: (probe) => set({ modelProbe: probe }),
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
   setActiveTool: (mode) => set({ activeTool: mode }),
   setSessionId: (id) => set({ sessionId: id }),
