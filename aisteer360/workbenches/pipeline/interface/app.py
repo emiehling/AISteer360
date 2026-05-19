@@ -5,10 +5,12 @@ inference requests browser↔agent, and never loads a model. All compute lives i
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from aisteer360.workbenches.common.interface.app_factory import create_workbench_app
@@ -17,6 +19,28 @@ from aisteer360.workbenches.common.interface.db import Database
 logger = logging.getLogger(__name__)
 
 DEFAULT_AGENT_COMMAND_NAME = "aisteer360-pipeline-agent"
+
+
+def _read_canvas_manifest(static_dir: Path) -> dict[str, str]:
+    manifest_path = static_dir / "canvas" / "manifest.json"
+    if manifest_path.exists():
+        try:
+            data = json.loads(manifest_path.read_text())
+            js = data.get("js")
+            css = data.get("css")
+            if isinstance(js, str) and isinstance(css, str):
+                return {"js": js, "css": css}
+        except (OSError, ValueError) as exc:
+            logger.warning("Failed to read canvas manifest: %s", exc)
+    return {"js": "pipeline-canvas.js", "css": "pipeline-canvas.css"}
+
+
+def _render_index(static_dir: Path) -> str:
+    template = (static_dir / "index.html").read_text()
+    manifest = _read_canvas_manifest(static_dir)
+    return template.replace("__CANVAS_JS__", manifest["js"]).replace(
+        "__CANVAS_CSS__", manifest["css"]
+    )
 
 
 async def _install_sessions(db: Database) -> None:
@@ -49,8 +73,22 @@ def create_app(
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
+        @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+        async def _index() -> HTMLResponse:
+            return HTMLResponse(
+                _render_index(static_dir),
+                headers={"Cache-Control": "no-store"},
+            )
+
+        @app.get("/index.html", response_class=HTMLResponse, include_in_schema=False)
+        async def _index_html() -> HTMLResponse:
+            return HTMLResponse(
+                _render_index(static_dir),
+                headers={"Cache-Control": "no-store"},
+            )
+
         app.mount(
-            "/", StaticFiles(directory=str(static_dir), html=True), name="static"
+            "/", StaticFiles(directory=str(static_dir), html=False), name="static"
         )
 
     return app

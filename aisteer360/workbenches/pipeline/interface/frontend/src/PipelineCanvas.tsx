@@ -8,6 +8,7 @@ import ReactFlow, {
   type OnSelectionChangeParams,
   ReactFlowProvider,
   useReactFlow,
+  useViewport,
 } from "reactflow";
 import "reactflow/dist/style.css";
 
@@ -36,6 +37,8 @@ const MARRY_THRESHOLD = 2 * GRID_SIZE;
 const NODE_BOUNDS_FALLBACK = { width: 150, height: 100 };
 const DATASET_FALLBACK = { width: 220, height: 130 };
 
+const PALETTE_MINIMIZED_HEIGHT = 24;
+
 interface CanvasGeometry {
   promptX: number;
   responseX: number;
@@ -47,6 +50,10 @@ interface CanvasGeometry {
   responseStemMidX: number;
   width: number;
   height: number;
+  // height the canvas would have if the palette were minimized; used for
+  // bounds (drag arena + visual box) so the draggable region is the same
+  // regardless of palette state.
+  boundsHeight: number;
 }
 
 function snap(value: number, step: number): number {
@@ -57,6 +64,7 @@ function computeGeometry(
   canvasWidth: number,
   canvasHeight: number,
   modelHeight: number,
+  boundsHeight: number,
 ): CanvasGeometry {
   const promptX = EDGE_BUFFER;
   const responseX = Math.max(EDGE_BUFFER, canvasWidth - EDGE_BUFFER - ANCHOR_TOTAL_WIDTH);
@@ -81,6 +89,7 @@ function computeGeometry(
     responseStemMidX,
     width: canvasWidth,
     height: canvasHeight,
+    boundsHeight,
   };
 }
 
@@ -118,29 +127,6 @@ function probeToParams(probe: ModelProbe | null) {
 }
 
 const EDGE_ARROW_MARKER = { type: MarkerType.Arrow, width: 16, height: 16 };
-
-function buildInitialEdges(): Edge[] {
-  return [
-    {
-      id: "default-prompt-model",
-      source: "anchor-prompt",
-      sourceHandle: "out",
-      target: "model",
-      targetHandle: "left",
-      type: "pipeline",
-      markerEnd: EDGE_ARROW_MARKER,
-    },
-    {
-      id: "default-model-response",
-      source: "model",
-      sourceHandle: "right",
-      target: "anchor-response",
-      targetHandle: "in",
-      type: "pipeline",
-      markerEnd: EDGE_ARROW_MARKER,
-    },
-  ];
-}
 
 function buildInitialNodes(
   modelNameOrPath: string,
@@ -194,9 +180,10 @@ interface SeamIndicatorsProps {
     maxY: number;
     railY: number;
   };
+  viewportOffset: { x: number; y: number };
 }
 
-function SeamIndicators({ nodes, lockedGroups, sizeForNode, getBoundsFor }: SeamIndicatorsProps) {
+function SeamIndicators({ nodes, lockedGroups, sizeForNode, getBoundsFor, viewportOffset }: SeamIndicatorsProps) {
   const items: {
     key: string;
     left: number;
@@ -263,7 +250,11 @@ function SeamIndicators({ nodes, lockedGroups, sizeForNode, getBoundsFor }: Seam
     usePipelineStore.getState().setNodes(next);
   };
   return (
-    <>
+    <div
+      className="lock-seam-layer"
+      style={{ transform: `translate(${viewportOffset.x}px, ${viewportOffset.y}px)` }}
+      aria-hidden={false}
+    >
       {items.map((it) => (
         <button
           key={it.key}
@@ -280,33 +271,41 @@ function SeamIndicators({ nodes, lockedGroups, sizeForNode, getBoundsFor }: Seam
           </svg>
         </button>
       ))}
-    </>
+    </div>
   );
 }
 
-interface GridOverlayProps {
+interface GridBoundsProps {
   geometry: CanvasGeometry | null;
+  viewportOffset: { x: number; y: number };
 }
 
-function GridOverlay({ geometry }: GridOverlayProps) {
+function GridBounds({ geometry, viewportOffset }: GridBoundsProps) {
   if (!geometry) return null;
   const left = geometry.promptStemMidX;
   const width = Math.max(0, geometry.responseStemMidX - geometry.promptStemMidX);
+  const halfH = geometry.boundsHeight / 2;
+  const top = geometry.centerY - halfH;
+  const height = geometry.boundsHeight;
   // Align the dot pattern so dots fall at flow-coord multiples of GRID_SIZE
-  // (where nodes' top-left corners snap to). radial-gradient places the dot at
-  // the cell center; we shift the pattern by -GRID_SIZE/2 so dots land on grid corners,
-  // then offset by the overlay's left position (mod GRID_SIZE) to keep phase locked
-  // to flow coordinates.
+  // (where nodes' top-left corners snap to). The element's own (left, top) is
+  // its origin; we shift by -GRID_SIZE/2 (radial-gradient draws at cell center)
+  // and lock phase to flow coords so the dots stay aligned across viewport
+  // translates / canvas resizes.
   const phaseX = ((left % GRID_SIZE) + GRID_SIZE) % GRID_SIZE;
+  const phaseY = ((top % GRID_SIZE) + GRID_SIZE) % GRID_SIZE;
   const bgPosX = -GRID_SIZE / 2 - phaseX;
-  const bgPosY = -GRID_SIZE / 2;
+  const bgPosY = -GRID_SIZE / 2 - phaseY;
   return (
     <div
-      className="canvas-grid-overlay"
+      className="canvas-grid-bounds"
       style={{
         left,
+        top,
         width,
+        height,
         backgroundPosition: `${bgPosX}px ${bgPosY}px`,
+        transform: `translate(${viewportOffset.x}px, ${viewportOffset.y}px)`,
       }}
       aria-hidden
     />
@@ -319,7 +318,6 @@ function CanvasInner() {
   const onEdgesChange = usePipelineStore((s) => s.onEdgesChange);
   const onConnect = usePipelineStore((s) => s.onConnect);
   const setNodes = usePipelineStore((s) => s.setNodes);
-  const setEdges = usePipelineStore((s) => s.setEdges);
   const onNodesChangeStore = usePipelineStore((s) => s.onNodesChange);
   const addControlNode = usePipelineStore((s) => s.addControlNode);
   const removeEdge = usePipelineStore((s) => s.removeEdge);
@@ -329,8 +327,11 @@ function CanvasInner() {
   const catalogTargetEntries = usePipelineStore((s) => s.catalogTargetEntries);
   const modelProbe = usePipelineStore((s) => s.modelProbe);
   const lockedGroups = usePipelineStore((s) => s.lockedGroups);
+  const selectedNodeId = usePipelineStore((s) => s.selectedNodeId);
+  const paletteMinimized = usePipelineStore((s) => s.paletteMinimized);
 
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, setViewport } = useReactFlow();
+  const viewport = useViewport();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [geometry, setGeometry] = useState<CanvasGeometry | null>(null);
   const measuredModelHeightRef = useRef<number>(MODEL_HEIGHT_FALLBACK);
@@ -351,7 +352,10 @@ function CanvasInner() {
     const wrapper = wrapperRef.current;
     const w = wrapper?.clientWidth ?? 1100;
     const h = wrapper?.clientHeight ?? 600;
-    const geom = computeGeometry(w, h, measuredModelHeightRef.current);
+    const state = usePipelineStore.getState();
+    const extra = state.paletteMinimized ? 0 : Math.max(0, state.paletteHeight - PALETTE_MINIMIZED_HEIGHT);
+    const boundsHeight = h + extra;
+    const geom = computeGeometry(w, h, measuredModelHeightRef.current, boundsHeight);
     const locked = lockedVerticalRef.current;
     if (!locked) return geom;
     return { ...geom, centerY: locked.centerY, anchorY: locked.anchorY, modelY: locked.modelY };
@@ -371,8 +375,12 @@ function CanvasInner() {
       const minX = geom.promptStemMidX + RAIL_BUFFER;
       const maxX = Math.max(minX, geom.responseStemMidX - RAIL_BUFFER - nodeWidth);
       const railY = geom.centerY - nodeHeight / 2;
-      const minY = GRID_SIZE;
-      const maxY = Math.max(minY, geom.height - nodeHeight - GRID_SIZE);
+      // Y bounds are an arena centered on the locked rail, sized to the
+      // palette-collapsed (max) canvas height so the draggable region is
+      // independent of palette state.
+      const halfH = geom.boundsHeight / 2;
+      const minY = geom.centerY - halfH + GRID_SIZE;
+      const maxY = Math.max(minY, geom.centerY + halfH - nodeHeight - GRID_SIZE);
       return { minX, maxX, minY, maxY, railY };
     },
     [geometry, computeGeometryNow],
@@ -384,17 +392,34 @@ function CanvasInner() {
       const byId = new Map(current.map((n) => [n.id, n]));
 
       // model height drives canvas geometry; control/dataset nodes are free
-      // on the grid once placed, so their dimension events don't re-center.
+      // on the grid once placed, but if a control was just dropped or snapped
+      // to the rail with the fallback height, we re-snap its Y once the real
+      // measured height arrives so its left/right handles sit on centerY.
       let modelHeightChanged = false;
+      const controlReSnaps = new Map<string, { x: number; y: number }>();
+      const geomNow = geometry ?? computeGeometryNow();
       for (const change of changes) {
         if (change.type !== "dimensions" || !change.dimensions) continue;
-        if (change.id !== "model") continue;
-        const newHeight = change.dimensions.height;
-        if (!newHeight) continue;
-        if (Math.abs(newHeight - measuredModelHeightRef.current) > 0.5) {
-          measuredModelHeightRef.current = newHeight;
-          modelHeightChanged = true;
+        if (change.id === "model") {
+          const newHeight = change.dimensions.height;
+          if (!newHeight) continue;
+          if (Math.abs(newHeight - measuredModelHeightRef.current) > 0.5) {
+            measuredModelHeightRef.current = newHeight;
+            modelHeightChanged = true;
+          }
+          continue;
         }
+        const node = byId.get(change.id);
+        if (!node || node.type !== "control") continue;
+        const newHeight = change.dimensions.height;
+        const newWidth = change.dimensions.width;
+        if (!newHeight || !newWidth) continue;
+        const prevHeight = node.height ?? NODE_BOUNDS_FALLBACK.height;
+        const wasOnRail = Math.abs(node.position.y - (geomNow.centerY - prevHeight / 2)) < 1.5;
+        if (!wasOnRail) continue;
+        const targetY = geomNow.centerY - newHeight / 2;
+        if (Math.abs(targetY - node.position.y) < 0.5) continue;
+        controlReSnaps.set(node.id, { x: node.position.x, y: targetY });
       }
 
       // clamp position changes for movable nodes. Control/dataset are 2D-free
@@ -464,6 +489,14 @@ function CanvasInner() {
         );
         setNodes(next);
       }
+
+      if (controlReSnaps.size > 0) {
+        const next = usePipelineStore.getState().nodes.map((n) => {
+          const upd = controlReSnaps.get(n.id);
+          return upd ? { ...n, position: upd } : n;
+        });
+        setNodes(next);
+      }
     },
     [getBoundsFor, sizeForNode, onNodesChangeStore, computeGeometryNow, setNodes, geometry],
   );
@@ -484,28 +517,43 @@ function CanvasInner() {
 
     if (usePipelineStore.getState().nodes.length === 0) {
       setNodes(buildInitialNodes(modelNameOrPath, initial, catalogTargetEntries));
-      if (usePipelineStore.getState().edges.length === 0) {
-        setEdges(buildInitialEdges());
-      }
     }
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
       const { width, height } = entry.contentRect;
-      const raw = computeGeometry(width, height, measuredModelHeightRef.current);
+      const state = usePipelineStore.getState();
+      const extra = state.paletteMinimized ? 0 : Math.max(0, state.paletteHeight - PALETTE_MINIMIZED_HEIGHT);
+      const boundsHeight = height + extra;
+      const raw = computeGeometry(width, height, measuredModelHeightRef.current, boundsHeight);
       const locked = lockedVerticalRef.current;
       const geom: CanvasGeometry = locked
         ? { ...raw, centerY: locked.centerY, anchorY: locked.anchorY, modelY: locked.modelY }
         : raw;
       setGeometry(geom);
-      // only reposition fixtures along X — Y is locked at initial layout so palette
-      // resize/minimize doesn't pull anchors or the model vertically.
+      // reposition fixtures along X (Y is locked) and re-clamp control/dataset
+      // nodes to the bounds arena. With bounds pinned to palette-collapsed size,
+      // vertical bounds don't change on palette toggle; this still re-clamps on
+      // width changes (window resize).
+      const halfH = geom.boundsHeight / 2;
       const current = usePipelineStore.getState().nodes;
       const next = current.map((n) => {
         if (n.id === "anchor-prompt") return { ...n, position: { x: geom.promptX, y: n.position.y } };
         if (n.id === "model") return { ...n, position: { x: geom.modelX, y: n.position.y } };
         if (n.id === "anchor-response") return { ...n, position: { x: geom.responseX, y: n.position.y } };
+        if (n.type === "control" || n.type === "dataset") {
+          const w = n.width ?? (n.type === "dataset" ? DATASET_FALLBACK.width : NODE_BOUNDS_FALLBACK.width);
+          const h = n.height ?? (n.type === "dataset" ? DATASET_FALLBACK.height : NODE_BOUNDS_FALLBACK.height);
+          const minY = geom.centerY - halfH + GRID_SIZE;
+          const maxY = Math.max(minY, geom.centerY + halfH - h - GRID_SIZE);
+          const minX = geom.promptStemMidX + RAIL_BUFFER;
+          const maxX = Math.max(minX, geom.responseStemMidX - RAIL_BUFFER - w);
+          const x = Math.min(maxX, Math.max(minX, n.position.x));
+          const y = Math.min(maxY, Math.max(minY, n.position.y));
+          if (x === n.position.x && y === n.position.y) return n;
+          return { ...n, position: { x, y } };
+        }
         return n;
       });
       setNodes(next);
@@ -537,6 +585,28 @@ function CanvasInner() {
     );
     setNodes(next);
   }, [modelNameOrPath, catalogTargetEntries, modelProbe, setNodes]);
+
+  useEffect(() => {
+    if (!geometry) return;
+    const locked = lockedVerticalRef.current;
+    if (!locked) return;
+    const canvasHeight = geometry.height;
+
+    let targetFlowCenterY: number | null = null;
+    if (paletteMinimized) {
+      targetFlowCenterY = locked.anchorY + ANCHOR_BODY_HEIGHT / 2;
+    } else if (selectedNodeId) {
+      const currentNodes = usePipelineStore.getState().nodes;
+      const node = currentNodes.find((n) => n.id === selectedNodeId);
+      if (node && (node.type === "control" || node.type === "dataset")) {
+        const { height } = sizeForNode(node);
+        targetFlowCenterY = node.position.y + height / 2;
+      }
+    }
+
+    const offsetY = targetFlowCenterY == null ? 0 : canvasHeight / 2 - targetFlowCenterY;
+    setViewport({ x: 0, y: offsetY, zoom: 1 }, { duration: 200 });
+  }, [paletteMinimized, selectedNodeId, geometry, sizeForNode, setViewport]);
 
   useEffect(() => {
     const id = modelNameOrPath.trim();
@@ -575,12 +645,15 @@ function CanvasInner() {
     (params: OnSelectionChangeParams) => {
       const node = params.nodes.find((n) => n.type === "control") ?? params.nodes[0];
       setSelectedNodeId(node?.id ?? null);
-      if (node?.type === "control") {
-        usePipelineStore.getState().setPaletteMinimized(false);
-      }
     },
     [setSelectedNodeId],
   );
+
+  const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
+    if (node.type === "control") {
+      usePipelineStore.getState().setPaletteMinimized(false);
+    }
+  }, []);
 
   const onPaneClick = useCallback(() => {
     usePipelineStore.getState().setPaletteMinimized(true);
@@ -797,12 +870,13 @@ function CanvasInner() {
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      <GridOverlay geometry={geometry} />
+      <GridBounds geometry={geometry} viewportOffset={{ x: viewport.x, y: viewport.y }} />
       <SeamIndicators
         nodes={nodes}
         lockedGroups={lockedGroups}
         sizeForNode={sizeForNode}
         getBoundsFor={getBoundsFor}
+        viewportOffset={{ x: viewport.x, y: viewport.y }}
       />
       <ReactFlow
         nodes={nodes}
@@ -813,6 +887,7 @@ function CanvasInner() {
         onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
         onSelectionChange={onSelectionChange}
+        onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
         onEdgeClick={onEdgeClick}
         nodeTypes={nodeTypes}

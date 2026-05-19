@@ -52,20 +52,17 @@ export function App() {
         style={{ height: effectiveHeight }}
       >
         {paletteMinimized ? (
-          <div className="palette-minimized-bar">
-            <span className="palette-minimized-label">palette</span>
-            <button
-              type="button"
-              className="palette-toggle-btn"
-              onClick={togglePaletteMinimized}
-              aria-label="Expand palette"
-              title="expand palette"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="18 15 12 9 6 15" />
-              </svg>
-            </button>
-          </div>
+          <button
+            type="button"
+            className="palette-minimized-bar"
+            onClick={togglePaletteMinimized}
+            aria-label="Expand palette"
+            title="expand palette"
+          >
+            <svg className="palette-minimized-chevron" width="32" height="14" viewBox="0 0 32 14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <polyline points="4 11 16 3 28 11" />
+            </svg>
+          </button>
         ) : (
           <>
             <LibraryPanel />

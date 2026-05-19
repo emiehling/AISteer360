@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/common/common.css" />
-<link rel="stylesheet" href="/canvas/pipeline-canvas.css" />
+<link rel="stylesheet" href="/canvas/__CANVAS_CSS__" />
 <style>
   /* settings modal styles (mirrored from vector calibration workbench) */
   .key-row { display:grid; grid-template-columns:90px 1fr 68px; gap:8px; align-items:center; padding:5px 0; border-bottom:1px solid var(--line); }
@@ -285,8 +285,8 @@
   $("statusBtn").addEventListener("click", () => { window.dispatchEvent(new CustomEvent("aisteer-open-session")); });
   window.addEventListener("aisteer-status", e => { const d=(e&&e.detail)||{}; setStatus(d.state||"idle",d.label||""); });
 
-  // load React canvas bundle
-  const script=document.createElement("script"); script.src="/canvas/pipeline-canvas.js"; script.defer=true; document.body.appendChild(script);
+  // load React canvas bundle (filename injected by server from build manifest)
+  const script=document.createElement("script"); script.src="/canvas/__CANVAS_JS__"; script.defer=true; document.body.appendChild(script);
 })();
 </script>
 
