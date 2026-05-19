@@ -44,7 +44,7 @@ function CloseIcon() {
 function ControlNodeImpl({ id, data, selected }: NodeProps<ControlNodeData>) {
   const requestDeleteNode = usePipelineStore((s) => s.requestDeleteNode);
 
-  const title = data.label || data.method || "method?";
+  const title = data.label || data.method || "unset";
 
   const displayParams: ControlNodeParam[] = (
     data.params && data.params.length > 0
@@ -60,12 +60,13 @@ function ControlNodeImpl({ id, data, selected }: NodeProps<ControlNodeData>) {
     else requestDeleteNode(id);
   };
 
-  const footerLabel = data.status ?? CATEGORY_FOOTER_LABEL[data.category] ?? data.category;
+  const footerLabel =
+    data.status ?? (data.category ? CATEGORY_FOOTER_LABEL[data.category] : "control");
 
   return (
     <div
       className={`ctrl-node${selected ? " selected" : ""}`}
-      data-category={data.category}
+      data-category={data.category ?? "neutral"}
     >
       <Handle type="source" position={Position.Left} id="left" />
       <Handle type="source" position={Position.Right} id="right" />

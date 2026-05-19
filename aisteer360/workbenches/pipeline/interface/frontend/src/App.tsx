@@ -16,7 +16,6 @@ const PALETTE_MINIMIZED_HEIGHT = 24;
 export function App() {
   const setMethods = usePipelineStore((s) => s.setMethods);
   const setCatalogTargetEntries = usePipelineStore((s) => s.setCatalogTargetEntries);
-  const setModelNameOrPath = usePipelineStore((s) => s.setModelNameOrPath);
   const paletteHeight = usePipelineStore((s) => s.paletteHeight);
   const paletteMinimized = usePipelineStore((s) => s.paletteMinimized);
   const togglePaletteMinimized = usePipelineStore((s) => s.togglePaletteMinimized);
@@ -31,12 +30,9 @@ export function App() {
           .filter((e) => Array.isArray(e.roles) && e.roles.includes("target"))
           .map((e) => ({ label: e.label, model_id: e.model_id }));
         setCatalogTargetEntries(targets);
-        if (targets.length > 0 && !usePipelineStore.getState().modelNameOrPath) {
-          setModelNameOrPath(targets[0].model_id);
-        }
       })
       .catch((err) => console.error("fetchCatalog failed:", err));
-  }, [setMethods, setCatalogTargetEntries, setModelNameOrPath]);
+  }, [setMethods, setCatalogTargetEntries]);
 
   const effectiveHeight = paletteMinimized ? PALETTE_MINIMIZED_HEIGHT : paletteHeight;
 

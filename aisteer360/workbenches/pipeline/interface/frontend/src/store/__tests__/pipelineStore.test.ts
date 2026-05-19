@@ -18,7 +18,6 @@ function resetStore() {
 function seedFixtures() {
   const fixtures: Node[] = [
     { id: "anchor-prompt", type: "prompt_anchor", position: { x: 0, y: 0 }, data: {} },
-    { id: "model", type: "target_model", position: { x: 100, y: 0 }, data: {} },
     { id: "anchor-response", type: "response_anchor", position: { x: 200, y: 0 }, data: {} },
   ];
   usePipelineStore.setState({ nodes: fixtures });
@@ -85,21 +84,20 @@ describe("pipelineStore", () => {
 
   it("removeNode is a no-op for fixture nodes", () => {
     seedFixtures();
-    usePipelineStore.getState().removeNode("model");
-    expect(usePipelineStore.getState().nodes.map((n) => n.id)).toContain("model");
+    usePipelineStore.getState().removeNode("anchor-prompt");
+    expect(usePipelineStore.getState().nodes.map((n) => n.id)).toContain("anchor-prompt");
   });
 
   it("resetCanvas keeps fixtures and clears edges", () => {
     seedFixtures();
     const a = usePipelineStore.getState().addControlNode("state_control", "pasta", { x: 0, y: 0 });
     usePipelineStore.setState({
-      edges: [{ id: "e1", source: a, target: "model", type: "pipeline" }],
+      edges: [{ id: "e1", source: a, target: "anchor-response", type: "pipeline" }],
     });
     usePipelineStore.getState().resetCanvas();
     expect(usePipelineStore.getState().nodes.map((n) => n.id).sort()).toEqual([
       "anchor-prompt",
       "anchor-response",
-      "model",
     ]);
     expect(usePipelineStore.getState().edges).toHaveLength(0);
   });

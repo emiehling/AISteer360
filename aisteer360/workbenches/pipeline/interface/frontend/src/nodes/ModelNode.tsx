@@ -1,6 +1,6 @@
-import { memo, useEffect, useRef, useState, type MouseEvent } from "react";
+import { memo, type MouseEvent } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
-import type { CatalogTargetEntry } from "../types";
+import { usePipelineStore } from "../store/pipelineStore";
 
 interface ModelNodeParam {
   label: string;
@@ -11,15 +11,13 @@ interface ModelNodeData {
   modelId: string;
   loaded: boolean;
   params: ModelNodeParam[];
-  entries?: CatalogTargetEntry[];
-  onChangeModel?: (modelId: string) => void;
 }
 
-function SwapIcon() {
+function CloseIcon() {
   return (
     <svg
-      width="11"
-      height="11"
+      width="9"
+      height="9"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -28,43 +26,47 @@ function SwapIcon() {
       strokeLinejoin="round"
       aria-hidden
     >
-      <path d="M12 3a9 9 0 1 0 9 9" />
-      <path d="M21 3v5h-5" />
-      <path d="M21 12A9 9 0 0 0 12 3" />
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
 }
 
-function ModelNodeImpl({ data }: NodeProps<ModelNodeData>) {
+function StarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <polygon points="12 2 15 9 22 9.5 17 14.5 18.5 22 12 18 5.5 22 7 14.5 2 9.5 9 9" />
+    </svg>
+  );
+}
+
+function ModelNodeImpl({ id, data }: NodeProps<ModelNodeData>) {
+  const requestDeleteNode = usePipelineStore((s) => s.requestDeleteNode);
+  const targetModelNodeId = usePipelineStore((s) => s.targetModelNodeId);
+  const setTargetModelNodeId = usePipelineStore((s) => s.setTargetModelNodeId);
+
   const display = data.modelId || "‹ select model ›";
-  const [open, setOpen] = useState(false);
-  const popoverRef = useRef<HTMLDivElement | null>(null);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const isTarget = targetModelNodeId === id;
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: globalThis.MouseEvent) => {
-      const target = event.target as Node | null;
-      if (popoverRef.current?.contains(target as Node)) return;
-      if (buttonRef.current?.contains(target as Node)) return;
-      setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
-  const onSwap = (event: MouseEvent) => {
+  const onClose = (event: MouseEvent) => {
     event.stopPropagation();
-    setOpen((prev) => !prev);
+    requestDeleteNode(id);
   };
 
-  const onPick = (event: MouseEvent, modelId: string) => {
+  const onToggleTarget = (event: MouseEvent) => {
     event.stopPropagation();
-    data.onChangeModel?.(modelId);
-    setOpen(false);
+    setTargetModelNodeId(isTarget ? null : id);
   };
-
-  const entries = data.entries ?? [];
 
   return (
     <div className="model-wrap">
@@ -75,24 +77,31 @@ function ModelNodeImpl({ data }: NodeProps<ModelNodeData>) {
 
       <div className="model-face">
         <div className="model-bar">
-          <span className="model-bar-title">target model</span>
-          <button
-            ref={buttonRef}
-            type="button"
-            className="model-bar-btn"
-            onClick={onSwap}
-            aria-label="Select model from catalog"
-            aria-haspopup="listbox"
-            aria-expanded={open}
-            title="change model"
-          >
-            <SwapIcon />
-          </button>
+          <span className="model-bar-title">{isTarget ? "target model" : "model"}</span>
           <span
             className={`model-bar-dot ${data.loaded ? "loaded" : "unloaded"}`}
             aria-label={data.loaded ? "model loaded" : "model not loaded"}
             title={data.loaded ? "model loaded" : "model not loaded"}
           />
+          <button
+            type="button"
+            className={`model-bar-btn model-bar-star${isTarget ? " active" : ""}`}
+            onClick={onToggleTarget}
+            aria-label={isTarget ? "Unset as target model" : "Set as target model"}
+            aria-pressed={isTarget}
+            title={isTarget ? "target model" : "set as target"}
+          >
+            <StarIcon filled={isTarget} />
+          </button>
+          <button
+            type="button"
+            className="model-bar-btn model-bar-close"
+            onClick={onClose}
+            aria-label="Remove model"
+            title="close"
+          >
+            <CloseIcon />
+          </button>
         </div>
 
         <div className="model-id-row" title={data.modelId || "no model selected"}>
@@ -112,38 +121,6 @@ function ModelNodeImpl({ data }: NodeProps<ModelNodeData>) {
           </div>
         ) : null}
       </div>
-
-      {open ? (
-        <div
-          ref={popoverRef}
-          className="model-picker-popover"
-          role="listbox"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {entries.length === 0 ? (
-            <div className="model-picker-empty">no target-eligible models in catalog</div>
-          ) : (
-            entries.map((entry) => {
-              const selected = entry.model_id === data.modelId;
-              return (
-                <button
-                  key={entry.model_id}
-                  type="button"
-                  className={`model-picker-row${selected ? " selected" : ""}`}
-                  role="option"
-                  aria-selected={selected}
-                  onClick={(e) => onPick(e, entry.model_id)}
-                >
-                  <span className="model-picker-label">{entry.label}</span>
-                  <span className="model-picker-id" title={entry.model_id}>
-                    {entry.model_id}
-                  </span>
-                </button>
-              );
-            })
-          )}
-        </div>
-      ) : null}
     </div>
   );
 }

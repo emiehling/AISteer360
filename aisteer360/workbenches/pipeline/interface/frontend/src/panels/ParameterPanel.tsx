@@ -225,14 +225,18 @@ function SelectedNodePanel({ node }: { node: { id: string; data: ControlNodeData
   const updateNodeRuntimeKwargs = usePipelineStore((s) => s.updateNodeRuntimeKwargs);
   const updateNodeLabel = usePipelineStore((s) => s.updateNodeLabel);
   const setNodeMethod = usePipelineStore((s) => s.setNodeMethod);
+  const setNodeCategory = usePipelineStore((s) => s.setNodeCategory);
 
   const data = node.data;
+  const categoryIsSet = Boolean(data.category);
   const methodIsSet = Boolean(data.method);
   const spec: MethodSpec | undefined = methodIsSet
     ? methods.find((m) => m.category === data.category && m.method === data.method)
     : undefined;
   const displayName = data.label || data.method || "";
-  const categoryMethods = methods.filter((m) => m.category === data.category);
+  const categoryMethods = data.category
+    ? methods.filter((m) => m.category === data.category)
+    : [];
 
   return (
     <>
@@ -240,12 +244,13 @@ function SelectedNodePanel({ node }: { node: { id: string; data: ControlNodeData
         name={displayName}
         category={data.category}
         nameDisabled={false}
-        categoryDisabled
+        categoryDisabled={false}
         methodSubtitle={methodIsSet ? data.method : null}
         onNameChange={(next) => updateNodeLabel(node.id, next)}
+        onCategoryChange={(next) => setNodeCategory(node.id, next)}
       />
       <div className="panel-scroll">
-        {!methodIsSet && (
+        {categoryIsSet && !methodIsSet && (
           <div className="panel-section">
             <div className="panel-section-head static">
               <span className="panel-section-arrow">▾</span>
@@ -270,6 +275,17 @@ function SelectedNodePanel({ node }: { node: { id: string; data: ControlNodeData
               {categoryMethods.length === 0 && (
                 <div className="panel-empty">no methods registered for this category</div>
               )}
+            </div>
+          </div>
+        )}
+        {!categoryIsSet && (
+          <div className="panel-section">
+            <div className="panel-section-head static">
+              <span className="panel-section-arrow">▾</span>
+              <span className="panel-section-title">Category</span>
+            </div>
+            <div className="panel-section-body">
+              <div className="panel-empty">pick a category above to choose a method</div>
             </div>
           </div>
         )}
@@ -541,6 +557,77 @@ function SettingsToolbar({ accept, onLoadFile }: SettingsToolbarProps) {
   );
 }
 
+function SelectedModelNodePanel({ node }: { node: { id: string; data: { modelId?: string } } }) {
+  const setModelNodeId = usePipelineStore((s) => s.setModelNodeId);
+  const targetModelNodeId = usePipelineStore((s) => s.targetModelNodeId);
+  const setTargetModelNodeId = usePipelineStore((s) => s.setTargetModelNodeId);
+
+  const currentId = node.data.modelId ?? "";
+  const [draftId, setDraftId] = useState<string>(currentId);
+  const [editing, setEditing] = useState<boolean>(!currentId);
+  const isTarget = targetModelNodeId === node.id;
+
+  const onConfirm = () => {
+    setModelNodeId(node.id, draftId.trim());
+    setEditing(false);
+  };
+
+  return (
+    <>
+      <div className="settings-toolbar">
+        <button
+          type="button"
+          className="settings-load-btn"
+          onClick={() => setEditing(true)}
+          title="enter HF model id"
+        >
+          load
+        </button>
+        <button
+          type="button"
+          className={`settings-load-btn${isTarget ? " active" : ""}`}
+          onClick={() => setTargetModelNodeId(isTarget ? null : node.id)}
+          title={isTarget ? "this is the target model" : "set as target model"}
+        >
+          {isTarget ? "★ target" : "set target"}
+        </button>
+      </div>
+      <header className="panel-head control-settings-head">
+        <div className="control-settings-field">
+          <span className="control-settings-label">huggingface id</span>
+          {editing ? (
+            <div className="model-id-entry">
+              <input
+                className="palette-input"
+                type="text"
+                value={draftId}
+                placeholder="org/model-name"
+                onChange={(e) => setDraftId(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onConfirm();
+                }}
+                autoFocus
+              />
+              <button
+                type="button"
+                className="settings-load-btn"
+                onClick={onConfirm}
+                disabled={!draftId.trim()}
+              >
+                confirm
+              </button>
+            </div>
+          ) : (
+            <div className="model-id-display" title={currentId}>
+              {currentId || "—"}
+            </div>
+          )}
+        </div>
+      </header>
+    </>
+  );
+}
+
 function StagingPanel() {
   const stagingKind = usePipelineStore((s) => s.stagingKind);
   if (stagingKind === "control") return <ControlStagingPanel />;
@@ -554,14 +641,18 @@ export function ParameterPanel() {
   const nodes = usePipelineStore((s) => s.nodes);
 
   const selected = selectedNodeId ? nodes.find((n) => n.id === selectedNodeId) : null;
-  const isControl = selected?.type === "control";
+  const selectedType = selected?.type;
 
   return (
     <aside className="parameter-panel" aria-label="Settings">
       <div className="palette-section-head control-settings-bar">Settings</div>
-      {isControl && selected ? (
+      {selectedType === "control" && selected ? (
         <SelectedNodePanel
           node={{ id: selected.id, data: selected.data as ControlNodeData }}
+        />
+      ) : selectedType === "model" && selected ? (
+        <SelectedModelNodePanel
+          node={{ id: selected.id, data: selected.data as { modelId?: string } }}
         />
       ) : (
         <StagingPanel />

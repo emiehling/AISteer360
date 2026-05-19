@@ -22,27 +22,33 @@ function CloseIcon() {
   );
 }
 
-function DatasetIcon() {
+function StackedDocIcon() {
   return (
     <svg
-      width="48"
-      height="56"
-      viewBox="0 0 48 56"
+      width="36"
+      height="42"
+      viewBox="0 0 36 42"
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"
+      strokeLinejoin="round"
       aria-hidden
     >
-      <ellipse cx="24" cy="10" rx="18" ry="6" fill="var(--dataset-disk-fill)" />
-      <path d="M6 10 V22" />
-      <path d="M42 10 V22" />
-      <ellipse cx="24" cy="22" rx="18" ry="6" fill="var(--dataset-disk-fill)" />
-      <path d="M6 22 V34" />
-      <path d="M42 22 V34" />
-      <ellipse cx="24" cy="34" rx="18" ry="6" fill="var(--dataset-disk-fill)" />
-      <path d="M6 34 V46" />
-      <path d="M42 34 V46" />
-      <ellipse cx="24" cy="46" rx="18" ry="6" fill="var(--dataset-disk-fill)" />
+      <path
+        d="M9 4 H21 L29 12 V36 a1 1 0 0 1 -1 1 H9 a1 1 0 0 1 -1 -1 V5 a1 1 0 0 1 1 -1 Z"
+        fill="var(--node-face-bg)"
+        transform="translate(4 0)"
+      />
+      <path
+        d="M9 4 H21 L29 12 V36 a1 1 0 0 1 -1 1 H9 a1 1 0 0 1 -1 -1 V5 a1 1 0 0 1 1 -1 Z"
+        fill="var(--node-face-bg)"
+        transform="translate(2 2)"
+      />
+      <path
+        d="M9 4 H21 L29 12 V36 a1 1 0 0 1 -1 1 H9 a1 1 0 0 1 -1 -1 V5 a1 1 0 0 1 1 -1 Z"
+        fill="var(--node-face-bg)"
+      />
+      <path d="M21 4 V12 H29" />
     </svg>
   );
 }
@@ -63,37 +69,22 @@ function DatasetNodeImpl({ id, data, selected }: NodeProps<DatasetNodeData>) {
       <Handle type="source" position={Position.Top} id="top" />
       <Handle type="source" position={Position.Bottom} id="bottom" />
 
-      <div className="dataset-bar">
-        <span className="dataset-bar-title" title={data.name}>
-          {data.name || "dataset"}
-        </span>
-        <div className="dataset-bar-spacer" />
-        <button
-          type="button"
-          className="dataset-bar-btn"
-          onClick={onClose}
-          aria-label={`Remove ${data.name}`}
-          title="Close"
-        >
-          <CloseIcon />
-        </button>
-      </div>
+      <button
+        type="button"
+        className="dataset-close"
+        onClick={onClose}
+        aria-label={`Remove ${data.name}`}
+        title="close"
+      >
+        <CloseIcon />
+      </button>
 
-      <div className="dataset-body">
-        <DatasetIcon />
-        <div className="dataset-meta">
-          <div className="dataset-name" title={data.name}>
-            {data.name || "dataset"}
-          </div>
-          {data.rowCount != null ? (
-            <div className="dataset-rowcount">{data.rowCount} rows</div>
-          ) : (
-            <div className="dataset-rowcount muted">unbound</div>
-          )}
-        </div>
+      <div className="dataset-icon-wrap">
+        <StackedDocIcon />
       </div>
-
-      <div className="dataset-footer">dataset</div>
+      <div className="dataset-name" title={data.name}>
+        {data.name || "dataset"}
+      </div>
     </div>
   );
 }

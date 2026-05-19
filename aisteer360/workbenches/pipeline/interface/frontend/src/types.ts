@@ -79,7 +79,7 @@ export interface ControlNodeParam {
 }
 
 export interface ControlNodeData {
-  category: ControlCategory;
+  category: ControlCategory | null;
   method: string;
   args: Record<string, unknown>;
   runtimeKwargs: Record<string, unknown>;

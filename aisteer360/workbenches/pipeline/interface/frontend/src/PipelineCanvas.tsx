@@ -19,7 +19,7 @@ import { makeIsValidConnection } from "./canvas/validation";
 import { ConfirmDialog } from "./canvas/ConfirmDialog";
 import { DRAG_MIME, DRAG_MIME_DATASET, DRAG_MIME_MODEL } from "./panels/LibraryPanel";
 import { probeModel } from "./api/model";
-import type { ControlCategory, ModelProbe } from "./types";
+import type { ControlCategory } from "./types";
 import type { PlacementRequest } from "./store/pipelineStore";
 
 const EDGE_BUFFER = 32;
@@ -36,7 +36,7 @@ const RAIL_BUFFER = 3 * GRID_SIZE;
 const MARRY_THRESHOLD = 2 * GRID_SIZE;
 
 const NODE_BOUNDS_FALLBACK = { width: 150, height: 100 };
-const DATASET_FALLBACK = { width: 220, height: 130 };
+const DATASET_FALLBACK = { width: 80, height: 80 };
 
 const PALETTE_MINIMIZED_HEIGHT = 24;
 
@@ -94,47 +94,10 @@ function computeGeometry(
   };
 }
 
-function modelNodeOnChange(modelId: string) {
-  usePipelineStore.getState().setModelNameOrPath(modelId);
-}
-
-function formatParameterCount(n: number): string {
-  if (n >= 1e12) return `${(n / 1e12).toFixed(1)}T`;
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(0)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K`;
-  return String(n);
-}
-
-function estimateParameters(probe: ModelProbe): number | null {
-  const layers = probe.num_hidden_layers;
-  const hidden = probe.hidden_size;
-  if (layers == null || hidden == null) return null;
-  // coarse decoder-only transformer estimate: 12 * L * H^2, plus embedding (V * H).
-  const core = 12 * layers * hidden * hidden;
-  const embedding = (probe.vocab_size ?? 0) * hidden;
-  return core + embedding;
-}
-
-function probeToParams(probe: ModelProbe | null) {
-  if (!probe) return [];
-  const rows: { label: string; value: string }[] = [];
-  const paramCount = estimateParameters(probe);
-  rows.push({ label: "parameters", value: paramCount != null ? formatParameterCount(paramCount) : "—" });
-  rows.push({ label: "layers", value: probe.num_hidden_layers != null ? String(probe.num_hidden_layers) : "—" });
-  rows.push({ label: "hidden dim", value: probe.hidden_size != null ? String(probe.hidden_size) : "—" });
-  rows.push({ label: "type", value: probe.model_type ?? "—" });
-  return rows;
-}
-
 const EDGE_ARROW_MARKER = { type: MarkerType.Arrow, width: 16, height: 16 };
 
-function buildInitialNodes(
-  modelNameOrPath: string,
-  geometry: CanvasGeometry,
-  entries: { label: string; model_id: string }[],
-): Node[] {
-  const { promptX, modelX, responseX, anchorY, modelY } = geometry;
+function buildInitialNodes(geometry: CanvasGeometry): Node[] {
+  const { promptX, responseX, anchorY } = geometry;
   return [
     {
       id: "anchor-prompt",
@@ -143,19 +106,6 @@ function buildInitialNodes(
       data: { variant: "prompt" },
       draggable: false,
       selectable: false,
-      deletable: false,
-    },
-    {
-      id: "model",
-      type: "target_model",
-      position: { x: modelX, y: modelY },
-      data: {
-        modelId: modelNameOrPath,
-        loaded: false,
-        params: [],
-        entries,
-        onChangeModel: modelNodeOnChange,
-      },
       deletable: false,
     },
     {
@@ -327,8 +277,6 @@ function CanvasInner() {
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId);
   const activeTool = usePipelineStore((s) => s.activeTool);
   const modelNameOrPath = usePipelineStore((s) => s.modelNameOrPath);
-  const catalogTargetEntries = usePipelineStore((s) => s.catalogTargetEntries);
-  const modelProbe = usePipelineStore((s) => s.modelProbe);
   const lockedGroups = usePipelineStore((s) => s.lockedGroups);
   const selectedNodeId = usePipelineStore((s) => s.selectedNodeId);
   const paletteMinimized = usePipelineStore((s) => s.paletteMinimized);
@@ -339,7 +287,6 @@ function CanvasInner() {
   const viewport = useViewport();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [geometry, setGeometry] = useState<CanvasGeometry | null>(null);
-  const measuredModelHeightRef = useRef<number>(MODEL_HEIGHT_FALLBACK);
   // vertical layout (centerY/anchorY/modelY) is captured once at initial mount
   // and never recomputed from canvas height afterwards — palette resize/minimize
   // changes the canvas height but must not pull anchors or the model vertically.
@@ -360,7 +307,7 @@ function CanvasInner() {
     const state = usePipelineStore.getState();
     const extra = state.paletteMinimized ? 0 : Math.max(0, state.paletteHeight - PALETTE_MINIMIZED_HEIGHT);
     const boundsHeight = h + extra;
-    const geom = computeGeometry(w, h, measuredModelHeightRef.current, boundsHeight);
+    const geom = computeGeometry(w, h, MODEL_HEIGHT_FALLBACK, boundsHeight);
     const locked = lockedVerticalRef.current;
     if (!locked) return geom;
     return { ...geom, centerY: locked.centerY, anchorY: locked.anchorY, modelY: locked.modelY };
@@ -371,6 +318,7 @@ function CanvasInner() {
       return { width: node.width, height: node.height };
     }
     if (node.type === "dataset") return DATASET_FALLBACK;
+    if (node.type === "model") return { width: MODEL_WIDTH, height: MODEL_HEIGHT_FALLBACK };
     return NODE_BOUNDS_FALLBACK;
   }, []);
 
@@ -396,24 +344,14 @@ function CanvasInner() {
       const current = usePipelineStore.getState().nodes;
       const byId = new Map(current.map((n) => [n.id, n]));
 
-      // model height drives canvas geometry; control/dataset nodes are free
-      // on the grid once placed, but if a control was just dropped or snapped
-      // to the rail with the fallback height, we re-snap its Y once the real
-      // measured height arrives so its left/right handles sit on centerY.
-      let modelHeightChanged = false;
+      // control nodes are free on the grid once placed, but if a control was
+      // just dropped or snapped to the rail with the fallback height, we
+      // re-snap its Y once the real measured height arrives so its left/right
+      // handles sit on centerY.
       const controlReSnaps = new Map<string, { x: number; y: number }>();
       const geomNow = geometry ?? computeGeometryNow();
       for (const change of changes) {
         if (change.type !== "dimensions" || !change.dimensions) continue;
-        if (change.id === "model") {
-          const newHeight = change.dimensions.height;
-          if (!newHeight) continue;
-          if (Math.abs(newHeight - measuredModelHeightRef.current) > 0.5) {
-            measuredModelHeightRef.current = newHeight;
-            modelHeightChanged = true;
-          }
-          continue;
-        }
         const node = byId.get(change.id);
         if (!node || node.type !== "control") continue;
         const newHeight = change.dimensions.height;
@@ -427,9 +365,8 @@ function CanvasInner() {
         controlReSnaps.set(node.id, { x: node.position.x, y: targetY });
       }
 
-      // clamp position changes for movable nodes. Control/dataset are 2D-free
-      // within bounds; the model snaps so its handle (vertical center) lands on
-      // a grid line, keeping edges to anchors straight.
+      // clamp position changes for movable nodes. Control/dataset/model are
+      // 2D-free within bounds.
       const clamped: NodeChange[] = [];
       const dragGroup = dragGroupRef.current;
       for (const change of changes) {
@@ -443,14 +380,7 @@ function CanvasInner() {
           continue;
         }
         let clampedPos = change.position;
-        if (node.id === "model") {
-          const modelHeight = measuredModelHeightRef.current;
-          const { minX, maxX, minY, maxY } = getBoundsFor(MODEL_WIDTH, modelHeight);
-          clampedPos = {
-            x: Math.min(maxX, Math.max(minX, change.position.x)),
-            y: Math.min(maxY, Math.max(minY, change.position.y)),
-          };
-        } else if (node.type === "control" || node.type === "dataset") {
+        if (node.type === "control" || node.type === "dataset" || node.type === "model") {
           const { width, height } = sizeForNode(node);
           const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
           clampedPos = {
@@ -485,16 +415,6 @@ function CanvasInner() {
       }
       onNodesChangeStore(clamped);
 
-      if (modelHeightChanged) {
-        const geom = computeGeometryNow();
-        setGeometry(geom);
-        // keep model X aligned to geometry but preserve its current Y (vertical is locked).
-        const next = usePipelineStore.getState().nodes.map((n) =>
-          n.id === "model" ? { ...n, position: { x: geom.modelX, y: n.position.y } } : n,
-        );
-        setNodes(next);
-      }
-
       if (controlReSnaps.size > 0) {
         const next = usePipelineStore.getState().nodes.map((n) => {
           const upd = controlReSnaps.get(n.id);
@@ -521,7 +441,7 @@ function CanvasInner() {
     setGeometry(initial);
 
     if (usePipelineStore.getState().nodes.length === 0) {
-      setNodes(buildInitialNodes(modelNameOrPath, initial, catalogTargetEntries));
+      setNodes(buildInitialNodes(initial));
     }
 
     const observer = new ResizeObserver((entries) => {
@@ -531,7 +451,7 @@ function CanvasInner() {
       const state = usePipelineStore.getState();
       const extra = state.paletteMinimized ? 0 : Math.max(0, state.paletteHeight - PALETTE_MINIMIZED_HEIGHT);
       const boundsHeight = height + extra;
-      const raw = computeGeometry(width, height, measuredModelHeightRef.current, boundsHeight);
+      const raw = computeGeometry(width, height, MODEL_HEIGHT_FALLBACK, boundsHeight);
       const locked = lockedVerticalRef.current;
       const geom: CanvasGeometry = locked
         ? { ...raw, centerY: locked.centerY, anchorY: locked.anchorY, modelY: locked.modelY }
@@ -545,11 +465,16 @@ function CanvasInner() {
       const current = usePipelineStore.getState().nodes;
       const next = current.map((n) => {
         if (n.id === "anchor-prompt") return { ...n, position: { x: geom.promptX, y: n.position.y } };
-        if (n.id === "model") return { ...n, position: { x: geom.modelX, y: n.position.y } };
         if (n.id === "anchor-response") return { ...n, position: { x: geom.responseX, y: n.position.y } };
-        if (n.type === "control" || n.type === "dataset") {
-          const w = n.width ?? (n.type === "dataset" ? DATASET_FALLBACK.width : NODE_BOUNDS_FALLBACK.width);
-          const h = n.height ?? (n.type === "dataset" ? DATASET_FALLBACK.height : NODE_BOUNDS_FALLBACK.height);
+        if (n.type === "control" || n.type === "dataset" || n.type === "model") {
+          const fallback =
+            n.type === "dataset"
+              ? DATASET_FALLBACK
+              : n.type === "model"
+                ? { width: MODEL_WIDTH, height: MODEL_HEIGHT_FALLBACK }
+                : NODE_BOUNDS_FALLBACK;
+          const w = n.width ?? fallback.width;
+          const h = n.height ?? fallback.height;
           const minY = geom.centerY - halfH + GRID_SIZE;
           const maxY = Math.max(minY, geom.centerY + halfH - h - GRID_SIZE);
           const minX = geom.promptStemMidX + RAIL_BUFFER;
@@ -569,27 +494,6 @@ function CanvasInner() {
     // catalog/entries reflection happens in the separate effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelNameOrPath, setNodes]);
-
-  useEffect(() => {
-    const current = usePipelineStore.getState().nodes;
-    if (current.length === 0) return;
-    const params = probeToParams(modelProbe?.model_id === modelNameOrPath ? modelProbe : null);
-    const next = current.map((n) =>
-      n.id === "model"
-        ? {
-            ...n,
-            data: {
-              ...n.data,
-              modelId: modelNameOrPath,
-              entries: catalogTargetEntries,
-              params,
-              onChangeModel: modelNodeOnChange,
-            },
-          }
-        : n,
-    );
-    setNodes(next);
-  }, [modelNameOrPath, catalogTargetEntries, modelProbe, setNodes]);
 
   useEffect(() => {
     if (!geometry) return;
@@ -650,7 +554,9 @@ function CanvasInner() {
 
   const onSelectionChange = useCallback(
     (params: OnSelectionChangeParams) => {
-      const node = params.nodes.find((n) => n.type === "control") ?? params.nodes[0];
+      const node =
+        params.nodes.find((n) => n.type === "control" || n.type === "model" || n.type === "dataset") ??
+        params.nodes[0];
       setSelectedNodeId(node?.id ?? null);
       selectedEdgeIdRef.current = params.edges[0]?.id ?? null;
     },
@@ -673,7 +579,7 @@ function CanvasInner() {
           x: Math.min(maxX, Math.max(minX, dropped.x)),
           y: railY,
         };
-        usePipelineStore.getState().addControlNode(req.category, "", position, "");
+        usePipelineStore.getState().addControlNode(null, "", position, "");
         return;
       }
       if (req.kind === "dataset") {
@@ -687,9 +593,7 @@ function CanvasInner() {
         return;
       }
       if (req.kind === "model") {
-        const width = MODEL_WIDTH;
-        const height = measuredModelHeightRef.current;
-        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
+        const { minX, maxX, minY, maxY } = getBoundsFor(MODEL_WIDTH, MODEL_HEIGHT_FALLBACK);
         const position = {
           x: Math.min(maxX, Math.max(minX, dropped.x)),
           y: Math.min(maxY, Math.max(minY, dropped.y)),
@@ -965,7 +869,7 @@ function CanvasInner() {
           return;
         }
         const width = MODEL_WIDTH;
-        const height = measuredModelHeightRef.current;
+        const height = MODEL_HEIGHT_FALLBACK;
         const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
         const position = {
           x: Math.min(maxX, Math.max(minX, dropped.x)),

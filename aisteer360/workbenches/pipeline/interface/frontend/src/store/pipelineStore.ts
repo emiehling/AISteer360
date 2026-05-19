@@ -22,7 +22,7 @@ import type {
   ToolMode,
 } from "../types";
 
-const FIXTURE_NODE_TYPES = new Set(["prompt_anchor", "response_anchor", "target_model"]);
+const FIXTURE_NODE_TYPES = new Set(["prompt_anchor", "response_anchor"]);
 
 const PALETTE_HEIGHT_DEFAULT = 440;
 const PALETTE_HEIGHT_MIN = 440;
@@ -49,7 +49,7 @@ function uuid(): string {
 export type StagingKind = "control" | "dataset" | "model";
 
 export type PlacementRequest =
-  | { kind: "control"; category: ControlCategory }
+  | { kind: "control" }
   | { kind: "dataset" }
   | { kind: "model" };
 
@@ -69,6 +69,7 @@ interface PipelineStoreState {
   toolbarLocked: boolean;
   toolbarMinimized: boolean;
   placement: PlacementRequest | null;
+  targetModelNodeId: string | null;
 
   stagingKind: StagingKind | null;
   stagingMethod: string | null;
@@ -104,6 +105,8 @@ interface PipelineStoreState {
   toggleToolbarMinimized: () => void;
   startPlacement: (req: PlacementRequest) => void;
   cancelPlacement: () => void;
+  setTargetModelNodeId: (id: string | null) => void;
+  setModelNodeId: (id: string, modelId: string) => void;
 
   setStagingKind: (kind: StagingKind | null) => void;
   setStagingMethod: (method: string | null) => void;
@@ -116,7 +119,7 @@ interface PipelineStoreState {
   resetStaging: () => void;
 
   addControlNode: (
-    category: ControlCategory,
+    category: ControlCategory | null,
     method: string,
     position: XYPosition,
     label?: string,
@@ -129,6 +132,7 @@ interface PipelineStoreState {
   updateNodeRuntimeKwargs: (id: string, kwargs: Record<string, unknown>) => void;
   updateNodeLabel: (id: string, label: string) => void;
   setNodeMethod: (id: string, method: string) => void;
+  setNodeCategory: (id: string, category: ControlCategory | null) => void;
   requestDeleteNode: (id: string) => void;
   confirmDeleteNode: () => void;
   cancelDeleteNode: () => void;
@@ -159,6 +163,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   toolbarLocked: false,
   toolbarMinimized: false,
   placement: null,
+  targetModelNodeId: null,
 
   stagingKind: null,
   stagingMethod: null,
@@ -213,6 +218,29 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   toggleToolbarMinimized: () => set({ toolbarMinimized: !get().toolbarMinimized }),
   startPlacement: (req) => set({ placement: req }),
   cancelPlacement: () => set({ placement: null }),
+  setTargetModelNodeId: (id) => {
+    set({ targetModelNodeId: id });
+    if (id) {
+      const node = get().nodes.find((n) => n.id === id);
+      const modelId = (node?.data as { modelId?: string } | undefined)?.modelId;
+      if (modelId !== undefined) set({ modelNameOrPath: modelId });
+    } else {
+      set({ modelNameOrPath: "" });
+    }
+  },
+  setModelNodeId: (id, modelId) => {
+    const trimmed = modelId.trim();
+    set({
+      nodes: get().nodes.map((n) =>
+        n.id === id && n.type === "model"
+          ? { ...n, data: { ...(n.data as Record<string, unknown>), modelId: trimmed } }
+          : n,
+      ),
+    });
+    if (get().targetModelNodeId === id) {
+      set({ modelNameOrPath: trimmed });
+    }
+  },
 
   setStagingKind: (kind) => {
     set({
@@ -267,12 +295,13 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
 
   addControlNode: (category, method, position, label) => {
     const id = uuid();
+    const trimmedLabel = label?.trim();
     const data: ControlNodeData = {
       category,
       method,
       args: {},
       runtimeKwargs: {},
-      label: label && label.trim() ? label.trim() : method,
+      label: trimmedLabel ? trimmedLabel : method,
       status: "",
       params: [],
     };
@@ -309,21 +338,26 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
         modelId: trimmed,
         loaded: false,
         params: [],
-        entries: get().catalogTargetEntries,
       },
     };
+    const isFirstTarget = get().targetModelNodeId === null;
     set({ nodes: [...get().nodes, node] });
+    if (isFirstTarget) {
+      set({ targetModelNodeId: id, modelNameOrPath: trimmed });
+    }
     return id;
   },
 
   removeNode: (id) => {
     const node = get().nodes.find((n) => n.id === id);
     if (node && FIXTURE_NODE_TYPES.has(node.type ?? "")) return;
+    const wasTarget = get().targetModelNodeId === id;
     set({
       nodes: get().nodes.filter((n) => n.id !== id),
       edges: get().edges.filter((e) => e.source !== id && e.target !== id),
       selectedNodeId: get().selectedNodeId === id ? null : get().selectedNodeId,
       lockedGroups: pruneLockedGroups(get().lockedGroups, id),
+      ...(wasTarget ? { targetModelNodeId: null, modelNameOrPath: "" } : {}),
     });
   },
 
@@ -383,6 +417,26 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     });
   },
 
+  setNodeCategory: (id, category) => {
+    set({
+      nodes: get().nodes.map((n) => {
+        if (n.id !== id || !isControlNode(n)) return n;
+        const data = n.data as ControlNodeData;
+        if (data.category === category) return n;
+        return {
+          ...n,
+          data: {
+            ...data,
+            category,
+            method: "",
+            args: {},
+            params: [],
+          },
+        };
+      }),
+    });
+  },
+
   requestDeleteNode: (id) => set({ pendingDeleteNodeId: id }),
   confirmDeleteNode: () => {
     const id = get().pendingDeleteNodeId;
@@ -392,12 +446,14 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       set({ pendingDeleteNodeId: null });
       return;
     }
+    const wasTarget = get().targetModelNodeId === id;
     set({
       nodes: get().nodes.filter((n) => n.id !== id),
       edges: get().edges.filter((e) => e.source !== id && e.target !== id),
       selectedNodeId: get().selectedNodeId === id ? null : get().selectedNodeId,
       pendingDeleteNodeId: null,
       lockedGroups: pruneLockedGroups(get().lockedGroups, id),
+      ...(wasTarget ? { targetModelNodeId: null, modelNameOrPath: "" } : {}),
     });
   },
   cancelDeleteNode: () => set({ pendingDeleteNodeId: null }),
@@ -424,6 +480,8 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       edges: [],
       selectedNodeId: null,
       lockedGroups: [],
+      targetModelNodeId: null,
+      modelNameOrPath: "",
     });
   },
 
@@ -462,12 +520,15 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   toPipelineDefinition: () => {
     const controlNodes: ControlNode[] = get()
       .nodes.filter(isControlNode)
-      .filter((n) => Boolean((n.data as ControlNodeData).method))
+      .filter((n) => {
+        const d = n.data as ControlNodeData;
+        return Boolean(d.method) && Boolean(d.category);
+      })
       .map((n) => {
         const data = n.data as ControlNodeData;
         return {
           id: n.id,
-          category: data.category,
+          category: data.category as ControlCategory,
           method: data.method,
           args: data.args,
           position: [n.position.x, n.position.y],

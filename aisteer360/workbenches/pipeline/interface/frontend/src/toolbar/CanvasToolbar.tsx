@@ -1,23 +1,14 @@
 import {
   useEffect,
   useRef,
-  useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { usePipelineStore } from "../store/pipelineStore";
-import type { ControlCategory } from "../types";
 
 const DEFAULT_OFFSET_RIGHT = 12;
 const DEFAULT_OFFSET_TOP = 12;
 const EDGE_PADDING = 6;
-
-const CONTROL_CATEGORIES: { value: ControlCategory; label: string }[] = [
-  { value: "input_control", label: "Input" },
-  { value: "structural_control", label: "Structural" },
-  { value: "state_control", label: "State" },
-  { value: "output_control", label: "Output" },
-];
 
 function GripIcon() {
   return (
@@ -99,14 +90,6 @@ function ChipIcon() {
   );
 }
 
-function ChevronRightIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <polyline points="9 6 15 12 9 18" />
-    </svg>
-  );
-}
-
 export function CanvasToolbar() {
   const placement = usePipelineStore((s) => s.placement);
   const startPlacement = usePipelineStore((s) => s.startPlacement);
@@ -128,22 +111,6 @@ export function CanvasToolbar() {
     selfHeight: number;
   } | null>(null);
 
-  const [submenuOpen, setSubmenuOpen] = useState(false);
-  const submenuRef = useRef<HTMLDivElement | null>(null);
-  const submenuButtonRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    if (!submenuOpen) return;
-    const onDown = (event: globalThis.MouseEvent) => {
-      const target = event.target as Node | null;
-      if (submenuRef.current?.contains(target as Node)) return;
-      if (submenuButtonRef.current?.contains(target as Node)) return;
-      setSubmenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [submenuOpen]);
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLElement) {
@@ -151,14 +118,13 @@ export function CanvasToolbar() {
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
         if (e.target.isContentEditable) return;
       }
-      if (e.key === "Escape") {
-        if (placement) cancelPlacement();
-        if (submenuOpen) setSubmenuOpen(false);
+      if (e.key === "Escape" && placement) {
+        cancelPlacement();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [placement, cancelPlacement, submenuOpen]);
+  }, [placement, cancelPlacement]);
 
   const onGripPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (toolbarLocked) return;
@@ -209,24 +175,20 @@ export function CanvasToolbar() {
     : { right: DEFAULT_OFFSET_RIGHT, top: DEFAULT_OFFSET_TOP };
 
   const placementKind = placement?.kind ?? null;
-  const placementCategory = placement?.kind === "control" ? placement.category : null;
 
   const onSelectClick = () => {
     if (placement) cancelPlacement();
-    setSubmenuOpen(false);
   };
 
   const onNewControlClick = () => {
-    setSubmenuOpen((v) => !v);
-  };
-
-  const onPickCategory = (category: ControlCategory) => {
-    setSubmenuOpen(false);
-    startPlacement({ kind: "control", category });
+    if (placementKind === "control") {
+      cancelPlacement();
+    } else {
+      startPlacement({ kind: "control" });
+    }
   };
 
   const onDatasetClick = () => {
-    setSubmenuOpen(false);
     if (placementKind === "dataset") {
       cancelPlacement();
     } else {
@@ -235,7 +197,6 @@ export function CanvasToolbar() {
   };
 
   const onModelClick = () => {
-    setSubmenuOpen(false);
     if (placementKind === "model") {
       cancelPlacement();
     } else {
@@ -287,72 +248,50 @@ export function CanvasToolbar() {
 
       {!toolbarMinimized && (
         <div className="toolbar-body">
-          <button
-            type="button"
-            className={`toolbar-btn${placement === null ? " active" : ""}`}
-            title="Select (Esc cancels placement)"
-            aria-label="Select"
-            aria-pressed={placement === null}
-            onClick={onSelectClick}
-          >
-            <CursorIcon />
-          </button>
-          <button
-            ref={submenuButtonRef}
-            type="button"
-            className={`toolbar-btn${placementKind === "control" ? " active" : ""}${submenuOpen ? " expanded" : ""}`}
-            title="New control"
-            aria-label="New control"
-            aria-haspopup="menu"
-            aria-expanded={submenuOpen}
-            onClick={onNewControlClick}
-          >
-            <ControlIcon />
-          </button>
-          <button
-            type="button"
-            className={`toolbar-btn${placementKind === "dataset" ? " active" : ""}`}
-            title="New dataset"
-            aria-label="New dataset"
-            aria-pressed={placementKind === "dataset"}
-            onClick={onDatasetClick}
-          >
-            <DocumentIcon />
-          </button>
-          <button
-            type="button"
-            className={`toolbar-btn${placementKind === "model" ? " active" : ""}`}
-            title="New model"
-            aria-label="New model"
-            aria-pressed={placementKind === "model"}
-            onClick={onModelClick}
-          >
-            <ChipIcon />
-          </button>
-
-          {submenuOpen && (
-            <div
-              ref={submenuRef}
-              className="toolbar-submenu"
-              role="menu"
-              aria-label="Pick control category"
+          <div className="toolbar-row">
+            <button
+              type="button"
+              className={`toolbar-btn${placement === null ? " active" : ""}`}
+              title="Select (Esc cancels placement)"
+              aria-label="Select"
+              aria-pressed={placement === null}
+              onClick={onSelectClick}
             >
-              {CONTROL_CATEGORIES.map((c) => (
-                <button
-                  key={c.value}
-                  type="button"
-                  role="menuitem"
-                  className={`toolbar-submenu-item${placementCategory === c.value ? " active" : ""}`}
-                  data-category={c.value}
-                  onClick={() => onPickCategory(c.value)}
-                >
-                  <span className="toolbar-submenu-dot" aria-hidden />
-                  <span className="toolbar-submenu-label">{c.label}</span>
-                  <ChevronRightIcon />
-                </button>
-              ))}
-            </div>
-          )}
+              <CursorIcon />
+            </button>
+            <button
+              type="button"
+              className={`toolbar-btn${placementKind === "control" ? " active" : ""}`}
+              title="New control"
+              aria-label="New control"
+              aria-pressed={placementKind === "control"}
+              onClick={onNewControlClick}
+            >
+              <ControlIcon />
+            </button>
+          </div>
+          <div className="toolbar-row">
+            <button
+              type="button"
+              className={`toolbar-btn${placementKind === "dataset" ? " active" : ""}`}
+              title="New dataset"
+              aria-label="New dataset"
+              aria-pressed={placementKind === "dataset"}
+              onClick={onDatasetClick}
+            >
+              <DocumentIcon />
+            </button>
+            <button
+              type="button"
+              className={`toolbar-btn${placementKind === "model" ? " active" : ""}`}
+              title="New model"
+              aria-label="New model"
+              aria-pressed={placementKind === "model"}
+              onClick={onModelClick}
+            >
+              <ChipIcon />
+            </button>
+          </div>
         </div>
       )}
     </div>
