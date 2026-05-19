@@ -26,14 +26,23 @@ function PipelineEdgeImpl(props: EdgeProps) {
   });
 
   return (
-    <path
-      id={id}
-      d={path}
-      style={style}
-      fill="none"
-      markerEnd={markerEnd}
-      className={`pipeline-edge${selected ? " selected" : ""}`}
-    />
+    <>
+      <path
+        d={path}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={20}
+        className="pipeline-edge-hit"
+      />
+      <path
+        id={id}
+        d={path}
+        style={style}
+        fill="none"
+        markerEnd={markerEnd}
+        className={`pipeline-edge${selected ? " selected" : ""}`}
+      />
+    </>
   );
 }
 

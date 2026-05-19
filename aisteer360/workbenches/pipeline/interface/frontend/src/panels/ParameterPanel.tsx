@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import type {
   ControlCategory,
   ControlNodeData,
@@ -14,6 +14,9 @@ const CATEGORIES: { value: ControlCategory; label: string }[] = [
   { value: "state_control", label: "State" },
   { value: "output_control", label: "Output" },
 ];
+
+const CONTROL_FILE_ACCEPT = ".control,application/json";
+const DATASET_FILE_ACCEPT = ".csv,.json,.jsonl,.parquet";
 
 function sortedFields(fields: MethodFieldSpec[]): MethodFieldSpec[] {
   return [...fields].sort((a, b) => {
@@ -221,12 +224,15 @@ function SelectedNodePanel({ node }: { node: { id: string; data: ControlNodeData
   const updateNodeArgs = usePipelineStore((s) => s.updateNodeArgs);
   const updateNodeRuntimeKwargs = usePipelineStore((s) => s.updateNodeRuntimeKwargs);
   const updateNodeLabel = usePipelineStore((s) => s.updateNodeLabel);
+  const setNodeMethod = usePipelineStore((s) => s.setNodeMethod);
 
   const data = node.data;
-  const spec: MethodSpec | undefined = methods.find(
-    (m) => m.category === data.category && m.method === data.method,
-  );
-  const displayName = data.label ?? data.method;
+  const methodIsSet = Boolean(data.method);
+  const spec: MethodSpec | undefined = methodIsSet
+    ? methods.find((m) => m.category === data.category && m.method === data.method)
+    : undefined;
+  const displayName = data.label || data.method || "";
+  const categoryMethods = methods.filter((m) => m.category === data.category);
 
   return (
     <>
@@ -235,11 +241,39 @@ function SelectedNodePanel({ node }: { node: { id: string; data: ControlNodeData
         category={data.category}
         nameDisabled={false}
         categoryDisabled
-        methodSubtitle={data.method}
+        methodSubtitle={methodIsSet ? data.method : null}
         onNameChange={(next) => updateNodeLabel(node.id, next)}
       />
       <div className="panel-scroll">
-        {spec ? (
+        {!methodIsSet && (
+          <div className="panel-section">
+            <div className="panel-section-head static">
+              <span className="panel-section-arrow">▾</span>
+              <span className="panel-section-title">Method</span>
+            </div>
+            <div className="panel-section-body">
+              <select
+                className="palette-input"
+                value=""
+                onChange={(e) => {
+                  const next = e.target.value;
+                  if (next) setNodeMethod(node.id, next);
+                }}
+              >
+                <option value="">— select method —</option>
+                {categoryMethods.map((m) => (
+                  <option key={m.method} value={m.method}>
+                    {m.method}
+                  </option>
+                ))}
+              </select>
+              {categoryMethods.length === 0 && (
+                <div className="panel-empty">no methods registered for this category</div>
+              )}
+            </div>
+          </div>
+        )}
+        {methodIsSet && spec ? (
           <>
             <PanelSection
               title="Fixed Parameters"
@@ -256,7 +290,7 @@ function SelectedNodePanel({ node }: { node: { id: string; data: ControlNodeData
               emptyHint="no runtime kwargs for this control"
             />
           </>
-        ) : (
+        ) : methodIsSet ? (
           <div className="panel-section">
             <div className="panel-section-head static">
               <span className="panel-section-arrow">▾</span>
@@ -276,40 +310,61 @@ function SelectedNodePanel({ node }: { node: { id: string; data: ControlNodeData
               />
             </div>
           </div>
-        )}
+        ) : null}
       </div>
     </>
   );
 }
 
-function StagingPanel() {
-  const stagingMode = usePipelineStore((s) => s.stagingMode);
+function ControlStagingPanel() {
   const stagingMethod = usePipelineStore((s) => s.stagingMethod);
   const stagingCategory = usePipelineStore((s) => s.stagingCategory);
   const stagingName = usePipelineStore((s) => s.stagingName);
   const stagingArgs = usePipelineStore((s) => s.stagingArgs);
+  const setStagingMethod = usePipelineStore((s) => s.setStagingMethod);
   const setStagingCategory = usePipelineStore((s) => s.setStagingCategory);
   const setStagingName = usePipelineStore((s) => s.setStagingName);
   const setStagingArgs = usePipelineStore((s) => s.setStagingArgs);
   const methods = usePipelineStore((s) => s.methods);
 
-  const isLoad = stagingMode === "load";
-  const spec: MethodSpec | undefined = isLoad
+  const spec: MethodSpec | undefined = stagingMethod
     ? methods.find((m) => m.method === stagingMethod)
     : undefined;
 
-  if (isLoad && !stagingMethod) {
-    return <div className="panel-placeholder">select a control to edit parameters</div>;
-  }
+  const onLoad = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result ?? "");
+        const parsed = JSON.parse(text) as {
+          category?: ControlCategory;
+          method?: string;
+          name?: string;
+          args?: Record<string, unknown>;
+        };
+        if (parsed.method) setStagingMethod(parsed.method);
+        if (parsed.category) setStagingCategory(parsed.category);
+        if (parsed.name) setStagingName(parsed.name);
+        if (parsed.args) setStagingArgs(parsed.args);
+      } catch (err) {
+        console.error("failed to parse .control file:", err);
+      }
+    };
+    reader.readAsText(file);
+  };
 
   return (
     <>
+      <SettingsToolbar accept={CONTROL_FILE_ACCEPT} onLoadFile={onLoad} />
       <ControlHeader
         name={stagingName}
         category={stagingCategory}
         nameDisabled={false}
-        categoryDisabled={isLoad}
-        methodSubtitle={isLoad ? stagingMethod : null}
+        categoryDisabled={false}
+        methodSubtitle={stagingMethod}
         onNameChange={setStagingName}
         onCategoryChange={setStagingCategory}
       />
@@ -349,6 +404,151 @@ function StagingPanel() {
   );
 }
 
+function DatasetStagingPanel() {
+  const stagingDatasetPath = usePipelineStore((s) => s.stagingDatasetPath);
+  const stagingDatasetName = usePipelineStore((s) => s.stagingDatasetName);
+  const setStagingDatasetPath = usePipelineStore((s) => s.setStagingDatasetPath);
+  const setStagingDatasetName = usePipelineStore((s) => s.setStagingDatasetName);
+
+  const onLoad = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setStagingDatasetPath(file.name);
+    setStagingDatasetName(file.name);
+  };
+
+  return (
+    <>
+      <SettingsToolbar accept={DATASET_FILE_ACCEPT} onLoadFile={onLoad} />
+      <header className="panel-head control-settings-head">
+        <div className="control-settings-field">
+          <span className="control-settings-label">name</span>
+          <input
+            className="palette-input"
+            type="text"
+            value={stagingDatasetName}
+            placeholder="dataset"
+            onChange={(e) => setStagingDatasetName(e.target.value)}
+          />
+        </div>
+      </header>
+      <div className="panel-scroll">
+        <div className="panel-section">
+          <div className="panel-section-head static">
+            <span className="panel-section-arrow">▾</span>
+            <span className="panel-section-title">Source</span>
+          </div>
+          <div className="panel-section-body">
+            {stagingDatasetPath ? (
+              <div className="dataset-source-row" title={stagingDatasetPath}>
+                {stagingDatasetPath}
+              </div>
+            ) : (
+              <div className="panel-empty">no file loaded — click load above</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ModelStagingPanel() {
+  const stagingModelId = usePipelineStore((s) => s.stagingModelId);
+  const setStagingModelId = usePipelineStore((s) => s.setStagingModelId);
+  const [draftId, setDraftId] = useState<string>(stagingModelId);
+  const [editing, setEditing] = useState<boolean>(!stagingModelId);
+
+  const onConfirm = () => {
+    setStagingModelId(draftId.trim());
+    setEditing(false);
+  };
+
+  return (
+    <>
+      <div className="settings-toolbar">
+        <button
+          type="button"
+          className="settings-load-btn"
+          onClick={() => setEditing(true)}
+          title="enter HF model id"
+        >
+          load
+        </button>
+      </div>
+      <header className="panel-head control-settings-head">
+        <div className="control-settings-field">
+          <span className="control-settings-label">huggingface id</span>
+          {editing ? (
+            <div className="model-id-entry">
+              <input
+                className="palette-input"
+                type="text"
+                value={draftId}
+                placeholder="org/model-name"
+                onChange={(e) => setDraftId(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onConfirm();
+                }}
+                autoFocus
+              />
+              <button
+                type="button"
+                className="settings-load-btn"
+                onClick={onConfirm}
+                disabled={!draftId.trim()}
+              >
+                confirm
+              </button>
+            </div>
+          ) : (
+            <div className="model-id-display" title={stagingModelId}>
+              {stagingModelId || "—"}
+            </div>
+          )}
+        </div>
+      </header>
+    </>
+  );
+}
+
+interface SettingsToolbarProps {
+  accept: string;
+  onLoadFile: (event: ChangeEvent<HTMLInputElement>) => void;
+}
+
+function SettingsToolbar({ accept, onLoadFile }: SettingsToolbarProps) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  return (
+    <div className="settings-toolbar">
+      <button
+        type="button"
+        className="settings-load-btn"
+        onClick={() => inputRef.current?.click()}
+        title="open file"
+      >
+        load
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        onChange={onLoadFile}
+        style={{ display: "none" }}
+      />
+    </div>
+  );
+}
+
+function StagingPanel() {
+  const stagingKind = usePipelineStore((s) => s.stagingKind);
+  if (stagingKind === "control") return <ControlStagingPanel />;
+  if (stagingKind === "dataset") return <DatasetStagingPanel />;
+  if (stagingKind === "model") return <ModelStagingPanel />;
+  return <div className="panel-placeholder">pick an element type to configure</div>;
+}
+
 export function ParameterPanel() {
   const selectedNodeId = usePipelineStore((s) => s.selectedNodeId);
   const nodes = usePipelineStore((s) => s.nodes);
@@ -357,8 +557,8 @@ export function ParameterPanel() {
   const isControl = selected?.type === "control";
 
   return (
-    <aside className="parameter-panel" aria-label="Control settings">
-      <div className="palette-section-head control-settings-bar">Control Settings</div>
+    <aside className="parameter-panel" aria-label="Settings">
+      <div className="palette-section-head control-settings-bar">Settings</div>
       {isControl && selected ? (
         <SelectedNodePanel
           node={{ id: selected.id, data: selected.data as ControlNodeData }}

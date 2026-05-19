@@ -1,16 +1,18 @@
-import { useMemo, type DragEvent } from "react";
+import type { DragEvent } from "react";
 import type { ControlCategory, ControlNodeParam } from "../types";
+import type { StagingKind } from "../store/pipelineStore";
 import { usePipelineStore } from "../store/pipelineStore";
 import { StagingChip } from "./StagingChip";
 
 export const DRAG_MIME = "application/x-aisteer-control";
+export const DRAG_MIME_DATASET = "application/x-aisteer-dataset";
+export const DRAG_MIME_MODEL = "application/x-aisteer-model";
 
-const CATEGORY_LABEL: Record<ControlCategory, string> = {
-  input_control: "Input",
-  structural_control: "Structural",
-  state_control: "State",
-  output_control: "Output",
-};
+const KIND_BUTTONS: { value: StagingKind; label: string }[] = [
+  { value: "control", label: "control" },
+  { value: "dataset", label: "dataset" },
+  { value: "model", label: "model" },
+];
 
 function paramsFromArgs(args: Record<string, unknown>): ControlNodeParam[] {
   return Object.entries(args)
@@ -19,85 +21,39 @@ function paramsFromArgs(args: Record<string, unknown>): ControlNodeParam[] {
     .map(([k, v]) => ({ label: k, value: String(v) }));
 }
 
-function ModeToggle() {
-  const stagingMode = usePipelineStore((s) => s.stagingMode);
-  const setStagingMode = usePipelineStore((s) => s.setStagingMode);
+function KindToggle() {
+  const stagingKind = usePipelineStore((s) => s.stagingKind);
+  const setStagingKind = usePipelineStore((s) => s.setStagingKind);
   return (
     <div className="palette-mode-toggle" role="tablist">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={stagingMode === "new"}
-        className={`palette-mode-btn${stagingMode === "new" ? " active" : ""}`}
-        onClick={() => setStagingMode("new")}
-      >
-        new
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={stagingMode === "load"}
-        className={`palette-mode-btn${stagingMode === "load" ? " active" : ""}`}
-        onClick={() => setStagingMode("load")}
-      >
-        load
-      </button>
+      {KIND_BUTTONS.map((b) => (
+        <button
+          key={b.value}
+          type="button"
+          role="tab"
+          aria-selected={stagingKind === b.value}
+          className={`palette-mode-btn${stagingKind === b.value ? " active" : ""}`}
+          onClick={() => setStagingKind(stagingKind === b.value ? null : b.value)}
+        >
+          {b.label}
+        </button>
+      ))}
     </div>
   );
 }
 
-function LoadModeDropdown() {
-  const methods = usePipelineStore((s) => s.methods);
-  const stagingMethod = usePipelineStore((s) => s.stagingMethod);
-  const setStagingMethod = usePipelineStore((s) => s.setStagingMethod);
-
-  const sorted = useMemo(
-    () =>
-      [...methods].sort((a, b) =>
-        a.category === b.category
-          ? a.method.localeCompare(b.method)
-          : a.category.localeCompare(b.category),
-      ),
-    [methods],
-  );
-
-  return (
-    <label className="palette-field">
-      <span className="palette-field-label">control</span>
-      <select
-        className="palette-input"
-        value={stagingMethod ?? ""}
-        onChange={(e) => setStagingMethod(e.target.value || null)}
-      >
-        <option value="">— select —</option>
-        {sorted.map((m) => (
-          <option key={`${m.category}:${m.method}`} value={m.method}>
-            {`◆ ${CATEGORY_LABEL[m.category]} · ${m.method}`}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-export function LibraryPanel() {
-  const stagingMode = usePipelineStore((s) => s.stagingMode);
+function ControlChip() {
   const stagingMethod = usePipelineStore((s) => s.stagingMethod);
   const stagingCategory = usePipelineStore((s) => s.stagingCategory);
   const stagingName = usePipelineStore((s) => s.stagingName);
   const stagingArgs = usePipelineStore((s) => s.stagingArgs);
   const resetStaging = usePipelineStore((s) => s.resetStaging);
-  const addDatasetNode = usePipelineStore((s) => s.addDatasetNode);
 
-  const ready =
-    stagingMode === "load"
-      ? Boolean(stagingMethod && stagingCategory)
-      : Boolean(stagingCategory && stagingName.trim());
+  const ready = Boolean(stagingCategory && (stagingMethod || stagingName.trim()));
 
   const onDragStart = (event: DragEvent<HTMLDivElement>) => {
     if (!ready || !stagingCategory) return;
-    const method =
-      stagingMode === "load" ? stagingMethod ?? stagingName.trim() : stagingName.trim();
+    const method = stagingMethod ?? stagingName.trim();
     const label = stagingName.trim() || method;
     const payload = {
       category: stagingCategory,
@@ -115,35 +71,114 @@ export function LibraryPanel() {
     }
   };
 
-  const chipCategory: ControlCategory | "neutral" =
-    stagingCategory ?? (stagingMode === "new" ? "neutral" : "neutral");
-  const chipTitle = stagingName.trim() || (stagingMode === "load" ? stagingMethod ?? "" : "");
-  const chipParams = paramsFromArgs(stagingArgs);
+  const chipCategory: ControlCategory | "neutral" = stagingCategory ?? "neutral";
+  const chipTitle = stagingName.trim() || stagingMethod || "";
 
-  const onAddDataset = () => {
-    // Position somewhere reasonable; the canvas will clamp it within bounds.
-    addDatasetNode("dataset", { x: 240, y: 140 });
+  return (
+    <StagingChip
+      category={chipCategory}
+      title={chipTitle}
+      params={paramsFromArgs(stagingArgs)}
+      draggable={ready}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+    />
+  );
+}
+
+function DatasetChip() {
+  const stagingDatasetPath = usePipelineStore((s) => s.stagingDatasetPath);
+  const stagingDatasetName = usePipelineStore((s) => s.stagingDatasetName);
+  const resetStaging = usePipelineStore((s) => s.resetStaging);
+
+  const ready = Boolean(stagingDatasetPath);
+  const title = stagingDatasetName || "select file…";
+
+  const onDragStart = (event: DragEvent<HTMLDivElement>) => {
+    if (!ready) return;
+    const payload = {
+      name: stagingDatasetName || "dataset",
+      path: stagingDatasetPath,
+    };
+    event.dataTransfer.setData(DRAG_MIME_DATASET, JSON.stringify(payload));
+    event.dataTransfer.effectAllowed = "copy";
+  };
+
+  const onDragEnd = (event: DragEvent<HTMLDivElement>) => {
+    if (event.dataTransfer.dropEffect !== "none") {
+      resetStaging();
+    }
   };
 
   return (
-    <div className="palette-section add-control-section" role="region" aria-label="Add control">
-      <div className="palette-section-head">Add Control</div>
+    <div
+      className={`dataset-chip${ready ? " draggable" : ""}`}
+      draggable={ready}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      title={ready ? "drag onto canvas" : "load a file in Settings"}
+    >
+      <div className="dataset-chip-title" title={title}>
+        {title}
+      </div>
+      <div className="dataset-chip-footer">dataset</div>
+    </div>
+  );
+}
+
+function ModelChip() {
+  const stagingModelId = usePipelineStore((s) => s.stagingModelId);
+  const resetStaging = usePipelineStore((s) => s.resetStaging);
+
+  const ready = Boolean(stagingModelId.trim());
+  const title = stagingModelId.trim() || "enter HF id…";
+
+  const onDragStart = (event: DragEvent<HTMLDivElement>) => {
+    if (!ready) return;
+    const payload = { modelId: stagingModelId.trim() };
+    event.dataTransfer.setData(DRAG_MIME_MODEL, JSON.stringify(payload));
+    event.dataTransfer.effectAllowed = "copy";
+  };
+
+  const onDragEnd = (event: DragEvent<HTMLDivElement>) => {
+    if (event.dataTransfer.dropEffect !== "none") {
+      resetStaging();
+    }
+  };
+
+  return (
+    <div
+      className={`model-chip${ready ? " draggable" : ""}`}
+      draggable={ready}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      title={ready ? "drag onto canvas" : "enter an HF id in Settings"}
+    >
+      <div className="model-chip-title" title={title}>
+        {title}
+      </div>
+      <div className="model-chip-footer">model</div>
+    </div>
+  );
+}
+
+function StageContent() {
+  const stagingKind = usePipelineStore((s) => s.stagingKind);
+  if (stagingKind === "control") return <ControlChip />;
+  if (stagingKind === "dataset") return <DatasetChip />;
+  if (stagingKind === "model") return <ModelChip />;
+  return <div className="palette-stage-empty">pick an element type above</div>;
+}
+
+export function LibraryPanel() {
+  return (
+    <div className="palette-section add-control-section" role="region" aria-label="Add element">
+      <div className="palette-section-head">Add element</div>
       <div className="palette-section-body">
-        <ModeToggle />
-        {stagingMode === "load" && <LoadModeDropdown />}
-        <div className="palette-stage" aria-label="Control staging area">
-          <StagingChip
-            category={chipCategory}
-            title={chipTitle}
-            params={chipParams}
-            draggable={ready}
-            onDragStart={onDragStart}
-            onDragEnd={onDragEnd}
-          />
+        <KindToggle />
+        <div className="palette-stage" aria-label="Element staging area">
+          <StageContent />
         </div>
-        <button type="button" className="palette-dataset-btn" onClick={onAddDataset}>
-          + dataset
-        </button>
       </div>
     </div>
   );

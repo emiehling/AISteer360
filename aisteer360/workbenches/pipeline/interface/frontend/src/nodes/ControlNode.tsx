@@ -44,7 +44,7 @@ function CloseIcon() {
 function ControlNodeImpl({ id, data, selected }: NodeProps<ControlNodeData>) {
   const requestDeleteNode = usePipelineStore((s) => s.requestDeleteNode);
 
-  const title = data.label ?? data.method;
+  const title = data.label || data.method || "method?";
 
   const displayParams: ControlNodeParam[] = (
     data.params && data.params.length > 0

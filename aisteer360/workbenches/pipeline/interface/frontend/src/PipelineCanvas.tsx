@@ -17,9 +17,10 @@ import { nodeTypes } from "./nodes/nodeTypes";
 import { usePipelineStore } from "./store/pipelineStore";
 import { makeIsValidConnection } from "./canvas/validation";
 import { ConfirmDialog } from "./canvas/ConfirmDialog";
-import { DRAG_MIME } from "./panels/LibraryPanel";
+import { DRAG_MIME, DRAG_MIME_DATASET, DRAG_MIME_MODEL } from "./panels/LibraryPanel";
 import { probeModel } from "./api/model";
 import type { ControlCategory, ModelProbe } from "./types";
+import type { PlacementRequest } from "./store/pipelineStore";
 
 const EDGE_BUFFER = 32;
 const ANCHOR_BODY_WIDTH = 100;
@@ -320,6 +321,8 @@ function CanvasInner() {
   const setNodes = usePipelineStore((s) => s.setNodes);
   const onNodesChangeStore = usePipelineStore((s) => s.onNodesChange);
   const addControlNode = usePipelineStore((s) => s.addControlNode);
+  const addDatasetNode = usePipelineStore((s) => s.addDatasetNode);
+  const addModelNode = usePipelineStore((s) => s.addModelNode);
   const removeEdge = usePipelineStore((s) => s.removeEdge);
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId);
   const activeTool = usePipelineStore((s) => s.activeTool);
@@ -329,6 +332,8 @@ function CanvasInner() {
   const lockedGroups = usePipelineStore((s) => s.lockedGroups);
   const selectedNodeId = usePipelineStore((s) => s.selectedNodeId);
   const paletteMinimized = usePipelineStore((s) => s.paletteMinimized);
+  const placement = usePipelineStore((s) => s.placement);
+  const cancelPlacement = usePipelineStore((s) => s.cancelPlacement);
 
   const { screenToFlowPosition, setViewport } = useReactFlow();
   const viewport = useViewport();
@@ -641,10 +646,13 @@ function CanvasInner() {
     [],
   );
 
+  const selectedEdgeIdRef = useRef<string | null>(null);
+
   const onSelectionChange = useCallback(
     (params: OnSelectionChangeParams) => {
       const node = params.nodes.find((n) => n.type === "control") ?? params.nodes[0];
       setSelectedNodeId(node?.id ?? null);
+      selectedEdgeIdRef.current = params.edges[0]?.id ?? null;
     },
     [setSelectedNodeId],
   );
@@ -655,21 +663,88 @@ function CanvasInner() {
     }
   }, []);
 
-  const onPaneClick = useCallback(() => {
-    usePipelineStore.getState().setPaletteMinimized(true);
-  }, []);
+  const placeAtScreen = useCallback(
+    (req: PlacementRequest, screenX: number, screenY: number) => {
+      const dropped = screenToFlowPosition({ x: screenX, y: screenY });
+      if (req.kind === "control") {
+        const { width, height } = NODE_BOUNDS_FALLBACK;
+        const { minX, maxX, railY } = getBoundsFor(width, height);
+        const position = {
+          x: Math.min(maxX, Math.max(minX, dropped.x)),
+          y: railY,
+        };
+        usePipelineStore.getState().addControlNode(req.category, "", position, "");
+        return;
+      }
+      if (req.kind === "dataset") {
+        const { width, height } = DATASET_FALLBACK;
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
+        const position = {
+          x: Math.min(maxX, Math.max(minX, dropped.x)),
+          y: Math.min(maxY, Math.max(minY, dropped.y)),
+        };
+        usePipelineStore.getState().addDatasetNode("dataset", position);
+        return;
+      }
+      if (req.kind === "model") {
+        const width = MODEL_WIDTH;
+        const height = measuredModelHeightRef.current;
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
+        const position = {
+          x: Math.min(maxX, Math.max(minX, dropped.x)),
+          y: Math.min(maxY, Math.max(minY, dropped.y)),
+        };
+        usePipelineStore.getState().addModelNode("", position);
+      }
+    },
+    [getBoundsFor, screenToFlowPosition],
+  );
+
+  const onPaneClick = useCallback(
+    (event: React.MouseEvent) => {
+      const current = usePipelineStore.getState().placement;
+      if (current) {
+        placeAtScreen(current, event.clientX, event.clientY);
+        cancelPlacement();
+        return;
+      }
+      usePipelineStore.getState().setPaletteMinimized(true);
+    },
+    [cancelPlacement, placeAtScreen],
+  );
 
   const onEdgeClick = useCallback(
     (_event: React.MouseEvent, edge: Edge) => {
-      if (activeTool === "erase") {
-        removeEdge(edge.id);
-      }
+      selectedEdgeIdRef.current = edge.id;
     },
-    [activeTool, removeEdge],
+    [],
   );
 
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLElement) {
+        const tag = event.target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (event.target.isContentEditable) return;
+      }
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      const edgeId = selectedEdgeIdRef.current;
+      if (!edgeId) return;
+      event.preventDefault();
+      removeEdge(edgeId);
+      selectedEdgeIdRef.current = null;
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [removeEdge]);
+
   const onDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
-    if (Array.from(event.dataTransfer.types).includes(DRAG_MIME)) {
+    const types = Array.from(event.dataTransfer.types);
+    if (
+      types.includes(DRAG_MIME) ||
+      types.includes(DRAG_MIME_DATASET) ||
+      types.includes(DRAG_MIME_MODEL)
+    ) {
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
     }
@@ -833,39 +908,81 @@ function CanvasInner() {
 
   const onDrop = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
-      const raw = event.dataTransfer.getData(DRAG_MIME);
-      if (!raw) return;
+      const controlRaw = event.dataTransfer.getData(DRAG_MIME);
+      const datasetRaw = event.dataTransfer.getData(DRAG_MIME_DATASET);
+      const modelRaw = event.dataTransfer.getData(DRAG_MIME_MODEL);
+      if (!controlRaw && !datasetRaw && !modelRaw) return;
       event.preventDefault();
-      let parsed: {
-        category: ControlCategory;
-        method: string;
-        args?: Record<string, unknown>;
-        label?: string;
-      };
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
+      const dropped = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+
+      if (controlRaw) {
+        let parsed: {
+          category: ControlCategory;
+          method: string;
+          args?: Record<string, unknown>;
+          label?: string;
+        };
+        try {
+          parsed = JSON.parse(controlRaw);
+        } catch {
+          return;
+        }
+        const { width, height } = NODE_BOUNDS_FALLBACK;
+        const { minX, maxX, railY } = getBoundsFor(width, height);
+        const position = {
+          x: Math.min(maxX, Math.max(minX, dropped.x)),
+          y: railY,
+        };
+        const id = addControlNode(parsed.category, parsed.method, position, parsed.label);
+        if (parsed.args && Object.keys(parsed.args).length > 0) {
+          usePipelineStore.getState().updateNodeArgs(id, parsed.args);
+        }
         return;
       }
-      const dropped = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      const { width, height } = NODE_BOUNDS_FALLBACK;
-      const { minX, maxX, railY } = getBoundsFor(width, height);
-      const position = {
-        x: Math.min(maxX, Math.max(minX, dropped.x)),
-        y: railY,
-      };
-      const id = addControlNode(parsed.category, parsed.method, position, parsed.label);
-      if (parsed.args && Object.keys(parsed.args).length > 0) {
-        usePipelineStore.getState().updateNodeArgs(id, parsed.args);
+
+      if (datasetRaw) {
+        let parsed: { name?: string; path?: string };
+        try {
+          parsed = JSON.parse(datasetRaw);
+        } catch {
+          return;
+        }
+        const { width, height } = DATASET_FALLBACK;
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
+        const position = {
+          x: Math.min(maxX, Math.max(minX, dropped.x)),
+          y: Math.min(maxY, Math.max(minY, dropped.y)),
+        };
+        addDatasetNode(parsed.name || "dataset", position);
+        return;
+      }
+
+      if (modelRaw) {
+        let parsed: { modelId?: string };
+        try {
+          parsed = JSON.parse(modelRaw);
+        } catch {
+          return;
+        }
+        const width = MODEL_WIDTH;
+        const height = measuredModelHeightRef.current;
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
+        const position = {
+          x: Math.min(maxX, Math.max(minX, dropped.x)),
+          y: Math.min(maxY, Math.max(minY, dropped.y)),
+        };
+        addModelNode(parsed.modelId || "", position);
+        return;
       }
     },
-    [addControlNode, screenToFlowPosition, getBoundsFor],
+    [addControlNode, addDatasetNode, addModelNode, screenToFlowPosition, getBoundsFor],
   );
 
   return (
     <div
       className="canvas-area"
       data-active-tool={activeTool}
+      data-placing={placement ? placement.kind : undefined}
       ref={wrapperRef}
       onDragOver={onDragOver}
       onDrop={onDrop}
@@ -892,8 +1009,9 @@ function CanvasInner() {
         onEdgeClick={onEdgeClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        nodesConnectable={activeTool === "connect"}
+        nodesConnectable={true}
         connectionMode={ConnectionMode.Loose}
+        connectionRadius={48}
         connectOnClick={false}
         isValidConnection={isValidConnection}
         defaultEdgeOptions={{ type: "pipeline", markerEnd: EDGE_ARROW_MARKER }}

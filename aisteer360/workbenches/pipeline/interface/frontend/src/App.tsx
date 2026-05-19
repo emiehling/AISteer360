@@ -7,6 +7,7 @@ import { PipelineCanvas } from "./PipelineCanvas";
 import { CanvasToolbar } from "./toolbar/CanvasToolbar";
 import { HintBar } from "./toolbar/HintBar";
 import { PaletteSplitter } from "./toolbar/PaletteSplitter";
+import { PlacementGhost } from "./toolbar/PlacementGhost";
 import { SessionStub } from "./session/SessionStub";
 import { usePipelineStore } from "./store/pipelineStore";
 
@@ -82,6 +83,7 @@ export function App() {
         )}
       </div>
       <SessionStub />
+      <PlacementGhost />
     </div>
   );
 }
