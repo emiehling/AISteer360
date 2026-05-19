@@ -59,6 +59,7 @@ interface PipelineStoreState {
   activeTool: ToolMode;
   sessionId: string | null;
   paletteHeight: number;
+  paletteMinimized: boolean;
 
   stagingMode: StagingMode;
   stagingMethod: string | null;
@@ -82,6 +83,8 @@ interface PipelineStoreState {
   setActiveTool: (mode: ToolMode) => void;
   setSessionId: (id: string | null) => void;
   setPaletteHeight: (px: number) => void;
+  setPaletteMinimized: (v: boolean) => void;
+  togglePaletteMinimized: () => void;
 
   setStagingMode: (mode: StagingMode) => void;
   setStagingMethod: (method: string | null) => void;
@@ -127,6 +130,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   activeTool: "select",
   sessionId: null,
   paletteHeight: PALETTE_HEIGHT_DEFAULT,
+  paletteMinimized: false,
 
   stagingMode: "new",
   stagingMethod: null,
@@ -169,6 +173,8 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     const clamped = Math.max(PALETTE_HEIGHT_MIN, Math.min(PALETTE_HEIGHT_MAX, snapped));
     set({ paletteHeight: clamped });
   },
+  setPaletteMinimized: (v) => set({ paletteMinimized: v }),
+  togglePaletteMinimized: () => set({ paletteMinimized: !get().paletteMinimized }),
 
   setStagingMode: (mode) => {
     set({

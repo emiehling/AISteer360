@@ -187,9 +187,16 @@ interface SeamIndicatorsProps {
   nodes: Node[];
   lockedGroups: string[][];
   sizeForNode: (node: Node) => { width: number; height: number };
+  getBoundsFor: (width: number, height: number) => {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    railY: number;
+  };
 }
 
-function SeamIndicators({ nodes, lockedGroups, sizeForNode }: SeamIndicatorsProps) {
+function SeamIndicators({ nodes, lockedGroups, sizeForNode, getBoundsFor }: SeamIndicatorsProps) {
   const items: {
     key: string;
     left: number;
@@ -223,6 +230,37 @@ function SeamIndicators({ nodes, lockedGroups, sizeForNode }: SeamIndicatorsProp
   const onSeamClick = (event: React.MouseEvent, leftIds: string[], rightIds: string[]) => {
     event.stopPropagation();
     usePipelineStore.getState().splitLockGroup(leftIds, rightIds);
+
+    // visibly separate: try to nudge the right group rightward by a gap; if that
+    // would clamp against the right rail, nudge the left group leftward instead.
+    const GAP = 4 * GRID_SIZE;
+    const allNodes = usePipelineStore.getState().nodes;
+    const byIdMap = new Map(allNodes.map((n) => [n.id, n]));
+    const rightMembers = rightIds.map((id) => byIdMap.get(id)).filter((n): n is Node => Boolean(n));
+    const leftMembers = leftIds.map((id) => byIdMap.get(id)).filter((n): n is Node => Boolean(n));
+    if (rightMembers.length === 0 && leftMembers.length === 0) return;
+
+    const tryShift = (members: Node[], dx: number) => {
+      const moves = new Map<string, { x: number; y: number }>();
+      for (const m of members) {
+        const { width, height } = sizeForNode(m);
+        const { minX, maxX } = getBoundsFor(width, height);
+        const x = m.position.x + dx;
+        if (x < minX - 0.5 || x > maxX + 0.5) return null;
+        moves.set(m.id, { x, y: m.position.y });
+      }
+      return moves;
+    };
+
+    let moves = tryShift(rightMembers, GAP);
+    if (!moves) moves = tryShift(leftMembers, -GAP);
+    if (!moves) return;
+
+    const next = allNodes.map((n) => {
+      const upd = moves!.get(n.id);
+      return upd ? { ...n, position: upd } : n;
+    });
+    usePipelineStore.getState().setNodes(next);
   };
   return (
     <>
@@ -296,6 +334,10 @@ function CanvasInner() {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [geometry, setGeometry] = useState<CanvasGeometry | null>(null);
   const measuredModelHeightRef = useRef<number>(MODEL_HEIGHT_FALLBACK);
+  // vertical layout (centerY/anchorY/modelY) is captured once at initial mount
+  // and never recomputed from canvas height afterwards — palette resize/minimize
+  // changes the canvas height but must not pull anchors or the model vertically.
+  const lockedVerticalRef = useRef<{ centerY: number; anchorY: number; modelY: number } | null>(null);
   // group-drag bookkeeping: when a locked-group member is dragged, we keep
   // the per-member offset relative to the dragged node so groupmates follow.
   const dragGroupRef = useRef<{
@@ -309,7 +351,10 @@ function CanvasInner() {
     const wrapper = wrapperRef.current;
     const w = wrapper?.clientWidth ?? 1100;
     const h = wrapper?.clientHeight ?? 600;
-    return computeGeometry(w, h, measuredModelHeightRef.current);
+    const geom = computeGeometry(w, h, measuredModelHeightRef.current);
+    const locked = lockedVerticalRef.current;
+    if (!locked) return geom;
+    return { ...geom, centerY: locked.centerY, anchorY: locked.anchorY, modelY: locked.modelY };
   }, []);
 
   const sizeForNode = useCallback((node: Node): { width: number; height: number } => {
@@ -413,8 +458,9 @@ function CanvasInner() {
       if (modelHeightChanged) {
         const geom = computeGeometryNow();
         setGeometry(geom);
+        // keep model X aligned to geometry but preserve its current Y (vertical is locked).
         const next = usePipelineStore.getState().nodes.map((n) =>
-          n.id === "model" ? { ...n, position: { x: geom.modelX, y: geom.modelY } } : n,
+          n.id === "model" ? { ...n, position: { x: geom.modelX, y: n.position.y } } : n,
         );
         setNodes(next);
       }
@@ -427,6 +473,13 @@ function CanvasInner() {
     if (!wrapper) return;
 
     const initial = computeGeometryNow();
+    if (!lockedVerticalRef.current) {
+      lockedVerticalRef.current = {
+        centerY: initial.centerY,
+        anchorY: initial.anchorY,
+        modelY: initial.modelY,
+      };
+    }
     setGeometry(initial);
 
     if (usePipelineStore.getState().nodes.length === 0) {
@@ -440,13 +493,19 @@ function CanvasInner() {
       const entry = entries[0];
       if (!entry) return;
       const { width, height } = entry.contentRect;
-      const geom = computeGeometry(width, height, measuredModelHeightRef.current);
+      const raw = computeGeometry(width, height, measuredModelHeightRef.current);
+      const locked = lockedVerticalRef.current;
+      const geom: CanvasGeometry = locked
+        ? { ...raw, centerY: locked.centerY, anchorY: locked.anchorY, modelY: locked.modelY }
+        : raw;
       setGeometry(geom);
+      // only reposition fixtures along X — Y is locked at initial layout so palette
+      // resize/minimize doesn't pull anchors or the model vertically.
       const current = usePipelineStore.getState().nodes;
       const next = current.map((n) => {
-        if (n.id === "anchor-prompt") return { ...n, position: { x: geom.promptX, y: geom.anchorY } };
-        if (n.id === "model") return { ...n, position: { x: geom.modelX, y: geom.modelY } };
-        if (n.id === "anchor-response") return { ...n, position: { x: geom.responseX, y: geom.anchorY } };
+        if (n.id === "anchor-prompt") return { ...n, position: { x: geom.promptX, y: n.position.y } };
+        if (n.id === "model") return { ...n, position: { x: geom.modelX, y: n.position.y } };
+        if (n.id === "anchor-response") return { ...n, position: { x: geom.responseX, y: n.position.y } };
         return n;
       });
       setNodes(next);
@@ -516,9 +575,16 @@ function CanvasInner() {
     (params: OnSelectionChangeParams) => {
       const node = params.nodes.find((n) => n.type === "control") ?? params.nodes[0];
       setSelectedNodeId(node?.id ?? null);
+      if (node?.type === "control") {
+        usePipelineStore.getState().setPaletteMinimized(false);
+      }
     },
     [setSelectedNodeId],
   );
+
+  const onPaneClick = useCallback(() => {
+    usePipelineStore.getState().setPaletteMinimized(true);
+  }, []);
 
   const onEdgeClick = useCallback(
     (_event: React.MouseEvent, edge: Edge) => {
@@ -732,7 +798,12 @@ function CanvasInner() {
       onDrop={onDrop}
     >
       <GridOverlay geometry={geometry} />
-      <SeamIndicators nodes={nodes} lockedGroups={lockedGroups} sizeForNode={sizeForNode} />
+      <SeamIndicators
+        nodes={nodes}
+        lockedGroups={lockedGroups}
+        sizeForNode={sizeForNode}
+        getBoundsFor={getBoundsFor}
+      />
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -742,6 +813,7 @@ function CanvasInner() {
         onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
         onSelectionChange={onSelectionChange}
+        onPaneClick={onPaneClick}
         onEdgeClick={onEdgeClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}

@@ -10,11 +10,15 @@ import { PaletteSplitter } from "./toolbar/PaletteSplitter";
 import { SessionStub } from "./session/SessionStub";
 import { usePipelineStore } from "./store/pipelineStore";
 
+const PALETTE_MINIMIZED_HEIGHT = 24;
+
 export function App() {
   const setMethods = usePipelineStore((s) => s.setMethods);
   const setCatalogTargetEntries = usePipelineStore((s) => s.setCatalogTargetEntries);
   const setModelNameOrPath = usePipelineStore((s) => s.setModelNameOrPath);
   const paletteHeight = usePipelineStore((s) => s.paletteHeight);
+  const paletteMinimized = usePipelineStore((s) => s.paletteMinimized);
+  const togglePaletteMinimized = usePipelineStore((s) => s.togglePaletteMinimized);
   useEffect(() => {
     fetchMethods()
       .then(setMethods)
@@ -33,6 +37,8 @@ export function App() {
       .catch((err) => console.error("fetchCatalog failed:", err));
   }, [setMethods, setCatalogTargetEntries, setModelNameOrPath]);
 
+  const effectiveHeight = paletteMinimized ? PALETTE_MINIMIZED_HEIGHT : paletteHeight;
+
   return (
     <div className="canvas-region">
       <div className="canvas-stack">
@@ -40,10 +46,43 @@ export function App() {
         <CanvasToolbar />
         <HintBar />
       </div>
-      <PaletteSplitter />
-      <div className="palette" style={{ height: paletteHeight }}>
-        <LibraryPanel />
-        <ParameterPanel />
+      {!paletteMinimized && <PaletteSplitter />}
+      <div
+        className={`palette${paletteMinimized ? " minimized" : ""}`}
+        style={{ height: effectiveHeight }}
+      >
+        {paletteMinimized ? (
+          <div className="palette-minimized-bar">
+            <span className="palette-minimized-label">palette</span>
+            <button
+              type="button"
+              className="palette-toggle-btn"
+              onClick={togglePaletteMinimized}
+              aria-label="Expand palette"
+              title="expand palette"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="18 15 12 9 6 15" />
+              </svg>
+            </button>
+          </div>
+        ) : (
+          <>
+            <LibraryPanel />
+            <ParameterPanel />
+            <button
+              type="button"
+              className="palette-toggle-btn palette-toggle-btn-floating"
+              onClick={togglePaletteMinimized}
+              aria-label="Minimize palette"
+              title="minimize palette"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+          </>
+        )}
       </div>
       <SessionStub />
     </div>
