@@ -24,6 +24,11 @@ import type {
 
 const FIXTURE_NODE_TYPES = new Set(["prompt_anchor", "response_anchor"]);
 
+// synthetic group nodes have ids starting with this prefix. they're created
+// by the canvas when a locked control group has 2+ members and removed when
+// the group dissolves.
+export const GROUP_NODE_ID_PREFIX = "group:";
+
 const PALETTE_HEIGHT_DEFAULT = 440;
 const PALETTE_HEIGHT_MIN = 440;
 const PALETTE_HEIGHT_MAX = 720;
@@ -33,13 +38,30 @@ function isControlNode(n: Node): boolean {
   return n.type === "control";
 }
 
-function pruneLockedGroups(groups: string[][], removedId: string): string[][] {
-  const next: string[][] = [];
+export interface LockedGroup {
+  id: string;
+  members: string[];
+}
+
+function pruneLockedGroups(groups: LockedGroup[], removedId: string): LockedGroup[] {
+  const next: LockedGroup[] = [];
   for (const group of groups) {
-    const filtered = group.filter((id) => id !== removedId);
-    if (filtered.length >= 2) next.push(filtered);
+    const filtered = group.members.filter((id) => id !== removedId);
+    if (filtered.length >= 2) next.push({ id: group.id, members: filtered });
   }
   return next;
+}
+
+/** Returns the set of group ids that existed in `before` but no longer survive
+ *  in `after` — those groups have dissolved and any synthetic group nodes /
+ *  edges referencing them should be dropped. */
+function dissolvedGroupIds(before: LockedGroup[], after: LockedGroup[]): Set<string> {
+  const surviving = new Set(after.map((g) => g.id));
+  const dissolved = new Set<string>();
+  for (const g of before) {
+    if (!surviving.has(g.id)) dissolved.add(g.id);
+  }
+  return dissolved;
 }
 
 function uuid(): string {
@@ -86,6 +108,9 @@ interface PipelineStoreState {
   // the canvas whenever geometry changes; consumed by collectNodes when called
   // from the toolbar (which doesn't know the canvas geometry directly).
   canvasBounds: { left: number; right: number; top: number; bottom: number } | null;
+  // ID prefix for synthetic group nodes so callers can recognize them and
+  // exclude them from pipeline definitions etc.
+  // see also: GROUP_NODE_ID_PREFIX exported from the store module.
   pendingDeleteNodeId: string | null;
   pendingConfirm: {
     title: string;
@@ -94,7 +119,7 @@ interface PipelineStoreState {
     cancelLabel?: string;
     onConfirm: () => void;
   } | null;
-  lockedGroups: string[][];
+  lockedGroups: LockedGroup[];
 
   setNodes: (nodes: Node[]) => void;
   setEdges: (edges: Edge[]) => void;
@@ -169,7 +194,7 @@ interface PipelineStoreState {
   toPipelineDefinition: () => PipelineDefinition;
   getRuntimeKwargs: () => Record<string, unknown>;
 
-  getGroupOf: (id: string) => string[] | null;
+  getGroupOf: (id: string) => LockedGroup | null;
   mergeLockGroups: (idA: string, idB: string) => void;
   removeFromLockGroup: (id: string) => void;
   splitLockGroup: (leftIds: string[], rightIds: string[]) => void;
@@ -415,12 +440,23 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   removeNode: (id) => {
     const node = get().nodes.find((n) => n.id === id);
     if (node && FIXTURE_NODE_TYPES.has(node.type ?? "")) return;
+    // synthetic group nodes are managed via lockedGroups — no direct removal.
+    if (node && node.type === "group") return;
     const wasTarget = get().targetModelNodeId === id;
+    const beforeGroups = get().lockedGroups;
+    const afterGroups = pruneLockedGroups(beforeGroups, id);
+    const dissolved = dissolvedGroupIds(beforeGroups, afterGroups);
     set({
-      nodes: get().nodes.filter((n) => n.id !== id),
-      edges: get().edges.filter((e) => e.source !== id && e.target !== id),
+      nodes: get().nodes.filter((n) => n.id !== id && !dissolved.has(n.id)),
+      edges: get().edges.filter(
+        (e) =>
+          e.source !== id &&
+          e.target !== id &&
+          !dissolved.has(e.source) &&
+          !dissolved.has(e.target),
+      ),
       selectedNodeId: get().selectedNodeId === id ? null : get().selectedNodeId,
-      lockedGroups: pruneLockedGroups(get().lockedGroups, id),
+      lockedGroups: afterGroups,
       ...(wasTarget ? { targetModelNodeId: null, modelNameOrPath: "" } : {}),
     });
   },
@@ -432,6 +468,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       const node = allNodes.find((n) => n.id === id);
       if (!node) continue;
       if (FIXTURE_NODE_TYPES.has(node.type ?? "")) continue;
+      if (node.type === "group") continue;  // managed via lockedGroups
       removableNodeIds.add(id);
     }
 
@@ -460,10 +497,13 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     const wasTargetRemoved =
       get().targetModelNodeId !== null && removableNodeIds.has(get().targetModelNodeId!);
 
-    let lockedGroups = get().lockedGroups;
+    const beforeGroups = get().lockedGroups;
+    let lockedGroups = beforeGroups;
     for (const id of removableNodeIds) {
       lockedGroups = pruneLockedGroups(lockedGroups, id);
     }
+    const dissolved = dissolvedGroupIds(beforeGroups, lockedGroups);
+    for (const gid of dissolved) removableNodeIds.add(gid);
 
     const nextNodes = allNodes.filter((n) => !removableNodeIds.has(n.id));
     const nextEdges = allEdges.filter(
@@ -502,11 +542,21 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       if (sourceNode && !sourceIsFixture) {
         const sourceId = sourceNode.id;
         const wasTarget = get().targetModelNodeId === sourceId;
+        const beforeGroups = get().lockedGroups;
+        const afterGroups = pruneLockedGroups(beforeGroups, sourceId);
+        const dissolved = dissolvedGroupIds(beforeGroups, afterGroups);
         set({
-          nodes: get().nodes.filter((n) => n.id !== sourceId),
-          edges: edges.filter((e) => e.id !== id && e.source !== sourceId && e.target !== sourceId),
+          nodes: get().nodes.filter((n) => n.id !== sourceId && !dissolved.has(n.id)),
+          edges: edges.filter(
+            (e) =>
+              e.id !== id &&
+              e.source !== sourceId &&
+              e.target !== sourceId &&
+              !dissolved.has(e.source) &&
+              !dissolved.has(e.target),
+          ),
           selectedNodeId: get().selectedNodeId === sourceId ? null : get().selectedNodeId,
-          lockedGroups: pruneLockedGroups(get().lockedGroups, sourceId),
+          lockedGroups: afterGroups,
           ...(wasTarget ? { targetModelNodeId: null, modelNameOrPath: "" } : {}),
         });
         return;
@@ -597,12 +647,21 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       return;
     }
     const wasTarget = get().targetModelNodeId === id;
+    const beforeGroups = get().lockedGroups;
+    const afterGroups = pruneLockedGroups(beforeGroups, id);
+    const dissolved = dissolvedGroupIds(beforeGroups, afterGroups);
     set({
-      nodes: get().nodes.filter((n) => n.id !== id),
-      edges: get().edges.filter((e) => e.source !== id && e.target !== id),
+      nodes: get().nodes.filter((n) => n.id !== id && !dissolved.has(n.id)),
+      edges: get().edges.filter(
+        (e) =>
+          e.source !== id &&
+          e.target !== id &&
+          !dissolved.has(e.source) &&
+          !dissolved.has(e.target),
+      ),
       selectedNodeId: get().selectedNodeId === id ? null : get().selectedNodeId,
       pendingDeleteNodeId: null,
-      lockedGroups: pruneLockedGroups(get().lockedGroups, id),
+      lockedGroups: afterGroups,
       ...(wasTarget ? { targetModelNodeId: null, modelNameOrPath: "" } : {}),
     });
   },
@@ -683,35 +742,86 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   },
 
   getGroupOf: (id) => {
-    const group = get().lockedGroups.find((g) => g.includes(id));
+    const group = get().lockedGroups.find((g) => g.members.includes(id));
     return group ?? null;
   },
   mergeLockGroups: (idA, idB) => {
     const groups = get().lockedGroups;
-    const groupA = groups.find((g) => g.includes(idA));
-    const groupB = groups.find((g) => g.includes(idB));
+    const groupA = groups.find((g) => g.members.includes(idA));
+    const groupB = groups.find((g) => g.members.includes(idB));
     if (groupA && groupA === groupB) return;
     const members = new Set<string>();
-    if (groupA) groupA.forEach((m) => members.add(m));
+    if (groupA) groupA.members.forEach((m) => members.add(m));
     else members.add(idA);
-    if (groupB) groupB.forEach((m) => members.add(m));
+    if (groupB) groupB.members.forEach((m) => members.add(m));
     else members.add(idB);
+    // pick a stable id: prefer existing groupA's id, else groupB's, else fresh.
+    const reusedId = groupA?.id ?? groupB?.id ?? `${GROUP_NODE_ID_PREFIX}${uuid()}`;
     const next = groups.filter((g) => g !== groupA && g !== groupB);
-    next.push(Array.from(members));
-    set({ lockedGroups: next });
+    next.push({ id: reusedId, members: Array.from(members) });
+
+    // edge migration: rewrite any edges sourced from a member to source from
+    // the group node instead. if multiple migrated edges exist, keep the
+    // oldest (first in the edges array) and drop the rest. inputs are left
+    // alone — only outputs are constrained.
+    const dissolvedGroupIds = new Set<string>();
+    if (groupA && groupA.id !== reusedId) dissolvedGroupIds.add(groupA.id);
+    if (groupB && groupB.id !== reusedId) dissolvedGroupIds.add(groupB.id);
+    const memberSet = members;
+    const currentEdges = get().edges;
+    const migrated: typeof currentEdges = [];
+    let firstSourceFromGroup: string | null = null;
+    for (const e of currentEdges) {
+      const wasFromMember = memberSet.has(e.source);
+      const wasFromOldGroup = dissolvedGroupIds.has(e.source);
+      if (wasFromMember || wasFromOldGroup) {
+        if (firstSourceFromGroup === null) {
+          firstSourceFromGroup = e.id;
+          migrated.push({ ...e, source: reusedId, sourceHandle: null });
+        } else {
+          // drop additional source edges — only one output across the group.
+        }
+      } else {
+        migrated.push(e);
+      }
+    }
+    set({ lockedGroups: next, edges: migrated });
   },
   removeFromLockGroup: (id) => {
-    set({ lockedGroups: pruneLockedGroups(get().lockedGroups, id) });
+    const before = get().lockedGroups.find((g) => g.members.includes(id));
+    if (!before) return;
+    const pruned = pruneLockedGroups(get().lockedGroups, id);
+    const stillExists = pruned.some((g) => g.id === before.id);
+    let edges = get().edges;
+    let nodes = get().nodes;
+    if (!stillExists) {
+      // group dissolved — drop the synthetic group node and any edges
+      // sourced from / targeted at it.
+      edges = edges.filter((e) => e.source !== before.id && e.target !== before.id);
+      nodes = nodes.filter((n) => n.id !== before.id);
+    }
+    set({ lockedGroups: pruned, edges, nodes });
   },
   splitLockGroup: (leftIds, rightIds) => {
     const groups = get().lockedGroups;
     const all = new Set<string>([...leftIds, ...rightIds]);
-    const containing = groups.find((g) => g.some((id) => all.has(id)));
+    const containing = groups.find((g) => g.members.some((id) => all.has(id)));
     if (!containing) return;
     const next = groups.filter((g) => g !== containing);
-    if (leftIds.length >= 2) next.push([...leftIds]);
-    if (rightIds.length >= 2) next.push([...rightIds]);
-    set({ lockedGroups: next });
+    // when splitting, the original group is dissolved; both halves get fresh
+    // ids if they survive (≥2 members). drop edges sourced from / targeted at
+    // the original group node, and drop the group node itself.
+    if (leftIds.length >= 2) {
+      next.push({ id: `${GROUP_NODE_ID_PREFIX}${uuid()}`, members: [...leftIds] });
+    }
+    if (rightIds.length >= 2) {
+      next.push({ id: `${GROUP_NODE_ID_PREFIX}${uuid()}`, members: [...rightIds] });
+    }
+    const edges = get().edges.filter(
+      (e) => e.source !== containing.id && e.target !== containing.id,
+    );
+    const nodes = get().nodes.filter((n) => n.id !== containing.id);
+    set({ lockedGroups: next, edges, nodes });
   },
 
   toPipelineDefinition: () => {

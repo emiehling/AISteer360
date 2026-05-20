@@ -2,6 +2,7 @@ import type { NodeTypes } from "reactflow";
 import { AnchorNode } from "./AnchorNode";
 import { ControlNode } from "./ControlNode";
 import { DatasetNode } from "./DatasetNode";
+import { GroupNode } from "./GroupNode";
 import { ModelNode } from "./ModelNode";
 import { MultiplexerNode } from "./MultiplexerNode";
 import { SteeringVectorNode } from "./SteeringVectorNode";
@@ -14,4 +15,5 @@ export const nodeTypes: NodeTypes = {
   dataset: DatasetNode,
   steering_vector: SteeringVectorNode,
   multiplexer: MultiplexerNode,
+  group: GroupNode,
 };

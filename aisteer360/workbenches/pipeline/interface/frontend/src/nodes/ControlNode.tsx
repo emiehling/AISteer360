@@ -43,6 +43,10 @@ function CloseIcon() {
 
 function ControlNodeImpl({ id, data, selected }: NodeProps<ControlNodeData>) {
   const requestDeleteNode = usePipelineStore((s) => s.requestDeleteNode);
+  const grouped = usePipelineStore((s) => {
+    const g = s.lockedGroups.find((grp) => grp.members.includes(id));
+    return Boolean(g && g.members.length >= 2);
+  });
 
   const title = data.label || data.method || "unset";
 
@@ -65,13 +69,16 @@ function ControlNodeImpl({ id, data, selected }: NodeProps<ControlNodeData>) {
 
   return (
     <div
-      className={`ctrl-node${selected ? " selected" : ""}`}
+      className={`ctrl-node${selected ? " selected" : ""}${grouped ? " grouped" : ""}`}
       data-category={data.category ?? "neutral"}
     >
-      <Handle type="source" position={Position.Left} id="left" />
-      <Handle type="source" position={Position.Right} id="right" />
-      <Handle type="source" position={Position.Top} id="top" />
-      <Handle type="source" position={Position.Bottom} id="bottom" />
+      {/* when grouped, members accept inputs only — outputs leave from the
+          synthetic group node behind them. flipping handle type to target
+          tells React Flow the handle can't source connections. */}
+      <Handle type={grouped ? "target" : "source"} position={Position.Left} id="left" />
+      <Handle type={grouped ? "target" : "source"} position={Position.Right} id="right" />
+      <Handle type={grouped ? "target" : "source"} position={Position.Top} id="top" />
+      <Handle type={grouped ? "target" : "source"} position={Position.Bottom} id="bottom" />
 
       <div className="ctrl-bar">
         <span className="ctrl-bar-title" title={title}>

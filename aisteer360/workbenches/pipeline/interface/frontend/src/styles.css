@@ -1096,6 +1096,31 @@
   color: var(--accent);
 }
 
+/* ── group node ──────────────────────────────────────────────────── */
+/* synthetic node that backs a merged-control group: tinted rectangle that
+   hugs its members. it owns the only output handles for the group; the
+   members inside are input-only while merged. */
+.group-node {
+  position: relative;
+  border-radius: 6px;
+  background: var(--col-fill);
+  border: 1px solid var(--col-border);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1) inset;
+  pointer-events: none;
+}
+.group-node[data-category="input_control"]      { --col-fill: var(--cat-input-fill);      --col-border: var(--cat-input-border); }
+.group-node[data-category="structural_control"] { --col-fill: var(--cat-structural-fill); --col-border: var(--cat-structural-border); }
+.group-node[data-category="state_control"]      { --col-fill: var(--cat-state-fill);      --col-border: var(--cat-state-border); }
+.group-node[data-category="output_control"]     { --col-fill: var(--cat-output-fill);     --col-border: var(--cat-output-border); }
+.group-node[data-category="neutral"]            { --col-fill: rgba(255, 255, 255, 0.04);  --col-border: var(--line-2); }
+
+/* the group's handles need to be reachable by the connection drag, but the
+   panel itself shouldn't intercept clicks (so members behind handle their
+   own selection). */
+.group-node .react-flow__handle {
+  pointer-events: auto;
+}
+
 /* ── pipeline edges ──────────────────────────────────────────────── */
 .canvas-area .react-flow__edge .pipeline-edge-hit {
   stroke: transparent;

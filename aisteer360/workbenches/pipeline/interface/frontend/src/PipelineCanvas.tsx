@@ -14,6 +14,7 @@ import "reactflow/dist/style.css";
 
 import { edgeTypes } from "./edges/edgeTypes";
 import { nodeTypes } from "./nodes/nodeTypes";
+import type { GroupNodeData } from "./nodes/GroupNode";
 import { usePipelineStore } from "./store/pipelineStore";
 import { makeIsValidConnection } from "./canvas/validation";
 import { ConfirmDialog } from "./canvas/ConfirmDialog";
@@ -55,6 +56,10 @@ const STEERING_VECTOR_FALLBACK = { width: 80, height: 80 };
 // fallback for newly placed multiplexers (vertical default, 1 empty input port).
 // after mount React Flow measures the actual size and node.width/height take over.
 const MULTIPLEXER_FALLBACK = { width: 20, height: 80 };
+
+// inset around merged-control groups (synthetic group node sits behind members
+// and tightly hugs them; handles attach to its outer edges).
+const GROUP_INSET = 8;
 
 const PALETTE_MINIMIZED_HEIGHT = 24;
 
@@ -140,7 +145,7 @@ function buildInitialNodes(geometry: CanvasGeometry): Node[] {
 
 interface SeamIndicatorsProps {
   nodes: Node[];
-  lockedGroups: string[][];
+  lockedGroups: { id: string; members: string[] }[];
   sizeForNode: (node: Node) => { width: number; height: number };
   getBoundsFor: (width: number, height: number) => {
     minX: number;
@@ -162,7 +167,7 @@ function SeamIndicators({ nodes, lockedGroups, sizeForNode, getBoundsFor, viewpo
   }[] = [];
   const byId = new Map(nodes.map((n) => [n.id, n]));
   for (const group of lockedGroups) {
-    const members = group
+    const members = group.members
       .map((id) => byId.get(id))
       .filter((n): n is Node => Boolean(n) && n.type === "control");
     if (members.length < 2) continue;
@@ -520,6 +525,106 @@ function CanvasInner() {
     });
   }, [geometry]);
 
+  // sync synthetic group nodes with the current locked groups + member geometry.
+  // each group with ≥2 members is represented by a single non-interactive
+  // node positioned behind its members; outputs leave from this node only.
+  useEffect(() => {
+    const current = usePipelineStore.getState().nodes;
+    const byId = new Map(current.map((n) => [n.id, n]));
+    const desiredGroupIds = new Set<string>();
+    const groupUpdates = new Map<
+      string,
+      { position: { x: number; y: number }; width: number; height: number; category: string | null }
+    >();
+
+    for (const group of lockedGroups) {
+      if (group.members.length < 2) continue;
+      const members = group.members
+        .map((id) => byId.get(id))
+        .filter((n): n is Node => n !== undefined && n.type === "control");
+      if (members.length < 2) continue;
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      let category: string | null = null;
+      for (const m of members) {
+        const { width, height } = sizeForNode(m);
+        if (m.position.x < minX) minX = m.position.x;
+        if (m.position.y < minY) minY = m.position.y;
+        if (m.position.x + width > maxX) maxX = m.position.x + width;
+        if (m.position.y + height > maxY) maxY = m.position.y + height;
+        const cat = (m.data as { category?: string } | undefined)?.category;
+        if (cat) category = cat;
+      }
+      desiredGroupIds.add(group.id);
+      groupUpdates.set(group.id, {
+        position: { x: minX - GROUP_INSET, y: minY - GROUP_INSET },
+        width: maxX - minX + GROUP_INSET * 2,
+        height: maxY - minY + GROUP_INSET * 2,
+        category,
+      });
+    }
+
+    let dirty = false;
+    const next: Node[] = [];
+    const seenIds = new Set<string>();
+    // first pass: keep/update existing group nodes that are still desired,
+    // drop ones that are no longer in lockedGroups.
+    for (const n of current) {
+      if (n.type !== "group") {
+        next.push(n);
+        continue;
+      }
+      const upd = groupUpdates.get(n.id);
+      if (!upd) {
+        dirty = true;  // dropped
+        continue;
+      }
+      seenIds.add(n.id);
+      const data = n.data as GroupNodeData;
+      const samePos = n.position.x === upd.position.x && n.position.y === upd.position.y;
+      const sameSize = data.width === upd.width && data.height === upd.height;
+      const sameCat = data.category === upd.category;
+      if (samePos && sameSize && sameCat) {
+        next.push(n);
+      } else {
+        dirty = true;
+        next.push({
+          ...n,
+          position: upd.position,
+          data: { category: upd.category, width: upd.width, height: upd.height },
+        });
+      }
+    }
+    // second pass: add brand-new group nodes for groups that didn't exist yet.
+    for (const [gid, upd] of groupUpdates) {
+      if (seenIds.has(gid)) continue;
+      dirty = true;
+      next.push({
+        id: gid,
+        type: "group",
+        position: upd.position,
+        data: { category: upd.category, width: upd.width, height: upd.height },
+        draggable: false,
+        selectable: false,
+        deletable: false,
+        zIndex: -1,
+      });
+    }
+
+    if (dirty) {
+      // reorder so group nodes render before member controls (lower in DOM
+      // means rendered behind, but React Flow uses zIndex for layering).
+      next.sort((a, b) => {
+        const az = a.type === "group" ? 0 : 1;
+        const bz = b.type === "group" ? 0 : 1;
+        return az - bz;
+      });
+      setNodes(next);
+    }
+  }, [lockedGroups, nodes, sizeForNode, setNodes]);
+
   useEffect(() => {
     if (!geometry) return;
     const locked = lockedVerticalRef.current;
@@ -581,6 +686,13 @@ function CanvasInner() {
       makeIsValidConnection(
         () => usePipelineStore.getState().edges,
         () => usePipelineStore.getState().nodes,
+        () => {
+          const ids = new Set<string>();
+          for (const g of usePipelineStore.getState().lockedGroups) {
+            if (g.members.length >= 2) for (const m of g.members) ids.add(m);
+          }
+          return ids;
+        },
       ),
     [],
   );
@@ -752,7 +864,7 @@ function CanvasInner() {
         return;
       }
       const group = usePipelineStore.getState().getGroupOf(node.id);
-      if (!group || group.length < 2) {
+      if (!group || group.members.length < 2) {
         dragGroupRef.current = {
           leaderId: node.id,
           offsets: new Map(),
@@ -763,7 +875,7 @@ function CanvasInner() {
       }
       const offsets = new Map<string, { dx: number; dy: number }>();
       const allNodes = usePipelineStore.getState().nodes;
-      for (const memberId of group) {
+      for (const memberId of group.members) {
         if (memberId === node.id) continue;
         const member = allNodes.find((n) => n.id === memberId);
         if (!member) continue;
