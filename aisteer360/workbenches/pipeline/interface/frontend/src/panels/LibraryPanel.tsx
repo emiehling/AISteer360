@@ -8,6 +8,10 @@ export const DRAG_MIME = "application/x-aisteer-control";
 export const DRAG_MIME_DATASET = "application/x-aisteer-dataset";
 export const DRAG_MIME_MODEL = "application/x-aisteer-model";
 
+// blank-from-toolbar sentinel: payload is just a kind, node is created
+// empty (matching click-to-place from the toolbar).
+export const DRAG_MIME_BLANK = "application/x-aisteer-blank";
+
 const KIND_BUTTONS: { value: StagingKind; label: string }[] = [
   { value: "control", label: "control" },
   { value: "dataset", label: "dataset" },

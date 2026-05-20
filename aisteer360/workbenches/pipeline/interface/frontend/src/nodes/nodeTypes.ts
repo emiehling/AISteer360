@@ -3,6 +3,8 @@ import { AnchorNode } from "./AnchorNode";
 import { ControlNode } from "./ControlNode";
 import { DatasetNode } from "./DatasetNode";
 import { ModelNode } from "./ModelNode";
+import { MultiplexerNode } from "./MultiplexerNode";
+import { SteeringVectorNode } from "./SteeringVectorNode";
 
 export const nodeTypes: NodeTypes = {
   prompt_anchor: AnchorNode,
@@ -10,4 +12,6 @@ export const nodeTypes: NodeTypes = {
   model: ModelNode,
   control: ControlNode,
   dataset: DatasetNode,
+  steering_vector: SteeringVectorNode,
+  multiplexer: MultiplexerNode,
 };

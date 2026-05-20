@@ -50,7 +50,7 @@ function StarIcon({ filled }: { filled: boolean }) {
   );
 }
 
-function ModelNodeImpl({ id, data }: NodeProps<ModelNodeData>) {
+function ModelNodeImpl({ id, data, selected }: NodeProps<ModelNodeData>) {
   const requestDeleteNode = usePipelineStore((s) => s.requestDeleteNode);
   const targetModelNodeId = usePipelineStore((s) => s.targetModelNodeId);
   const setTargetModelNodeId = usePipelineStore((s) => s.setTargetModelNodeId);
@@ -69,7 +69,7 @@ function ModelNodeImpl({ id, data }: NodeProps<ModelNodeData>) {
   };
 
   return (
-    <div className="model-wrap">
+    <div className={`model-wrap${selected ? " selected" : ""}`}>
       <Handle type="source" position={Position.Left} id="left" />
       <Handle type="source" position={Position.Right} id="right" />
       <Handle type="source" position={Position.Top} id="top" />

@@ -557,6 +557,54 @@ function SettingsToolbar({ accept, onLoadFile }: SettingsToolbarProps) {
   );
 }
 
+function SelectedMultiplexerNodePanel({
+  node,
+}: {
+  node: { id: string; data: { name?: string; orientation?: "vertical" | "horizontal" } };
+}) {
+  const setMultiplexerOrientation = usePipelineStore((s) => s.setMultiplexerOrientation);
+  const edges = usePipelineStore((s) => s.edges);
+
+  const orientation = node.data.orientation ?? "vertical";
+  const connectedInputs = edges.filter(
+    (e) => e.target === node.id && (e.targetHandle ?? "").startsWith("in-"),
+  ).length;
+
+  return (
+    <>
+      <header className="panel-head control-settings-head">
+        <div className="control-settings-field">
+          <span className="control-settings-label">orientation</span>
+          <div className="palette-mode-toggle" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={orientation === "vertical"}
+              className={`palette-mode-btn${orientation === "vertical" ? " active" : ""}`}
+              onClick={() => setMultiplexerOrientation(node.id, "vertical")}
+            >
+              vertical
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={orientation === "horizontal"}
+              className={`palette-mode-btn${orientation === "horizontal" ? " active" : ""}`}
+              onClick={() => setMultiplexerOrientation(node.id, "horizontal")}
+            >
+              horizontal
+            </button>
+          </div>
+        </div>
+        <div className="control-settings-field">
+          <span className="control-settings-label">connected inputs</span>
+          <div className="model-id-display">{connectedInputs}</div>
+        </div>
+      </header>
+    </>
+  );
+}
+
 function SelectedModelNodePanel({ node }: { node: { id: string; data: { modelId?: string } } }) {
   const setModelNodeId = usePipelineStore((s) => s.setModelNodeId);
   const targetModelNodeId = usePipelineStore((s) => s.targetModelNodeId);
@@ -653,6 +701,16 @@ export function ParameterPanel() {
       ) : selectedType === "model" && selected ? (
         <SelectedModelNodePanel
           node={{ id: selected.id, data: selected.data as { modelId?: string } }}
+        />
+      ) : selectedType === "multiplexer" && selected ? (
+        <SelectedMultiplexerNodePanel
+          node={{
+            id: selected.id,
+            data: selected.data as {
+              name?: string;
+              orientation?: "vertical" | "horizontal";
+            },
+          }}
         />
       ) : (
         <StagingPanel />

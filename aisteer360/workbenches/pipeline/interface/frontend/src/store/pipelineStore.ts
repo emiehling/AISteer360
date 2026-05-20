@@ -51,7 +51,9 @@ export type StagingKind = "control" | "dataset" | "model";
 export type PlacementRequest =
   | { kind: "control" }
   | { kind: "dataset" }
-  | { kind: "model" };
+  | { kind: "model" }
+  | { kind: "steering_vector" }
+  | { kind: "multiplexer" };
 
 interface PipelineStoreState {
   nodes: Node[];
@@ -126,6 +128,9 @@ interface PipelineStoreState {
   ) => string;
   addDatasetNode: (name: string, position: XYPosition) => string;
   addModelNode: (modelId: string, position: XYPosition) => string;
+  addSteeringVectorNode: (name: string, position: XYPosition) => string;
+  addMultiplexerNode: (position: XYPosition) => string;
+  setMultiplexerOrientation: (id: string, orientation: "vertical" | "horizontal") => void;
   removeNode: (id: string) => void;
   removeEdge: (id: string) => void;
   updateNodeArgs: (id: string, args: Record<string, unknown>) => void;
@@ -348,6 +353,40 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     return id;
   },
 
+  addSteeringVectorNode: (name, position) => {
+    const id = uuid();
+    const node: Node = {
+      id,
+      type: "steering_vector",
+      position,
+      data: { name: name && name.trim() ? name.trim() : "vector", path: null },
+    };
+    set({ nodes: [...get().nodes, node] });
+    return id;
+  },
+
+  addMultiplexerNode: (position) => {
+    const id = uuid();
+    const node: Node = {
+      id,
+      type: "multiplexer",
+      position,
+      data: { name: "mux", orientation: "vertical" },
+    };
+    set({ nodes: [...get().nodes, node] });
+    return id;
+  },
+
+  setMultiplexerOrientation: (id, orientation) => {
+    set({
+      nodes: get().nodes.map((n) =>
+        n.id === id && n.type === "multiplexer"
+          ? { ...n, data: { ...(n.data as Record<string, unknown>), orientation } }
+          : n,
+      ),
+    });
+  },
+
   removeNode: (id) => {
     const node = get().nodes.find((n) => n.id === id);
     if (node && FIXTURE_NODE_TYPES.has(node.type ?? "")) return;
@@ -362,7 +401,33 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   },
 
   removeEdge: (id) => {
-    set({ edges: get().edges.filter((e) => e.id !== id) });
+    const edges = get().edges;
+    const edge = edges.find((e) => e.id === id);
+    if (!edge) return;
+    // cascade: if the edge is feeding into a multiplexer's input, delete the
+    // upstream source node too so the mux port count tracks the input set.
+    const targetNode = get().nodes.find((n) => n.id === edge.target);
+    const isMuxInput =
+      targetNode?.type === "multiplexer" &&
+      typeof edge.targetHandle === "string" &&
+      edge.targetHandle.startsWith("in-");
+    if (isMuxInput && edge.source) {
+      const sourceNode = get().nodes.find((n) => n.id === edge.source);
+      const sourceIsFixture = sourceNode && FIXTURE_NODE_TYPES.has(sourceNode.type ?? "");
+      if (sourceNode && !sourceIsFixture) {
+        const sourceId = sourceNode.id;
+        const wasTarget = get().targetModelNodeId === sourceId;
+        set({
+          nodes: get().nodes.filter((n) => n.id !== sourceId),
+          edges: edges.filter((e) => e.id !== id && e.source !== sourceId && e.target !== sourceId),
+          selectedNodeId: get().selectedNodeId === sourceId ? null : get().selectedNodeId,
+          lockedGroups: pruneLockedGroups(get().lockedGroups, sourceId),
+          ...(wasTarget ? { targetModelNodeId: null, modelNameOrPath: "" } : {}),
+        });
+        return;
+      }
+    }
+    set({ edges: edges.filter((e) => e.id !== id) });
   },
 
   updateNodeArgs: (id, args) => {

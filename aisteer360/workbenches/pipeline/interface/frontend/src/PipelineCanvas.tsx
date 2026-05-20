@@ -17,16 +17,25 @@ import { nodeTypes } from "./nodes/nodeTypes";
 import { usePipelineStore } from "./store/pipelineStore";
 import { makeIsValidConnection } from "./canvas/validation";
 import { ConfirmDialog } from "./canvas/ConfirmDialog";
-import { DRAG_MIME, DRAG_MIME_DATASET, DRAG_MIME_MODEL } from "./panels/LibraryPanel";
+import { DRAG_MIME, DRAG_MIME_BLANK, DRAG_MIME_DATASET, DRAG_MIME_MODEL } from "./panels/LibraryPanel";
 import { probeModel } from "./api/model";
 import type { ControlCategory } from "./types";
 import type { PlacementRequest } from "./store/pipelineStore";
 
 const EDGE_BUFFER = 32;
-const ANCHOR_BODY_WIDTH = 100;
-const ANCHOR_STEM_WIDTH = 24;
-const ANCHOR_TOTAL_WIDTH = ANCHOR_BODY_WIDTH + ANCHOR_STEM_WIDTH;  // 124
-const ANCHOR_BODY_HEIGHT = 34;
+// outline-only anchors: [label 50] [gap 4] [stem 20] [gap 4] [handle 10] = 88 total.
+// the prompt anchor renders this layout left-to-right (handle on the right);
+// the response anchor mirrors it (handle on the left). centers below give the
+// X coord of the handle's center, which is where edges visually attach.
+const ANCHOR_LABEL_WIDTH = 50;
+const ANCHOR_GAP = 4;
+const ANCHOR_STEM_WIDTH = 20;
+const ANCHOR_HANDLE_WIDTH = 10;
+const ANCHOR_TOTAL_WIDTH =
+  ANCHOR_LABEL_WIDTH + ANCHOR_GAP + ANCHOR_STEM_WIDTH + ANCHOR_GAP + ANCHOR_HANDLE_WIDTH;  // 88
+const ANCHOR_PROMPT_HANDLE_OFFSET = ANCHOR_TOTAL_WIDTH - ANCHOR_HANDLE_WIDTH / 2;  // 83
+const ANCHOR_RESPONSE_HANDLE_OFFSET = ANCHOR_HANDLE_WIDTH / 2;  // 5
+const ANCHOR_BODY_HEIGHT = 40;
 const MODEL_WIDTH = 340;
 const MODEL_HEIGHT_FALLBACK = 240;
 
@@ -35,8 +44,16 @@ const GRID_SIZE = SNAP_GRID[0];
 const RAIL_BUFFER = 3 * GRID_SIZE;
 const MARRY_THRESHOLD = 2 * GRID_SIZE;
 
-const NODE_BOUNDS_FALLBACK = { width: 150, height: 100 };
+// node sizes are integer (and even) multiples of GRID_SIZE so that left/right
+// handles (placed at node center = position.y + height/2) sit on the snap grid.
+// keeping height/2 a multiple of GRID_SIZE keeps controls/datasets aligned with
+// anchors and the model after snap-to-grid drag.
+const NODE_BOUNDS_FALLBACK = { width: 160, height: 120 };
 const DATASET_FALLBACK = { width: 80, height: 80 };
+const STEERING_VECTOR_FALLBACK = { width: 80, height: 80 };
+// fallback for newly placed multiplexers (vertical default, 1 empty input port).
+// after mount React Flow measures the actual size and node.width/height take over.
+const MULTIPLEXER_FALLBACK = { width: 20, height: 80 };
 
 const PALETTE_MINIMIZED_HEIGHT = 24;
 
@@ -77,8 +94,8 @@ function computeGeometry(
   const centerY = snap(Math.max(0, canvasHeight / 2), GRID_SIZE);
   const anchorY = centerY - ANCHOR_BODY_HEIGHT / 2;
   const modelY = centerY - modelHeight / 2;
-  const promptStemMidX = promptX + ANCHOR_BODY_WIDTH + ANCHOR_STEM_WIDTH / 2;  // promptX + 112
-  const responseStemMidX = responseX + ANCHOR_STEM_WIDTH / 2;  // responseX + 12
+  const promptStemMidX = promptX + ANCHOR_PROMPT_HANDLE_OFFSET;  // promptX + 83
+  const responseStemMidX = responseX + ANCHOR_RESPONSE_HANDLE_OFFSET;  // responseX + 5
   return {
     promptX,
     responseX,
@@ -318,6 +335,8 @@ function CanvasInner() {
       return { width: node.width, height: node.height };
     }
     if (node.type === "dataset") return DATASET_FALLBACK;
+    if (node.type === "steering_vector") return STEERING_VECTOR_FALLBACK;
+    if (node.type === "multiplexer") return MULTIPLEXER_FALLBACK;
     if (node.type === "model") return { width: MODEL_WIDTH, height: MODEL_HEIGHT_FALLBACK };
     return NODE_BOUNDS_FALLBACK;
   }, []);
@@ -380,7 +399,13 @@ function CanvasInner() {
           continue;
         }
         let clampedPos = change.position;
-        if (node.type === "control" || node.type === "dataset" || node.type === "model") {
+        if (
+          node.type === "control" ||
+          node.type === "dataset" ||
+          node.type === "model" ||
+          node.type === "steering_vector" ||
+          node.type === "multiplexer"
+        ) {
           const { width, height } = sizeForNode(node);
           const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
           clampedPos = {
@@ -457,36 +482,25 @@ function CanvasInner() {
         ? { ...raw, centerY: locked.centerY, anchorY: locked.anchorY, modelY: locked.modelY }
         : raw;
       setGeometry(geom);
-      // reposition fixtures along X (Y is locked) and re-clamp control/dataset
-      // nodes to the bounds arena. With bounds pinned to palette-collapsed size,
-      // vertical bounds don't change on palette toggle; this still re-clamps on
-      // width changes (window resize).
-      const halfH = geom.boundsHeight / 2;
+      // only reposition the prompt/response anchor fixtures along X so they
+      // stay pinned to the canvas edges. user-placed nodes (control, dataset,
+      // model, steering_vector, multiplexer) keep their absolute positions —
+      // re-clamping on resize would silently rewrite the layout. nodes that
+      // end up outside the new bounds remain there until the user drags them.
       const current = usePipelineStore.getState().nodes;
+      let dirty = false;
       const next = current.map((n) => {
-        if (n.id === "anchor-prompt") return { ...n, position: { x: geom.promptX, y: n.position.y } };
-        if (n.id === "anchor-response") return { ...n, position: { x: geom.responseX, y: n.position.y } };
-        if (n.type === "control" || n.type === "dataset" || n.type === "model") {
-          const fallback =
-            n.type === "dataset"
-              ? DATASET_FALLBACK
-              : n.type === "model"
-                ? { width: MODEL_WIDTH, height: MODEL_HEIGHT_FALLBACK }
-                : NODE_BOUNDS_FALLBACK;
-          const w = n.width ?? fallback.width;
-          const h = n.height ?? fallback.height;
-          const minY = geom.centerY - halfH + GRID_SIZE;
-          const maxY = Math.max(minY, geom.centerY + halfH - h - GRID_SIZE);
-          const minX = geom.promptStemMidX + RAIL_BUFFER;
-          const maxX = Math.max(minX, geom.responseStemMidX - RAIL_BUFFER - w);
-          const x = Math.min(maxX, Math.max(minX, n.position.x));
-          const y = Math.min(maxY, Math.max(minY, n.position.y));
-          if (x === n.position.x && y === n.position.y) return n;
-          return { ...n, position: { x, y } };
+        if (n.id === "anchor-prompt" && n.position.x !== geom.promptX) {
+          dirty = true;
+          return { ...n, position: { x: geom.promptX, y: n.position.y } };
+        }
+        if (n.id === "anchor-response" && n.position.x !== geom.responseX) {
+          dirty = true;
+          return { ...n, position: { x: geom.responseX, y: n.position.y } };
         }
         return n;
       });
-      setNodes(next);
+      if (dirty) setNodes(next);
     });
     observer.observe(wrapper);
     return () => observer.disconnect();
@@ -507,7 +521,13 @@ function CanvasInner() {
     } else if (selectedNodeId) {
       const currentNodes = usePipelineStore.getState().nodes;
       const node = currentNodes.find((n) => n.id === selectedNodeId);
-      if (node && (node.type === "control" || node.type === "dataset")) {
+      if (
+        node &&
+        (node.type === "control" ||
+          node.type === "dataset" ||
+          node.type === "steering_vector" ||
+          node.type === "multiplexer")
+      ) {
         const { height } = sizeForNode(node);
         targetFlowCenterY = node.position.y + height / 2;
       }
@@ -546,7 +566,11 @@ function CanvasInner() {
   }, [modelNameOrPath]);
 
   const isValidConnection = useMemo(
-    () => makeIsValidConnection(() => usePipelineStore.getState().edges),
+    () =>
+      makeIsValidConnection(
+        () => usePipelineStore.getState().edges,
+        () => usePipelineStore.getState().nodes,
+      ),
     [],
   );
 
@@ -555,8 +579,14 @@ function CanvasInner() {
   const onSelectionChange = useCallback(
     (params: OnSelectionChangeParams) => {
       const node =
-        params.nodes.find((n) => n.type === "control" || n.type === "model" || n.type === "dataset") ??
-        params.nodes[0];
+        params.nodes.find(
+          (n) =>
+            n.type === "control" ||
+            n.type === "model" ||
+            n.type === "dataset" ||
+            n.type === "steering_vector" ||
+            n.type === "multiplexer",
+        ) ?? params.nodes[0];
       setSelectedNodeId(node?.id ?? null);
       selectedEdgeIdRef.current = params.edges[0]?.id ?? null;
     },
@@ -564,7 +594,13 @@ function CanvasInner() {
   );
 
   const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
-    if (node.type === "control") {
+    if (
+      node.type === "control" ||
+      node.type === "dataset" ||
+      node.type === "model" ||
+      node.type === "steering_vector" ||
+      node.type === "multiplexer"
+    ) {
       usePipelineStore.getState().setPaletteMinimized(false);
     }
   }, []);
@@ -574,10 +610,10 @@ function CanvasInner() {
       const dropped = screenToFlowPosition({ x: screenX, y: screenY });
       if (req.kind === "control") {
         const { width, height } = NODE_BOUNDS_FALLBACK;
-        const { minX, maxX, railY } = getBoundsFor(width, height);
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
         const position = {
-          x: Math.min(maxX, Math.max(minX, dropped.x)),
-          y: railY,
+          x: Math.min(maxX, Math.max(minX, dropped.x - width / 2)),
+          y: Math.min(maxY, Math.max(minY, dropped.y - height / 2)),
         };
         usePipelineStore.getState().addControlNode(null, "", position, "");
         return;
@@ -586,19 +622,41 @@ function CanvasInner() {
         const { width, height } = DATASET_FALLBACK;
         const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
         const position = {
-          x: Math.min(maxX, Math.max(minX, dropped.x)),
-          y: Math.min(maxY, Math.max(minY, dropped.y)),
+          x: Math.min(maxX, Math.max(minX, dropped.x - width / 2)),
+          y: Math.min(maxY, Math.max(minY, dropped.y - height / 2)),
         };
         usePipelineStore.getState().addDatasetNode("dataset", position);
         return;
       }
       if (req.kind === "model") {
-        const { minX, maxX, minY, maxY } = getBoundsFor(MODEL_WIDTH, MODEL_HEIGHT_FALLBACK);
+        const width = MODEL_WIDTH;
+        const height = MODEL_HEIGHT_FALLBACK;
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
         const position = {
-          x: Math.min(maxX, Math.max(minX, dropped.x)),
-          y: Math.min(maxY, Math.max(minY, dropped.y)),
+          x: Math.min(maxX, Math.max(minX, dropped.x - width / 2)),
+          y: Math.min(maxY, Math.max(minY, dropped.y - height / 2)),
         };
         usePipelineStore.getState().addModelNode("", position);
+        return;
+      }
+      if (req.kind === "steering_vector") {
+        const { width, height } = STEERING_VECTOR_FALLBACK;
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
+        const position = {
+          x: Math.min(maxX, Math.max(minX, dropped.x - width / 2)),
+          y: Math.min(maxY, Math.max(minY, dropped.y - height / 2)),
+        };
+        usePipelineStore.getState().addSteeringVectorNode("vector", position);
+        return;
+      }
+      if (req.kind === "multiplexer") {
+        const { width, height } = MULTIPLEXER_FALLBACK;
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
+        const position = {
+          x: Math.min(maxX, Math.max(minX, dropped.x - width / 2)),
+          y: Math.min(maxY, Math.max(minY, dropped.y - height / 2)),
+        };
+        usePipelineStore.getState().addMultiplexerNode(position);
       }
     },
     [getBoundsFor, screenToFlowPosition],
@@ -647,7 +705,8 @@ function CanvasInner() {
     if (
       types.includes(DRAG_MIME) ||
       types.includes(DRAG_MIME_DATASET) ||
-      types.includes(DRAG_MIME_MODEL)
+      types.includes(DRAG_MIME_MODEL) ||
+      types.includes(DRAG_MIME_BLANK)
     ) {
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
@@ -812,11 +871,24 @@ function CanvasInner() {
 
   const onDrop = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
+      const blankRaw = event.dataTransfer.getData(DRAG_MIME_BLANK);
       const controlRaw = event.dataTransfer.getData(DRAG_MIME);
       const datasetRaw = event.dataTransfer.getData(DRAG_MIME_DATASET);
       const modelRaw = event.dataTransfer.getData(DRAG_MIME_MODEL);
-      if (!controlRaw && !datasetRaw && !modelRaw) return;
+      if (!blankRaw && !controlRaw && !datasetRaw && !modelRaw) return;
       event.preventDefault();
+
+      if (
+        blankRaw === "control" ||
+        blankRaw === "dataset" ||
+        blankRaw === "model" ||
+        blankRaw === "steering_vector" ||
+        blankRaw === "multiplexer"
+      ) {
+        placeAtScreen({ kind: blankRaw }, event.clientX, event.clientY);
+        return;
+      }
+
       const dropped = screenToFlowPosition({ x: event.clientX, y: event.clientY });
 
       if (controlRaw) {
@@ -832,10 +904,10 @@ function CanvasInner() {
           return;
         }
         const { width, height } = NODE_BOUNDS_FALLBACK;
-        const { minX, maxX, railY } = getBoundsFor(width, height);
+        const { minX, maxX, minY, maxY } = getBoundsFor(width, height);
         const position = {
-          x: Math.min(maxX, Math.max(minX, dropped.x)),
-          y: railY,
+          x: Math.min(maxX, Math.max(minX, dropped.x - width / 2)),
+          y: Math.min(maxY, Math.max(minY, dropped.y - height / 2)),
         };
         const id = addControlNode(parsed.category, parsed.method, position, parsed.label);
         if (parsed.args && Object.keys(parsed.args).length > 0) {
@@ -879,7 +951,7 @@ function CanvasInner() {
         return;
       }
     },
-    [addControlNode, addDatasetNode, addModelNode, screenToFlowPosition, getBoundsFor],
+    [addControlNode, addDatasetNode, addModelNode, screenToFlowPosition, getBoundsFor, placeAtScreen],
   );
 
   return (

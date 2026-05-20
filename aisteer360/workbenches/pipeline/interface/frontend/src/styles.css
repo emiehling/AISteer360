@@ -80,6 +80,11 @@
   --dataset-icon:          #b4b2a9;
   --dataset-disk-fill:     #2a2a2e;
   --dataset-footer:        #6a665e;
+
+  /* steering-vector node — dark mode (cool violet accent) */
+  --steering-vector-border: #5b5e75;
+  --steering-vector-icon:   #9a9bd6;
+  --steering-vector-text:   #d4d4e4;
 }
 
 [data-theme="light"] {
@@ -160,6 +165,11 @@
   --dataset-icon:          #5b574e;
   --dataset-disk-fill:     #ffffff;
   --dataset-footer:        #4a4742;
+
+  /* steering-vector node — light mode */
+  --steering-vector-border: #6f7295;
+  --steering-vector-icon:   #4a4d77;
+  --steering-vector-text:   #1a1a1a;
 }
 
 /* ── mount point + canvas-region: occupy workspace-inset ─────────── */
@@ -256,18 +266,47 @@
   border-radius: 0;
 }
 
+/* slim rectangular visible mark; long axis lies along the node edge.
+   the hit area is enlarged via a transparent ::before overlay so users
+   don't have to land precisely on the visible rectangle. handles are
+   hidden until the parent node is hovered (or actively connecting). */
 .canvas-area .react-flow__handle {
-  width: 10px;
-  height: 10px;
-  background: transparent;
-  border: 1px solid var(--line-3);
-  box-shadow: none;
-}
-.canvas-area .react-flow__handle.port-source {
-  border-radius: 50%;
-}
-.canvas-area .react-flow__handle.port-target {
+  background: var(--text-dimmer);
+  border: none;
   border-radius: 1px;
+  box-shadow: none;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s;
+}
+.canvas-area .react-flow__handle::before {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  background: transparent;
+  border-radius: 3px;
+  pointer-events: auto;
+}
+.canvas-area .react-flow__node:hover .react-flow__handle {
+  opacity: 0.7;
+}
+.canvas-area .react-flow__handle:hover {
+  opacity: 1 !important;
+  background: var(--accent);
+}
+.canvas-area .react-flow__handle.connectingfrom,
+.canvas-area .react-flow__handle.connectingto {
+  opacity: 1 !important;
+  background: var(--accent);
+}
+.canvas-area .react-flow__handle-left,
+.canvas-area .react-flow__handle-right {
+  width: 4px;
+  height: 16px;
+}
+.canvas-area .react-flow__handle-top,
+.canvas-area .react-flow__handle-bottom {
+  width: 16px;
+  height: 4px;
 }
 
 .canvas-area .react-flow__attribution {
@@ -312,6 +351,16 @@
 .palette-minimized-bar:hover {
   background: var(--panel);
   color: var(--text);
+}
+/* same look as the minimized expand bar but used while the palette is open;
+   sits as its own row above the palette so the user can collapse it via a
+   wide, easy-to-hit target. */
+.palette-minimize-bar {
+  flex: 0 0 24px;
+  height: 24px;
+  width: 100%;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 .palette-minimized-chevron {
   display: block;
@@ -478,32 +527,49 @@
 }
 
 /* ── anchor nodes ────────────────────────────────────────────────── */
+/* outline-only body around the label, transparent fill, stem, and a tiny
+   hollow shape for the connection point. prompt: hollow circle on the
+   right; response: hollow square on the left. */
 .anchor-wrap {
   display: flex;
   align-items: center;
+  gap: 4px;
   font-family: var(--mono);
+  height: 40px;
+  width: 88px;
 }
 .anchor-body {
-  width: 100px;
-  height: 34px;
+  width: 50px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--line-2);
+  border: 1px solid var(--text-dim);
   border-radius: 3px;
-  background: var(--panel-2);
+  background: transparent;
   flex-shrink: 0;
 }
 .anchor-label {
   font-size: 9px;
   letter-spacing: 0.04em;
   color: var(--text-dim);
+  white-space: nowrap;
 }
 .anchor-stem {
-  width: 24px;
+  width: 20px;
   height: 0;
   border-top: 1.5px solid var(--text-dim);
   flex-shrink: 0;
+}
+/* override the canvas-wide handle hover-visibility so the anchor's hollow
+   marker is always shown — anchors are permanent fixtures and the small
+   shape is part of the visual identity. */
+.canvas-area .react-flow__handle.anchor-handle {
+  opacity: 1 !important;
+  background: transparent !important;
+}
+.canvas-area .react-flow__handle.anchor-handle:hover {
+  border-color: var(--accent);
 }
 
 /* ── target model node ───────────────────────────────────────────── */
@@ -522,6 +588,10 @@
   border-radius: 6px;
   overflow: hidden;
   z-index: 1;
+  transition: box-shadow 0.12s;
+}
+.model-wrap.selected .model-face {
+  box-shadow: 0 0 0 2px var(--accent);
 }
 .model-bar {
   display: flex;
@@ -667,15 +737,29 @@
 }
 
 /* ── control node (themed floating panel) ────────────────────────── */
+/* fixed 160x120 — both even multiples of the 20px grid so the left/right
+   handles at vertical center align with prompt/model/response on centerY.
+   overflow stays visible so handles aren't clipped by the rounded border;
+   the title bar and footer round their own outer corners to compensate. */
 .ctrl-node {
   position: relative;
-  width: 150px;
+  width: 160px;
+  height: 120px;
+  display: flex;
+  flex-direction: column;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
   background: var(--node-face-bg);
   border: 1.5px solid var(--col-border);
   border-radius: 3px;
-  overflow: hidden;
   transition: box-shadow 0.12s;
+}
+.ctrl-bar {
+  border-top-left-radius: 2px;
+  border-top-right-radius: 2px;
+}
+.ctrl-footer {
+  border-bottom-left-radius: 2px;
+  border-bottom-right-radius: 2px;
 }
 .ctrl-node[data-category="input_control"]      { --col-border: var(--cat-input-border);      --col-bar-bg: var(--cat-input-bar-bg);      --col-bar-text: var(--cat-input-bar-text);      --col-btn-border: var(--cat-input-btn-border);      --col-icon: var(--cat-input-icon);      --col-footer: var(--cat-input-footer); }
 .ctrl-node[data-category="structural_control"] { --col-border: var(--cat-structural-border); --col-bar-bg: var(--cat-structural-bar-bg); --col-bar-text: var(--cat-structural-bar-text); --col-btn-border: var(--cat-structural-btn-border); --col-icon: var(--cat-structural-icon); --col-footer: var(--cat-structural-footer); }
@@ -684,7 +768,6 @@
 .ctrl-node[data-category="neutral"]            { --col-border: var(--cat-neutral-border);    --col-bar-bg: var(--cat-neutral-bar-bg);    --col-bar-text: var(--cat-neutral-bar-text);    --col-btn-border: var(--cat-neutral-btn-border);    --col-icon: var(--cat-neutral-icon);    --col-footer: var(--cat-neutral-footer); }
 .ctrl-node.selected { box-shadow: 0 0 0 2px var(--accent); }
 .ctrl-node .react-flow__handle {
-  opacity: 0;
   pointer-events: auto;
 }
 
@@ -747,6 +830,9 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 .ctrl-card {
   border: 0.5px solid var(--node-card-border);
@@ -795,12 +881,16 @@
 }
 
 /* ── dataset node ────────────────────────────────────────────────── */
+/* fixed 80x80 — both multiples of the 20px grid so the left/right handles at
+   vertical center align with the prompt/model/response rail on centerY. */
 .dataset-node {
   position: relative;
   width: 80px;
+  height: 80px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   padding: 4px 4px 6px;
   background: transparent;
@@ -816,7 +906,6 @@
   border-color: var(--accent);
 }
 .dataset-node .react-flow__handle {
-  opacity: 0;
   pointer-events: auto;
 }
 .dataset-icon-wrap {
@@ -854,6 +943,156 @@
   opacity: 1;
 }
 .dataset-close:hover {
+  color: var(--accent);
+}
+
+/* ── steering vector node ────────────────────────────────────────── */
+/* fixed 80x80 — same footprint as dataset so left/right handles at vertical
+   center align with the prompt/model/response rail on centerY. */
+.steering-vector-node {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 4px 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+.steering-vector-node:hover {
+  background: rgba(154, 155, 214, 0.06);
+  border-color: var(--steering-vector-border);
+}
+.steering-vector-node.selected {
+  background: rgba(154, 155, 214, 0.08);
+  border-color: var(--accent);
+}
+.steering-vector-node .react-flow__handle {
+  pointer-events: auto;
+}
+.steering-vector-icon-wrap {
+  color: var(--steering-vector-icon);
+}
+.steering-vector-name {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--steering-vector-text);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.steering-vector-close {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+}
+.steering-vector-node:hover .steering-vector-close,
+.steering-vector-node.selected .steering-vector-close {
+  opacity: 1;
+}
+.steering-vector-close:hover {
+  color: var(--accent);
+}
+
+/* ── multiplexer node ────────────────────────────────────────────── */
+/* a thin bar with N+1 input ports on its "long" side and one output on
+   the opposite side. inputs are inferred from edges (always renders one
+   extra empty port). orientation toggles which axis is the long one. */
+.mux-node {
+  position: relative;
+  background: var(--panel-3, #34343c);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+.mux-node.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.mux-node .react-flow__handle {
+  pointer-events: auto;
+}
+/* mux input handles override the canvas-wide hover-only visibility so
+   ports are always discoverable (small but persistent). output handle is
+   slightly larger to read as the "single output". */
+.canvas-area .react-flow__handle.mux-input-handle {
+  opacity: 0.65 !important;
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  background: var(--text-dim);
+}
+.canvas-area .react-flow__handle.mux-input-handle:hover {
+  opacity: 1 !important;
+  background: var(--accent);
+}
+/* the trailing empty port — visually distinct from connected ports so users
+   can find where to drop the next connection. hollow with a dashed outline. */
+.canvas-area .react-flow__handle.mux-input-handle.mux-input-handle-empty {
+  opacity: 0.85 !important;
+  background: transparent;
+  border: 1px dashed var(--accent);
+}
+.canvas-area .react-flow__handle.mux-input-handle.mux-input-handle-empty:hover {
+  background: var(--accent);
+  opacity: 1 !important;
+}
+.canvas-area .react-flow__handle.mux-output-handle {
+  opacity: 0.85 !important;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 1px solid var(--text-dim);
+}
+.canvas-area .react-flow__handle.mux-output-handle:hover {
+  opacity: 1 !important;
+  background: var(--accent);
+}
+.mux-close {
+  position: absolute;
+  top: -18px;
+  right: -2px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+}
+.mux-node[data-orientation="horizontal"] .mux-close {
+  top: -2px;
+  right: -18px;
+}
+.mux-node:hover .mux-close,
+.mux-node.selected .mux-close {
+  opacity: 1;
+}
+.mux-close:hover {
   color: var(--accent);
 }
 

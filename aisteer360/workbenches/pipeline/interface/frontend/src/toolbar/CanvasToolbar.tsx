@@ -2,9 +2,22 @@ import {
   useEffect,
   useRef,
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { usePipelineStore } from "../store/pipelineStore";
+import { DRAG_MIME_BLANK } from "../panels/LibraryPanel";
+
+type ToolbarKind = "control" | "dataset" | "model" | "steering_vector" | "multiplexer";
+
+function makeBlankDragStart(kind: ToolbarKind) {
+  return (event: ReactDragEvent<HTMLButtonElement>) => {
+    event.dataTransfer.setData(DRAG_MIME_BLANK, kind);
+    event.dataTransfer.effectAllowed = "copy";
+    // cancel any active click-to-place mode so the user only acts on the drag.
+    usePipelineStore.getState().cancelPlacement();
+  };
+}
 
 const DEFAULT_OFFSET_RIGHT = 12;
 const DEFAULT_OFFSET_TOP = 12;
@@ -86,6 +99,28 @@ function ChipIcon() {
       <path d="M15 3 V6" />
       <path d="M9 18 V21" />
       <path d="M15 18 V21" />
+    </svg>
+  );
+}
+
+function VectorIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <line x1="5" y1="19" x2="19" y2="5" />
+      <polyline points="12 5 19 5 19 12" />
+      <circle cx="5" cy="19" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function MultiplexerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="10" y="4" width="4" height="16" rx="0.5" />
+      <line x1="3" y1="7" x2="10" y2="7" />
+      <line x1="3" y1="12" x2="10" y2="12" />
+      <line x1="3" y1="17" x2="10" y2="17" />
+      <line x1="14" y1="12" x2="21" y2="12" />
     </svg>
   );
 }
@@ -204,6 +239,22 @@ export function CanvasToolbar() {
     }
   };
 
+  const onSteeringVectorClick = () => {
+    if (placementKind === "steering_vector") {
+      cancelPlacement();
+    } else {
+      startPlacement({ kind: "steering_vector" });
+    }
+  };
+
+  const onMultiplexerClick = () => {
+    if (placementKind === "multiplexer") {
+      cancelPlacement();
+    } else {
+      startPlacement({ kind: "multiplexer" });
+    }
+  };
+
   return (
     <div
       ref={containerRef}
@@ -262,10 +313,12 @@ export function CanvasToolbar() {
             <button
               type="button"
               className={`toolbar-btn${placementKind === "control" ? " active" : ""}`}
-              title="New control"
+              title="New control (click then click canvas, or drag onto canvas)"
               aria-label="New control"
               aria-pressed={placementKind === "control"}
               onClick={onNewControlClick}
+              draggable
+              onDragStart={makeBlankDragStart("control")}
             >
               <ControlIcon />
             </button>
@@ -274,22 +327,52 @@ export function CanvasToolbar() {
             <button
               type="button"
               className={`toolbar-btn${placementKind === "dataset" ? " active" : ""}`}
-              title="New dataset"
+              title="New dataset (click then click canvas, or drag onto canvas)"
               aria-label="New dataset"
               aria-pressed={placementKind === "dataset"}
               onClick={onDatasetClick}
+              draggable
+              onDragStart={makeBlankDragStart("dataset")}
             >
               <DocumentIcon />
             </button>
             <button
               type="button"
               className={`toolbar-btn${placementKind === "model" ? " active" : ""}`}
-              title="New model"
+              title="New model (click then click canvas, or drag onto canvas)"
               aria-label="New model"
               aria-pressed={placementKind === "model"}
               onClick={onModelClick}
+              draggable
+              onDragStart={makeBlankDragStart("model")}
             >
               <ChipIcon />
+            </button>
+          </div>
+          <div className="toolbar-row">
+            <button
+              type="button"
+              className={`toolbar-btn${placementKind === "steering_vector" ? " active" : ""}`}
+              title="New steering vector (click then click canvas, or drag onto canvas)"
+              aria-label="New steering vector"
+              aria-pressed={placementKind === "steering_vector"}
+              onClick={onSteeringVectorClick}
+              draggable
+              onDragStart={makeBlankDragStart("steering_vector")}
+            >
+              <VectorIcon />
+            </button>
+            <button
+              type="button"
+              className={`toolbar-btn${placementKind === "multiplexer" ? " active" : ""}`}
+              title="New multiplexer (click then click canvas, or drag onto canvas)"
+              aria-label="New multiplexer"
+              aria-pressed={placementKind === "multiplexer"}
+              onClick={onMultiplexerClick}
+              draggable
+              onDragStart={makeBlankDragStart("multiplexer")}
+            >
+              <MultiplexerIcon />
             </button>
           </div>
         </div>
