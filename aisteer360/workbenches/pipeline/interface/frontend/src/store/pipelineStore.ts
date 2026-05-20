@@ -82,7 +82,18 @@ interface PipelineStoreState {
   stagingDatasetName: string;
   stagingModelId: string;
 
+  // raw canvas rails (without per-node-size offset). pushed into the store by
+  // the canvas whenever geometry changes; consumed by collectNodes when called
+  // from the toolbar (which doesn't know the canvas geometry directly).
+  canvasBounds: { left: number; right: number; top: number; bottom: number } | null;
   pendingDeleteNodeId: string | null;
+  pendingConfirm: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    onConfirm: () => void;
+  } | null;
   lockedGroups: string[][];
 
   setNodes: (nodes: Node[]) => void;
@@ -133,6 +144,7 @@ interface PipelineStoreState {
   setMultiplexerOrientation: (id: string, orientation: "vertical" | "horizontal") => void;
   removeNode: (id: string) => void;
   removeEdge: (id: string) => void;
+  removeManyNodesAndEdges: (nodeIds: string[], edgeIds: string[]) => void;
   updateNodeArgs: (id: string, args: Record<string, unknown>) => void;
   updateNodeRuntimeKwargs: (id: string, kwargs: Record<string, unknown>) => void;
   updateNodeLabel: (id: string, label: string) => void;
@@ -141,7 +153,18 @@ interface PipelineStoreState {
   requestDeleteNode: (id: string) => void;
   confirmDeleteNode: () => void;
   cancelDeleteNode: () => void;
+  requestConfirm: (config: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    onConfirm: () => void;
+  }) => void;
+  resolveConfirm: () => void;
+  cancelConfirm: () => void;
   resetCanvas: () => void;
+  setCanvasBounds: (bounds: { left: number; right: number; top: number; bottom: number } | null) => void;
+  collectNodes: () => void;
 
   toPipelineDefinition: () => PipelineDefinition;
   getRuntimeKwargs: () => Record<string, unknown>;
@@ -179,7 +202,9 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   stagingDatasetName: "",
   stagingModelId: "",
 
+  canvasBounds: null,
   pendingDeleteNodeId: null,
+  pendingConfirm: null,
   lockedGroups: [],
 
   setNodes: (nodes) => set({ nodes }),
@@ -400,6 +425,66 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     });
   },
 
+  removeManyNodesAndEdges: (nodeIds, edgeIds) => {
+    const removableNodeIds = new Set<string>();
+    const allNodes = get().nodes;
+    for (const id of nodeIds) {
+      const node = allNodes.find((n) => n.id === id);
+      if (!node) continue;
+      if (FIXTURE_NODE_TYPES.has(node.type ?? "")) continue;
+      removableNodeIds.add(id);
+    }
+
+    // Cascade: any edge feeding INTO a multiplexer input is selected for
+    // deletion; its source node should also be removed (matches the existing
+    // single-edge cascade behavior in removeEdge).
+    const allEdges = get().edges;
+    const removableEdgeIds = new Set(edgeIds);
+    for (const eid of edgeIds) {
+      const edge = allEdges.find((e) => e.id === eid);
+      if (!edge) continue;
+      const targetNode = allNodes.find((n) => n.id === edge.target);
+      const isMuxInput =
+        targetNode?.type === "multiplexer" &&
+        typeof edge.targetHandle === "string" &&
+        edge.targetHandle.startsWith("in-");
+      if (!isMuxInput) continue;
+      const sourceNode = allNodes.find((n) => n.id === edge.source);
+      if (!sourceNode) continue;
+      if (FIXTURE_NODE_TYPES.has(sourceNode.type ?? "")) continue;
+      removableNodeIds.add(sourceNode.id);
+    }
+
+    if (removableNodeIds.size === 0 && removableEdgeIds.size === 0) return;
+
+    const wasTargetRemoved =
+      get().targetModelNodeId !== null && removableNodeIds.has(get().targetModelNodeId!);
+
+    let lockedGroups = get().lockedGroups;
+    for (const id of removableNodeIds) {
+      lockedGroups = pruneLockedGroups(lockedGroups, id);
+    }
+
+    const nextNodes = allNodes.filter((n) => !removableNodeIds.has(n.id));
+    const nextEdges = allEdges.filter(
+      (e) =>
+        !removableEdgeIds.has(e.id) &&
+        !removableNodeIds.has(e.source) &&
+        !removableNodeIds.has(e.target),
+    );
+
+    set({
+      nodes: nextNodes,
+      edges: nextEdges,
+      lockedGroups,
+      selectedNodeId:
+        get().selectedNodeId && removableNodeIds.has(get().selectedNodeId!)
+          ? null
+          : get().selectedNodeId,
+      ...(wasTargetRemoved ? { targetModelNodeId: null, modelNameOrPath: "" } : {}),
+    });
+  },
+
   removeEdge: (id) => {
     const edges = get().edges;
     const edge = edges.find((e) => e.id === id);
@@ -522,6 +607,53 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     });
   },
   cancelDeleteNode: () => set({ pendingDeleteNodeId: null }),
+
+  requestConfirm: (config) => set({ pendingConfirm: config }),
+  resolveConfirm: () => {
+    const cur = get().pendingConfirm;
+    set({ pendingConfirm: null });
+    cur?.onConfirm();
+  },
+  cancelConfirm: () => set({ pendingConfirm: null }),
+
+  setCanvasBounds: (bounds) => set({ canvasBounds: bounds }),
+
+  collectNodes: () => {
+    const bounds = get().canvasBounds;
+    if (!bounds) return;
+    const SNAP = 20;
+    const snap = (v: number) => Math.round(v / SNAP) * SNAP;
+    // size fallbacks mirror the canvas's sizeForNode. measured node.width/height
+    // (set by React Flow after mount) takes precedence when available.
+    const fallbackSizeFor = (n: Node): { width: number; height: number } => {
+      if (n.width != null && n.height != null) return { width: n.width, height: n.height };
+      if (n.type === "dataset") return { width: 80, height: 80 };
+      if (n.type === "steering_vector") return { width: 80, height: 80 };
+      if (n.type === "multiplexer") return { width: 20, height: 80 };
+      if (n.type === "model") return { width: 340, height: 240 };
+      return { width: 160, height: 120 };
+    };
+    let dirty = false;
+    const nextNodes = get().nodes.map((n) => {
+      if (FIXTURE_NODE_TYPES.has(n.type ?? "")) return n;
+      const { width, height } = fallbackSizeFor(n);
+      const minX = bounds.left;
+      const minY = bounds.top + SNAP;
+      const maxX = Math.max(minX, bounds.right - width);
+      const maxY = Math.max(minY, bounds.bottom - height - SNAP);
+      const inX = n.position.x >= minX && n.position.x <= maxX;
+      const inY = n.position.y >= minY && n.position.y <= maxY;
+      if (inX && inY) return n;
+      const clampedX = Math.min(maxX, Math.max(minX, n.position.x));
+      const clampedY = Math.min(maxY, Math.max(minY, n.position.y));
+      const x = Math.min(maxX, Math.max(minX, snap(clampedX)));
+      const y = Math.min(maxY, Math.max(minY, snap(clampedY)));
+      if (x === n.position.x && y === n.position.y) return n;
+      dirty = true;
+      return { ...n, position: { x, y } };
+    });
+    if (dirty) set({ nodes: nextNodes });
+  },
 
   updateNodeRuntimeKwargs: (id, kwargs) => {
     set({

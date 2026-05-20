@@ -17,6 +17,7 @@ import { nodeTypes } from "./nodes/nodeTypes";
 import { usePipelineStore } from "./store/pipelineStore";
 import { makeIsValidConnection } from "./canvas/validation";
 import { ConfirmDialog } from "./canvas/ConfirmDialog";
+import { ConfirmModal } from "./canvas/ConfirmModal";
 import { DRAG_MIME, DRAG_MIME_BLANK, DRAG_MIME_DATASET, DRAG_MIME_MODEL } from "./panels/LibraryPanel";
 import { probeModel } from "./api/model";
 import type { ControlCategory } from "./types";
@@ -290,7 +291,6 @@ function CanvasInner() {
   const addControlNode = usePipelineStore((s) => s.addControlNode);
   const addDatasetNode = usePipelineStore((s) => s.addDatasetNode);
   const addModelNode = usePipelineStore((s) => s.addModelNode);
-  const removeEdge = usePipelineStore((s) => s.removeEdge);
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId);
   const activeTool = usePipelineStore((s) => s.activeTool);
   const modelNameOrPath = usePipelineStore((s) => s.modelNameOrPath);
@@ -511,6 +511,17 @@ function CanvasInner() {
 
   useEffect(() => {
     if (!geometry) return;
+    const halfH = geometry.boundsHeight / 2;
+    usePipelineStore.getState().setCanvasBounds({
+      left: geometry.promptStemMidX + RAIL_BUFFER,
+      right: geometry.responseStemMidX - RAIL_BUFFER,
+      top: geometry.centerY - halfH,
+      bottom: geometry.centerY + halfH,
+    });
+  }, [geometry]);
+
+  useEffect(() => {
+    if (!geometry) return;
     const locked = lockedVerticalRef.current;
     if (!locked) return;
     const canvasHeight = geometry.height;
@@ -690,15 +701,24 @@ function CanvasInner() {
         if (event.target.isContentEditable) return;
       }
       if (event.key !== "Delete" && event.key !== "Backspace") return;
-      const edgeId = selectedEdgeIdRef.current;
-      if (!edgeId) return;
+      const state = usePipelineStore.getState();
+      const selectedNodeIds = state.nodes.filter((n) => n.selected).map((n) => n.id);
+      const selectedEdgeIds = state.edges.filter((e) => e.selected).map((e) => e.id);
+      // also consider the most-recently-clicked edge ref, since edge selection
+      // doesn't always set the `selected` flag on the underlying edge object
+      // (it lives in React Flow's internal state until selection is applied).
+      const recentEdgeId = selectedEdgeIdRef.current;
+      if (recentEdgeId && !selectedEdgeIds.includes(recentEdgeId)) {
+        selectedEdgeIds.push(recentEdgeId);
+      }
+      if (selectedNodeIds.length === 0 && selectedEdgeIds.length === 0) return;
       event.preventDefault();
-      removeEdge(edgeId);
+      state.removeManyNodesAndEdges(selectedNodeIds, selectedEdgeIds);
       selectedEdgeIdRef.current = null;
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [removeEdge]);
+  }, []);
 
   const onDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     const types = Array.from(event.dataTransfer.types);
@@ -1000,6 +1020,8 @@ function CanvasInner() {
         preventScrolling={false}
         autoPanOnNodeDrag={false}
         autoPanOnConnect={false}
+        selectionOnDrag
+        selectNodesOnDrag={false}
         minZoom={1}
         maxZoom={1}
         defaultViewport={{ x: 0, y: 0, zoom: 1 }}
@@ -1007,6 +1029,7 @@ function CanvasInner() {
         snapGrid={SNAP_GRID}
       />
       <ConfirmDialog />
+      <ConfirmModal />
     </div>
   );
 }

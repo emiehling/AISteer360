@@ -125,6 +125,30 @@ function MultiplexerIcon() {
   );
 }
 
+function CollectIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="7" y="7" width="10" height="10" rx="1" />
+      <polyline points="3 7 7 7 7 3" />
+      <polyline points="21 7 17 7 17 3" />
+      <polyline points="3 17 7 17 7 21" />
+      <polyline points="21 17 17 17 17 21" />
+    </svg>
+  );
+}
+
+function ClearIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <polyline points="4 6 20 6" />
+      <path d="M9 6 V4 a1 1 0 0 1 1 -1 h4 a1 1 0 0 1 1 1 V6" />
+      <path d="M6 6 L7 20 a1 1 0 0 0 1 1 h8 a1 1 0 0 0 1 -1 L18 6" />
+      <line x1="10" y1="11" x2="10" y2="17" />
+      <line x1="14" y1="11" x2="14" y2="17" />
+    </svg>
+  );
+}
+
 export function CanvasToolbar() {
   const placement = usePipelineStore((s) => s.placement);
   const startPlacement = usePipelineStore((s) => s.startPlacement);
@@ -255,6 +279,20 @@ export function CanvasToolbar() {
     }
   };
 
+  const onCollectClick = () => {
+    usePipelineStore.getState().collectNodes();
+  };
+
+  const onClearClick = () => {
+    usePipelineStore.getState().requestConfirm({
+      title: "Clear canvas",
+      message: "This will remove every element on the canvas. Continue?",
+      confirmLabel: "Clear",
+      cancelLabel: "Cancel",
+      onConfirm: () => usePipelineStore.getState().resetCanvas(),
+    });
+  };
+
   return (
     <div
       ref={containerRef}
@@ -373,6 +411,27 @@ export function CanvasToolbar() {
               onDragStart={makeBlankDragStart("multiplexer")}
             >
               <MultiplexerIcon />
+            </button>
+          </div>
+          <div className="toolbar-divider" />
+          <div className="toolbar-row">
+            <button
+              type="button"
+              className="toolbar-btn"
+              title="Collect off-canvas elements back inside the bounds"
+              aria-label="Collect off-canvas elements"
+              onClick={onCollectClick}
+            >
+              <CollectIcon />
+            </button>
+            <button
+              type="button"
+              className="toolbar-btn"
+              title="Clear canvas"
+              aria-label="Clear canvas"
+              onClick={onClearClick}
+            >
+              <ClearIcon />
             </button>
           </div>
         </div>
