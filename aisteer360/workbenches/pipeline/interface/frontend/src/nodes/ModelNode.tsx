@@ -13,6 +13,28 @@ interface ModelNodeData {
   params: ModelNodeParam[];
 }
 
+/* ── icons ───────────────────────────────────────────────────────── */
+
+function BoxIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M21 8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
+      <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+      <line x1="12" y1="22.08" x2="12" y2="12" />
+    </svg>
+  );
+}
+
 function CloseIcon() {
   return (
     <svg
@@ -32,40 +54,24 @@ function CloseIcon() {
   );
 }
 
-function StarIcon({ filled }: { filled: boolean }) {
-  return (
-    <svg
-      width="11"
-      height="11"
-      viewBox="0 0 24 24"
-      fill={filled ? "currentColor" : "none"}
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <polygon points="12 2 15 9 22 9.5 17 14.5 18.5 22 12 18 5.5 22 7 14.5 2 9.5 9 9" />
-    </svg>
-  );
+/* ── helpers ──────────────────────────────────────────────────────── */
+
+/** Strip the org prefix: "ibm-granite/granite-4.0-h-micro" → "granite-4.0-h-micro" */
+function shortModelId(id: string): string {
+  const idx = id.lastIndexOf("/");
+  return idx >= 0 ? id.slice(idx + 1) : id;
 }
+
+/* ── component ───────────────────────────────────────────────────── */
 
 function ModelNodeImpl({ id, data, selected }: NodeProps<ModelNodeData>) {
   const requestDeleteNode = usePipelineStore((s) => s.requestDeleteNode);
-  const targetModelNodeId = usePipelineStore((s) => s.targetModelNodeId);
-  const setTargetModelNodeId = usePipelineStore((s) => s.setTargetModelNodeId);
 
-  const display = data.modelId || "‹ select model ›";
-  const isTarget = targetModelNodeId === id;
+  const display = data.modelId ? shortModelId(data.modelId) : "‹ select model ›";
 
   const onClose = (event: MouseEvent) => {
     event.stopPropagation();
     requestDeleteNode(id);
-  };
-
-  const onToggleTarget = (event: MouseEvent) => {
-    event.stopPropagation();
-    setTargetModelNodeId(isTarget ? null : id);
   };
 
   return (
@@ -75,51 +81,51 @@ function ModelNodeImpl({ id, data, selected }: NodeProps<ModelNodeData>) {
       <Handle type="source" position={Position.Top} id="top" />
       <Handle type="source" position={Position.Bottom} id="bottom" />
 
+      <button
+        type="button"
+        className="model-close"
+        onClick={onClose}
+        aria-label="Remove model"
+        title="close"
+      >
+        <CloseIcon />
+      </button>
+
+      {/* offset shadow */}
+      <div className="model-shadow" />
+
+      {/* face */}
       <div className="model-face">
-        <div className="model-bar">
-          <span className="model-bar-title">{isTarget ? "target model" : "model"}</span>
-          <span
-            className={`model-bar-dot ${data.loaded ? "loaded" : "unloaded"}`}
-            aria-label={data.loaded ? "model loaded" : "model not loaded"}
-            title={data.loaded ? "model loaded" : "model not loaded"}
-          />
-          <button
-            type="button"
-            className={`model-bar-btn model-bar-star${isTarget ? " active" : ""}`}
-            onClick={onToggleTarget}
-            aria-label={isTarget ? "Unset as target model" : "Set as target model"}
-            aria-pressed={isTarget}
-            title={isTarget ? "target model" : "set as target"}
-          >
-            <StarIcon filled={isTarget} />
-          </button>
-          <button
-            type="button"
-            className="model-bar-btn model-bar-close"
-            onClick={onClose}
-            aria-label="Remove model"
-            title="close"
-          >
-            <CloseIcon />
-          </button>
+        {/* ── sidebar ── */}
+        <div className="model-sidebar">
+          <span className="model-sidebar-icon">
+            <BoxIcon />
+          </span>
+          <div className="model-sidebar-spacer" />
+          <span className="model-sidebar-label">model</span>
         </div>
 
-        <div className="model-id-row" title={data.modelId || "no model selected"}>
-          {display}
-        </div>
-
-        {data.params.length > 0 ? (
-          <div className="model-params">
-            {data.params.map((p, idx) => (
-              <div key={`${p.label}-${idx}`} className="model-param-row">
-                <span className="model-param-label">{p.label}</span>
-                <span className="model-param-value" title={p.value}>
-                  {p.value}
-                </span>
-              </div>
-            ))}
+        {/* ── content ── */}
+        <div className="model-content">
+          <div className="model-head">
+            <span className="model-id" title={data.modelId || "no model selected"}>
+              {display}
+            </span>
           </div>
-        ) : null}
+
+          {data.params.length > 0 ? (
+            <div className="model-rows">
+              {data.params.map((p, idx) => (
+                <div key={`${p.label}-${idx}`} className="model-row">
+                  <span className="model-row-key">{p.label}</span>
+                  <span className="model-row-value" title={p.value}>
+                    {p.value}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );

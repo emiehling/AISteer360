@@ -1,4 +1,6 @@
-import { useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { probeModel, searchModels, type ModelSearchHit } from "../api/model";
+import type { ModelProbe } from "../types";
 import type {
   ControlCategory,
   ControlNodeData,
@@ -201,19 +203,23 @@ function ControlHeader({
       </div>
       <div className="control-settings-field">
         <span className="control-settings-label">category</span>
-        <select
-          className="palette-input"
-          value={category ?? ""}
-          disabled={categoryDisabled}
-          onChange={(e) => onCategoryChange?.((e.target.value || null) as ControlCategory | null)}
-        >
-          <option value="">— select —</option>
+        <div className="palette-mode-toggle" role="tablist" aria-disabled={categoryDisabled}>
           {CATEGORIES.map((c) => (
-            <option key={c.value} value={c.value}>
+            <button
+              key={c.value}
+              type="button"
+              role="tab"
+              aria-selected={category === c.value}
+              disabled={categoryDisabled}
+              className={`palette-mode-btn${category === c.value ? " active" : ""}`}
+              onClick={() =>
+                onCategoryChange?.(category === c.value ? null : (c.value as ControlCategory))
+              }
+            >
               {c.label}
-            </option>
+            </button>
           ))}
-        </select>
+        </div>
       </div>
     </header>
   );
@@ -605,6 +611,12 @@ function SelectedMultiplexerNodePanel({
   );
 }
 
+/** Format an integer with thousands separators (e.g. 4096 -> "4,096"). */
+function fmtInt(n: number | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  return n.toLocaleString();
+}
+
 function SelectedModelNodePanel({ node }: { node: { id: string; data: { modelId?: string } } }) {
   const setModelNodeId = usePipelineStore((s) => s.setModelNodeId);
   const targetModelNodeId = usePipelineStore((s) => s.targetModelNodeId);
@@ -615,9 +627,117 @@ function SelectedModelNodePanel({ node }: { node: { id: string; data: { modelId?
   const [editing, setEditing] = useState<boolean>(!currentId);
   const isTarget = targetModelNodeId === node.id;
 
-  const onConfirm = () => {
-    setModelNodeId(node.id, draftId.trim());
+  // autocomplete state
+  const [suggestions, setSuggestions] = useState<ModelSearchHit[]>([]);
+  const [openSuggestions, setOpenSuggestions] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState<number>(-1);
+
+  // probe state — keyed by current confirmed model id, not the live draft.
+  const [probe, setProbe] = useState<ModelProbe | null>(null);
+  const [probeError, setProbeError] = useState<string | null>(null);
+  const [probing, setProbing] = useState(false);
+
+  // debounce + cancellation for autocomplete
+  useEffect(() => {
+    if (!editing) return;
+    const q = draftId.trim();
+    if (q.length < 2) {
+      setSuggestions([]);
+      setOpenSuggestions(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      searchModels(q, 10)
+        .then((res) => {
+          if (cancelled) return;
+          setSuggestions(res.results);
+          setOpenSuggestions(res.results.length > 0);
+          setHighlightIdx(-1);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setSuggestions([]);
+          setOpenSuggestions(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [draftId, editing]);
+
+  // probe on confirmed id change
+  useEffect(() => {
+    const id = currentId.trim();
+    if (!id) {
+      setProbe(null);
+      setProbeError(null);
+      setProbing(false);
+      return;
+    }
+    let cancelled = false;
+    setProbing(true);
+    setProbeError(null);
+    probeModel(id)
+      .then((res) => {
+        if (cancelled) return;
+        setProbe(res);
+        setProbing(false);
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setProbe(null);
+        setProbeError(err?.message ?? "probe failed");
+        setProbing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentId]);
+
+  const commit = (id: string) => {
+    setModelNodeId(node.id, id.trim());
     setEditing(false);
+    setOpenSuggestions(false);
+  };
+
+  const onConfirm = () => commit(draftId);
+
+  const onPickSuggestion = (hit: ModelSearchHit) => {
+    setDraftId(hit.model_id);
+    commit(hit.model_id);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (openSuggestions && suggestions.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setHighlightIdx((idx) => Math.min(suggestions.length - 1, idx + 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setHighlightIdx((idx) => Math.max(-1, idx - 1));
+        return;
+      }
+      if (e.key === "Tab" && highlightIdx >= 0) {
+        e.preventDefault();
+        setDraftId(suggestions[highlightIdx].model_id);
+        return;
+      }
+      if (e.key === "Escape") {
+        setOpenSuggestions(false);
+        return;
+      }
+    }
+    if (e.key === "Enter") {
+      if (highlightIdx >= 0 && suggestions[highlightIdx]) {
+        onPickSuggestion(suggestions[highlightIdx]);
+      } else {
+        onConfirm();
+      }
+    }
   };
 
   return (
@@ -640,22 +760,56 @@ function SelectedModelNodePanel({ node }: { node: { id: string; data: { modelId?
           {isTarget ? "★ target" : "set target"}
         </button>
       </div>
-      <header className="panel-head control-settings-head">
-        <div className="control-settings-field">
+      <header className="panel-head control-settings-head model-settings-head">
+        <div className="control-settings-field model-id-field">
           <span className="control-settings-label">huggingface id</span>
           {editing ? (
             <div className="model-id-entry">
-              <input
-                className="palette-input"
-                type="text"
-                value={draftId}
-                placeholder="org/model-name"
-                onChange={(e) => setDraftId(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onConfirm();
-                }}
-                autoFocus
-              />
+              <div className="model-id-input-wrap">
+                <input
+                  className="palette-input model-id-input"
+                  type="text"
+                  value={draftId}
+                  placeholder="search or paste org/model-name"
+                  onChange={(e) => {
+                    setDraftId(e.target.value);
+                    setOpenSuggestions(true);
+                  }}
+                  onFocus={() => {
+                    if (suggestions.length > 0) setOpenSuggestions(true);
+                  }}
+                  onBlur={() => {
+                    // delay so click on suggestion can fire first
+                    setTimeout(() => setOpenSuggestions(false), 120);
+                  }}
+                  onKeyDown={onKeyDown}
+                  autoFocus
+                />
+                {openSuggestions && suggestions.length > 0 ? (
+                  <ul className="model-id-suggestions" role="listbox">
+                    {suggestions.map((hit, idx) => (
+                      <li
+                        key={hit.model_id}
+                        role="option"
+                        aria-selected={idx === highlightIdx}
+                        className={`model-id-suggestion${idx === highlightIdx ? " highlighted" : ""}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          onPickSuggestion(hit);
+                        }}
+                        onMouseEnter={() => setHighlightIdx(idx)}
+                      >
+                        <span className="model-id-suggestion-id">{hit.model_id}</span>
+                        {hit.downloads != null ? (
+                          <span className="model-id-suggestion-meta">
+                            ↓ {fmtInt(hit.downloads)}
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
               <button
                 type="button"
                 className="settings-load-btn"
@@ -672,6 +826,57 @@ function SelectedModelNodePanel({ node }: { node: { id: string; data: { modelId?
           )}
         </div>
       </header>
+      {currentId ? (
+        <div className="panel-section model-probe-section">
+          <div className="panel-section-head static">
+            <span className="panel-section-arrow">▾</span>
+            <span className="panel-section-title">architecture</span>
+            {probing ? <span className="model-probe-status">probing…</span> : null}
+          </div>
+          <div className="panel-section-body">
+            {probeError ? (
+              <div className="model-probe-error">{probeError}</div>
+            ) : probe ? (
+              <div className="panel-fields-grid model-probe-grid">
+                <div className="panel-field-row model-probe-row">
+                  <span className="panel-field-name">type</span>
+                  <span className="model-probe-value">{probe.model_type ?? "—"}</span>
+                </div>
+                <div className="panel-field-row model-probe-row">
+                  <span className="panel-field-name">layers</span>
+                  <span className="model-probe-value">{fmtInt(probe.num_hidden_layers)}</span>
+                </div>
+                <div className="panel-field-row model-probe-row">
+                  <span className="panel-field-name">hidden_dim</span>
+                  <span className="model-probe-value">{fmtInt(probe.hidden_size)}</span>
+                </div>
+                <div className="panel-field-row model-probe-row">
+                  <span className="panel-field-name">attention heads</span>
+                  <span className="model-probe-value">{fmtInt(probe.num_attention_heads)}</span>
+                </div>
+                <div className="panel-field-row model-probe-row">
+                  <span className="panel-field-name">kv heads</span>
+                  <span className="model-probe-value">{fmtInt(probe.num_key_value_heads)}</span>
+                </div>
+                <div className="panel-field-row model-probe-row">
+                  <span className="panel-field-name">intermediate_dim</span>
+                  <span className="model-probe-value">{fmtInt(probe.intermediate_size)}</span>
+                </div>
+                <div className="panel-field-row model-probe-row">
+                  <span className="panel-field-name">vocab</span>
+                  <span className="model-probe-value">{fmtInt(probe.vocab_size)}</span>
+                </div>
+                <div className="panel-field-row model-probe-row">
+                  <span className="panel-field-name">max positions</span>
+                  <span className="model-probe-value">{fmtInt(probe.max_position_embeddings)}</span>
+                </div>
+              </div>
+            ) : (
+              !probing && <div className="panel-empty">no probe data</div>
+            )}
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }
