@@ -67,6 +67,7 @@ export interface ModelProbe {
   vocab_size: number | null;
   max_position_embeddings: number | null;
   model_type: string | null;
+  total_params: number | null;
   source: string;
 }
 
@@ -89,8 +90,32 @@ export interface ControlNodeData {
   onClose?: () => void;
 }
 
+export type DatasetSource = "local" | "huggingface";
+
+export interface DatasetColumnSpec {
+  name: string;
+  active: boolean;
+  renameTo: string;
+}
+
 export interface DatasetNodeData {
   name: string;
   rowCount?: number | null;
+  source?: DatasetSource;
+  path?: string | null;
+  hfId?: string;
+  columns?: DatasetColumnSpec[];
   onClose?: () => void;
+}
+
+export interface ModelNodeParam {
+  label: string;
+  value: string;
+}
+
+export interface ModelNodeData {
+  modelId: string;
+  loaded: boolean;
+  params: ModelNodeParam[];
+  genKwargs?: Record<string, unknown>;
 }

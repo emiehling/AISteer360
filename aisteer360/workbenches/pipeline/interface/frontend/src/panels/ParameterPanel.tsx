@@ -1,24 +1,24 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { probeModel, searchModels, type ModelSearchHit } from "../api/model";
-import type { ModelProbe } from "../types";
+import { useState } from "react";
 import type {
-  ControlCategory,
   ControlNodeData,
+  DatasetColumnSpec,
+  DatasetNodeData,
   MethodFieldSpec,
   MethodSpec,
+  ModelNodeData,
 } from "../types";
 import { usePipelineStore } from "../store/pipelineStore";
 import { FieldWidget } from "./widgets";
 
-const CATEGORIES: { value: ControlCategory; label: string }[] = [
-  { value: "input_control", label: "Input" },
-  { value: "structural_control", label: "Structural" },
-  { value: "state_control", label: "State" },
-  { value: "output_control", label: "Output" },
+const GEN_KWARG_FIELDS: MethodFieldSpec[] = [
+  { name: "max_new_tokens", type: "int", default: 256, required: false, help: null },
+  { name: "temperature", type: "float", default: 1.0, required: false, help: null },
+  { name: "top_p", type: "float", default: 1.0, required: false, help: null },
+  { name: "top_k", type: "int", default: 50, required: false, help: null },
+  { name: "repetition_penalty", type: "float", default: 1.0, required: false, help: null },
+  { name: "do_sample", type: "bool", default: true, required: false, help: null },
+  { name: "seed", type: "int | None", default: null, required: false, help: null },
 ];
-
-const CONTROL_FILE_ACCEPT = ".control,application/json";
-const DATASET_FILE_ACCEPT = ".csv,.json,.jsonl,.parquet";
 
 function sortedFields(fields: MethodFieldSpec[]): MethodFieldSpec[] {
   return [...fields].sort((a, b) => {
@@ -33,11 +33,19 @@ interface SectionProps {
   values: Record<string, unknown>;
   onChange: (name: string, next: unknown) => void;
   emptyHint: string;
+  preserveOrder?: boolean;
 }
 
-function PanelSection({ title, fields, values, onChange, emptyHint }: SectionProps) {
+function PanelSection({
+  title,
+  fields,
+  values,
+  onChange,
+  emptyHint,
+  preserveOrder = false,
+}: SectionProps) {
   const [open, setOpen] = useState(true);
-  const ordered = sortedFields(fields);
+  const ordered = preserveOrder ? fields : sortedFields(fields);
   return (
     <div className={`panel-section${open ? " open" : " collapsed"}`}>
       <button
@@ -164,406 +172,155 @@ function FreeFormEditor({ args, onChange }: FreeFormEditorProps) {
   );
 }
 
-interface HeaderProps {
-  name: string;
-  category: ControlCategory | null;
-  nameDisabled: boolean;
-  categoryDisabled: boolean;
-  methodSubtitle?: string | null;
-  onNameChange?: (next: string) => void;
-  onCategoryChange?: (next: ControlCategory | null) => void;
-}
-
-function ControlHeader({
-  name,
-  category,
-  nameDisabled,
-  categoryDisabled,
-  methodSubtitle,
-  onNameChange,
-  onCategoryChange,
-}: HeaderProps) {
-  return (
-    <header className="panel-head control-settings-head">
-      <div className="control-settings-field">
-        <span className="control-settings-label">name</span>
-        <input
-          className="palette-input"
-          type="text"
-          value={name}
-          placeholder="control_name"
-          disabled={nameDisabled}
-          onChange={(e) => onNameChange?.(e.target.value)}
-        />
-        {methodSubtitle ? (
-          <span className="control-settings-method-id" title={`method: ${methodSubtitle}`}>
-            method: {methodSubtitle}
-          </span>
-        ) : null}
-      </div>
-      <div className="control-settings-field">
-        <span className="control-settings-label">category</span>
-        <div className="palette-mode-toggle" role="tablist" aria-disabled={categoryDisabled}>
-          {CATEGORIES.map((c) => (
-            <button
-              key={c.value}
-              type="button"
-              role="tab"
-              aria-selected={category === c.value}
-              disabled={categoryDisabled}
-              className={`palette-mode-btn${category === c.value ? " active" : ""}`}
-              onClick={() =>
-                onCategoryChange?.(category === c.value ? null : (c.value as ControlCategory))
-              }
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
-      </div>
-    </header>
-  );
-}
-
-function SelectedNodePanel({ node }: { node: { id: string; data: ControlNodeData } }) {
+function ControlParameters({ node }: { node: { id: string; data: ControlNodeData } }) {
   const methods = usePipelineStore((s) => s.methods);
   const updateNodeArgs = usePipelineStore((s) => s.updateNodeArgs);
   const updateNodeRuntimeKwargs = usePipelineStore((s) => s.updateNodeRuntimeKwargs);
-  const updateNodeLabel = usePipelineStore((s) => s.updateNodeLabel);
-  const setNodeMethod = usePipelineStore((s) => s.setNodeMethod);
-  const setNodeCategory = usePipelineStore((s) => s.setNodeCategory);
-
   const data = node.data;
-  const categoryIsSet = Boolean(data.category);
   const methodIsSet = Boolean(data.method);
   const spec: MethodSpec | undefined = methodIsSet
     ? methods.find((m) => m.category === data.category && m.method === data.method)
     : undefined;
-  const displayName = data.label || data.method || "";
-  const categoryMethods = data.category
-    ? methods.filter((m) => m.category === data.category)
-    : [];
 
-  return (
-    <>
-      <ControlHeader
-        name={displayName}
-        category={data.category}
-        nameDisabled={false}
-        categoryDisabled={false}
-        methodSubtitle={methodIsSet ? data.method : null}
-        onNameChange={(next) => updateNodeLabel(node.id, next)}
-        onCategoryChange={(next) => setNodeCategory(node.id, next)}
-      />
+  if (!methodIsSet) {
+    return <div className="panel-placeholder">select a method in Configure to edit parameters</div>;
+  }
+
+  if (!spec) {
+    return (
       <div className="panel-scroll">
-        {categoryIsSet && !methodIsSet && (
-          <div className="panel-section">
-            <div className="panel-section-head static">
-              <span className="panel-section-arrow">▾</span>
-              <span className="panel-section-title">Method</span>
-            </div>
-            <div className="panel-section-body">
-              <select
-                className="palette-input"
-                value=""
-                onChange={(e) => {
-                  const next = e.target.value;
-                  if (next) setNodeMethod(node.id, next);
-                }}
-              >
-                <option value="">— select method —</option>
-                {categoryMethods.map((m) => (
-                  <option key={m.method} value={m.method}>
-                    {m.method}
-                  </option>
-                ))}
-              </select>
-              {categoryMethods.length === 0 && (
-                <div className="panel-empty">no methods registered for this category</div>
-              )}
-            </div>
-          </div>
-        )}
-        {!categoryIsSet && (
-          <div className="panel-section">
-            <div className="panel-section-head static">
-              <span className="panel-section-arrow">▾</span>
-              <span className="panel-section-title">Category</span>
-            </div>
-            <div className="panel-section-body">
-              <div className="panel-empty">pick a category above to choose a method</div>
-            </div>
-          </div>
-        )}
-        {methodIsSet && spec ? (
-          <>
-            <PanelSection
-              title="Fixed Parameters"
-              fields={spec.args}
-              values={data.args}
-              onChange={(name, next) => updateNodeArgs(node.id, { [name]: next })}
-              emptyHint="no fixed parameters"
-            />
-            <PanelSection
-              title="Runtime Kwargs"
-              fields={spec.runtime_kwargs}
-              values={data.runtimeKwargs}
-              onChange={(name, next) => updateNodeRuntimeKwargs(node.id, { [name]: next })}
-              emptyHint="no runtime kwargs for this control"
-            />
-          </>
-        ) : methodIsSet ? (
-          <div className="panel-section">
-            <div className="panel-section-head static">
-              <span className="panel-section-arrow">▾</span>
-              <span className="panel-section-title">Parameters</span>
-            </div>
-            <div className="panel-section-body">
-              <FreeFormEditor
-                args={data.args}
-                onChange={(next) => {
-                  const current = data.args;
-                  const merged: Record<string, unknown> = { ...next };
-                  for (const k of Object.keys(current)) {
-                    if (!(k in merged)) merged[k] = undefined;
-                  }
-                  updateNodeArgs(node.id, merged);
-                }}
-              />
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </>
-  );
-}
-
-function ControlStagingPanel() {
-  const stagingMethod = usePipelineStore((s) => s.stagingMethod);
-  const stagingCategory = usePipelineStore((s) => s.stagingCategory);
-  const stagingName = usePipelineStore((s) => s.stagingName);
-  const stagingArgs = usePipelineStore((s) => s.stagingArgs);
-  const setStagingMethod = usePipelineStore((s) => s.setStagingMethod);
-  const setStagingCategory = usePipelineStore((s) => s.setStagingCategory);
-  const setStagingName = usePipelineStore((s) => s.setStagingName);
-  const setStagingArgs = usePipelineStore((s) => s.setStagingArgs);
-  const methods = usePipelineStore((s) => s.methods);
-
-  const spec: MethodSpec | undefined = stagingMethod
-    ? methods.find((m) => m.method === stagingMethod)
-    : undefined;
-
-  const onLoad = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const text = String(reader.result ?? "");
-        const parsed = JSON.parse(text) as {
-          category?: ControlCategory;
-          method?: string;
-          name?: string;
-          args?: Record<string, unknown>;
-        };
-        if (parsed.method) setStagingMethod(parsed.method);
-        if (parsed.category) setStagingCategory(parsed.category);
-        if (parsed.name) setStagingName(parsed.name);
-        if (parsed.args) setStagingArgs(parsed.args);
-      } catch (err) {
-        console.error("failed to parse .control file:", err);
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  return (
-    <>
-      <SettingsToolbar accept={CONTROL_FILE_ACCEPT} onLoadFile={onLoad} />
-      <ControlHeader
-        name={stagingName}
-        category={stagingCategory}
-        nameDisabled={false}
-        categoryDisabled={false}
-        methodSubtitle={stagingMethod}
-        onNameChange={setStagingName}
-        onCategoryChange={setStagingCategory}
-      />
-      <div className="panel-scroll">
-        {spec ? (
-          <>
-            <PanelSection
-              title="Fixed Parameters"
-              fields={spec.args}
-              values={stagingArgs}
-              onChange={(name, next) =>
-                setStagingArgs({ ...stagingArgs, [name]: next })
-              }
-              emptyHint="no fixed parameters"
-            />
-            <PanelSection
-              title="Runtime Kwargs"
-              fields={spec.runtime_kwargs}
-              values={{}}
-              onChange={() => {}}
-              emptyHint="set on the canvas after dropping"
-            />
-          </>
-        ) : (
-          <div className="panel-section">
-            <div className="panel-section-head static">
-              <span className="panel-section-arrow">▾</span>
-              <span className="panel-section-title">Parameters</span>
-            </div>
-            <div className="panel-section-body">
-              <FreeFormEditor args={stagingArgs} onChange={setStagingArgs} />
-            </div>
-          </div>
-        )}
-      </div>
-    </>
-  );
-}
-
-function DatasetStagingPanel() {
-  const stagingDatasetPath = usePipelineStore((s) => s.stagingDatasetPath);
-  const stagingDatasetName = usePipelineStore((s) => s.stagingDatasetName);
-  const setStagingDatasetPath = usePipelineStore((s) => s.setStagingDatasetPath);
-  const setStagingDatasetName = usePipelineStore((s) => s.setStagingDatasetName);
-
-  const onLoad = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    setStagingDatasetPath(file.name);
-    setStagingDatasetName(file.name);
-  };
-
-  return (
-    <>
-      <SettingsToolbar accept={DATASET_FILE_ACCEPT} onLoadFile={onLoad} />
-      <header className="panel-head control-settings-head">
-        <div className="control-settings-field">
-          <span className="control-settings-label">name</span>
-          <input
-            className="palette-input"
-            type="text"
-            value={stagingDatasetName}
-            placeholder="dataset"
-            onChange={(e) => setStagingDatasetName(e.target.value)}
-          />
-        </div>
-      </header>
-      <div className="panel-scroll">
-        <div className="panel-section">
+        <div className="panel-section open">
           <div className="panel-section-head static">
             <span className="panel-section-arrow">▾</span>
-            <span className="panel-section-title">Source</span>
+            <span className="panel-section-title">Parameters</span>
           </div>
           <div className="panel-section-body">
-            {stagingDatasetPath ? (
-              <div className="dataset-source-row" title={stagingDatasetPath}>
-                {stagingDatasetPath}
-              </div>
-            ) : (
-              <div className="panel-empty">no file loaded — click load above</div>
-            )}
+            <FreeFormEditor
+              args={data.args}
+              onChange={(next) => {
+                const current = data.args;
+                const merged: Record<string, unknown> = { ...next };
+                for (const k of Object.keys(current)) {
+                  if (!(k in merged)) merged[k] = undefined;
+                }
+                updateNodeArgs(node.id, merged);
+              }}
+            />
           </div>
         </div>
       </div>
-    </>
-  );
-}
-
-function ModelStagingPanel() {
-  const stagingModelId = usePipelineStore((s) => s.stagingModelId);
-  const setStagingModelId = usePipelineStore((s) => s.setStagingModelId);
-  const [draftId, setDraftId] = useState<string>(stagingModelId);
-  const [editing, setEditing] = useState<boolean>(!stagingModelId);
-
-  const onConfirm = () => {
-    setStagingModelId(draftId.trim());
-    setEditing(false);
-  };
+    );
+  }
 
   return (
-    <>
-      <div className="settings-toolbar">
-        <button
-          type="button"
-          className="settings-load-btn"
-          onClick={() => setEditing(true)}
-          title="enter HF model id"
-        >
-          load
-        </button>
-      </div>
-      <header className="panel-head control-settings-head">
-        <div className="control-settings-field">
-          <span className="control-settings-label">huggingface id</span>
-          {editing ? (
-            <div className="model-id-entry">
-              <input
-                className="palette-input"
-                type="text"
-                value={draftId}
-                placeholder="org/model-name"
-                onChange={(e) => setDraftId(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onConfirm();
-                }}
-                autoFocus
-              />
-              <button
-                type="button"
-                className="settings-load-btn"
-                onClick={onConfirm}
-                disabled={!draftId.trim()}
-              >
-                confirm
-              </button>
-            </div>
-          ) : (
-            <div className="model-id-display" title={stagingModelId}>
-              {stagingModelId || "—"}
-            </div>
-          )}
-        </div>
-      </header>
-    </>
-  );
-}
-
-interface SettingsToolbarProps {
-  accept: string;
-  onLoadFile: (event: ChangeEvent<HTMLInputElement>) => void;
-}
-
-function SettingsToolbar({ accept, onLoadFile }: SettingsToolbarProps) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  return (
-    <div className="settings-toolbar">
-      <button
-        type="button"
-        className="settings-load-btn"
-        onClick={() => inputRef.current?.click()}
-        title="open file"
-      >
-        load
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        accept={accept}
-        onChange={onLoadFile}
-        style={{ display: "none" }}
+    <div className="panel-scroll">
+      <PanelSection
+        title="Fixed Parameters"
+        fields={spec.args}
+        values={data.args}
+        onChange={(name, next) => updateNodeArgs(node.id, { [name]: next })}
+        emptyHint="no fixed parameters"
+      />
+      <PanelSection
+        title="Runtime Kwargs"
+        fields={spec.runtime_kwargs}
+        values={data.runtimeKwargs}
+        onChange={(name, next) => updateNodeRuntimeKwargs(node.id, { [name]: next })}
+        emptyHint="no runtime kwargs for this control"
       />
     </div>
   );
 }
 
-function SelectedMultiplexerNodePanel({
+function ModelParameters({ node }: { node: { id: string; data: ModelNodeData } }) {
+  const updateModelNodeGenKwargs = usePipelineStore((s) => s.updateModelNodeGenKwargs);
+  const genKwargs = node.data.genKwargs ?? {};
+  return (
+    <div className="panel-scroll">
+      <PanelSection
+        title="Generation"
+        fields={GEN_KWARG_FIELDS}
+        values={genKwargs}
+        onChange={(name, next) => updateModelNodeGenKwargs(node.id, { [name]: next })}
+        emptyHint="no generation kwargs"
+        preserveOrder
+      />
+    </div>
+  );
+}
+
+function DatasetParameters({ node }: { node: { id: string; data: DatasetNodeData } }) {
+  const updateDatasetNodeData = usePipelineStore((s) => s.updateDatasetNodeData);
+  const columns: DatasetColumnSpec[] = node.data.columns ?? [];
+
+  const updateColumn = (idx: number, patch: Partial<DatasetColumnSpec>) => {
+    const next = columns.map((c, i) => (i === idx ? { ...c, ...patch } : c));
+    updateDatasetNodeData(node.id, { columns: next });
+  };
+  const removeColumn = (idx: number) => {
+    updateDatasetNodeData(node.id, { columns: columns.filter((_, i) => i !== idx) });
+  };
+  const addColumn = () => {
+    updateDatasetNodeData(node.id, {
+      columns: [...columns, { name: "", active: true, renameTo: "" }],
+    });
+  };
+
+  return (
+    <div className="panel-scroll">
+      <div className="panel-section open">
+        <div className="panel-section-head static">
+          <span className="panel-section-arrow">▾</span>
+          <span className="panel-section-title">Columns</span>
+        </div>
+        <div className="panel-section-body">
+          {columns.length === 0 && (
+            <div className="panel-empty">no columns defined — click + to add</div>
+          )}
+          {columns.map((col, idx) => (
+            <div className="free-form-row" key={idx}>
+              <label className="widget-checkbox" title="active">
+                <input
+                  type="checkbox"
+                  checked={col.active}
+                  onChange={(e) => updateColumn(idx, { active: e.target.checked })}
+                />
+              </label>
+              <input
+                className="widget-input"
+                type="text"
+                placeholder="column"
+                value={col.name}
+                onChange={(e) => updateColumn(idx, { name: e.target.value })}
+              />
+              <input
+                className="widget-input"
+                type="text"
+                placeholder="rename to (optional)"
+                value={col.renameTo}
+                onChange={(e) => updateColumn(idx, { renameTo: e.target.value })}
+              />
+              <button
+                type="button"
+                className="free-form-btn"
+                onClick={() => removeColumn(idx)}
+                aria-label="remove column"
+                title="remove"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button type="button" className="free-form-add" onClick={addColumn}>
+            + add column
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MultiplexerParameters({
   node,
 }: {
   node: { id: string; data: { name?: string; orientation?: "vertical" | "horizontal" } };
@@ -577,316 +334,36 @@ function SelectedMultiplexerNodePanel({
   ).length;
 
   return (
-    <>
-      <header className="panel-head control-settings-head">
-        <div className="control-settings-field">
-          <span className="control-settings-label">orientation</span>
-          <div className="palette-mode-toggle" role="tablist">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={orientation === "vertical"}
-              className={`palette-mode-btn${orientation === "vertical" ? " active" : ""}`}
-              onClick={() => setMultiplexerOrientation(node.id, "vertical")}
-            >
-              vertical
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={orientation === "horizontal"}
-              className={`palette-mode-btn${orientation === "horizontal" ? " active" : ""}`}
-              onClick={() => setMultiplexerOrientation(node.id, "horizontal")}
-            >
-              horizontal
-            </button>
-          </div>
+    <header className="panel-head control-settings-head">
+      <div className="control-settings-field">
+        <span className="control-settings-label">orientation</span>
+        <div className="palette-mode-toggle" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={orientation === "vertical"}
+            className={`palette-mode-btn${orientation === "vertical" ? " active" : ""}`}
+            onClick={() => setMultiplexerOrientation(node.id, "vertical")}
+          >
+            vertical
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={orientation === "horizontal"}
+            className={`palette-mode-btn${orientation === "horizontal" ? " active" : ""}`}
+            onClick={() => setMultiplexerOrientation(node.id, "horizontal")}
+          >
+            horizontal
+          </button>
         </div>
-        <div className="control-settings-field">
-          <span className="control-settings-label">connected inputs</span>
-          <div className="model-id-display">{connectedInputs}</div>
-        </div>
-      </header>
-    </>
-  );
-}
-
-/** Format an integer with thousands separators (e.g. 4096 -> "4,096"). */
-function fmtInt(n: number | null | undefined): string {
-  if (n === null || n === undefined) return "—";
-  return n.toLocaleString();
-}
-
-function SelectedModelNodePanel({ node }: { node: { id: string; data: { modelId?: string } } }) {
-  const setModelNodeId = usePipelineStore((s) => s.setModelNodeId);
-  const targetModelNodeId = usePipelineStore((s) => s.targetModelNodeId);
-  const setTargetModelNodeId = usePipelineStore((s) => s.setTargetModelNodeId);
-
-  const currentId = node.data.modelId ?? "";
-  const [draftId, setDraftId] = useState<string>(currentId);
-  const [editing, setEditing] = useState<boolean>(!currentId);
-  const isTarget = targetModelNodeId === node.id;
-
-  // autocomplete state
-  const [suggestions, setSuggestions] = useState<ModelSearchHit[]>([]);
-  const [openSuggestions, setOpenSuggestions] = useState(false);
-  const [highlightIdx, setHighlightIdx] = useState<number>(-1);
-
-  // probe state — keyed by current confirmed model id, not the live draft.
-  const [probe, setProbe] = useState<ModelProbe | null>(null);
-  const [probeError, setProbeError] = useState<string | null>(null);
-  const [probing, setProbing] = useState(false);
-
-  // debounce + cancellation for autocomplete
-  useEffect(() => {
-    if (!editing) return;
-    const q = draftId.trim();
-    if (q.length < 2) {
-      setSuggestions([]);
-      setOpenSuggestions(false);
-      return;
-    }
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      searchModels(q, 10)
-        .then((res) => {
-          if (cancelled) return;
-          setSuggestions(res.results);
-          setOpenSuggestions(res.results.length > 0);
-          setHighlightIdx(-1);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setSuggestions([]);
-          setOpenSuggestions(false);
-        });
-    }, 250);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [draftId, editing]);
-
-  // probe on confirmed id change
-  useEffect(() => {
-    const id = currentId.trim();
-    if (!id) {
-      setProbe(null);
-      setProbeError(null);
-      setProbing(false);
-      return;
-    }
-    let cancelled = false;
-    setProbing(true);
-    setProbeError(null);
-    probeModel(id)
-      .then((res) => {
-        if (cancelled) return;
-        setProbe(res);
-        setProbing(false);
-      })
-      .catch((err: Error) => {
-        if (cancelled) return;
-        setProbe(null);
-        setProbeError(err?.message ?? "probe failed");
-        setProbing(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [currentId]);
-
-  const commit = (id: string) => {
-    setModelNodeId(node.id, id.trim());
-    setEditing(false);
-    setOpenSuggestions(false);
-  };
-
-  const onConfirm = () => commit(draftId);
-
-  const onPickSuggestion = (hit: ModelSearchHit) => {
-    setDraftId(hit.model_id);
-    commit(hit.model_id);
-  };
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (openSuggestions && suggestions.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setHighlightIdx((idx) => Math.min(suggestions.length - 1, idx + 1));
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setHighlightIdx((idx) => Math.max(-1, idx - 1));
-        return;
-      }
-      if (e.key === "Tab" && highlightIdx >= 0) {
-        e.preventDefault();
-        setDraftId(suggestions[highlightIdx].model_id);
-        return;
-      }
-      if (e.key === "Escape") {
-        setOpenSuggestions(false);
-        return;
-      }
-    }
-    if (e.key === "Enter") {
-      if (highlightIdx >= 0 && suggestions[highlightIdx]) {
-        onPickSuggestion(suggestions[highlightIdx]);
-      } else {
-        onConfirm();
-      }
-    }
-  };
-
-  return (
-    <>
-      <div className="settings-toolbar">
-        <button
-          type="button"
-          className="settings-load-btn"
-          onClick={() => setEditing(true)}
-          title="enter HF model id"
-        >
-          load
-        </button>
-        <button
-          type="button"
-          className={`settings-load-btn${isTarget ? " active" : ""}`}
-          onClick={() => setTargetModelNodeId(isTarget ? null : node.id)}
-          title={isTarget ? "this is the target model" : "set as target model"}
-        >
-          {isTarget ? "★ target" : "set target"}
-        </button>
       </div>
-      <header className="panel-head control-settings-head model-settings-head">
-        <div className="control-settings-field model-id-field">
-          <span className="control-settings-label">huggingface id</span>
-          {editing ? (
-            <div className="model-id-entry">
-              <div className="model-id-input-wrap">
-                <input
-                  className="palette-input model-id-input"
-                  type="text"
-                  value={draftId}
-                  placeholder="search or paste org/model-name"
-                  onChange={(e) => {
-                    setDraftId(e.target.value);
-                    setOpenSuggestions(true);
-                  }}
-                  onFocus={() => {
-                    if (suggestions.length > 0) setOpenSuggestions(true);
-                  }}
-                  onBlur={() => {
-                    // delay so click on suggestion can fire first
-                    setTimeout(() => setOpenSuggestions(false), 120);
-                  }}
-                  onKeyDown={onKeyDown}
-                  autoFocus
-                />
-                {openSuggestions && suggestions.length > 0 ? (
-                  <ul className="model-id-suggestions" role="listbox">
-                    {suggestions.map((hit, idx) => (
-                      <li
-                        key={hit.model_id}
-                        role="option"
-                        aria-selected={idx === highlightIdx}
-                        className={`model-id-suggestion${idx === highlightIdx ? " highlighted" : ""}`}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          onPickSuggestion(hit);
-                        }}
-                        onMouseEnter={() => setHighlightIdx(idx)}
-                      >
-                        <span className="model-id-suggestion-id">{hit.model_id}</span>
-                        {hit.downloads != null ? (
-                          <span className="model-id-suggestion-meta">
-                            ↓ {fmtInt(hit.downloads)}
-                          </span>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                className="settings-load-btn"
-                onClick={onConfirm}
-                disabled={!draftId.trim()}
-              >
-                confirm
-              </button>
-            </div>
-          ) : (
-            <div className="model-id-display" title={currentId}>
-              {currentId || "—"}
-            </div>
-          )}
-        </div>
-      </header>
-      {currentId ? (
-        <div className="panel-section model-probe-section">
-          <div className="panel-section-head static">
-            <span className="panel-section-arrow">▾</span>
-            <span className="panel-section-title">architecture</span>
-            {probing ? <span className="model-probe-status">probing…</span> : null}
-          </div>
-          <div className="panel-section-body">
-            {probeError ? (
-              <div className="model-probe-error">{probeError}</div>
-            ) : probe ? (
-              <div className="panel-fields-grid model-probe-grid">
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">type</span>
-                  <span className="model-probe-value">{probe.model_type ?? "—"}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">layers</span>
-                  <span className="model-probe-value">{fmtInt(probe.num_hidden_layers)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">hidden_dim</span>
-                  <span className="model-probe-value">{fmtInt(probe.hidden_size)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">attention heads</span>
-                  <span className="model-probe-value">{fmtInt(probe.num_attention_heads)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">kv heads</span>
-                  <span className="model-probe-value">{fmtInt(probe.num_key_value_heads)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">intermediate_dim</span>
-                  <span className="model-probe-value">{fmtInt(probe.intermediate_size)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">vocab</span>
-                  <span className="model-probe-value">{fmtInt(probe.vocab_size)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">max positions</span>
-                  <span className="model-probe-value">{fmtInt(probe.max_position_embeddings)}</span>
-                </div>
-              </div>
-            ) : (
-              !probing && <div className="panel-empty">no probe data</div>
-            )}
-          </div>
-        </div>
-      ) : null}
-    </>
+      <div className="control-settings-field">
+        <span className="control-settings-label">connected inputs</span>
+        <div className="model-id-display">{connectedInputs}</div>
+      </div>
+    </header>
   );
-}
-
-function StagingPanel() {
-  const stagingKind = usePipelineStore((s) => s.stagingKind);
-  if (stagingKind === "control") return <ControlStagingPanel />;
-  if (stagingKind === "dataset") return <DatasetStagingPanel />;
-  if (stagingKind === "model") return <ModelStagingPanel />;
-  return <div className="panel-placeholder">pick an element type to configure</div>;
 }
 
 export function ParameterPanel() {
@@ -897,18 +374,22 @@ export function ParameterPanel() {
   const selectedType = selected?.type;
 
   return (
-    <aside className="parameter-panel" aria-label="Settings">
-      <div className="palette-section-head control-settings-bar">Settings</div>
+    <aside className="parameter-panel" aria-label="Parameters">
+      <div className="palette-section-head control-settings-bar">Parameters</div>
       {selectedType === "control" && selected ? (
-        <SelectedNodePanel
+        <ControlParameters
           node={{ id: selected.id, data: selected.data as ControlNodeData }}
         />
       ) : selectedType === "model" && selected ? (
-        <SelectedModelNodePanel
-          node={{ id: selected.id, data: selected.data as { modelId?: string } }}
+        <ModelParameters
+          node={{ id: selected.id, data: selected.data as ModelNodeData }}
+        />
+      ) : selectedType === "dataset" && selected ? (
+        <DatasetParameters
+          node={{ id: selected.id, data: selected.data as DatasetNodeData }}
         />
       ) : selectedType === "multiplexer" && selected ? (
-        <SelectedMultiplexerNodePanel
+        <MultiplexerParameters
           node={{
             id: selected.id,
             data: selected.data as {
@@ -918,7 +399,7 @@ export function ParameterPanel() {
           }}
         />
       ) : (
-        <StagingPanel />
+        <div className="panel-placeholder">select a node to edit parameters</div>
       )}
     </aside>
   );

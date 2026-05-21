@@ -1,17 +1,7 @@
 import { memo, type MouseEvent } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
+import type { ModelNodeData } from "../types";
 import { usePipelineStore } from "../store/pipelineStore";
-
-interface ModelNodeParam {
-  label: string;
-  value: string;
-}
-
-interface ModelNodeData {
-  modelId: string;
-  loaded: boolean;
-  params: ModelNodeParam[];
-}
 
 /* ── icons ───────────────────────────────────────────────────────── */
 

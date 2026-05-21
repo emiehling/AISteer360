@@ -136,38 +136,40 @@ function ControlNodeImpl({ id, data, selected }: NodeProps<ControlNodeData>) {
         <CloseIcon />
       </button>
 
-      {/* ── coloured sidebar ── */}
-      <div className="ctrl-sidebar">
-        {IconComponent ? (
-          <span className="ctrl-sidebar-icon">
-            <IconComponent />
-          </span>
-        ) : null}
-        <div className="ctrl-sidebar-spacer" />
-        {sidebarLabel ? (
-          <span className="ctrl-sidebar-label">{sidebarLabel}</span>
-        ) : null}
-      </div>
-
-      {/* ── content area ── */}
-      <div className="ctrl-content">
-        <div className="ctrl-method-name" title={methodName}>
-          {methodName}
+      <div className="ctrl-face">
+        {/* coloured sidebar */}
+        <div className="ctrl-sidebar">
+          {IconComponent ? (
+            <span className="ctrl-sidebar-icon">
+              <IconComponent />
+            </span>
+          ) : null}
+          <div className="ctrl-sidebar-spacer" />
+          {sidebarLabel ? (
+            <span className="ctrl-sidebar-label">{sidebarLabel}</span>
+          ) : null}
         </div>
 
-        <div className="ctrl-rows">
-          {displayParams.length === 0 ? (
-            <div className="ctrl-empty">no parameters set</div>
-          ) : (
-            displayParams.map((p, idx) => (
-              <div key={`${p.label}-${idx}`} className="ctrl-row">
-                <span className="ctrl-row-key">{p.label}</span>
-                <span className="ctrl-row-value" title={p.value}>
-                  {p.value}
-                </span>
-              </div>
-            ))
-          )}
+        {/* content area */}
+        <div className="ctrl-content">
+          <div className="ctrl-method-name" title={methodName}>
+            {methodName}
+          </div>
+
+          <div className="ctrl-rows">
+            {displayParams.length === 0 ? (
+              <div className="ctrl-empty">no parameters set</div>
+            ) : (
+              displayParams.map((p, idx) => (
+                <div key={`${p.label}-${idx}`} className="ctrl-row">
+                  <span className="ctrl-row-key">{p.label}</span>
+                  <span className="ctrl-row-value" title={p.value}>
+                    {p.value}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>

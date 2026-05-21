@@ -16,7 +16,9 @@ import type {
   ControlCategory,
   ControlNode,
   ControlNodeData,
+  DatasetNodeData,
   MethodSpec,
+  ModelNodeData,
   ModelProbe,
   PipelineDefinition,
   ToolMode,
@@ -68,8 +70,6 @@ function uuid(): string {
   return crypto.randomUUID();
 }
 
-export type StagingKind = "control" | "dataset" | "model";
-
 export type PlacementRequest =
   | { kind: "control" }
   | { kind: "dataset" }
@@ -94,15 +94,6 @@ interface PipelineStoreState {
   toolbarMinimized: boolean;
   placement: PlacementRequest | null;
   targetModelNodeId: string | null;
-
-  stagingKind: StagingKind | null;
-  stagingMethod: string | null;
-  stagingCategory: ControlCategory | null;
-  stagingName: string;
-  stagingArgs: Record<string, unknown>;
-  stagingDatasetPath: string | null;
-  stagingDatasetName: string;
-  stagingModelId: string;
 
   // raw canvas rails (without per-node-size offset). pushed into the store by
   // the canvas whenever geometry changes; consumed by collectNodes when called
@@ -145,16 +136,12 @@ interface PipelineStoreState {
   cancelPlacement: () => void;
   setTargetModelNodeId: (id: string | null) => void;
   setModelNodeId: (id: string, modelId: string) => void;
-
-  setStagingKind: (kind: StagingKind | null) => void;
-  setStagingMethod: (method: string | null) => void;
-  setStagingCategory: (category: ControlCategory | null) => void;
-  setStagingName: (name: string) => void;
-  setStagingArgs: (args: Record<string, unknown>) => void;
-  setStagingDatasetPath: (path: string | null) => void;
-  setStagingDatasetName: (name: string) => void;
-  setStagingModelId: (id: string) => void;
-  resetStaging: () => void;
+  updateModelNodeGenKwargs: (id: string, kwargs: Record<string, unknown>) => void;
+  setModelNodeParams: (
+    id: string,
+    params: { label: string; value: string }[],
+  ) => void;
+  updateDatasetNodeData: (id: string, patch: Partial<DatasetNodeData>) => void;
 
   addControlNode: (
     category: ControlCategory | null,
@@ -211,21 +198,12 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   activeTool: "select",
   sessionId: null,
   paletteHeight: PALETTE_HEIGHT_DEFAULT,
-  paletteMinimized: false,
+  paletteMinimized: true,
   toolbarPosition: null,
   toolbarLocked: false,
   toolbarMinimized: false,
   placement: null,
   targetModelNodeId: null,
-
-  stagingKind: null,
-  stagingMethod: null,
-  stagingCategory: null,
-  stagingName: "",
-  stagingArgs: {},
-  stagingDatasetPath: null,
-  stagingDatasetName: "",
-  stagingModelId: "",
 
   canvasBounds: null,
   pendingDeleteNodeId: null,
@@ -297,54 +275,36 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     }
   },
 
-  setStagingKind: (kind) => {
+  updateModelNodeGenKwargs: (id, kwargs) => {
     set({
-      stagingKind: kind,
-      stagingMethod: null,
-      stagingCategory: null,
-      stagingName: "",
-      stagingArgs: {},
-      stagingDatasetPath: null,
-      stagingDatasetName: "",
-      stagingModelId: "",
+      nodes: get().nodes.map((n) => {
+        if (n.id !== id || n.type !== "model") return n;
+        const data = n.data as ModelNodeData;
+        return {
+          ...n,
+          data: { ...data, genKwargs: { ...(data.genKwargs ?? {}), ...kwargs } },
+        };
+      }),
     });
   },
-  setStagingMethod: (method) => {
-    if (method === null) {
-      set({ stagingMethod: null, stagingCategory: null, stagingName: "", stagingArgs: {} });
-      return;
-    }
-    const spec = get().methods.find((m) => m.method === method);
-    if (!spec) {
-      set({ stagingMethod: method });
-      return;
-    }
-    const defaults: Record<string, unknown> = {};
-    for (const f of spec.args) {
-      if (f.default !== undefined) defaults[f.name] = f.default;
-    }
+
+  setModelNodeParams: (id, params) => {
     set({
-      stagingMethod: method,
-      stagingCategory: spec.category,
-      stagingName: method,
-      stagingArgs: defaults,
+      nodes: get().nodes.map((n) => {
+        if (n.id !== id || n.type !== "model") return n;
+        const data = n.data as ModelNodeData;
+        return { ...n, data: { ...data, params } };
+      }),
     });
   },
-  setStagingCategory: (category) => set({ stagingCategory: category }),
-  setStagingName: (name) => set({ stagingName: name }),
-  setStagingArgs: (args) => set({ stagingArgs: args }),
-  setStagingDatasetPath: (path) => set({ stagingDatasetPath: path }),
-  setStagingDatasetName: (name) => set({ stagingDatasetName: name }),
-  setStagingModelId: (id) => set({ stagingModelId: id }),
-  resetStaging: () => {
+
+  updateDatasetNodeData: (id, patch) => {
     set({
-      stagingMethod: null,
-      stagingCategory: null,
-      stagingName: "",
-      stagingArgs: {},
-      stagingDatasetPath: null,
-      stagingDatasetName: "",
-      stagingModelId: "",
+      nodes: get().nodes.map((n) => {
+        if (n.id !== id || n.type !== "dataset") return n;
+        const data = n.data as DatasetNodeData;
+        return { ...n, data: { ...data, ...patch } };
+      }),
     });
   },
 
@@ -372,11 +332,19 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
 
   addDatasetNode: (name, position) => {
     const id = uuid();
+    const data: DatasetNodeData = {
+      name: name && name.trim() ? name.trim() : "dataset",
+      rowCount: null,
+      source: "local",
+      path: null,
+      hfId: "",
+      columns: [],
+    };
     const node: Node = {
       id,
       type: "dataset",
       position,
-      data: { name: name && name.trim() ? name.trim() : "dataset", rowCount: null },
+      data,
     };
     set({ nodes: [...get().nodes, node] });
     return id;
@@ -385,15 +353,17 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   addModelNode: (modelId, position) => {
     const id = uuid();
     const trimmed = modelId.trim();
+    const data: ModelNodeData = {
+      modelId: trimmed,
+      loaded: false,
+      params: [],
+      genKwargs: {},
+    };
     const node: Node = {
       id,
       type: "model",
       position,
-      data: {
-        modelId: trimmed,
-        loaded: false,
-        params: [],
-      },
+      data,
     };
     const isFirstTarget = get().targetModelNodeId === null;
     set({ nodes: [...get().nodes, node] });
@@ -689,7 +659,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       if (n.type === "dataset") return { width: 80, height: 80 };
       if (n.type === "steering_vector") return { width: 80, height: 80 };
       if (n.type === "multiplexer") return { width: 20, height: 80 };
-      if (n.type === "model") return { width: 340, height: 240 };
+      if (n.type === "model") return { width: 240, height: 80 };
       return { width: 160, height: 120 };
     };
     let dirty = false;

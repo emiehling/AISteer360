@@ -19,7 +19,7 @@ import { usePipelineStore } from "./store/pipelineStore";
 import { makeIsValidConnection } from "./canvas/validation";
 import { ConfirmDialog } from "./canvas/ConfirmDialog";
 import { ConfirmModal } from "./canvas/ConfirmModal";
-import { DRAG_MIME, DRAG_MIME_BLANK, DRAG_MIME_DATASET, DRAG_MIME_MODEL } from "./panels/LibraryPanel";
+import { DRAG_MIME, DRAG_MIME_BLANK, DRAG_MIME_DATASET, DRAG_MIME_MODEL } from "./dragMime";
 import { probeModel } from "./api/model";
 import type { ControlCategory } from "./types";
 import type { PlacementRequest } from "./store/pipelineStore";
@@ -38,8 +38,10 @@ const ANCHOR_TOTAL_WIDTH =
 const ANCHOR_PROMPT_HANDLE_OFFSET = ANCHOR_TOTAL_WIDTH - ANCHOR_HANDLE_WIDTH / 2;  // 83
 const ANCHOR_RESPONSE_HANDLE_OFFSET = ANCHOR_HANDLE_WIDTH / 2;  // 5
 const ANCHOR_BODY_HEIGHT = 40;
-const MODEL_WIDTH = 340;
-const MODEL_HEIGHT_FALLBACK = 240;
+// 240×80 — both multiples of GRID_SIZE (20) so left/right handles at vertical
+// centre snap to the rail. height grows past 80 once probe data renders.
+const MODEL_WIDTH = 240;
+const MODEL_HEIGHT_FALLBACK = 80;
 
 const SNAP_GRID: [number, number] = [20, 20];
 const GRID_SIZE = SNAP_GRID[0];

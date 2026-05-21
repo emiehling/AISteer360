@@ -39,6 +39,7 @@ class ModelProbeResponse(BaseModel):
     vocab_size: int | None = None
     max_position_embeddings: int | None = None
     model_type: str | None = None
+    total_params: int | None = None
     source: str = "hf"
 
 
@@ -106,6 +107,7 @@ def probe_model(
         "vocab_size": config_data.get("vocab_size"),
         "max_position_embeddings": config_data.get("max_position_embeddings"),
         "model_type": config_data.get("model_type"),
+        "total_params": None,
         "source": "hf",
     }
 
@@ -123,8 +125,93 @@ def probe_model(
                     payload[field_name] = sub[field_name]
                     break
 
+    # total_params: prefer model_info().safetensors.total (HF-indexed). when
+    # that's missing, fall back to summing tensor shapes from each .safetensors
+    # file's header — a small Range request per file pulls only the JSON
+    # header, never the weights. local paths skip this lookup entirely.
+    if not local_path.is_dir():
+        payload["total_params"] = _resolve_total_params(model_id)
+
     _PROBE_CACHE[model_id] = payload
     return ModelProbeResponse(**payload)
+
+
+def _resolve_total_params(model_id: str) -> int | None:
+    try:
+        from huggingface_hub import model_info
+    except ImportError:
+        return None
+
+    try:
+        info = model_info(model_id)
+    except Exception:
+        return None
+
+    safetensors = getattr(info, "safetensors", None)
+    if safetensors is not None:
+        total = (
+            safetensors.get("total")
+            if isinstance(safetensors, dict)
+            else getattr(safetensors, "total", None)
+        )
+        if isinstance(total, int) and total > 0:
+            return total
+
+    # fall back to per-file safetensors header range requests.
+    try:
+        from huggingface_hub import hf_hub_url
+    except ImportError:
+        return None
+    siblings = getattr(info, "siblings", None) or []
+    files = [
+        getattr(s, "rfilename", None)
+        for s in siblings
+        if getattr(s, "rfilename", "").endswith(".safetensors")
+    ]
+    files = [f for f in files if f]
+    if not files:
+        return None
+
+    import struct
+    import urllib.error
+    import urllib.request
+
+    total = 0
+    for fname in files:
+        try:
+            url = hf_hub_url(model_id, fname)
+            req = urllib.request.Request(url, headers={"Range": "bytes=0-7"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                first8 = r.read(8)
+            if len(first8) != 8:
+                return None
+            (hdr_len,) = struct.unpack("<Q", first8)
+            if hdr_len <= 0 or hdr_len > 100 * 1024 * 1024:
+                return None
+            req = urllib.request.Request(
+                url, headers={"Range": f"bytes=8-{8 + hdr_len - 1}"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                header_bytes = r.read(hdr_len)
+            header_json = json.loads(header_bytes)
+        except (urllib.error.URLError, OSError, json.JSONDecodeError, struct.error):
+            return None
+
+        for name, meta in header_json.items():
+            if name == "__metadata__":
+                continue
+            shape = meta.get("shape") if isinstance(meta, dict) else None
+            if not shape:
+                continue
+            count = 1
+            for dim in shape:
+                if not isinstance(dim, int):
+                    count = 0
+                    break
+                count *= dim
+            total += count
+
+    return total if total > 0 else None
 
 
 @router.get("/model/search", response_model=ModelSearchResponse)

@@ -6,7 +6,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { usePipelineStore } from "../store/pipelineStore";
-import { DRAG_MIME_BLANK } from "../panels/LibraryPanel";
+import { DRAG_MIME_BLANK } from "../dragMime";
 
 type ToolbarKind = "control" | "dataset" | "model" | "steering_vector" | "multiplexer";
 
