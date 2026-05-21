@@ -34,6 +34,7 @@ interface SectionProps {
   onChange: (name: string, next: unknown) => void;
   emptyHint: string;
   preserveOrder?: boolean;
+  hideHeader?: boolean;
 }
 
 function PanelSection({
@@ -43,20 +44,23 @@ function PanelSection({
   onChange,
   emptyHint,
   preserveOrder = false,
+  hideHeader = false,
 }: SectionProps) {
   const [open, setOpen] = useState(true);
   const ordered = preserveOrder ? fields : sortedFields(fields);
   return (
     <div className={`panel-section${open ? " open" : " collapsed"}`}>
-      <button
-        type="button"
-        className="panel-section-head"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-      >
-        <span className="panel-section-arrow">{open ? "▾" : "▸"}</span>
-        <span className="panel-section-title">{title}</span>
-      </button>
+      {!hideHeader && (
+        <button
+          type="button"
+          className="panel-section-head"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+        >
+          <span className="panel-section-arrow">{open ? "▾" : "▸"}</span>
+          <span className="panel-section-title">{title}</span>
+        </button>
+      )}
       {open && (
         <div className="panel-section-body">
           {ordered.length === 0 ? (
@@ -72,7 +76,7 @@ function PanelSection({
                         {f.name}
                         {f.required ? <span className="panel-field-required">*</span> : null}
                       </span>
-                      <span className="panel-field-type">{f.type}</span>
+                      <span className="panel-field-type">({f.type})</span>
                     </label>
                     <FieldWidget
                       spec={f}
@@ -212,22 +216,40 @@ function ControlParameters({ node }: { node: { id: string; data: ControlNodeData
     );
   }
 
+  const hasAnyFields = spec.args.length + spec.runtime_kwargs.length > 0;
+
   return (
-    <div className="panel-scroll">
-      <PanelSection
-        title="Fixed Parameters"
-        fields={spec.args}
-        values={data.args}
-        onChange={(name, next) => updateNodeArgs(node.id, { [name]: next })}
-        emptyHint="no fixed parameters"
-      />
-      <PanelSection
-        title="Runtime Kwargs"
-        fields={spec.runtime_kwargs}
-        values={data.runtimeKwargs}
-        onChange={(name, next) => updateNodeRuntimeKwargs(node.id, { [name]: next })}
-        emptyHint="no runtime kwargs for this control"
-      />
+    <div className="panel-scroll model-params-split">
+      <div className="model-params-left">
+        {hasAnyFields ? (
+          <>
+            {spec.args.length > 0 ? (
+              <PanelSection
+                title="Fixed Parameters"
+                fields={spec.args}
+                values={data.args}
+                onChange={(name, next) => updateNodeArgs(node.id, { [name]: next })}
+                emptyHint="no fixed parameters"
+                hideHeader
+              />
+            ) : null}
+            {spec.runtime_kwargs.length > 0 ? (
+              <PanelSection
+                title="Runtime Kwargs"
+                fields={spec.runtime_kwargs}
+                values={data.runtimeKwargs}
+                onChange={(name, next) => updateNodeRuntimeKwargs(node.id, { [name]: next })}
+                emptyHint="no runtime kwargs for this control"
+                hideHeader
+              />
+            ) : null}
+          </>
+        ) : (
+          <div className="panel-empty">no parameters for this method</div>
+        )}
+      </div>
+      <div className="model-params-divider" aria-hidden />
+      <div className="model-params-right" />
     </div>
   );
 }
@@ -236,15 +258,20 @@ function ModelParameters({ node }: { node: { id: string; data: ModelNodeData } }
   const updateModelNodeGenKwargs = usePipelineStore((s) => s.updateModelNodeGenKwargs);
   const genKwargs = node.data.genKwargs ?? {};
   return (
-    <div className="panel-scroll">
-      <PanelSection
-        title="Generation"
-        fields={GEN_KWARG_FIELDS}
-        values={genKwargs}
-        onChange={(name, next) => updateModelNodeGenKwargs(node.id, { [name]: next })}
-        emptyHint="no generation kwargs"
-        preserveOrder
-      />
+    <div className="panel-scroll model-params-split">
+      <div className="model-params-left">
+        <PanelSection
+          title="Generation"
+          fields={GEN_KWARG_FIELDS}
+          values={genKwargs}
+          onChange={(name, next) => updateModelNodeGenKwargs(node.id, { [name]: next })}
+          emptyHint="no generation kwargs"
+          preserveOrder
+          hideHeader
+        />
+      </div>
+      <div className="model-params-divider" aria-hidden />
+      <div className="model-params-right" />
     </div>
   );
 }

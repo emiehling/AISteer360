@@ -309,6 +309,16 @@
   height: 4px;
 }
 
+/* the right and bottom handles on ctrl/model nodes overhang onto the offset
+   drop shadow (var(--model-border), a dark grey). bump them to a lighter
+   colour so they read against the shadow without losing the rest tone. */
+.ctrl-node .react-flow__handle-right,
+.ctrl-node .react-flow__handle-bottom,
+.model-wrap .react-flow__handle-right,
+.model-wrap .react-flow__handle-bottom {
+  background: var(--text-dim);
+}
+
 .canvas-area .react-flow__attribution {
   display: none;
 }
@@ -549,14 +559,15 @@
 .model-wrap {
   position: relative;
   width: 240px;
-  /* keep the empty (pre-probe) card at the canvas-fallback height so its
-     vertical center stays on the anchor rail. once probe rows are added the
-     card grows and the entire card recenters around the same handle row. */
-  min-height: 80px;
+  /* fixed grid-aligned heights: 80px empty, 120px when probe rows are loaded.
+     both height/2 values are multiples of GRID_SIZE (20) so left/right handles
+     at vertical centre snap to the anchor rail. the store recenters Y on the
+     empty↔loaded transition so the rail-center stays fixed. */
+  height: 80px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
 }
-.model-wrap .model-face {
-  min-height: 80px;
+.model-wrap.loaded {
+  height: 120px;
 }
 .model-wrap .react-flow__handle {
   pointer-events: auto;
@@ -576,6 +587,8 @@
 /* the visible card face */
 .model-face {
   position: relative;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: row;
   border-radius: 3px;
@@ -685,6 +698,7 @@
 .model-rows {
   display: flex;
   flex-direction: column;
+  margin-top: auto;
 }
 .model-row {
   display: flex;
@@ -1470,8 +1484,9 @@
 }
 .panel-field-label-inline {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
   flex: 0 0 38%;
   min-width: 0;
 }
@@ -1500,6 +1515,50 @@
 }
 .panel-field-row > .widget-json .widget-textarea {
   width: 100%;
+}
+
+/* model parameters: split layout with a vertical divider. left side stacks
+   one row per kwarg (label left-justified, fixed-width input right-justified,
+   pushed flush right). right side is reserved blank space for future content. */
+.model-params-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: stretch;
+  gap: 0;
+}
+.model-params-left {
+  padding: 0;
+  min-width: 0;
+}
+.model-params-left .panel-fields-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.model-params-left .panel-field-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.model-params-left .panel-field-label-inline {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.model-params-left .panel-field-row > .widget-input,
+.model-params-left .panel-field-row > .widget-checkbox,
+.model-params-left .panel-field-row > .widget-json {
+  flex: 0 0 auto;
+  width: 140px;
+}
+.model-params-divider {
+  width: 1px;
+  background: var(--line);
+  margin: 8px 14px;
+}
+.model-params-right {
+  min-width: 0;
 }
 
 /* ── widgets ─────────────────────────────────────────────────────── */
@@ -1902,7 +1961,7 @@
 .control-settings-field:first-child {
   flex: 1 1 auto;
 }
-.control-settings-field:last-child {
+.control-settings-field:last-child:not(:only-child) {
   flex: 0 0 140px;
 }
 .control-settings-label {

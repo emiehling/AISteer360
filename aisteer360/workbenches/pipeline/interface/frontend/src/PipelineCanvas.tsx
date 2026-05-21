@@ -827,7 +827,19 @@ function CanvasInner() {
       }
       if (selectedNodeIds.length === 0 && selectedEdgeIds.length === 0) return;
       event.preventDefault();
-      state.removeManyNodesAndEdges(selectedNodeIds, selectedEdgeIds);
+      // route through the generic confirm modal so the user gets a
+      // chance to back out of a multi-item delete (the per-node X
+      // button already has its own confirm path via requestDeleteNode).
+      const total = selectedNodeIds.length + selectedEdgeIds.length;
+      state.requestConfirm({
+        title: total > 1 ? "Delete selection" : "Delete",
+        message: "Are you sure you wish to delete?",
+        confirmLabel: "Yes",
+        cancelLabel: "No",
+        onConfirm: () => {
+          usePipelineStore.getState().removeManyNodesAndEdges(selectedNodeIds, selectedEdgeIds);
+        },
+      });
       selectedEdgeIdRef.current = null;
     };
     window.addEventListener("keydown", onKey);

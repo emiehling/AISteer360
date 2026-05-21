@@ -16,7 +16,7 @@ export function ConfirmDialog() {
     >
       <div className="session-modal confirm-modal" role="dialog" aria-modal>
         <div className="session-modal-head">
-          <span className="title">Delete control</span>
+          <span className="title">Delete</span>
           <button
             type="button"
             className="close"
@@ -28,7 +28,7 @@ export function ConfirmDialog() {
         </div>
         <div className="session-modal-body">
           <div className="confirm-message">
-            Are you sure you want to delete this control?
+            Are you sure you wish to delete?
           </div>
           <div className="confirm-actions">
             <button

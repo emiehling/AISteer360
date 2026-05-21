@@ -58,6 +58,7 @@ function ModelNodeImpl({ id, data, selected }: NodeProps<ModelNodeData>) {
   const requestDeleteNode = usePipelineStore((s) => s.requestDeleteNode);
 
   const display = data.modelId ? shortModelId(data.modelId) : "‹ select model ›";
+  const loaded = data.params.length > 0;
 
   const onClose = (event: MouseEvent) => {
     event.stopPropagation();
@@ -65,7 +66,7 @@ function ModelNodeImpl({ id, data, selected }: NodeProps<ModelNodeData>) {
   };
 
   return (
-    <div className={`model-wrap${selected ? " selected" : ""}`}>
+    <div className={`model-wrap${loaded ? " loaded" : ""}${selected ? " selected" : ""}`}>
       <Handle type="source" position={Position.Left} id="left" />
       <Handle type="source" position={Position.Right} id="right" />
       <Handle type="source" position={Position.Top} id="top" />

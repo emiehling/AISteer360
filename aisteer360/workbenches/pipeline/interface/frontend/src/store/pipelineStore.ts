@@ -293,7 +293,17 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
       nodes: get().nodes.map((n) => {
         if (n.id !== id || n.type !== "model") return n;
         const data = n.data as ModelNodeData;
-        return { ...n, data: { ...data, params } };
+        const wasLoaded = data.params.length > 0;
+        const willBeLoaded = params.length > 0;
+        // model node grows from 80px (empty) to 120px (probe rows present).
+        // shift Y by half the height delta so the rail-center stays fixed.
+        let position = n.position;
+        if (!wasLoaded && willBeLoaded) {
+          position = { ...position, y: position.y - 20 };
+        } else if (wasLoaded && !willBeLoaded) {
+          position = { ...position, y: position.y + 20 };
+        }
+        return { ...n, position, data: { ...data, params } };
       }),
     });
   },

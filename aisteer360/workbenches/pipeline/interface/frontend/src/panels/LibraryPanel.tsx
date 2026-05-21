@@ -331,11 +331,11 @@ function ModelConfigure({ node }: { node: { id: string; data: ModelNodeData } })
       </header>
       {currentId ? (
         <div className="panel-section model-probe-section">
-          <div className="panel-section-head static">
-            <span className="panel-section-arrow">▾</span>
-            <span className="panel-section-title">architecture</span>
-            {probing ? <span className="model-probe-status">probing…</span> : null}
-          </div>
+          {probing ? (
+            <div className="panel-section-head static">
+              <span className="model-probe-status">probing…</span>
+            </div>
+          ) : null}
           <div className="panel-section-body">
             {probeError ? (
               <div className="model-probe-error">{probeError}</div>
