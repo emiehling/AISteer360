@@ -1,4 +1,5 @@
 import { useEffect, useState, type ChangeEvent } from "react";
+import ReactMarkdown from "react-markdown";
 import { probeModel, searchModels, type ModelSearchHit } from "../api/model";
 import type {
   ControlCategory,
@@ -41,69 +42,62 @@ function ControlConfigure({ node }: { node: { id: string; data: ControlNodeData 
   const categoryMethods = data.category
     ? methods.filter((m) => m.category === data.category)
     : [];
+  const selectedMethod = data.method
+    ? categoryMethods.find((m) => m.method === data.method)
+    : undefined;
 
   return (
     <>
-      <header className="panel-head control-settings-head">
-        <div className="control-settings-field">
-          <span className="control-settings-label">category</span>
-          <div className="palette-mode-toggle palette-mode-toggle-fill" role="tablist">
+      <header className="panel-head control-configure-head">
+        <div className="control-method-row">
+          <span className="control-method-label">Category:</span>
+          <select
+            className="palette-input palette-select control-method-select"
+            value={data.category ?? ""}
+            onChange={(e) => {
+              const next = e.target.value as ControlCategory | "";
+              setNodeCategory(node.id, next === "" ? null : next);
+            }}
+          >
+            <option value="">— select category —</option>
             {CATEGORIES.map((c) => (
-              <button
-                key={c.value}
-                type="button"
-                role="tab"
-                aria-selected={data.category === c.value}
-                className={`palette-mode-btn${data.category === c.value ? " active" : ""}`}
-                onClick={() =>
-                  setNodeCategory(node.id, data.category === c.value ? null : c.value)
-                }
-              >
+              <option key={c.value} value={c.value}>
                 {c.label}
-              </button>
+              </option>
             ))}
-          </div>
+          </select>
         </div>
-      </header>
-      <div className="panel-scroll">
         {categoryIsSet ? (
-          <div className="panel-section open">
-            <div className="panel-section-head static">
-              <span className="panel-section-arrow">▾</span>
-              <span className="panel-section-title">Method</span>
-            </div>
-            <div className="panel-section-body">
-              <select
-                className="palette-input palette-select"
-                value={data.method ?? ""}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  if (next) setNodeMethod(node.id, next);
-                }}
-              >
-                <option value="">— select method —</option>
-                {categoryMethods.map((m) => (
-                  <option key={m.method} value={m.method}>
-                    {m.method}
-                  </option>
-                ))}
-              </select>
-              {categoryMethods.length === 0 && (
-                <div className="panel-empty">no methods registered for this category</div>
-              )}
-            </div>
+          <div className="control-method-row">
+            <span className="control-method-label">Method:</span>
+            <select
+              className="palette-input palette-select control-method-select"
+              value={data.method ?? ""}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (next) setNodeMethod(node.id, next);
+              }}
+            >
+              <option value="">— select method —</option>
+              {categoryMethods.map((m) => (
+                <option key={m.method} value={m.method}>
+                  {m.method}
+                </option>
+              ))}
+            </select>
           </div>
-        ) : (
-          <div className="panel-section open">
-            <div className="panel-section-head static">
-              <span className="panel-section-arrow">▾</span>
-              <span className="panel-section-title">Category</span>
-            </div>
-            <div className="panel-section-body">
-              <div className="panel-empty">pick a category above to choose a method</div>
-            </div>
+        ) : null}
+      </header>
+      <div className="panel-scroll control-configure-scroll">
+        {!categoryIsSet ? (
+          <div className="panel-empty">pick a category above to choose a method</div>
+        ) : categoryMethods.length === 0 ? (
+          <div className="panel-empty">no methods registered for this category</div>
+        ) : selectedMethod?.description ? (
+          <div className="control-method-description markdown-body">
+            <ReactMarkdown>{selectedMethod.description}</ReactMarkdown>
           </div>
-        )}
+        ) : null}
       </div>
     </>
   );
@@ -206,7 +200,11 @@ function ModelConfigure({ node }: { node: { id: string; data: ModelNodeData } })
     setOpenSuggestions(false);
   };
 
-  const onConfirm = () => commit(draftId);
+  const onConfirm = () => {
+    const trimmed = draftId.trim();
+    if (trimmed) commit(trimmed);
+    else if (currentId) setEditing(false);
+  };
 
   const onPickSuggestion = (hit: ModelSearchHit) => {
     setDraftId(hit.model_id);
@@ -244,147 +242,145 @@ function ModelConfigure({ node }: { node: { id: string; data: ModelNodeData } })
     }
   };
 
+  const beginEdit = () => {
+    setDraftId(currentId);
+    setEditing(true);
+  };
+
   return (
-    <>
-      <div className="settings-toolbar">
-        <button
-          type="button"
-          className="settings-load-btn"
-          onClick={() => setEditing(true)}
-          title="enter HF model id"
-        >
-          load
-        </button>
-        <button
-          type="button"
-          className={`settings-load-btn${isTarget ? " active" : ""}`}
-          onClick={() => setTargetModelNodeId(isTarget ? null : node.id)}
+    <div className="model-configure-stack">
+      <div className="model-id-row">
+        {editing ? (
+          <div className="model-id-input-wrap">
+            <input
+              className="palette-input model-id-input"
+              type="text"
+              value={draftId}
+              placeholder="huggingface id"
+              onChange={(e) => {
+                setDraftId(e.target.value);
+                setOpenSuggestions(true);
+              }}
+              onFocus={() => {
+                if (suggestions.length > 0) setOpenSuggestions(true);
+              }}
+              onBlur={() => {
+                // delay so onMouseDown on a suggestion can fire first.
+                setTimeout(() => {
+                  setOpenSuggestions(false);
+                  const trimmed = draftId.trim();
+                  if (trimmed) commit(trimmed);
+                  else if (currentId) setEditing(false);
+                }, 150);
+              }}
+              onKeyDown={onKeyDown}
+              autoFocus
+            />
+            {openSuggestions && suggestions.length > 0 ? (
+              <ul className="model-id-suggestions" role="listbox">
+                {suggestions.map((hit, idx) => (
+                  <li
+                    key={hit.model_id}
+                    role="option"
+                    aria-selected={idx === highlightIdx}
+                    className={`model-id-suggestion${idx === highlightIdx ? " highlighted" : ""}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      onPickSuggestion(hit);
+                    }}
+                    onMouseEnter={() => setHighlightIdx(idx)}
+                  >
+                    <span className="model-id-suggestion-id">{hit.model_id}</span>
+                    {hit.downloads != null ? (
+                      <span className="model-id-suggestion-meta">
+                        ↓ {fmtInt(hit.downloads)}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="model-id-display model-id-display-button"
+            title={currentId ? `${currentId} — click to edit` : "click to enter a model id"}
+            onClick={beginEdit}
+          >
+            {currentId || "huggingface id"}
+          </button>
+        )}
+      </div>
+
+      <div className="model-target-row">
+        <span className="model-target-label">Target model:</span>
+        <label
+          className={`toggle-switch${isTarget ? " on" : ""}`}
           title={isTarget ? "this is the target model" : "set as target model"}
         >
-          {isTarget ? "★ target" : "set target"}
-        </button>
+          <input
+            type="checkbox"
+            checked={isTarget}
+            onChange={() => setTargetModelNodeId(isTarget ? null : node.id)}
+          />
+          <span className="toggle-switch-track" aria-hidden>
+            <span className="toggle-switch-knob" />
+          </span>
+        </label>
       </div>
-      <header className="panel-head control-settings-head model-settings-head">
-        <div className="control-settings-field model-id-field">
-          <span className="control-settings-label">huggingface id</span>
-          {editing ? (
-            <div className="model-id-entry">
-              <div className="model-id-input-wrap">
-                <input
-                  className="palette-input model-id-input"
-                  type="text"
-                  value={draftId}
-                  placeholder="search or paste org/model-name"
-                  onChange={(e) => {
-                    setDraftId(e.target.value);
-                    setOpenSuggestions(true);
-                  }}
-                  onFocus={() => {
-                    if (suggestions.length > 0) setOpenSuggestions(true);
-                  }}
-                  onBlur={() => {
-                    setTimeout(() => setOpenSuggestions(false), 120);
-                  }}
-                  onKeyDown={onKeyDown}
-                  autoFocus
-                />
-                {openSuggestions && suggestions.length > 0 ? (
-                  <ul className="model-id-suggestions" role="listbox">
-                    {suggestions.map((hit, idx) => (
-                      <li
-                        key={hit.model_id}
-                        role="option"
-                        aria-selected={idx === highlightIdx}
-                        className={`model-id-suggestion${idx === highlightIdx ? " highlighted" : ""}`}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          onPickSuggestion(hit);
-                        }}
-                        onMouseEnter={() => setHighlightIdx(idx)}
-                      >
-                        <span className="model-id-suggestion-id">{hit.model_id}</span>
-                        {hit.downloads != null ? (
-                          <span className="model-id-suggestion-meta">
-                            ↓ {fmtInt(hit.downloads)}
-                          </span>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
+
+      {currentId ? (
+        <div className="model-probe-block">
+          {probing ? (
+            <div className="model-probe-status">probing…</div>
+          ) : probeError ? (
+            <div className="model-probe-error">{probeError}</div>
+          ) : probe ? (
+            <div className="panel-fields-grid model-probe-grid">
+              <div className="panel-field-row model-probe-row">
+                <span className="panel-field-name">parameters</span>
+                <span className="model-probe-value">{fmtParams(probe.total_params)}</span>
               </div>
-              <button
-                type="button"
-                className="settings-load-btn"
-                onClick={onConfirm}
-                disabled={!draftId.trim()}
-              >
-                confirm
-              </button>
+              <div className="panel-field-row model-probe-row">
+                <span className="panel-field-name">type</span>
+                <span className="model-probe-value">{probe.model_type ?? "—"}</span>
+              </div>
+              <div className="panel-field-row model-probe-row">
+                <span className="panel-field-name">layers</span>
+                <span className="model-probe-value">{fmtInt(probe.num_hidden_layers)}</span>
+              </div>
+              <div className="panel-field-row model-probe-row">
+                <span className="panel-field-name">hidden_dim</span>
+                <span className="model-probe-value">{fmtInt(probe.hidden_size)}</span>
+              </div>
+              <div className="panel-field-row model-probe-row">
+                <span className="panel-field-name">attention heads</span>
+                <span className="model-probe-value">{fmtInt(probe.num_attention_heads)}</span>
+              </div>
+              <div className="panel-field-row model-probe-row">
+                <span className="panel-field-name">kv heads</span>
+                <span className="model-probe-value">{fmtInt(probe.num_key_value_heads)}</span>
+              </div>
+              <div className="panel-field-row model-probe-row">
+                <span className="panel-field-name">intermediate_dim</span>
+                <span className="model-probe-value">{fmtInt(probe.intermediate_size)}</span>
+              </div>
+              <div className="panel-field-row model-probe-row">
+                <span className="panel-field-name">vocab</span>
+                <span className="model-probe-value">{fmtInt(probe.vocab_size)}</span>
+              </div>
+              <div className="panel-field-row model-probe-row">
+                <span className="panel-field-name">max positions</span>
+                <span className="model-probe-value">{fmtInt(probe.max_position_embeddings)}</span>
+              </div>
             </div>
           ) : (
-            <div className="model-id-display" title={currentId}>
-              {currentId || "—"}
-            </div>
+            <div className="panel-empty">no probe data</div>
           )}
         </div>
-      </header>
-      {currentId ? (
-        <div className="panel-section model-probe-section">
-          {probing ? (
-            <div className="panel-section-head static">
-              <span className="model-probe-status">probing…</span>
-            </div>
-          ) : null}
-          <div className="panel-section-body">
-            {probeError ? (
-              <div className="model-probe-error">{probeError}</div>
-            ) : probe ? (
-              <div className="panel-fields-grid model-probe-grid">
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">parameters</span>
-                  <span className="model-probe-value">{fmtParams(probe.total_params)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">type</span>
-                  <span className="model-probe-value">{probe.model_type ?? "—"}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">layers</span>
-                  <span className="model-probe-value">{fmtInt(probe.num_hidden_layers)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">hidden_dim</span>
-                  <span className="model-probe-value">{fmtInt(probe.hidden_size)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">attention heads</span>
-                  <span className="model-probe-value">{fmtInt(probe.num_attention_heads)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">kv heads</span>
-                  <span className="model-probe-value">{fmtInt(probe.num_key_value_heads)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">intermediate_dim</span>
-                  <span className="model-probe-value">{fmtInt(probe.intermediate_size)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">vocab</span>
-                  <span className="model-probe-value">{fmtInt(probe.vocab_size)}</span>
-                </div>
-                <div className="panel-field-row model-probe-row">
-                  <span className="panel-field-name">max positions</span>
-                  <span className="model-probe-value">{fmtInt(probe.max_position_embeddings)}</span>
-                </div>
-              </div>
-            ) : (
-              !probing && <div className="panel-empty">no probe data</div>
-            )}
-          </div>
-        </div>
       ) : null}
-    </>
+    </div>
   );
 }
 

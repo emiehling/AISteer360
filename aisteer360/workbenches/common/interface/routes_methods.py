@@ -7,6 +7,7 @@ forms without hardcoding method-specific knowledge.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import typing
 from dataclasses import MISSING, fields, is_dataclass
@@ -33,6 +34,7 @@ class MethodFieldSpec(BaseModel):
 class MethodSpec(BaseModel):
     category: str
     method: str
+    description: str | None = None
     args: list[MethodFieldSpec] = Field(default_factory=list)
     runtime_kwargs: list[MethodFieldSpec] = Field(default_factory=list)
 
@@ -129,6 +131,7 @@ def get_methods(_: OwnerTokenHash) -> MethodsResponse:
                 MethodSpec(
                     category=category,
                     method=method_name,
+                    description=inspect.getdoc(method.control_cls),
                     args=_introspect_args(method.args_cls),
                     runtime_kwargs=_runtime_kwargs(method.control_cls),
                 )

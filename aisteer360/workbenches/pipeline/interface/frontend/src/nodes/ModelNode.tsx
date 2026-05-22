@@ -25,6 +25,48 @@ function BoxIcon() {
   );
 }
 
+/* gold cube with three faceted faces (top / front-left / front-right) and a
+   thin outline; rendered when the model node is the steering target. */
+function TargetBoxIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
+      <polygon points="12,2 21,7 12,12 3,7" fill="#f6d76b" />
+      <polygon points="3,7 12,12 12,22 3,17" fill="#b8902f" />
+      <polygon points="21,7 12,12 12,22 21,17" fill="#d9ad3f" />
+      <path
+        d="M21 8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"
+        fill="none"
+        stroke="#5a4612"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <polyline
+        points="3.27 6.96 12 12.01 20.73 6.96"
+        fill="none"
+        stroke="#5a4612"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <line
+        x1="12"
+        y1="22.08"
+        x2="12"
+        y2="12"
+        stroke="#5a4612"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function CloseIcon() {
   return (
     <svg
@@ -56,8 +98,9 @@ function shortModelId(id: string): string {
 
 function ModelNodeImpl({ id, data, selected }: NodeProps<ModelNodeData>) {
   const requestDeleteNode = usePipelineStore((s) => s.requestDeleteNode);
+  const isTarget = usePipelineStore((s) => s.targetModelNodeId === id);
 
-  const display = data.modelId ? shortModelId(data.modelId) : "‹ select model ›";
+  const display = data.modelId ? shortModelId(data.modelId) : "unset";
   const loaded = data.params.length > 0;
 
   const onClose = (event: MouseEvent) => {
@@ -89,8 +132,8 @@ function ModelNodeImpl({ id, data, selected }: NodeProps<ModelNodeData>) {
       <div className="model-face">
         {/* ── sidebar ── */}
         <div className="model-sidebar">
-          <span className="model-sidebar-icon">
-            <BoxIcon />
+          <span className={`model-sidebar-icon${isTarget ? " target" : ""}`}>
+            {isTarget ? <TargetBoxIcon /> : <BoxIcon />}
           </span>
           <div className="model-sidebar-spacer" />
           <span className="model-sidebar-label">model</span>

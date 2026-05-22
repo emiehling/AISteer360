@@ -30,6 +30,7 @@ export interface MethodFieldSpec {
 export interface MethodSpec {
   category: ControlCategory;
   method: string;
+  description: string | null;
   args: MethodFieldSpec[];
   runtime_kwargs: MethodFieldSpec[];
 }

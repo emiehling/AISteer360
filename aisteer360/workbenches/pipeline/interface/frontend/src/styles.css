@@ -310,13 +310,15 @@
 }
 
 /* the right and bottom handles on ctrl/model nodes overhang onto the offset
-   drop shadow (var(--model-border), a dark grey). bump them to a lighter
-   colour so they read against the shadow without losing the rest tone. */
+   drop shadow (var(--model-border), a dark grey). lift them above the shadow
+   layer (.model-shadow / .ctrl-face's box-shadow paint at z-index 0/1) and
+   force a light tone so they read against the dark shadow. */
 .ctrl-node .react-flow__handle-right,
 .ctrl-node .react-flow__handle-bottom,
 .model-wrap .react-flow__handle-right,
 .model-wrap .react-flow__handle-bottom {
-  background: var(--text-dim);
+  background: #d8d4c8;
+  z-index: 5;
 }
 
 .canvas-area .react-flow__attribution {
@@ -1522,7 +1524,7 @@
    pushed flush right). right side is reserved blank space for future content. */
 .model-params-split {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 2fr) auto minmax(0, 1fr);
   align-items: stretch;
   gap: 0;
 }
@@ -1788,7 +1790,8 @@
    padding, so the toolbar / header should not double-indent — keep them flush
    with the .panel-section-head (architecture) bar that sits below. */
 .add-control-section .settings-toolbar,
-.add-control-section .control-settings-head {
+.add-control-section .control-settings-head,
+.add-control-section .control-configure-head {
   padding-left: 0;
   padding-right: 0;
 }
@@ -1818,6 +1821,187 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* control configure: category buttons + Method row both pinned outside the
+   scroll region, with the docstring (rendered as markdown) below. all rows
+   share the parent .palette-section-body padding so left edges line up. */
+.control-configure-head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.control-method-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.control-method-label {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  flex: 0 0 auto;
+}
+.control-method-select {
+  flex: 0 0 60%;
+  min-width: 0;
+}
+.control-configure-scroll {
+  padding-top: 10px;
+}
+.control-method-description {
+  font-family: var(--sans);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+
+/* compact markdown rendering for docstrings inside the configure panel. */
+.markdown-body p {
+  margin: 0 0 8px 0;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-body strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.markdown-body em {
+  font-style: italic;
+}
+.markdown-body code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 1px 4px;
+  background: var(--panel-2);
+  border-radius: 2px;
+  color: var(--text);
+}
+.markdown-body pre {
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  padding: 8px;
+  overflow-x: auto;
+  margin: 0 0 8px 0;
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0 0 8px 0;
+  padding-left: 20px;
+}
+.markdown-body li {
+  margin-bottom: 4px;
+}
+.markdown-body li:last-child {
+  margin-bottom: 0;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  font-family: var(--sans);
+  font-weight: 600;
+  color: var(--text);
+  margin: 8px 0 4px 0;
+  font-size: 12px;
+}
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.markdown-body blockquote {
+  margin: 0 0 8px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  color: var(--text-dimmer);
+}
+
+/* model configure stack — vertical layout with no horizontal dividers.
+   id input on top, target toggle, then probe params. */
+.model-configure-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.model-id-row {
+  display: flex;
+}
+.model-id-row .model-id-input-wrap,
+.model-id-row .model-id-display-button {
+  width: 100%;
+}
+.model-target-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.model-target-label {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+.model-probe-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* iOS-style toggle switch — pill track + sliding knob. */
+.toggle-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+.toggle-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.toggle-switch-track {
+  display: inline-block;
+  position: relative;
+  width: 30px;
+  height: 16px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.toggle-switch-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  background: var(--text-dim);
+  border-radius: 50%;
+  transition: transform 0.15s, background 0.15s;
+}
+.toggle-switch.on .toggle-switch-track {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.toggle-switch.on .toggle-switch-knob {
+  background: var(--accent);
+  transform: translateX(14px);
+}
+.toggle-switch input:focus-visible + .toggle-switch-track {
+  box-shadow: 0 0 0 2px var(--accent);
+}
 .dataset-source-row {
   font-family: var(--mono);
   font-size: 10.5px;
@@ -1845,6 +2029,17 @@
   border: 1px solid var(--line-2);
   border-radius: 2px;
   word-break: break-all;
+}
+.model-id-display-button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+}
+.model-id-display-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* model settings: stretch the id field across the full panel width and

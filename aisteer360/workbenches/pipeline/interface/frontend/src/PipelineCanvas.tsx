@@ -642,6 +642,7 @@ function CanvasInner() {
       if (
         node &&
         (node.type === "control" ||
+          node.type === "model" ||
           node.type === "dataset" ||
           node.type === "steering_vector" ||
           node.type === "multiplexer")
