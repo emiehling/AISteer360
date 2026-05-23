@@ -90,8 +90,7 @@ def test_few_shot(model_and_tokenizer, device: torch.device, conf: dict):
     runtime_kwargs = _runtime_kwargs_from_conf(conf)
 
     # sanity check
-    adapter = fewshot.get_prompt_adapter()
-    adapted = adapter(prompt_ids, runtime_kwargs)
+    adapted = fewshot.adapt(prompt_ids, runtime_kwargs=runtime_kwargs)
 
     # handle tensor/list shapes consistently
     if isinstance(adapted, torch.Tensor):
@@ -143,8 +142,6 @@ def test_few_shot_batch_formats(model_and_tokenizer, device: torch.device, input
     pipeline.tokenizer = tokenizer
     pipeline.steer()
 
-    adapter = fewshot.get_prompt_adapter()
-
     # prepare input in the specified format
     tokens_1 = tokenizer.encode(PROMPT_TEXT_SHORT, add_special_tokens=False)
     tokens_2 = tokenizer.encode(PROMPT_TEXT_SHORT_2, add_special_tokens=False)
@@ -158,7 +155,7 @@ def test_few_shot_batch_formats(model_and_tokenizer, device: torch.device, input
     else:  # list_nested
         input_ids = [tokens_1, tokens_2]
 
-    adapted = adapter(input_ids, {})
+    adapted = fewshot.adapt(input_ids, runtime_kwargs={})
 
     # verify output format matches input format
     if input_format == "tensor_1d":
@@ -204,14 +201,12 @@ def test_few_shot_1d_tensor_bug_regression(model_and_tokenizer, device: torch.de
     pipeline.tokenizer = tokenizer
     pipeline.steer()
 
-    adapter = fewshot.get_prompt_adapter()
-
     # create 1D tensor input
     tokens = tokenizer.encode(PROMPT_TEXT_SHORT, add_special_tokens=False)
     input_ids_1d = torch.tensor(tokens, device=device)
 
     # this would fail before the fix: .tolist()[0] grabbed a single int instead of the sequence
-    adapted = adapter(input_ids_1d, {})
+    adapted = fewshot.adapt(input_ids_1d, runtime_kwargs={})
 
     # the adapted output should contain the original text (decoded correctly)
     decoded = tokenizer.decode(adapted.tolist(), skip_special_tokens=True)
@@ -234,8 +229,6 @@ def test_few_shot_missing_pad_token_raises(model_and_tokenizer, device: torch.de
     pipeline.tokenizer = tokenizer
     pipeline.steer()
 
-    adapter = fewshot.get_prompt_adapter()
-
     tokens = tokenizer.encode(PROMPT_TEXT_SHORT, add_special_tokens=False)
     input_ids = torch.tensor([tokens], device=device)
 
@@ -244,6 +237,6 @@ def test_few_shot_missing_pad_token_raises(model_and_tokenizer, device: torch.de
     tokenizer.pad_token_id = None
     try:
         with pytest.raises(RuntimeError, match="pad_token_id"):
-            adapter(input_ids, {})
+            fewshot.adapt(input_ids, runtime_kwargs={})
     finally:
         tokenizer.pad_token_id = original_pad_token_id

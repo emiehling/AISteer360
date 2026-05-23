@@ -1118,3 +1118,175 @@ class TestPipelineIntegration:
             )
             assert logprobs is not None
             assert logprobs.shape == (1, 3)
+
+
+# Stateful Input Control Tests (real SteeringPipeline)
+from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline as RealSteeringPipeline
+from aisteer360.algorithms.core.types import Output as RealOutput
+from aisteer360.algorithms.input_control.base import InputControl as RealInputControl
+
+
+class _RecordingStatefulControl(RealInputControl):
+    """Test scaffolding: a stateful input control that records the priors and observations it sees."""
+
+    is_stateful = True
+    supports_batching = True
+
+    def __init__(self):
+        super().__init__()
+        self.priors_seen: list = []
+        self.observations: list = []
+
+    def adapt(self, input_ids, prior=None, runtime_kwargs=None):
+        self.priors_seen.append(prior)
+        return input_ids
+
+    def observe(self, input_ids, output, runtime_kwargs=None):
+        self.observations.append((input_ids, output))
+
+    def steer(self, model=None, tokenizer=None, **kwargs):
+        pass
+
+
+class _RecordingStatelessControl(RealInputControl):
+    """Test scaffolding: a stateless input control that records the priors it sees."""
+
+    is_stateful = False
+    supports_batching = True
+
+    def __init__(self):
+        super().__init__()
+        self.priors_seen: list = []
+        self.adapt_called = 0
+        self.observe_called = 0
+
+    def adapt(self, input_ids, prior=None, runtime_kwargs=None):
+        self.adapt_called += 1
+        self.priors_seen.append(prior)
+        return input_ids
+
+    def observe(self, input_ids, output, runtime_kwargs=None):
+        # should never be called on stateless controls; track if it is
+        self.observe_called += 1
+
+    def steer(self, model=None, tokenizer=None, **kwargs):
+        pass
+
+
+def _make_real_pipeline_with_mock_model(input_control):
+    """Build a real SteeringPipeline with a mock model+tokenizer attached."""
+    pipeline = RealSteeringPipeline(controls=[input_control], lazy_init=True)
+    pipeline.model = create_mock_model()
+    pipeline.tokenizer = create_mock_tokenizer()
+    pipeline.steer()
+    return pipeline
+
+
+class TestStatefulInputControl:
+    """Tests for stateful input control prior/observe wiring."""
+
+    def test_pipeline_passes_prior_when_stateful(self):
+        """A stateful control's `adapt` receives `prior=None` on the first call and the previous Output thereafter."""
+        control = _RecordingStatefulControl()
+        pipeline = _make_real_pipeline_with_mock_model(control)
+
+        input_ids = torch.tensor([[1, 2, 3]])
+
+        pipeline.generate(input_ids, max_new_tokens=4)
+        assert control.priors_seen[0] is None
+
+        pipeline.generate(input_ids, max_new_tokens=4)
+        assert isinstance(control.priors_seen[1], RealOutput)
+
+        pipeline.generate(input_ids, max_new_tokens=4)
+        assert isinstance(control.priors_seen[2], RealOutput)
+
+    def test_pipeline_skips_prior_when_stateless(self):
+        """A stateless control's `adapt` is never called with a non-None prior."""
+        control = _RecordingStatelessControl()
+        pipeline = _make_real_pipeline_with_mock_model(control)
+
+        pipeline.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=4)
+        pipeline.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=4)
+        pipeline.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=4)
+
+        assert control.adapt_called == 3
+        assert all(p is None for p in control.priors_seen)
+
+    def test_pipeline_calls_observe_when_stateful(self):
+        """`observe` is invoked exactly once per `generate()` for a stateful control."""
+        control = _RecordingStatefulControl()
+        pipeline = _make_real_pipeline_with_mock_model(control)
+
+        pipeline.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=4)
+        assert len(control.observations) == 1
+
+        pipeline.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=4)
+        assert len(control.observations) == 2
+
+    def test_pipeline_does_not_call_observe_when_stateless(self):
+        """`observe` is never called for a stateless control."""
+        control = _RecordingStatelessControl()
+        pipeline = _make_real_pipeline_with_mock_model(control)
+
+        pipeline.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=4)
+        pipeline.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=4)
+
+        assert control.observe_called == 0
+
+    def test_compute_logprobs_does_not_call_observe(self):
+        """`compute_logprobs` does not invoke `observe` and does not update `_last_output`, even after a prior
+        `generate()` call."""
+        control = _RecordingStatefulControl()
+        pipeline = _make_real_pipeline_with_mock_model(control)
+
+        pipeline.generate(torch.tensor([[1, 2, 3]]), max_new_tokens=4)
+        observations_after_generate = len(control.observations)
+        last_output_after_generate = pipeline._last_output
+
+        pipeline.compute_logprobs(
+            input_ids=torch.tensor([[1, 2, 3]]),
+            ref_output_ids=torch.tensor([[4, 5, 6]]),
+        )
+
+        assert len(control.observations) == observations_after_generate
+        assert pipeline._last_output is last_output_after_generate
+
+    def test_observe_sees_pre_adapt_input(self):
+        """`observe` receives the user's original `input_ids`, not the steered/adapted version."""
+
+        class _ModifyingStatefulControl(RealInputControl):
+            is_stateful = True
+            supports_batching = True
+
+            def __init__(self):
+                super().__init__()
+                self.observe_inputs: list = []
+
+            def adapt(self, input_ids, prior=None, runtime_kwargs=None):
+                # return a different sequence to simulate prompt modification
+                if isinstance(input_ids, torch.Tensor):
+                    extra = torch.full(
+                        (input_ids.size(0), 5) if input_ids.ndim == 2 else (5,),
+                        99,
+                        dtype=input_ids.dtype,
+                        device=input_ids.device,
+                    )
+                    return torch.cat([extra, input_ids], dim=-1)
+                return [99] * 5 + list(input_ids)
+
+            def observe(self, input_ids, output, runtime_kwargs=None):
+                self.observe_inputs.append(input_ids)
+
+            def steer(self, model=None, tokenizer=None, **kwargs):
+                pass
+
+        control = _ModifyingStatefulControl()
+        pipeline = _make_real_pipeline_with_mock_model(control)
+
+        original_input_ids = torch.tensor([[1, 2, 3]])
+        pipeline.generate(original_input_ids, max_new_tokens=4)
+
+        observed = control.observe_inputs[0]
+        assert observed.size(-1) == original_input_ids.size(-1)
+        assert torch.equal(observed.cpu(), original_input_ids.cpu())

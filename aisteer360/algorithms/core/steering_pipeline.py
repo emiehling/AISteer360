@@ -10,6 +10,7 @@ import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
 from aisteer360.algorithms.core.steering_utils import ensure_pad_token, merge_controls, to_left_pad
+from aisteer360.algorithms.core.types import Output
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.output_control.base import OutputControl
 from aisteer360.algorithms.state_control.base import StateControl
@@ -78,6 +79,7 @@ class SteeringPipeline:
     output_control: OutputControl = field(init=False)
 
     _is_steered: bool = field(default=False, init=False, repr=False)
+    _last_output: Output | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
 
@@ -221,8 +223,12 @@ class SteeringPipeline:
         device = self.model.device
 
         # apply input control adapter
-        adapter = self.input_control.get_prompt_adapter(runtime_kwargs)
-        steered_input_ids = adapter(input_ids, runtime_kwargs)
+        prior = self._last_output if self.input_control.is_stateful else None
+        steered_input_ids = self.input_control.adapt(
+            input_ids,
+            prior=prior,
+            runtime_kwargs=runtime_kwargs,
+        )
 
         # normalize input_ids to 2D tensor
         if isinstance(steered_input_ids, list):
@@ -325,6 +331,28 @@ class SteeringPipeline:
                 **gen_kwargs
             )
 
+        if self.input_control.is_stateful:
+            # normalize the pre-adapt input to a 2D tensor for the observe contract
+            if isinstance(input_ids, list):
+                normalized_input_ids = torch.tensor(input_ids, dtype=torch.long)
+            else:
+                normalized_input_ids = input_ids
+            if normalized_input_ids.ndim == 1:
+                normalized_input_ids = normalized_input_ids.unsqueeze(0)
+            normalized_input_ids = normalized_input_ids.to(self.model.device)
+
+            new_tokens = output_ids[:, steered_input_ids.size(1):]
+            output_value = Output(
+                output_ids=new_tokens,
+                runtime_kwargs=runtime_kwargs,
+            )
+            self.input_control.observe(
+                input_ids=normalized_input_ids,
+                output=output_value,
+                runtime_kwargs=runtime_kwargs,
+            )
+            self._last_output = output_value
+
         if not return_full_sequence:
             output_ids = output_ids[:, steered_input_ids.size(1):]
 
@@ -363,6 +391,10 @@ class SteeringPipeline:
 
         When all pipeline controls support batching, a single batched forward pass is used (inputs are left-padded
         internally for correct positional alignment). Otherwise, falls back to sequential per-item processing.
+
+        Note:
+            `compute_logprobs` does not trigger `observe()` and does not update `_last_output`, even when called between
+            `generate()` calls. Stateful input controls only see priors and observations from generation traffic.
 
         Args:
             input_ids: Input token IDs as list or tensor [seq_len] or [batch, seq_len]

@@ -26,28 +26,41 @@ See Also:
 """
 from abc import ABC, abstractmethod
 from dataclasses import fields
-from typing import Any, Callable, Type
+from typing import Type
 
 import torch
 from transformers import PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.algorithms.core.types import Output
 
 
 class InputControl(ABC):
     """Abstract base class for input control steering methods.
 
-    Transforms prompts before model processing through a prompt adapter function that modifies input token sequences.
+    Transforms prompts before model processing. May maintain internal memory that is updated either offline (in
+    `steer()`) or online (in `observe()`).
+
+    Subclasses that maintain artifacts (instructions, demonstrations, learned weights, rule streams, ...) should expose
+    them via a `memory` attribute. The framework treats this attribute as opaque but reserves it as the recognized
+    location for serialization tooling, debugging, and Benchmark checkpoint integration. The expected type is anything
+    satisfying the `Memory` Protocol (`input_control.common.memory.Memory`); see `TextMemory` for the canonical reusable
+    shape.
 
     Methods:
-        get_prompt_adapter(runtime_kwargs) -> Callable: Return transformation function (required)
+        adapt(input_ids, prior, runtime_kwargs) -> input_ids: Transform prompt token IDs (required)
         steer(model, tokenizer, **kwargs) -> None: One-time preparation (optional)
+        observe(input_ids, output, runtime_kwargs) -> None: Post-generation memory update (optional)
+        cleanup() -> None: Release resources allocated during steer (optional)
     """
 
     Args: Type[BaseArgs] | None = None
 
     enabled: bool = True
     supports_batching: bool = False
+    is_stateful: bool = False
+
+    memory: "Memory | None" = None  # subclasses populate in steer() or observe()
 
     def __init__(self, *args, **kwargs) -> None:
         if self.Args is None:  # null control
@@ -62,25 +75,58 @@ class InputControl(ABC):
             setattr(self, field.name, getattr(self.args, field.name))
 
     @abstractmethod
-    def get_prompt_adapter(
+    def adapt(
         self,
-        runtime_kwargs: dict | None = None
-    ) -> Callable[[list[int] | torch.Tensor, dict[str, Any]], list[int] | torch.Tensor]:
-        """Receives (input_ids, runtime_kwargs) and returns modified input_ids."""
+        input_ids: list[int] | torch.Tensor,
+        prior: Output | None = None,
+        runtime_kwargs: dict | None = None,
+    ) -> list[int] | torch.Tensor:
+        """Transform `input_ids` into a steered prompt.
+
+        May read instance state (e.g. `self.memory`) that was populated by `steer()` or `observe()`.
+
+        Args:
+            input_ids: The user's prompt token IDs.
+            prior: The most recent `Output` produced by this pipeline, or None if no prior output exists OR if
+                `is_stateful` is False. The pipeline is responsible for not passing `prior` to stateless controls.
+            runtime_kwargs: Per-call parameters.
+
+        Returns:
+            The transformed token IDs.
+        """
+
+    def steer(
+        self,
+        model=None,
+        tokenizer=None,
+        **kwargs,
+    ) -> None:
+        """Optional offline preparation. Default is no-op."""
         pass
 
-    def steer(self,
-              model=None,
-              tokenizer=None,
-              **kwargs) -> None:
-        """Optional steering/preparation."""
+    def observe(
+        self,
+        input_ids: torch.Tensor,
+        output: Output,
+        runtime_kwargs: dict | None = None,
+    ) -> None:
+        """Optional post-generation callback. Default is no-op.
+
+        Invoked by `SteeringPipeline.generate()` after every call IF and ONLY IF `is_stateful` is True. Stateful
+        controls override this to update internal memory based on the model's response.
+
+        Args:
+            input_ids: The user's pre-adapt prompt (2D tensor).
+            output: The model's response, wrapped in an `Output`.
+            runtime_kwargs: Per-call parameters.
+        """
         pass
 
     def cleanup(self) -> None:
-        """Release resources allocated during steer().
+        """Release resources allocated during `steer()`.
 
-        Override this method in subclasses that allocate GPU memory or other resources
-        during steering to ensure proper cleanup.
+        Override this method in subclasses that allocate GPU memory or other resources during steering to ensure proper
+        cleanup.
         """
         pass
 
@@ -88,30 +134,27 @@ class InputControl(ABC):
 class NoInputControl(InputControl):
     """Identity input control.
 
-    Used as the default when no input control is needed. Returns input_ids.
+    Used as the default when no input control is needed. Returns input_ids unchanged.
     """
     enabled: bool = False
     supports_batching: bool = True
+    is_stateful: bool = False
     tokenizer: PreTrainedTokenizerBase | None = None
 
-    def get_prompt_adapter(
-            self,
-            runtime_kwargs: dict | None = None
-    ):
-        """Null adapter operation; returns identity map."""
-        if self.tokenizer is None:
-            return lambda ids, _: ids
-
-        def adapter(input_ids: list[int] | torch.Tensor, runtime_kwargs) -> list[int] | torch.Tensor:
-            return input_ids
-
-        return adapter
+    def adapt(
+        self,
+        input_ids: list[int] | torch.Tensor,
+        prior: Output | None = None,
+        runtime_kwargs: dict | None = None,
+    ) -> list[int] | torch.Tensor:
+        """Identity adapter; returns input_ids unchanged."""
+        return input_ids
 
     def steer(
-            self,
-            model=None,
-            tokenizer: PreTrainedTokenizerBase | None = None,
-            **kwargs
+        self,
+        model=None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
+        **kwargs,
     ) -> None:
         """Null steer operation; attaches tokenizer."""
         self.tokenizer = tokenizer

@@ -2,12 +2,14 @@
 Few-shot learning control for prompt adaptation.
 """
 import warnings
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
 import torch
 from transformers import PreTrainedTokenizer
 
+from aisteer360.algorithms.core.types import Output
 from aisteer360.algorithms.input_control.base import InputControl
+from aisteer360.algorithms.input_control.common.memory import TextMemory
 from aisteer360.algorithms.input_control.few_shot.args import FewShotArgs
 from aisteer360.algorithms.input_control.few_shot.selectors import SELECTOR_REGISTRY
 from aisteer360.algorithms.input_control.few_shot.selectors.base import Selector
@@ -82,6 +84,7 @@ class FewShot(InputControl):
     k_positive: int | None = None
     k_negative: int | None = None
     selector: Selector | None = None
+    memory: TextMemory | None = None
 
     def steer(
             self,
@@ -91,22 +94,38 @@ class FewShot(InputControl):
     ) -> None:
         self.tokenizer = tokenizer
 
-        # initialize selector if using pool mode
-        if self.positive_example_pool is not None or self.negative_example_pool is not None:
+        # build memory from Args fields
+        demonstrations: list[dict] = []
+        if self.positive_example_pool:
+            for example in self.positive_example_pool:
+                demonstrations.append({**example, "_label": "positive"})
+        if self.negative_example_pool:
+            for example in self.negative_example_pool:
+                demonstrations.append({**example, "_label": "negative"})
+
+        self.memory = TextMemory(
+            instruction=self.directive,
+            demonstrations=demonstrations or None,
+            template=getattr(self, "template", None),
+        )
+
+        # initialize selector if any demonstrations are available
+        if self.memory.demonstrations:
             if self.selector_name:
                 selector_cls = SELECTOR_REGISTRY.get(self.selector_name, RandomSelector)
                 self.selector = selector_cls()
             else:
                 self.selector = RandomSelector()
 
-    def get_prompt_adapter(
+    def adapt(
         self,
-        runtime_kwargs: dict | None = None
-    ) -> Callable[[list[int] | torch.Tensor, dict[str, Any]], list[int] | torch.Tensor]:
-        """Return a prompt adapter function that adds few-shot examples to the model's system prompt. Creates and
-        returns a closure that modifies input token sequences by prepending few-shot examples.
+        input_ids: list[int] | torch.Tensor,
+        prior: Output | None = None,
+        runtime_kwargs: dict | None = None,
+    ) -> list[int] | torch.Tensor:
+        """Adapt input token sequences by prepending few-shot examples to the model's system prompt.
 
-        The returned adapter function performs the following steps:
+        Performs the following steps:
 
         1. Determines operational mode (runtime examples take precedence over pools)
         2. Decodes input tokens to retrieve the original user message
@@ -116,8 +135,13 @@ class FewShot(InputControl):
         6. Applies the model's chat template (if available) to combine system prompt and user message
         7. Re-encodes the adapted text to tokens
 
+        Args:
+            input_ids: User prompt token IDs.
+            prior: Unused (FewShot is stateless).
+            runtime_kwargs: Per-call parameters; may include `positive_examples` / `negative_examples`.
+
         Returns:
-            A prompt adapter function.
+            Adapted token IDs.
 
         Raises:
             RuntimeError: If tokenizer is not set (requires calling `steer()` first)
@@ -133,136 +157,131 @@ class FewShot(InputControl):
         if self.tokenizer is None:
             raise RuntimeError("FewShot needs a tokenizer; call .steer() first.")
 
-        def adapter(input_ids: list[int] | torch.Tensor, runtime_kwargs: dict[str, Any]) -> list[int] | torch.Tensor:
-            # infer mode from arguments
-            using_runtime_examples = (
-                runtime_kwargs
-                and ("positive_examples" in runtime_kwargs or "negative_examples" in runtime_kwargs)
-            )
-            using_pool_mode = self.positive_example_pool is not None or self.negative_example_pool is not None
+        # infer mode from arguments
+        using_runtime_examples = (
+            runtime_kwargs
+            and ("positive_examples" in runtime_kwargs or "negative_examples" in runtime_kwargs)
+        )
+        using_pool_mode = (
+            self.memory is not None
+            and self.memory.demonstrations is not None
+            and len(self.memory.demonstrations) > 0
+        )
 
-            if not using_runtime_examples and not using_pool_mode:
+        if not using_runtime_examples and not using_pool_mode:
+            warnings.warn(
+                "FewShot: No examples provided via runtime_kwargs or example pools. "
+                "Returning original input unchanged.",
+                UserWarning,
+            )
+            return input_ids
+
+        # determine input format
+        is_tensor = isinstance(input_ids, torch.Tensor)
+        original_device = input_ids.device if is_tensor else None
+        original_dtype = input_ids.dtype if is_tensor else None
+
+        # normalize to 2D list format [batch_size, seq_len]
+        if is_tensor:
+            if input_ids.ndim == 1:
+                batch_input_ids = [input_ids.tolist()]
+                single_sequence = True
+            else:
+                batch_input_ids = input_ids.tolist()
+                single_sequence = False
+        else:
+            if isinstance(input_ids[0], int):
+                batch_input_ids = [input_ids]
+                single_sequence = True
+            else:
+                batch_input_ids = input_ids
+                single_sequence = False
+
+        has_chat_template = hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template
+        warned_no_template = False
+
+        # process each item independently (per-item sampling ensures correct behavior for query-dependent
+        # selectors and matches the sequential pipeline path)
+        adapted_batch = []
+        for input_ids_single in batch_input_ids:
+            original_text = self.tokenizer.decode(input_ids_single, skip_special_tokens=True)
+
+            # sample or gather examples independently per item
+            if using_runtime_examples:
+                examples = self._gather_runtime_examples(runtime_kwargs)
+            else:
+                examples = self._sample_from_pools()
+
+            if not examples:
                 warnings.warn(
-                    "FewShot: No examples provided via runtime_kwargs or example pools. "
-                    "Returning original input unchanged.",
+                    "FewShot: No examples available after selection. Returning original input unchanged.",
                     UserWarning,
                 )
-                return input_ids
+                adapted_batch.append(input_ids_single)
+                continue
 
-            # determine input format
-            is_tensor = isinstance(input_ids, torch.Tensor)
-            original_device = input_ids.device if is_tensor else None
-            original_dtype = input_ids.dtype if is_tensor else None
+            examples_text = self._format_examples(examples)
 
-            # normalize to 2D list format [batch_size, seq_len]
-            if is_tensor:
-                if input_ids.ndim == 1:
-                    batch_input_ids = [input_ids.tolist()]
-                    single_sequence = True
-                else:
-                    batch_input_ids = input_ids.tolist()
-                    single_sequence = False
+            # apply chat template
+            if has_chat_template:
+                messages = [
+                    {"role": "system", "content": examples_text},
+                    {"role": "user", "content": original_text},
+                ]
+                adapted_text = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
             else:
-                if isinstance(input_ids[0], int):
-                    batch_input_ids = [input_ids]
-                    single_sequence = True
-                else:
-                    batch_input_ids = input_ids
-                    single_sequence = False
-
-            has_chat_template = hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template
-            warned_no_template = False
-
-            # process each item independently (per-item sampling ensures correct behavior for query-dependent
-            # selectors and matches the sequential pipeline path)
-            adapted_batch = []
-            for input_ids_single in batch_input_ids:
-                original_text = self.tokenizer.decode(input_ids_single, skip_special_tokens=True)
-
-                # sample or gather examples independently per item
-                if using_runtime_examples:
-                    examples = self._gather_runtime_examples(runtime_kwargs)
-                else:
-                    examples = self._sample_from_pools()
-
-                if not examples:
+                if not warned_no_template:
                     warnings.warn(
-                        "FewShot: No examples available after selection. Returning original input unchanged.",
+                        "No chat template found for tokenizer. Prepending few-shot examples directly to user query.",
                         UserWarning,
                     )
-                    adapted_batch.append(input_ids_single)
-                    continue
+                    warned_no_template = True
+                adapted_text = examples_text + original_text
 
-                examples_text = self._format_examples(examples)
+            adapted_tokens = self.tokenizer.encode(adapted_text, add_special_tokens=False)
+            adapted_batch.append(adapted_tokens)
 
-                # apply chat template
-                if has_chat_template:
-                    messages = [
-                        {"role": "system", "content": examples_text},
-                        {"role": "user", "content": original_text},
-                    ]
-                    adapted_text = self.tokenizer.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    )
-                else:
-                    if not warned_no_template:
-                        warnings.warn(
-                            "No chat template found for tokenizer. Prepending few-shot examples directly to user query.",
-                            UserWarning,
-                        )
-                        warned_no_template = True
-                    adapted_text = examples_text + original_text
+        # pad to uniform length for batched output
+        max_len = max(len(seq) for seq in adapted_batch)
+        if self.tokenizer.pad_token_id is None:
+            raise RuntimeError(
+                "FewShot: tokenizer has no pad_token_id; cannot pad batch sequences. "
+                "Set a pad token before using FewShot with batched inputs."
+            )
+        pad_id = self.tokenizer.pad_token_id
 
-                adapted_tokens = self.tokenizer.encode(adapted_text, add_special_tokens=False)
-                adapted_batch.append(adapted_tokens)
+        padded_batch = []
+        for seq in adapted_batch:
+            padded_batch.append(seq + [pad_id] * (max_len - len(seq)))
 
-            # pad to uniform length for batched output
-            max_len = max(len(seq) for seq in adapted_batch)
-            if self.tokenizer.pad_token_id is None:
-                raise RuntimeError(
-                    "FewShot: tokenizer has no pad_token_id; cannot pad batch sequences. "
-                    "Set a pad token before using FewShot with batched inputs."
-                )
-            pad_id = self.tokenizer.pad_token_id
-
-            padded_batch = []
-            for seq in adapted_batch:
-                padded_batch.append(seq + [pad_id] * (max_len - len(seq)))
-
-            # convert back to original format
-            if is_tensor:
-                result = torch.tensor(padded_batch, dtype=original_dtype, device=original_device)
-                if single_sequence:
-                    result = result.squeeze(0)
-                return result
-            else:
-                if single_sequence:
-                    return padded_batch[0]
-                return padded_batch
-
-        return adapter
+        # convert back to original format
+        if is_tensor:
+            result = torch.tensor(padded_batch, dtype=original_dtype, device=original_device)
+            if single_sequence:
+                result = result.squeeze(0)
+            return result
+        else:
+            if single_sequence:
+                return padded_batch[0]
+            return padded_batch
 
     def _sample_from_pools(self) -> list[dict[str, Any]]:
-        """Sample examples from the pools."""
-        all_examples = []
+        """Sample examples from memory.demonstrations, split by _label."""
+        if self.memory is None or not self.memory.demonstrations:
+            return []
 
-        if self.positive_example_pool and self.k_positive and self.k_positive > 0:
-            positive_samples = self.selector.sample(
-                self.positive_example_pool,
-                self.k_positive
-            )
-            for example in positive_samples:
-                all_examples.append({**example, "_label": "positive"})
+        positive = [d for d in self.memory.demonstrations if d.get("_label") == "positive"]
+        negative = [d for d in self.memory.demonstrations if d.get("_label") == "negative"]
 
-        if self.negative_example_pool and self.k_negative and self.k_negative > 0:
-            negative_samples = self.selector.sample(
-                self.negative_example_pool,
-                self.k_negative
-            )
-            for example in negative_samples:
-                all_examples.append({**example, "_label": "negative"})
+        all_examples: list[dict[str, Any]] = []
+        if positive and self.k_positive and self.k_positive > 0:
+            all_examples.extend(self.selector.sample(positive, self.k_positive))
+        if negative and self.k_negative and self.k_negative > 0:
+            all_examples.extend(self.selector.sample(negative, self.k_negative))
 
         return all_examples
 
@@ -281,10 +300,11 @@ class FewShot(InputControl):
             else:
                 example_blocks.append(self._NEGATIVE_EXAMPLE_TEMPLATE.format(content=content))
 
-        template = getattr(self, 'template', None) or self._SYSTEM_PROMPT_TEMPLATE
+        template = (self.memory.template if self.memory else None) or self._SYSTEM_PROMPT_TEMPLATE
         formatted_blocks = "\n".join(example_blocks)
 
-        return template.format(directive=self.directive or "", example_blocks=formatted_blocks)
+        directive = (self.memory.instruction if self.memory else None) or ""
+        return template.format(directive=directive, example_blocks=formatted_blocks)
 
     @staticmethod
     def _gather_runtime_examples(runtime_kwargs: dict[str, Any]) -> list[dict[str, Any]]:
