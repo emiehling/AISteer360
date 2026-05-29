@@ -3877,8 +3877,8 @@
 
     await refreshCatalog();
     attachModelCombo("mcTarget", "target");
-    attachModelCombo("mcGenerator", "generator");
-    attachModelCombo("mcJudge", "judge");
+    attachModelCombo("mcGenerator", "inference");
+    attachModelCombo("mcJudge", "inference");
 
     const initialRuns = await fetchLatestRuns();
     // auto-select: prefer most recently claimed; else first in list
