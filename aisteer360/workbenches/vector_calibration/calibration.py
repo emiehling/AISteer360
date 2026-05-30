@@ -28,7 +28,7 @@ from .configs import CalibrationConfig, JudgeConfig, QualityGate
 from .results import CalibrationResult, CellResult
 
 if TYPE_CHECKING:
-    from .agent.providers.base import JudgeProvider
+    from aisteer360.workbenches.common.agent.providers.base import JudgeProvider
 
 logger = logging.getLogger(__name__)
 
@@ -701,7 +701,7 @@ class CalibrationSweep:
     ) -> "_Judge":
         """Build the judge adapter. Uses `provider` if given, else falls back to HF-local."""
         if provider is None:
-            from .agent.providers.hf_local import HFJudgeProvider
+            from aisteer360.workbenches.common.agent.providers.hf_local import HFJudgeProvider
             provider = HFJudgeProvider(config=asdict(judge_config))
         return _Judge(judge_config, provider=provider)
 

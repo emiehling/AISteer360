@@ -21,6 +21,5 @@ examples/**/profiles_*/
 **/CLAUDE.md
 /logs
 
-examples/scripts/
 runs/
 runs.db

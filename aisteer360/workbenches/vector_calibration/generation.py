@@ -18,7 +18,7 @@ from .configs import GenerationConfig
 from .results import GenerationResult
 
 if TYPE_CHECKING:
-    from .agent.providers.base import GenerationProvider
+    from aisteer360.workbenches.common.agent.providers.base import GenerationProvider
 
 logger = logging.getLogger(__name__)
 
