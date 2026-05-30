@@ -5,7 +5,8 @@ import json
 import logging
 import math
 import time
-from dataclasses import asdict
+from collections import Counter
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -33,6 +34,47 @@ logger = logging.getLogger(__name__)
 
 _CHECKPOINT_FILENAME = "calibration_checkpoint.json"
 _PPL_BATCH_CAP = 2  # Max batch size for perplexity forward passes (logits are [B, seq, vocab]).
+_PROBE_PROMPTS = 4  # Number of eval prompts generated in the pre-screen probe phase.
+
+
+@dataclass
+class _EvalBatch:
+    """A pre-tokenized batch of eval prompts, reused read-only across every cell.
+
+    Eval prompts are invariant over the sweep, so the chat template and tokenization are applied once
+    up front. `model.generate` does not mutate its `input_ids`/`attention_mask`, so the tensors here are
+    safe to share across cells.
+
+    Attributes:
+        prompts: The raw prompt strings in this batch.
+        inputs: Tokenized batch (`input_ids`, `attention_mask`) already moved to the model device.
+        prompt_lens: Per-item prompt lengths, used to build the steering token mask.
+        initial_seq_len: Input sequence length, used to seed the per-cell hook state.
+    """
+
+    prompts: list[str]
+    inputs: Any
+    prompt_lens: "torch.Tensor"
+    initial_seq_len: int
+
+
+@dataclass
+class _Baseline:
+    """Unsteered baseline, evaluated once and reused for `multiplier == 0` cells.
+
+    Attributes:
+        score: Mean judge score over the baseline generations.
+        perplexity: Mean baseline perplexity (NaN when perplexity is disabled).
+        texts: Per-prompt baseline generations.
+        scores: Per-prompt judge scores.
+        reasons: Per-prompt judge reasons (may be all `None`).
+    """
+
+    score: float
+    perplexity: float
+    texts: list[str]
+    scores: list[float] = field(default_factory=list)
+    reasons: list[str | None] = field(default_factory=list)
 
 
 class CalibrationSweep:
@@ -93,15 +135,39 @@ class CalibrationSweep:
 
         judge = self._build_judge(cfg.judge, provider=judge_provider)
 
-        baseline_score, baseline_perplexity, baseline_texts = self._evaluate_baseline(
-            model, tokenizer, eval_prompts, judge, cfg,
-        )
+        # tokenize the invariant eval prompts once; reused read-only for the baseline and every cell.
+        eval_batches = self._prepare_eval_batches(tokenizer, eval_prompts, cfg.batch_size, model.device)
+        probe_prompts = eval_prompts[:_PROBE_PROMPTS]
+        probe_batches = self._prepare_eval_batches(tokenizer, probe_prompts, cfg.batch_size, model.device)
+
+        baseline = self._evaluate_baseline(model, tokenizer, eval_batches, eval_prompts, judge, cfg)
 
         _, layer_names = get_model_layer_list(model)
 
         cells: list[CellResult] = list(completed.values())
         start_time = time.monotonic()
         done = len(cells)
+
+        def _commit(cell: CellResult) -> None:
+            nonlocal done
+            cells.append(cell)
+            completed[(cell.layer, cell.multiplier)] = cell
+            done += 1
+            if save_dir_path:
+                self._save_checkpoint(save_dir_path, cells)
+            if on_progress:
+                on_progress(
+                    {
+                        "completed": done,
+                        "total": total_cells,
+                        "current_cell": {"layer": cell.layer, "multiplier": cell.multiplier},
+                        "elapsed_s": time.monotonic() - start_time,
+                    }
+                )
+            # Release cached GPU memory between cells to prevent fragmentation
+            # from accumulating across hundreds of generate→perplexity cycles.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         for layer in layers:
             if layer not in steering_vector.directions:
@@ -111,20 +177,62 @@ class CalibrationSweep:
                 if (layer, mult) in completed:
                     continue
 
+                # mult == 0 adds exactly zero under greedy decoding, so the steered output is identical
+                # to the unsteered baseline; reuse it instead of re-generating and re-judging.
+                if abs(mult) < 1e-9:
+                    _commit(self._baseline_cell(layer, mult, baseline, model, tokenizer, eval_prompts))
+                    continue
+
                 transform = self._build_transform(
                     steering_vector, layer, mult, cfg.transform
                 )
 
-                generations = self._generate_with_hook(
+                # probe phase: generate on a small subset and skip the full pass for cells that are
+                # unambiguously degenerate (every probe response empty or single-token looping). Such
+                # cells fail the quality gate under full evaluation too, so they can never be the peak.
+                probe_generations = self._generate_with_hook(
                     model=model,
                     tokenizer=tokenizer,
-                    prompts=eval_prompts,
+                    eval_batches=probe_batches,
                     layer_name=layer_names[layer],
                     layer_id=layer,
                     transform=transform,
                     token_scope=cfg.token_scope,
                     max_new_tokens=cfg.max_new_tokens,
-                    batch_size=cfg.batch_size,
+                )
+                probe_texts = [g["steered_text"] for g in probe_generations]
+                probe_coherence = self._compute_coherence(
+                    model, tokenizer, probe_prompts, probe_texts, baseline.texts
+                )
+                if probe_texts and probe_coherence == 0.0:
+                    for i, gen in enumerate(probe_generations):
+                        gen["baseline_text"] = baseline.texts[i] if i < len(baseline.texts) else None
+                        gen["judge_score"] = None
+                        gen["judge_reason"] = None
+                    _commit(
+                        CellResult(
+                            layer=layer,
+                            multiplier=mult,
+                            score_mean=float("nan"),
+                            score_delta=float("nan"),
+                            coherence=probe_coherence,
+                            perplexity=float("nan"),
+                            perplexity_delta=float("nan"),
+                            coherent=False,
+                            generations=probe_generations,
+                        )
+                    )
+                    continue
+
+                generations = self._generate_with_hook(
+                    model=model,
+                    tokenizer=tokenizer,
+                    eval_batches=eval_batches,
+                    layer_name=layer_names[layer],
+                    layer_id=layer,
+                    transform=transform,
+                    token_scope=cfg.token_scope,
+                    max_new_tokens=cfg.max_new_tokens,
                 )
 
                 steered_texts = [g["steered_text"] for g in generations]
@@ -145,49 +253,29 @@ class CalibrationSweep:
                 else:
                     perplexity = float("nan")
                 coherence = self._compute_coherence(
-                    model, tokenizer, eval_prompts, steered_texts, baseline_texts
+                    model, tokenizer, eval_prompts, steered_texts, baseline.texts
                 )
 
                 for i, gen in enumerate(generations):
-                    gen["baseline_text"] = baseline_texts[i] if i < len(baseline_texts) else None
+                    gen["baseline_text"] = baseline.texts[i] if i < len(baseline.texts) else None
                     gen["judge_score"] = scores[i] if i < len(scores) else None
                     gen["judge_reason"] = reasons[i] if reasons and i < len(reasons) else None
 
-                cell = CellResult(
-                    layer=layer,
-                    multiplier=mult,
-                    score_mean=score_mean,
-                    score_delta=score_mean - baseline_score,
-                    coherence=coherence,
-                    perplexity=perplexity,
-                    perplexity_delta=perplexity - baseline_perplexity,
-                    coherent=self._passes_gate(
-                        coherence, perplexity, baseline_perplexity, cfg.quality_gate
-                    ),
-                    generations=generations,
-                )
-
-                cells.append(cell)
-                completed[(layer, mult)] = cell
-                done += 1
-
-                if save_dir_path:
-                    self._save_checkpoint(save_dir_path, cells)
-
-                if on_progress:
-                    on_progress(
-                        {
-                            "completed": done,
-                            "total": total_cells,
-                            "current_cell": {"layer": layer, "multiplier": mult},
-                            "elapsed_s": time.monotonic() - start_time,
-                        }
+                _commit(
+                    CellResult(
+                        layer=layer,
+                        multiplier=mult,
+                        score_mean=score_mean,
+                        score_delta=score_mean - baseline.score,
+                        coherence=coherence,
+                        perplexity=perplexity,
+                        perplexity_delta=perplexity - baseline.perplexity,
+                        coherent=self._passes_gate(
+                            coherence, perplexity, baseline.perplexity, cfg.quality_gate
+                        ),
+                        generations=generations,
                     )
-
-                # Release cached GPU memory between cells to prevent fragmentation
-                # from accumulating across hundreds of generate→perplexity cycles.
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                )
 
         del judge
         if torch.cuda.is_available():
@@ -198,8 +286,8 @@ class CalibrationSweep:
 
         return CalibrationResult(
             cells=cells,
-            baseline_score=baseline_score,
-            baseline_perplexity=baseline_perplexity,
+            baseline_score=baseline.score,
+            baseline_perplexity=baseline.perplexity,
             peak_cell=peak,
             grid_shape=(len(layers), len(multipliers)),
             layers=layers,
@@ -250,33 +338,59 @@ class CalibrationSweep:
 
     # ── generation with hook ─────────────────────────────────────────
 
+    @staticmethod
+    def _prepare_eval_batches(
+        tokenizer: PreTrainedTokenizerBase,
+        prompts: list[str],
+        batch_size: int,
+        device,
+    ) -> list[_EvalBatch]:
+        """Tokenize the eval prompts once into per-batch inputs moved onto `device`.
+
+        The returned batches are invariant across the sweep and reused read-only; `model.generate` does
+        not mutate its inputs, so the same tensors are safe to feed to the baseline pass and every cell.
+        """
+        batches: list[_EvalBatch] = []
+        for batch_start in range(0, len(prompts), batch_size):
+            batch_prompts = prompts[batch_start: batch_start + batch_size]
+            inputs = _tokenize_chat(tokenizer, batch_prompts).to(device)
+            batches.append(
+                _EvalBatch(
+                    prompts=batch_prompts,
+                    inputs=inputs,
+                    prompt_lens=compute_prompt_lens(inputs["input_ids"]),
+                    initial_seq_len=inputs["input_ids"].size(1),
+                )
+            )
+        return batches
+
     def _generate_with_hook(
         self,
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizerBase,
-        prompts: list[str],
+        eval_batches: list[_EvalBatch],
         layer_name: str,
         layer_id: int,
         transform,
         token_scope: str,
         max_new_tokens: int,
-        batch_size: int,
     ) -> list[dict[str, Any]]:
         """Generate responses with a steering hook registered.
+
+        Consumes pre-tokenized `eval_batches` (see `_prepare_eval_batches`); a fresh `hook_state` is
+        created per batch since `position_offset` is written during generation.
 
         Returns:
             A list of dicts with keys `prompt`, `steered_text`.
         """
         generations: list[dict[str, Any]] = []
 
-        for batch_start in range(0, len(prompts), batch_size):
-            batch_prompts = prompts[batch_start: batch_start + batch_size]
+        for batch in eval_batches:
+            batch_prompts = batch.prompts
+            inputs = batch.inputs
+            prompt_lens = batch.prompt_lens
 
-            inputs = _tokenize_chat(tokenizer, batch_prompts).to(model.device)
-            prompt_lens = compute_prompt_lens(inputs["input_ids"])
-            initial_seq_len = inputs["input_ids"].size(1)
-
-            hook_state = {"position_offset": 0, "initial_seq_len": initial_seq_len}
+            hook_state = {"position_offset": 0, "initial_seq_len": batch.initial_seq_len}
 
             def _hook(
                 module,
@@ -361,15 +475,15 @@ class CalibrationSweep:
         self,
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizerBase,
+        eval_batches: list[_EvalBatch],
         prompts: list[str],
         judge: "_Judge",
         cfg: CalibrationConfig,
-    ) -> tuple[float, float, list[str]]:
-        """Generate with no steering and score it; returns `(score, perplexity, texts)`."""
+    ) -> _Baseline:
+        """Generate with no steering and score it; returns a `_Baseline` reused for `mult == 0` cells."""
         baseline_texts: list[str] = []
-        for batch_start in range(0, len(prompts), cfg.batch_size):
-            batch_prompts = prompts[batch_start: batch_start + cfg.batch_size]
-            inputs = _tokenize_chat(tokenizer, batch_prompts).to(model.device)
+        for batch in eval_batches:
+            inputs = batch.inputs
             with torch.no_grad():
                 output_ids = model.generate(
                     **inputs,
@@ -383,7 +497,7 @@ class CalibrationSweep:
             )
             baseline_texts.extend(decoded)
 
-        scores, _ = judge.score_batch(prompts=prompts, responses=baseline_texts)
+        scores, reasons = judge.score_batch(prompts=prompts, responses=baseline_texts)
         baseline_score = _nan_mean(scores)
 
         if cfg.compute_perplexity:
@@ -395,7 +509,55 @@ class CalibrationSweep:
             )
         else:
             baseline_perplexity = float("nan")
-        return baseline_score, baseline_perplexity, baseline_texts
+        return _Baseline(
+            score=baseline_score,
+            perplexity=baseline_perplexity,
+            texts=baseline_texts,
+            scores=list(scores),
+            reasons=list(reasons),
+        )
+
+    def _baseline_cell(
+        self,
+        layer: int,
+        multiplier: float,
+        baseline: _Baseline,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizerBase,
+        prompts: list[str],
+    ) -> CellResult:
+        """Build a `CellResult` for a `multiplier == 0` cell directly from the cached baseline.
+
+        Output is mathematically identical to a full evaluation at `mult == 0` (greedy decoding adds zero),
+        so generation and judging are skipped and the baseline texts/scores are reused verbatim.
+        """
+        generations: list[dict[str, Any]] = []
+        for i, prompt in enumerate(prompts):
+            generations.append(
+                {
+                    "prompt": prompt,
+                    "steered_text": baseline.texts[i] if i < len(baseline.texts) else "",
+                    "baseline_text": baseline.texts[i] if i < len(baseline.texts) else None,
+                    "judge_score": baseline.scores[i] if i < len(baseline.scores) else None,
+                    "judge_reason": baseline.reasons[i] if i < len(baseline.reasons) else None,
+                }
+            )
+        coherence = self._compute_coherence(
+            model, tokenizer, prompts, baseline.texts, baseline.texts
+        )
+        return CellResult(
+            layer=layer,
+            multiplier=multiplier,
+            score_mean=baseline.score,
+            score_delta=0.0,
+            coherence=coherence,
+            perplexity=baseline.perplexity,
+            perplexity_delta=0.0,
+            coherent=self._passes_gate(
+                coherence, baseline.perplexity, baseline.perplexity, self.config.quality_gate
+            ),
+            generations=generations,
+        )
 
     # ── perplexity / coherence ───────────────────────────────────────
 
@@ -524,7 +686,7 @@ class CalibrationSweep:
             tokens = stripped.split()
             if not tokens:
                 continue
-            most_common = max(tokens.count(t) for t in set(tokens))
+            most_common = Counter(tokens).most_common(1)[0][1]
             if most_common / len(tokens) > 0.8 and len(tokens) > 4:
                 continue
             good += 1
@@ -548,7 +710,12 @@ class CalibrationSweep:
     @staticmethod
     def _save_checkpoint(save_dir: Path, cells: list[CellResult]) -> None:
         path = save_dir / _CHECKPOINT_FILENAME
-        data = [asdict(c) for c in cells]
+        # exclude the bulky per-prompt `generations` (mirroring CalibrationResult.save): the checkpoint
+        # is rewritten in full after every cell, so carrying generation text makes it O(N^2) bytes.
+        data = [
+            {k: v for k, v in asdict(c).items() if k != "generations"}
+            for c in cells
+        ]
         path.write_text(json.dumps(data))
 
     @staticmethod
