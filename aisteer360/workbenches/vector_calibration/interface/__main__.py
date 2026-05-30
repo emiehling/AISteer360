@@ -54,7 +54,13 @@ def main() -> int:
     )
 
     data_root = resolve_data_root(args.save_dir)
-    app = create_app(data_root=data_root, solo_mode=not args.no_agent)
+    solo_mode = not args.no_agent
+    public_server_url = f"http://127.0.0.1:{args.port}" if solo_mode else None
+    app = create_app(
+        data_root=data_root,
+        solo_mode=solo_mode,
+        public_server_url=public_server_url,
+    )
     server = _run_uvicorn(app, args.host, args.port, args.log_level)
 
     owner_token = mint_owner_token()
