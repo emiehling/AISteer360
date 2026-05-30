@@ -1,17 +1,8 @@
-"""Build a calibrated steering vector end to end, without the workbench server.
-
-This script walks the three stages of the vector-calibration workbench as a plain sequence of
-function calls:
+"""Build a calibrated steering vector end to end as a plain sequence of function calls:
 
     generation  -> contrastive response pairs              (ContrastivePairGenerator)
     extraction  -> per-layer steering directions           (SteeringVectorExtractor)
     calibration -> best (layer, multiplier) operating point (CalibrationSweep)
-
-The web UI (`aisteer360/workbenches/vector_calibration/interface`) and the headless agent runner
-are thin wrappers over exactly these classes; `VectorCalibrationWorkbench` is the orchestrator they
-both call. They add progress reporting, cancellation, run directories, and provider selection on
-top, but the steering logic itself is entirely in the three classes used below. Nothing is hidden
-behind the server.
 
 The model is loaded once and shared across all three stages. By default everything runs locally via
 Hugging Face (no API keys); swap in `anthropic`/`openai` providers on `GenerationConfig`/`JudgeConfig`
@@ -22,6 +13,8 @@ real calibration.
 
 Run:
     python examples/scripts/vector_calibration/build_steering_vector.py
+
+This is the code version of the interactive vector-calibration workbench.
 """
 from __future__ import annotations
 
