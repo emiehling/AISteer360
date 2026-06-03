@@ -40,28 +40,35 @@ from aisteer360.workbenches.vector_calibration.results import CalibrationResult
 
 logger = logging.getLogger(__name__)
 
-# a small, open, chat-tuned model so the example needs no auth and fits on modest hardware.
 MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
-BEHAVIOR = "warmth"
+BEHAVIOR = "<add>"
 
-# seed prompts steer the generator into producing a contrastive pair per prompt (warm vs cold).
+# seed prompts
 SEED_PROMPTS = [
-    "My flight got cancelled and I'm stuck at the airport overnight.",
-    "I just submitted my first research paper.",
-    "I think I bombed my job interview today.",
-    "My dog has been sick all week.",
-    "I finally paid off my student loans.",
-    "I'm nervous about moving to a new city next month.",
-    "I burned dinner right before the guests arrived.",
-    "I got promoted at work.",
+    "What would the world look like if humans could photosynthesize?",
+    "What makes an effective meeting?",
+    "Explain the difference between compiled and interpreted languages.",
+    "What are the key principles of writing maintainable code?",
+    "What is the greenhouse effect?",
+    "Should cities prioritize public transit over car infrastructure?",
+    "How would you design a fair voting system from scratch?",
+    "How does inflation affect an economy?",
+    "What would a school system designed from scratch today look like?",
+    "Is universal basic income a good idea?",
+    "Are electric vehicles ready to replace gasoline cars?",
+    "How do graph databases differ from relational databases?",
+    "What is the best way to learn a new language as an adult?",
+    "How do you create and stick to a personal budget?",
+    "Is remote work better than working in an office?"
 ]
 
-# held-out prompts the calibration sweep generates on and scores at each (layer, multiplier) cell.
+# held-out prompts
 EVAL_PROMPTS = [
-    "I had a really rough day.",
-    "I'm feeling overwhelmed with everything going on.",
-    "Can you help me figure out what to do next?",
-    "Nothing seems to be going right lately.",
+    "How does bond pricing work?",
+    "What is the best way to communicate bad news to stakeholders?",
+    "How does compound interest work and why does it matter for saving?",
+    "How do you manage scope creep in a project?",
+    "What should someone look for when buying a used car?"
 ]
 
 
@@ -79,8 +86,8 @@ def generate_pairs(model, tokenizer) -> ContrastivePairs:
     config = GenerationConfig(
         generator_model=MODEL,
         behavior=BEHAVIOR,
-        positive_prompt="You are deeply warm, empathetic, and emotionally supportive.",
-        negative_prompt="You are cold, clinical, and emotionally detached.",
+        positive_prompt="<add>",
+        negative_prompt="<add>",
         seed_prompts=SEED_PROMPTS,
         max_new_tokens=64,
     )
@@ -101,15 +108,16 @@ def extract_vector(model, tokenizer, pairs: ContrastivePairs) -> SteeringVector:
     return extractor.extract(model, tokenizer, pairs)
 
 
+#todo: add functionality to inject system prompt
 def calibrate(model, tokenizer, steering_vector: SteeringVector) -> CalibrationResult:
     """Stage 3: sweep (layer, multiplier), generate steered text, and judge it to find the peak."""
     config = CalibrationConfig(
         judge=JudgeConfig(
             model=MODEL,
             rating_scale=[
-                (1, "cold, curt, or impersonal"),
-                (3, "neutral, matter-of-fact"),
-                (5, "warm, empathetic, and emotionally supportive"),
+                (1, "<add>"),
+                (3, "<add>"),
+                (5, "<add>"),
             ],
         ),
         sweep=SweepGrid(
