@@ -12,7 +12,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 
 from aisteer360.algorithms.core.steering_utils import ensure_pad_token
-from aisteer360.algorithms.state_control.common.specs import ContrastivePairs
+from aisteer360.algorithms.state_control._common.specs import ContrastivePairs
 
 from .configs import GenerationConfig
 from .results import GenerationResult

@@ -7,7 +7,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from ..specs import Comparator, ConditionSearchSpec, ContrastivePairs, VectorTrainSpec
 from .base import BaseSelector
-from ..estimators.contrastive_direction_estimator import (
+from ..estimators.contrastive_direction import (
     _layerwise_tokenwise_hidden,
     _pool_over_spans,
     _select_spans,

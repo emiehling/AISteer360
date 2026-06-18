@@ -12,8 +12,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from aisteer360.algorithms.core.steering_utils import ensure_pad_token
-from aisteer360.algorithms.state_control.common.specs import ContrastivePairs
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control._common.specs import ContrastivePairs
+from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 
 from .calibration import CalibrationSweep
 from .configs import CalibrationBuilderConfig

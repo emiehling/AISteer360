@@ -23,8 +23,8 @@ import logging
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from aisteer360.algorithms.core.steering_utils import ensure_pad_token
-from aisteer360.algorithms.state_control.common.specs import ContrastivePairs
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control._common.specs import ContrastivePairs
+from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.workbenches.vector_calibration.calibration import CalibrationSweep
 from aisteer360.workbenches.vector_calibration.configs import (
     CalibrationConfig,

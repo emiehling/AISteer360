@@ -74,7 +74,7 @@ nav:
             - TRL wrapper: reference/algorithms/structural_control/trl_wrapper.md
         - State control:
             - Base classes: reference/algorithms/state_control/base_state_control.md
-            - Common library: reference/algorithms/state_control/common.md
+            - Common library: reference/algorithms/state_control/_common.md
             - ActAdd: reference/algorithms/state_control/act_add.md
             - CAA: reference/algorithms/state_control/caa.md
             - CAST: reference/algorithms/state_control/cast.md

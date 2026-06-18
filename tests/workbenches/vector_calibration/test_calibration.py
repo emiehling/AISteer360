@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.workbenches.common.agent.providers.base import JudgeProvider
 from aisteer360.workbenches.vector_calibration import calibration as calib_mod
 from aisteer360.workbenches.vector_calibration.calibration import CalibrationSweep, _Baseline

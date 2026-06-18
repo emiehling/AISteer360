@@ -32,7 +32,7 @@ class _FakeWorkbench:
         )
         if on_progress:
             on_progress(1, 1)
-        from aisteer360.algorithms.state_control.common.specs import ContrastivePairs
+        from aisteer360.algorithms.state_control._common.specs import ContrastivePairs
         from aisteer360.workbenches.vector_calibration.results import GenerationResult
         return GenerationResult(
             pairs=ContrastivePairs(positives=["P"], negatives=["N"], prompts=["p"]),

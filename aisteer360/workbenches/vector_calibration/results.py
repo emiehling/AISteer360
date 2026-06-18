@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from aisteer360.algorithms.state_control.common.specs import ContrastivePairs
+from aisteer360.algorithms.state_control._common.specs import ContrastivePairs
 
 
 @dataclass
