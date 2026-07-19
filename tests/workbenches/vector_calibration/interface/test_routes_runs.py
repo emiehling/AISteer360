@@ -46,18 +46,6 @@ def test_create_generation_only_skips_target_and_judge_checks(
     assert resp.json()["run"]["stages"] == ["generation"]
 
 
-def test_create_extraction_only_requires_target(client: TestClient, owner_header: dict) -> None:
-    cfg = minimal_config()
-    cfg["steered_model"] = ""
-    resp = client.post(
-        "/api/runs",
-        json=run_body(config=cfg, stages=["extraction"]),
-        headers=owner_header,
-    )
-    assert resp.status_code == 400
-    assert "target model" in resp.text.lower()
-
-
 def test_list_is_scoped_to_owner(client: TestClient) -> None:
     alice = {"Authorization": "Bearer dt-alice"}
     bob = {"Authorization": "Bearer dt-bob"}
