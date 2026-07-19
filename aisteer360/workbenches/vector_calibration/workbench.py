@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.steering_utils import ensure_pad_token
+from aisteer360.utils.tokenization import ensure_pad_token
 from aisteer360.algorithms.state_control._common.specs import ContrastivePairs
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 

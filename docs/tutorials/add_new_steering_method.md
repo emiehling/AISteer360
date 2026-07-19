@@ -35,9 +35,9 @@ The `__init__.py` file exposes the method to the toolkit's registry.
 from .control import CustomControl
 from .args import CustomControlArgs
 
-REGISTRY_ENTRY = {
+STEERING_METHOD = {
     "category": "<category>",
-    "name": "CustomControl",
+    "name": "custom_control",
     "control": CustomControl,
     "args": CustomControlArgs,
 }
@@ -110,7 +110,7 @@ under each of the four categories, via a simple example implementation, is detai
 
     Input control methods adapt the input (prompt) before the model is called.
 
-    *Required override*: `get_prompt_adapter`
+    *Required override*: `adapt`
 
     [:octicons-arrow-right-24: Add your own input control method](./add_method_by_category/add_new_input_control.md)
 
@@ -214,4 +214,4 @@ should contain the following:
 - A simple example of it working; it's helpful to illustrate how the steered behavior compares with the baseline
 (non-steered) behavior
 
-See the [DeAL notebook](`../examples/notebooks/control_deal/deal.ipynb`) for an example.
+See the [DeAL notebook](`../examples/notebooks/deal.ipynb`) for an example.

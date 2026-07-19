@@ -37,9 +37,20 @@ For a control method to be deemed an input control method, it must satisfy the f
 - *Access*: Implemented without requiring access to model's internals, e.g., hidden states.
 
 Some examples of input control methods include: few-shot prompting, reasoning guidance (like CoT, ToT, GoT,
-self-consistency), automatic prompting methods, and prompt routing. Few-shot prompting is implemented in our toolkit
-under the control name `FewShot` (source code: `algorithms/input_control/few_shot/control.py`). See the notebook
-here: [FewShot](../examples/notebooks/control_few_shot/few_shot.ipynb).
+self-consistency), automatic prompting methods, and prompt routing. The toolkit implements:
+
+- [`FewShot`](../reference/algorithms/input_control/few_shot.md) — pool- or runtime-supplied few-shot examples; pluggable selector. See the notebook: [FewShot](../examples/notebooks/few_shot.ipynb).
+- [`PRewrite`](../reference/algorithms/input_control/prewrite.md) — RL-trained instruction rewriter ([Kong et al. 2024](https://arxiv.org/abs/2401.08189)); supports a greedy "inference" strategy and a best-of-K "search" strategy. The rewriter can optionally be trained with GRPO using a metric-in-the-loop reward (apply the rewrite with the frozen task model over a dev set and score with a `Metric`, the paper's reward).
+- [`CPO`](../reference/algorithms/input_control/cpo.md) — causal prompt optimization ([Chen et al. 2026](https://arxiv.org/abs/2602.01711)); offline causal reward training (Double ML over PCA-reduced embeddings) plus per-query tree search.
+- [`GEPA`](../reference/algorithms/input_control/gepa.md) — reflective genetic prompt evolution ([Agrawal et al. 2025](https://arxiv.org/abs/2507.19457)); single-module variant.
+
+The few-shot retriever from [Rubin et al. 2021](https://arxiv.org/abs/2112.08633) (EPR) is shipped as a `BaseSelector`
+that slots into `FewShot` rather than as a separate control; see
+[`few_shot.selectors.epr`](../reference/algorithms/input_control/few_shot.md).
+
+Reusable building blocks shared across these methods (memory containers, formatters, scorers, proposers, selectors,
+Pareto / rollout-budget utilities) live in
+[`input_control._common`](../reference/algorithms/input_control/_common.md).
 
 
 
@@ -63,10 +74,11 @@ Structural control methods satisfy the following requirements:
 - *Access*: Implementation requires access to parameters and (typically) gradient flows.
 
 Examples of structural control methods include: fine-tuning methods (full, parameter efficient), soft prompting (prefix
-tuning, p-tuning), and model merging. Many of the structural control methods in the toolkit are implemented using
-wrappers around existing libraries, e.g., Hugging Face's PEFT library. Some implementations of structural control
-methods can be found in the notebooks: [MergeKit](../examples/notebooks/wrapper_mergekit/mergekit_wrapper.ipynb)[@goddard-etal-2024-arcees],
-[TRL](../examples/notebooks/wrapper_trl/trl_wrapper.ipynb)[@vonwerra2022trl].
+tuning, p-tuning), and model merging. Many of the structural control methods in the toolkit are implemented as wrappers
+around existing libraries. The toolkit implements:
+
+- [`MergeKit`](../reference/algorithms/structural_control/mergekit_wrapper.md) — model merging via MergeKit[@goddard-etal-2024-arcees]; combines multiple checkpoints with strategies such as linear interpolation, SLERP, and TIES from a YAML/dict config. See the notebook: [MergeKit](../examples/notebooks/mergekit_wrapper.ipynb).
+- [`TRL`](../reference/algorithms/structural_control/trl_wrapper.md) — weight-level training via Hugging Face TRL[@vonwerra2022trl]; exposes SFT, DPO, APO, PPO, and GRPO trainers, with optional LoRA/PEFT and a post-training merge. See the notebook: [TRL](../examples/notebooks/trl_wrapper.ipynb).
 
 
 ## State control
@@ -87,9 +99,29 @@ State control methods satisfy requirements:
 
 - *Access*: Requires access to internal states (to define hooks).
 
-Some examples of output control methods include: activation addition/steering, attention steering, and representation
-patching. Example implementations of state control methods can be found in the following notebooks:
-[CAST](../examples/notebooks/control_cast/cast.ipynb)[@lee2025programming], [PASTA](../examples/notebooks/control_pasta/pasta.ipynb)[@zhang2024tell].
+Some examples of state control methods include: activation addition/steering, attention steering, and representation
+patching. The toolkit implements:
+
+- [`ActAdd`](../reference/algorithms/state_control/act_add.md) — activation addition[@turner2023activation]; adds a positional steering vector from a single contrast pair to the residual stream at one layer. See the notebook: [ActAdd](../examples/notebooks/act_add.ipynb).
+- [`ActivationAdapter`](../reference/algorithms/state_control/activation_adapter.md) — the composable activation-steering atom; wires together the shared `_common` components (a transform that carries its own artifact, selector, gate, condition path, token scope) so a recipe is assembled without writing a new control class.
+- [`AngularSteering`](../reference/algorithms/state_control/angular_steering.md) — angular steering[@vu2025angular]; rotates the hidden state within a per-layer 2D plane (feature axis + companion axis) to a target angle, leaving the orthogonal complement untouched. Norm-preserving by construction; vector addition and directional ablation are special cases.
+- [`CAA`](../reference/algorithms/state_control/caa.md) — contrastive activation addition[@panickssery2023steering]; adds a learned mean-difference direction to the residual stream at a single layer. See the notebook: [CAA](../examples/notebooks/caa.ipynb).
+- [`CAST`](../reference/algorithms/state_control/cast.md) — conditional activation steering[@lee2025programming]; applies behavior steering only when a learned condition direction crosses a threshold. The applied behavior transform is pluggable (additive by default; any `BaseTransform` via `behavior_transform`, e.g. directional ablation for conditional abliteration). See the notebook: [CAST](../examples/notebooks/cast.ipynb).
+- [`DirectionalAblation`](../reference/algorithms/state_control/directional_ablation.md) — directional ablation / abliteration[@arditi2024refusal]; projects a learned feature direction (or subspace) out of the residual stream at masked positions, with a graded ablation strength.
+- [`ITI`](../reference/algorithms/state_control/iti.md) — inference-time intervention[@li2023inference]; shifts activations at a sparse set of probe-selected attention heads during generation. See the notebook: [ITI](../examples/notebooks/iti.ipynb).
+- [`PASTA`](../reference/algorithms/state_control/pasta.md) — post-hoc attention steering[@zhang2024tell]; rescales attention to targeted prompt substrings at selected layers and heads. See the notebook: [PASTA](../examples/notebooks/pasta.ipynb).
+
+Reusable building blocks shared across the residual-stream methods (estimators, gates, selectors, transforms, steering
+vectors, hook utilities) live in
+[`state_control._common`](../reference/algorithms/state_control/_common.md).
+
+`ActivationAdapter` is the **composition surface** for these building blocks: each adapter is a single-behavior atom
+(one transform chain — which carries its own artifact — one gate, one token scope), and steering with several behaviors
+is simply several adapters listed together in a pipeline's `controls`. Because a pipeline accepts
+[multiple state controls](steering_pipelines.md) applied in list order, composition across behaviors is owned by that
+ordered list — no separate composite abstraction is needed. Joint conditioning across adapters uses one shared gate
+instance: a driver declares the condition path and updates the gate; followers pass the same instance with
+`gate_driven_externally=True` and read its decision.
 
 
 
@@ -111,6 +143,9 @@ Output control methods satisfy:
 - *Access*: Requires access to logits, token-probabilities, and possibly hidden states (depending on the method).
 
 Examples of output control methods include: sampling/search strategies, weighted decoding, and reward-augmented
-decoding. Some example methods can be found in the following notebooks: [DeAL](../examples/notebooks/control_deal/deal.ipynb)[@huang2024deal],
-[RAD](../examples/notebooks/control_rad/rad.ipynb)[@deng-raffel-2023-reward], [SASA](../examples/notebooks/control_sasa/sasa.ipynb)[@ko2025large],
-[ThinkingIntervention](../examples/notebooks/control_thinking_intervention/thinking_intervention.ipynb)[@wu2025effectively].
+decoding. The toolkit implements:
+
+- [`DeAL`](../reference/algorithms/output_control/deal.md) — decoding-time alignment[@huang2024deal]; iterative lookahead beam search with reward-guided beam selection. See the notebook: [DeAL](../examples/notebooks/deal.ipynb).
+- [`RAD`](../reference/algorithms/output_control/rad.md) — reward-augmented decoding[@deng-raffel-2023-reward]; shifts candidate-token logits by a reward from a unidirectional reward model. See the notebook: [RAD](../examples/notebooks/rad.ipynb).
+- [`SASA`](../reference/algorithms/output_control/sasa.md) — self-disciplined autoregressive sampling[@ko2025large]; shifts logits toward a learned non-toxic subspace. See the notebook: [SASA](../examples/notebooks/sasa.ipynb).
+- [`ThinkingIntervention`](../reference/algorithms/output_control/thinking_intervention.md) — thinking intervention[@wu2025effectively]; injects structured reasoning instructions into the chain of thought, then extracts the post-thinking output. See the notebook: [ThinkingIntervention](../examples/notebooks/thinking_intervention.ipynb).

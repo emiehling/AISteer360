@@ -17,7 +17,7 @@ from transformers import (
     StoppingCriteriaList,
 )
 
-from aisteer360.algorithms.core.steering_utils import ensure_pad_token
+from aisteer360.utils.tokenization import ensure_pad_token
 from aisteer360.evaluation.metrics.base_judge import LLMJudgeMetric
 
 from .base import GenerationProvider, JudgeProvider

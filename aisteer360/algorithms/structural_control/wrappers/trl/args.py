@@ -14,6 +14,7 @@ class TRLArgs(BaseArgs):
     base_model_name_or_path: str | None = None
     tokenizer_name_or_path: str | None = None
     hf_model_kwargs: dict[str, Any] = field(default_factory=dict)
+    trust_remote_code: bool = False
 
     # datasets / collators
     train_dataset: Any | None = None
@@ -60,6 +61,9 @@ class TRLArgs(BaseArgs):
     lora_kwargs: dict[str, Any] = field(init=False)
 
     def __post_init__(self) -> None:
+
+        # default transient artifacts under ./tmp so nothing lands at the repository root
+        self.output_dir = self.output_dir or self.training_args.get("output_dir") or "./tmp/trainer_output"
 
         # compose training args
         base_training_args = {

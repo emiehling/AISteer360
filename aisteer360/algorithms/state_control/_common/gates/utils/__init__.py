@@ -1,4 +1,16 @@
 """Gate utility modules."""
-from .scores import projected_cosine_similarity
+from .scores import (
+    aggregate_condition_hidden,
+    masked_mean,
+    projected_cosine_similarity,
+    projected_cosine_similarity_tensor,
+    rank_one_projector,
+)
 
-__all__ = ["projected_cosine_similarity"]
+__all__ = [
+    "aggregate_condition_hidden",
+    "masked_mean",
+    "projected_cosine_similarity",
+    "projected_cosine_similarity_tensor",
+    "rank_one_projector",
+]

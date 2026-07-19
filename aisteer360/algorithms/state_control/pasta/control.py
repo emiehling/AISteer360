@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import logging
 from functools import partial
 from typing import Sequence
 
 import torch
-from transformers import BatchEncoding, PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizer
 
+from aisteer360.algorithms.state_control._common.model_layout import resolve_model_layout
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control.pasta.args import PASTAArgs
+
+logger = logging.getLogger(__name__)
 
 
 class PASTA(StateControl):
@@ -46,6 +50,12 @@ class PASTA(StateControl):
 
             Defaults to "include".
 
+    Note:
+        PASTA injects a 4D additive attention mask, which only the `"eager"` and `"sdpa"` attention
+        implementations consume. Load the model with `attn_implementation="eager"` (or `"sdpa"`);
+        `"flash_attention_2"` expects a 2D padding mask and silently ignores or errors on the
+        injected scaling. `steer()` fails fast if the model reports an unsupported implementation.
+
     Reference:
     - "PASTA: Tell Your Model Where to Attend: Post-hoc Attention Steering for LLMs"
     Qingru Zhang, Chandan Singh, Liyuan Liu, Xiaodong Liu, Bin Yu, Jianfeng Gao, Tuo Zhao
@@ -71,6 +81,7 @@ class PASTA(StateControl):
 
     _head_map: dict[int, list[int]] | None = None
     _layers: list[int] | None = None
+    _attn_module_names: dict[int, str] | None = None
     _scale_constant: torch.Tensor | None = None
 
     def steer(
@@ -78,8 +89,9 @@ class PASTA(StateControl):
     ) -> PreTrainedModel:
         """Initialize PASTA by configuring attention head mappings and model references.
 
-        Sets up the layer and head configurations that will be modified during generation.
-        Validates head configurations against model architecture.
+        Sets up the layer and head configurations that will be modified during generation,
+        resolves the architecture-specific attention module paths, and fails fast on unsupported
+        layers or attention implementations (rather than deep inside generation).
 
         Args:
             model (PreTrainedModel): The base language model to be steered.
@@ -89,12 +101,57 @@ class PASTA(StateControl):
 
         Returns:
             PreTrainedModel: The input model (unchanged).
+
+        Raises:
+            ValueError: If a configured attention module path is missing on the model, or if the
+                model's attention implementation is not one of `"eager"` / `"sdpa"`.
         """
         self.model = model
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
         self.device = next(model.parameters()).device
         self._setup_head_config(self.head_config)
+        self._resolve_attention_modules(model)
+        self._check_attention_implementation(model)
         return model
+
+    def _resolve_attention_modules(self, model: PreTrainedModel) -> None:
+        """Resolve the per-layer attention module path from the model layout.
+
+        The per-layer attention module paths come from `resolve_model_layout` (`.self_attn` for
+        `model.layers.*`, `.attn` for `transformer.h.*`). Validates every configured layer's module
+        exists so registration cannot fail mid-generation.
+
+        Raises:
+            ValueError: If the architecture is unrecognized or a configured module path is absent.
+        """
+        attn_names = resolve_model_layout(model).attn_names
+
+        self._attn_module_names = {}
+        for layer in self._layers:
+            if layer < 0 or layer >= len(attn_names):
+                raise ValueError(
+                    f"PASTA layer {layer} out of range for model with {len(attn_names)} layers."
+                )
+            path = attn_names[layer]
+            try:
+                model.get_submodule(path)
+            except AttributeError as error:
+                raise ValueError(f"PASTA could not resolve attention module {path!r}.") from error
+            self._attn_module_names[layer] = path
+
+    @staticmethod
+    def _check_attention_implementation(model: PreTrainedModel) -> None:
+        """Fail fast unless the model uses an attention implementation PASTA can steer.
+
+        Raises:
+            ValueError: If `model.config._attn_implementation` is not `"eager"` or `"sdpa"`.
+        """
+        impl = getattr(model.config, "_attn_implementation", "eager")
+        if impl not in {"eager", "sdpa"}:
+            raise ValueError(
+                f"PASTA requires attn_implementation 'eager' or 'sdpa' to inject a 4D attention "
+                f"mask; got {impl!r}. Load the model with attn_implementation=\"eager\"."
+            )
 
     def get_hooks(
         self,
@@ -128,48 +185,71 @@ class PASTA(StateControl):
         substrings = runtime_kwargs["substrings"]
         batch_size = input_ids.size(0)
 
-        # normalize substrings to shape (batch, group, str)
+        # normalize to (batch, group, str) in a local copy so we never mutate the caller's list
         if isinstance(substrings, str):
-            substrings = [[substrings]] * batch_size
+            groups: list[list[str]] = [[substrings] for _ in range(batch_size)]
         elif substrings and isinstance(substrings[0], str):
-            substrings = [substrings] * batch_size
+            groups = [list(substrings) for _ in range(batch_size)]
         elif len(substrings) != batch_size:
             raise ValueError(
                 f"Need {batch_size} substring groups (one per prompt); got {len(substrings)}"
             )
+        else:
+            groups = [list(group) for group in substrings]
 
-        # decode and get offsets
-        prompts = self.tokenizer.batch_decode(input_ids, skip_special_tokens=True)
+        # decode *with* special tokens so offsets share the attention mask's coordinate system
+        # (its key axis includes BOS/template tokens)
+        prompts = self.tokenizer.batch_decode(input_ids, skip_special_tokens=False)
 
-        # Have to encode & decode substrings along with prompts, since we observed prompts getting changed due to
-        # tokenization (e.g. spaces removed); and we need to replicate the same effect in the substrings to ensure they
-        # actually match
-        for idx, substring in enumerate(substrings):
+        # round-trip the substrings through the tokenizer so they match the decoded text
+        # (tokenization can subtly change text, e.g. drop spaces)
+        for group_idx, group in enumerate(groups):
             try:
-                substrings[idx] = self.tokenizer.batch_decode(
-                    self.tokenizer(substring, return_tensors="pt", padding=True)['input_ids'],
-                    skip_special_tokens=True
+                groups[group_idx] = self.tokenizer.batch_decode(
+                    self.tokenizer(group, return_tensors="pt", padding=True)["input_ids"],
+                    skip_special_tokens=True,
                 )
-            except:
-                breakpoint()
+            except Exception as error:
+                raise ValueError(
+                    f"PASTA failed to re-tokenize substrings {group!r}: {error}"
+                ) from error
 
-        if self.tokenizer.padding_side != "left":
-            self.tokenizer.padding_side = "left"
+        # per item: re-encode the decoded text (no specials) and locate token ranges. A faithful
+        # fast tokenizer reproduces the real input ids, so its offsets are already in real
+        # coordinates; processing per item also avoids any batch padding / padding_side handling.
+        token_ranges: list[torch.Tensor] = []
+        for item_idx in range(batch_size):
+            row_ids = input_ids[item_idx]
+            enc = self.tokenizer(
+                prompts[item_idx],
+                return_tensors="pt",
+                return_offsets_mapping=True,
+                add_special_tokens=False,
+            )
+            enc_ids = enc["input_ids"][0].to(row_ids.device)
+            offsets = enc["offset_mapping"][0].tolist()
 
-        tokenized: BatchEncoding = self.tokenizer(
-            prompts,
-            return_tensors="pt",
-            return_offsets_mapping=True,
-            add_special_tokens=False,
-            padding=True,
-        ).to(self.device)
+            if torch.equal(enc_ids, row_ids):
+                # id-faithful: offsets are already in the real sequence's coordinates
+                ranges = [
+                    torch.tensor(self._find_token_range(prompts[item_idx], sub, offsets))
+                    for sub in groups[item_idx]
+                ]
+            else:
+                # not id-faithful (e.g. sentencepiece whitespace normalization): compute the range
+                # in re-encoded space, then relocate the token-id window inside the real ids
+                ranges = [
+                    torch.tensor(
+                        self._locate_range_by_ids(
+                            prompts[item_idx], sub, offsets, enc_ids, row_ids
+                        )
+                    )
+                    for sub in groups[item_idx]
+                ]
+            token_ranges.append(torch.stack(ranges))
 
-        offset_mapping = tokenized.pop("offset_mapping")
-        input_len = tokenized["input_ids"].size(-1)
-
-        token_ranges = self._token_ranges_from_batch(
-            prompts, substrings, offset_mapping
-        )
+        # input_len is the real (padded) sequence length, matching the attention mask's key axis
+        input_len = input_ids.size(1)
 
         if self._scale_constant is None:
             self._scale_constant = torch.tensor(
@@ -182,7 +262,7 @@ class PASTA(StateControl):
         for layer in self._layers:
             hooks["pre"].append(
                 {
-                    "module": f"model.layers.{layer}.self_attn",
+                    "module": self._attn_module_names[layer],
                     "hook_func": partial(
                         self._attention_pre_hook,
                         head_idx=self._head_map[layer],
@@ -247,13 +327,17 @@ class PASTA(StateControl):
                 Defaults to 0 (first occurrence).
 
         Returns:
-            tuple[int, int]: Start (inclusive) and end (exclusive) token indices.
+            tuple[int, int]: Start (inclusive) and end (exclusive) token indices. If the substring is
+                absent from `string`, returns the `(0, 0)` sentinel (skipped downstream) after warning.
 
         Raises:
-            ValueError: If substring cannot be mapped to token range.
+            ValueError: If the substring is present in `string` but cannot be aligned to token offsets.
         """
         if substring not in string:
-            print(f"'{substring}' not found in input {string}")
+            logger.warning(
+                "PASTA: substring %r not found in input (len=%d chars); skipping steering for this range.",
+                substring, len(string),
+            )
             return 0, 0
 
         char_index = -1
@@ -274,39 +358,55 @@ class PASTA(StateControl):
 
         return token_start, token_end + 1
 
-    def _token_ranges_from_batch(
-        self,
-        texts: Sequence[str],
-        groups: Sequence[Sequence[str]],
-        offsets_mapping: Sequence[Sequence[tuple[int, int]]],
-        occurrence: int = 0,
-    ) -> list[torch.Tensor]:
-        """Convert batch of substring groups to token ranges.
+    @staticmethod
+    def _locate_range_by_ids(
+        text: str,
+        substring: str,
+        offsets: Sequence[tuple[int, int]],
+        enc_ids: torch.Tensor,
+        real_ids: torch.Tensor,
+    ) -> tuple[int, int]:
+        """Fallback range resolution when re-encoding is not id-faithful to the real sequence.
 
-        Maps multiple substrings across batch items to their corresponding token index ranges for attention modification.
+        Computes the token range in the re-encoded (special-free) space, extracts that window of
+        token ids, and finds the matching contiguous id window inside the real sequence (choosing
+        the occurrence nearest the naive index). Returns the `(0, 0)` skip sentinel if the
+        substring is absent or its id window cannot be located in the real ids.
 
         Args:
-            texts: Decoded text for each batch item.
-            groups: Groups of substrings for each batch item.
-            offsets_mapping: Token offset mappings for each batch item.
-            occurrence: Which occurrence to find for repeated substrings.
+            text: The decoded text the offsets were computed against.
+            substring: The target substring.
+            offsets: Offset mapping for the re-encoded text.
+            enc_ids: Token ids of the re-encoded text (same coordinate system as `offsets`).
+            real_ids: Token ids of the real (padded) sequence to relocate the window into.
 
         Returns:
-            list[torch.Tensor]: Token range tensors for each batch item.
-                Each tensor has shape [num_substrings, 2] with [start, end] pairs.
+            `(start, end)` token indices in the real sequence, or `(0, 0)` if unresolved.
         """
-        token_ranges: list[torch.Tensor] = []
+        naive_start, naive_end = PASTA._find_token_range(text, substring, offsets)
+        if naive_start == naive_end:  # absent (already warned) or empty
+            return 0, 0
 
-        for text, substrings, offsets in zip(texts, groups, offsets_mapping):
-            substring_ranges = [
-                torch.tensor(
-                    self._find_token_range(text, substring, offsets, occurrence)
-                )
-                for substring in substrings
-            ]
-            token_ranges.append(torch.stack(substring_ranges))
+        window = enc_ids[naive_start:naive_end]
+        w_len = window.size(0)
+        real = real_ids.tolist()
+        window_list = window.tolist()
 
-        return token_ranges
+        # every contiguous position in real_ids that matches the window
+        matches = [
+            i for i in range(len(real) - w_len + 1)
+            if real[i:i + w_len] == window_list
+        ]
+        if not matches:
+            logger.warning(
+                "PASTA: could not relocate substring %r window into the real sequence; skipping.",
+                substring,
+            )
+            return 0, 0
+
+        # pick the occurrence nearest the naive index
+        best = min(matches, key=lambda i: abs(i - naive_start))
+        return best, best + w_len
 
     def _attention_pre_hook(
         self,
@@ -344,11 +444,26 @@ class PASTA(StateControl):
 
         attention_mask = input_kwargs.get("attention_mask")
         if attention_mask is None:  # build it
-            batch_size, sequence_len, _ = hidden_states.size()
+            batch_size, query_len, _ = hidden_states.size()
             num_heads = self.model.config.num_attention_heads
-            causal = torch.triu(
-                hidden_states.new_full((sequence_len, sequence_len), float("-inf")),
-                diagonal=1,
+
+            # during decoding the query attends to the full kv cache, so the mask spans the cached key
+            # positions (read from cache_position) rather than just the current query window
+            cache_position = input_kwargs.get("cache_position")
+            if cache_position is not None:
+                key_len = int(cache_position[-1]) + 1
+            else:
+                key_len = query_len
+
+            # query row i sits at absolute position (key_len - query_len + i) and attends to keys 0..position
+            query_positions = torch.arange(
+                key_len - query_len, key_len, device=hidden_states.device
+            ).unsqueeze(1)
+            key_positions = torch.arange(key_len, device=hidden_states.device).unsqueeze(0)
+            causal = torch.where(
+                key_positions <= query_positions,
+                hidden_states.new_zeros(()),
+                hidden_states.new_full((), float("-inf")),
             )
             attention_mask = causal[None, None]  # (1,1,q,k)
             attention_mask = attention_mask.expand(
@@ -367,12 +482,21 @@ class PASTA(StateControl):
 
         batch_size = attention_mask.size(0)
 
-        # beam search expands the batch dimension by num_beams; broadcast token_ranges to match
+        # beam search expands the batch via repeat_interleave ([item0, item0, item1, item1]); index
+        # token_ranges the same way (a modulo would misorder the beams)
         if batch_size > len(token_ranges):
-            token_ranges = [token_ranges[i % len(token_ranges)] for i in range(batch_size)]
+            if batch_size % len(token_ranges) != 0:
+                raise RuntimeError(
+                    f"Hidden batch {batch_size} is not a multiple of the prompt batch "
+                    f"{len(token_ranges)}; cannot align PASTA token ranges."
+                )
+            expand = batch_size // len(token_ranges)
+            token_ranges = [token_ranges[i // expand] for i in range(batch_size)]
 
         for batch_index in range(batch_size):
-            for start_idx, end_idx in token_ranges[batch_index].tolist():
+            ranges = token_ranges[batch_index].tolist()
+            has_valid_range = any(start != end for start, end in ranges)
+            for start_idx, end_idx in ranges:
                 if start_idx == end_idx:
                     continue
                 if self.scale_position == "include":
@@ -394,8 +518,8 @@ class PASTA(StateControl):
                 else:
                     raise ValueError(f"Unknown scale_position '{self.scale_position}'")
 
-        if self.scale_position == "include":
-            attention_mask[:, head_idx, :, :input_len] -= self._scale_constant
+            if self.scale_position == "include" and has_valid_range:
+                attention_mask[batch_index, head_idx, :, :input_len] -= self._scale_constant
 
         input_kwargs["attention_mask"] = attention_mask
         return input_args, input_kwargs

@@ -1,23 +1,105 @@
 """Contrastive direction estimator using paired PCA."""
 import logging
 import math
-from typing import Callable, Sequence
+from typing import Callable, Literal, Sequence
 
 import torch
 from sklearn.decomposition import PCA
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from ..render import render_contrastive
 from ..specs import ContrastivePairs, VectorTrainSpec
 from ..steering_vector import SteeringVector
 from .base import BaseEstimator
+from .utils import layerwise_tokenwise_hidden
 
 logger = logging.getLogger(__name__)
+
+PcaMethod = Literal["pca_pairwise", "pca_center"]
+
+
+def _prepare_pca_samples(
+    positive: torch.Tensor,
+    negative: torch.Tensor,
+    method: PcaMethod,
+) -> torch.Tensor:
+    """Build the PCA sample matrix from pooled positive/negative activations.
+
+    - `pca_pairwise`: centers each pair `(H^+_i, H^-_i)` at its midpoint, yielding the two samples
+        `±(H^+_i - H^-_i)/2`.
+    - `pca_center`: stacks positive and negative activations and centers by their grand mean.
+
+    Args:
+        positive: Pooled positive activations, shape `[N, H]`.
+        negative: Pooled negative activations, shape `[N, H]`.
+        method: Which sample construction to use.
+
+    Returns:
+        A float32 sample matrix of shape `[2N, H]`.
+
+    Raises:
+        ValueError: If the shapes disagree, the method is unsupported, or the samples are non-finite.
+    """
+    if positive.shape != negative.shape:
+        raise ValueError(
+            "positive and negative pooled activations must have equal shape; "
+            f"got {tuple(positive.shape)} and {tuple(negative.shape)}."
+        )
+
+    positive = positive.float()
+    negative = negative.float()
+
+    if method == "pca_pairwise":
+        delta = positive - negative
+        samples = torch.cat((0.5 * delta, -0.5 * delta), dim=0)
+    elif method == "pca_center":
+        stacked = torch.cat((positive, negative), dim=0)
+        samples = stacked - stacked.mean(dim=0, keepdim=True)
+    else:
+        raise ValueError(f"Unknown PCA method: {method!r}.")
+
+    if not torch.isfinite(samples).all():
+        raise ValueError("PCA samples contain non-finite values.")
+    return samples
+
+
+def _orient_direction(
+    direction: torch.Tensor,
+    positive: torch.Tensor,
+    negative: torch.Tensor,
+) -> torch.Tensor:
+    """Orient `direction` so the positive class projects above the negative class.
+
+    Uses a majority vote over pairs, breaking ties by the sign of the mean projection margin.
+
+    Args:
+        direction: Direction to orient, shape `[H]`.
+        positive: Pooled positive activations, shape `[N, H]`.
+        negative: Pooled negative activations, shape `[N, H]`.
+
+    Returns:
+        The direction, flipped if positives projected below negatives.
+    """
+    direction = direction.float()
+    positive_projection = positive.float() @ direction
+    negative_projection = negative.float() @ direction
+
+    positive_wins = (positive_projection > negative_projection).float().mean()
+    if positive_wins < 0.5:
+        return -direction
+    if positive_wins == 0.5:
+        mean_margin = (positive_projection - negative_projection).mean()
+        if mean_margin < 0:
+            return -direction
+    return direction
 
 
 def _tokenize(
     tokenizer: PreTrainedTokenizerBase,
     texts: Sequence[str],
     device: torch.device | str,
+    *,
+    add_special_tokens: bool = True,
 ) -> dict[str, torch.Tensor]:
     """Tokenize a list of texts and move to device.
 
@@ -25,6 +107,8 @@ def _tokenize(
         tokenizer: Tokenizer to use.
         texts: List of text strings.
         device: Target device.
+        add_special_tokens: Whether to add special tokens (e.g. BOS). Pass False
+            for chat-templated text that already contains them.
 
     Returns:
         Dictionary with input_ids and attention_mask tensors.
@@ -34,64 +118,9 @@ def _tokenize(
         return_tensors="pt",
         padding=True,
         truncation=True,
+        add_special_tokens=add_special_tokens,
     )
     return {k: v.to(device) for k, v in enc.items()}
-
-
-@torch.no_grad()
-def _layerwise_tokenwise_hidden(
-    model: PreTrainedModel,
-    enc: dict[str, torch.Tensor],
-    batch_size: int = 8,
-    on_batch: Callable[[], None] | None = None,
-) -> dict[int, torch.Tensor]:
-    """Extract hidden states from all layers for all tokens.
-
-    Args:
-        model: The model to extract from.
-        enc: Tokenized input with input_ids and attention_mask.
-        batch_size: Batch size for forward passes.
-        on_batch: Optional callable invoked after each batch finishes. Used by callers to surface
-            progress to the UI.
-
-    Returns:
-        Dict mapping layer_id to tensor of shape [N, T, H] where N is total samples.
-    """
-    input_ids = enc["input_ids"]
-    attention_mask = enc.get("attention_mask")
-    N = input_ids.size(0)
-
-    # collect outputs per layer
-    all_hidden: dict[int, list[torch.Tensor]] = {}
-
-    for start in range(0, N, batch_size):
-        end = min(start + batch_size, N)
-        batch_ids = input_ids[start:end]
-        batch_mask = attention_mask[start:end] if attention_mask is not None else None
-
-        outputs = model(
-            input_ids=batch_ids,
-            attention_mask=batch_mask,
-            output_hidden_states=True,
-            return_dict=True,
-        )
-
-        # outputs.hidden_states is a tuple of (num_layers+1) tensors
-        # index 0 is embedding output, indices 1..num_layers are layer outputs
-        for layer_idx, hs in enumerate(outputs.hidden_states[1:]):
-            if layer_idx not in all_hidden:
-                all_hidden[layer_idx] = []
-            all_hidden[layer_idx].append(hs.cpu())
-
-        if on_batch is not None:
-            on_batch()
-
-    # concatenate all batches
-    result = {}
-    for layer_idx, tensors in all_hidden.items():
-        result[layer_idx] = torch.cat(tensors, dim=0)
-
-    return result
 
 
 def _select_spans(
@@ -104,44 +133,53 @@ def _select_spans(
     Args:
         enc: Tokenized full sequences (prompts + completions).
         prompt_enc: Tokenized prompts only (if accumulate == "suffix-only").
-        accumulate: "all" or "suffix-only".
+        accumulate: "all", "suffix-only", or "last_token".
 
     Returns:
         List of (start, end) tuples, one per sample.
     """
+    if accumulate not in ("all", "suffix-only", "last_token"):
+        raise ValueError(
+            f"_select_spans does not support accumulate='{accumulate}'. "
+            "Expected one of: 'all', 'suffix-only', 'last_token'."
+        )
+
     input_ids = enc["input_ids"]
     attention_mask = enc.get("attention_mask")
     N, T = input_ids.shape
 
     spans = []
     for i in range(N):
-        # find actual sequence length (non-padded)
-        if attention_mask is not None:
-            seq_len = int(attention_mask[i].sum().item())
-        else:
-            seq_len = T
-
+        # number of prompt tokens to skip for suffix-only pooling (a count, not an absolute index)
         if accumulate == "suffix-only" and prompt_enc is not None:
-            # start after the prompt
-            prompt_len = int(prompt_enc["attention_mask"][i].sum().item()) if "attention_mask" in prompt_enc else prompt_enc["input_ids"].size(1)
-            start = prompt_len
+            prompt_len = (
+                int(prompt_enc["attention_mask"][i].sum().item())
+                if "attention_mask" in prompt_enc
+                else prompt_enc["input_ids"].size(1)
+            )
         else:
-            start = 0
+            prompt_len = 0
 
-        # end is the actual sequence length (left-padded sequences: end at seq_len)
-        # for left-padded, positions 0..T-seq_len are padding, so we want T-seq_len..T
+        # derive both bounds from the mask so the span excludes pads on either padding side
         if attention_mask is not None:
-            # find first non-pad position
-            first_non_pad = (attention_mask[i] == 1).nonzero(as_tuple=True)[0]
-            if len(first_non_pad) > 0:
-                first_pos = int(first_non_pad[0].item())
+            non_pad = (attention_mask[i] == 1).nonzero(as_tuple=True)[0]
+            if len(non_pad) > 0:
+                first = int(non_pad[0].item())
+                last = int(non_pad[-1].item())
             else:
-                first_pos = 0
-            end = T
-            # adjust start for left-padding
-            start = max(start + first_pos, first_pos)
+                first, last = 0, T - 1
+            if accumulate == "last_token":
+                # one-token span at the final non-pad position (mask-derived, so pad-side agnostic)
+                start, end = last, last + 1
+            else:
+                start = first + prompt_len
+                end = last + 1
         else:
-            end = seq_len
+            if accumulate == "last_token":
+                start, end = T - 1, T
+            else:
+                start = prompt_len
+                end = T
 
         spans.append((start, end))
 
@@ -173,11 +211,21 @@ def _pool_over_spans(
 
 
 class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
-    """Learns per-layer direction vectors from contrastive text pairs.
+    """Learns per-layer direction vectors from contrastive text pairs via PCA.
 
-    Uses PCA on the difference of mean hidden states between positive and
-    negative examples to extract the principal direction of variation at each
-    layer.
+    Two PCA variants are supported, selected by `spec.method`:
+
+    - `pca_pairwise`: centers each pair `(H_l^+, H_l^-)` at its midpoint, giving the samples
+        `±(H_l^+ - H_l^-)/2`, and takes the first principal component of that symmetric set.
+    - `pca_center`: fits PCA on the union of positive and negative pooled activations centered by
+        their grand mean: `vector_l = PCA(H_l^+ - mu_l, H_l^- - mu_l)` with `mu_l` the mean over all
+        examples of both classes.
+
+    For both methods the first principal component is oriented so positive examples project above
+    negative examples (see `_orient_direction`).
+
+    Examples are rendered via `render_for_model` according to `spec.prompt_format` and tokenized with
+    `add_special_tokens=False` for chat-templated text.
     """
 
     def fit(
@@ -205,24 +253,23 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
         device = next(model.parameters()).device
         model_type = getattr(model.config, "model_type", "unknown")
 
-        # build full texts
-        if data.prompts is not None:
-            pos_texts = [p + c for p, c in zip(data.prompts, data.positives)]
-            neg_texts = [p + c for p, c in zip(data.prompts, data.negatives)]
-        else:
-            pos_texts = list(data.positives)
-            neg_texts = list(data.negatives)
+        # render full texts according to prompt_format (shared with inference)
+        rendered = render_contrastive(tokenizer, data, spec.prompt_format)
 
-        logger.debug("Tokenizing %d positive and %d negative examples", len(pos_texts), len(neg_texts))
+        logger.debug(
+            "Tokenizing %d positive and %d negative examples", len(rendered.pos_texts), len(rendered.neg_texts)
+        )
 
         # tokenize
-        enc_pos = _tokenize(tokenizer, pos_texts, device)
-        enc_neg = _tokenize(tokenizer, neg_texts, device)
+        enc_pos = _tokenize(tokenizer, rendered.pos_texts, device, add_special_tokens=rendered.add_special_tokens)
+        enc_neg = _tokenize(tokenizer, rendered.neg_texts, device, add_special_tokens=rendered.add_special_tokens)
 
         # tokenize prompts separately if needed for suffix-only
         prompt_enc = None
-        if spec.accumulate == "suffix-only" and data.prompts is not None:
-            prompt_enc = _tokenize(tokenizer, list(data.prompts), device)
+        if spec.accumulate == "suffix-only" and rendered.prompt_texts is not None:
+            prompt_enc = _tokenize(
+                tokenizer, rendered.prompt_texts, device, add_special_tokens=rendered.add_special_tokens
+            )
             prompt_enc = {k: v.cpu() for k, v in prompt_enc.items()}
 
         # extract hidden states
@@ -239,8 +286,12 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
 
         if on_progress is not None:
             on_progress(0, total_batches)
-        hs_pos = _layerwise_tokenwise_hidden(model, enc_pos, batch_size=spec.batch_size, on_batch=_tick)
-        hs_neg = _layerwise_tokenwise_hidden(model, enc_neg, batch_size=spec.batch_size, on_batch=_tick)
+        hs_pos = layerwise_tokenwise_hidden(
+            model, enc_pos, batch_size=spec.batch_size, on_batch=_tick, location=spec.location
+        )
+        hs_neg = layerwise_tokenwise_hidden(
+            model, enc_neg, batch_size=spec.batch_size, on_batch=_tick, location=spec.location
+        )
 
         # move encodings to CPU for span selection
         enc_pos_cpu = {k: v.cpu() for k, v in enc_pos.items()}
@@ -262,19 +313,18 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
             Hp = _pool_over_spans(hs_pos[layer_id], spans_pos)  # [N, H]
             Hn = _pool_over_spans(hs_neg[layer_id], spans_neg)  # [N, H]
 
-            # compute pairwise differences
-            diffs = (Hp - Hn).float().numpy()  # [N, H]
+            samples = _prepare_pca_samples(Hp, Hn, spec.method)  # [2N, H]
 
-            if spec.method == "pca_pairwise":
-                # fit PCA to get principal direction
-                pca = PCA(n_components=1)
-                pca.fit(diffs)
-                direction = pca.components_[0]  # shape [H]
-                variance = float(pca.explained_variance_ratio_[0])
-            else:
-                raise ValueError(f"Unknown method: {spec.method}")
+            pca = PCA(n_components=1)
+            pca.fit(samples.numpy())
+            direction = torch.from_numpy(pca.components_[0]).float()  # [H]
+            variance = float(pca.explained_variance_ratio_[0])
 
-            directions[layer_id] = torch.tensor(direction, dtype=torch.float32).unsqueeze(0)  # [1, H]
+            direction = _orient_direction(direction, Hp, Hn)
+            if not torch.isfinite(direction).all():
+                raise ValueError(f"Non-finite direction produced for layer {layer_id}.")
+
+            directions[layer_id] = direction.unsqueeze(0)  # [1, H]
             explained_variances[layer_id] = variance
 
         logger.debug("Finished fitting contrastive directions")

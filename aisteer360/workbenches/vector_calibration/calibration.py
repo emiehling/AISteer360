@@ -329,7 +329,7 @@ class CalibrationSweep:
     ):
         """Build a transform for a single (layer, multiplier) cell."""
         single_layer_dirs = {layer: sv.directions[layer]}
-        transform = AdditiveTransform(directions=single_layer_dirs, strength=multiplier)
+        transform = AdditiveTransform(single_layer_dirs, strength=multiplier)
         if method == "norm_preserving":
             transform = NormPreservingTransform(transform)
         elif method != "additive":

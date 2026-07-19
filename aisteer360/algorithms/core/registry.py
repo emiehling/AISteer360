@@ -4,13 +4,12 @@ Discovers steering methods at import‑time for cli reference.
 import logging
 from importlib import import_module
 from pathlib import Path
-from typing import Dict, Type
 
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 
-REGISTRY: Dict[str, Dict[str, "SteeringMethod"]] = {}
+REGISTRY: dict[str, dict[str, "SteeringMethod"]] = {}
 
 
 class SteeringMethod:
@@ -22,7 +21,7 @@ class SteeringMethod:
        control_cls: The control class implementation
        args_cls: The args dataclass for configuration
     """
-    def __init__(self, category: str, name: str, control_cls: Type, args_cls: Type):
+    def __init__(self, category: str, name: str, control_cls: type, args_cls: type):
         self.category = category
         self.name = name
         self.control_cls = control_cls
