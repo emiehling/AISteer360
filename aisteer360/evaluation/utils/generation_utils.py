@@ -6,7 +6,7 @@ from typing import Any, Callable, Sequence
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.core.steering_pipeline import SteeringPipeline
 from aisteer360.utils.rendering import has_chat_template, render_for_model, render_messages
 
 logger = logging.getLogger(__name__)

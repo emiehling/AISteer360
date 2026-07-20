@@ -7,7 +7,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from tests.conftest import hf_pipeline
 from aisteer360.algorithms.input_control._common.memory.pool_memory import PoolMemory
 from aisteer360.algorithms.input_control._common.selectors.base import BaseSelector
 from aisteer360.algorithms.input_control.few_shot import FewShot
@@ -162,9 +162,7 @@ class TestEPRWithFewShot:
             k_positive=1,
             selector=epr,
         )
-        pipeline = SteeringPipeline(controls=[fewshot], lazy_init=True)
-        pipeline.model = scoring_lm
-        pipeline.tokenizer = scoring_tok
+        pipeline = hf_pipeline(controls=[fewshot], model=scoring_lm, tokenizer=scoring_tok)
         pipeline.steer()
 
         # capture the actual query passed into the selector during adapt
@@ -206,9 +204,7 @@ class TestEPRWithFewShot:
             k_positive=1,
             selector=epr,
         )
-        pipeline = SteeringPipeline(controls=[fewshot], lazy_init=True)
-        pipeline.model = scoring_lm
-        pipeline.tokenizer = scoring_tok
+        pipeline = hf_pipeline(controls=[fewshot], model=scoring_lm, tokenizer=scoring_tok)
         pipeline.steer()
 
         # adapt_messages should now use the trained encoder for retrieval

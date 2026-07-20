@@ -27,15 +27,20 @@ See Also:
 - `aisteer360.algorithms.state_control`: Implementations of state control methods
 - `aisteer360.core.steering_pipeline`: Integration with steering pipeline
 """
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import fields
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import torch
 import torch.nn as nn
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
+from aisteer360.core.requirements import Capability, Requirements
+
+if TYPE_CHECKING:
+    from aisteer360.algorithms.state_control._common.intervention import InterventionPlan, PromptContext
+    from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 
 PreHook = Callable[[nn.Module, tuple], tuple | torch.Tensor]
 ForwardHook = Callable[[nn.Module, tuple, torch.Tensor], torch.Tensor]
@@ -52,8 +57,21 @@ class StateControl(ABC):
     gate decisions) and therefore supports one in-flight generation at a time; do not share a single
     control instance across concurrently running pipelines.
 
+    Two sanctioned extension points, exactly one of which a concrete subclass overrides (enforced in
+    `__init_subclass__`):
+
+    - `plan()` — the declarative path: return an `InterventionPlan` (pure data describing the
+        transforms/gating). The base `get_hooks` compiles it to hooks via `compile_plan_to_hooks`,
+        and the same plan is portable to server backends where its components export. Preferred for
+        residual-stream steering.
+    - `get_hooks()` — the hook-level path: return hook specs directly. For controls that cannot be
+        expressed declaratively (e.g. PASTA's attention-mask writes); implies
+        `Capability.FORWARD_HOOKS`.
+
     Methods:
-        get_hooks(input_ids, runtime_kwargs, **kwargs) -> dict: Create hook specs (required)
+        plan(prompt_ctx, runtime_kwargs) -> InterventionPlan | None: Declarative interventions.
+        get_hooks(input_ids, runtime_kwargs, **kwargs) -> dict: Hook specs (concrete; routes
+            through `plan` unless overridden).
         steer(model, tokenizer, **kwargs) -> None: One-time preparation (optional)
         reset() -> None: Reset logic (optional)
         register_hooks(model) -> None: Attach hooks to model (provided)
@@ -66,6 +84,30 @@ class StateControl(ABC):
     enabled: bool = True
     supports_batching: bool = False
     _model_ref: PreTrainedModel | None = None
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        """Enforce that a concrete state control overrides exactly one of `plan` / `get_hooks`.
+
+        Raises:
+            TypeError: If a concrete subclass overrides neither entry point, or both.
+        """
+        super().__init_subclass__(**kwargs)
+        # skip abstract or internal base subclasses (no-op controls set enabled=False as a marker)
+        if getattr(cls, "__abstractmethods__", None):
+            return
+        overrides_plan = cls.plan is not StateControl.plan
+        overrides_hooks = cls.get_hooks is not StateControl.get_hooks
+        if not overrides_plan and not overrides_hooks and cls.enabled:
+            raise TypeError(
+                f"{cls.__name__} must override exactly one of `plan()` or `get_hooks()`; it overrides "
+                "neither. Implement `plan()` for declarative controls or `get_hooks()` for hook-level "
+                "controls (e.g. attention writes)."
+            )
+        if overrides_plan and overrides_hooks:
+            raise TypeError(
+                f"{cls.__name__} overrides both `plan()` and `get_hooks()`; override exactly one. "
+                "Declarative controls implement `plan()`; hook-level controls implement `get_hooks()`."
+            )
 
     def __init__(self, *args, **kwargs) -> None:
         if self.Args is None:  # null control
@@ -85,24 +127,82 @@ class StateControl(ABC):
         self.hooks: dict[str, list[HookSpec]] = {"pre": [], "forward": [], "backward": []}
         self.registered: list[torch.utils.hooks.RemovableHandle] = []
 
-    @abstractmethod
+    def plan(
+        self,
+        prompt_ctx: "PromptContext",
+        runtime_kwargs: dict | None = None,
+    ) -> "InterventionPlan | None":
+        """Return the declarative interventions for the current generation, or `None`.
+
+        The declarative extension point. Declarative controls override this to describe their
+        transforms and gating as data; the base `get_hooks` compiles the result. The default returns
+        `None` (the control is hook-level and overrides `get_hooks` instead).
+
+        Args:
+            prompt_ctx: Per-generation prompt context (ids, mask, prompt lengths, pad id).
+            runtime_kwargs: Per-call parameters for the control.
+
+        Returns:
+            An `InterventionPlan`, or `None` for hook-level controls.
+        """
+        return None
+
+    def _ensure_runtime(self) -> "TransformHookRuntime":
+        """Return the control's shared hook runtime (built in `steer()`).
+
+        Raises:
+            RuntimeError: If the control has no `_runtime` (steer() not called, or a hook-level
+                control that does not use the shared runtime).
+        """
+        runtime = getattr(self, "_runtime", None)
+        if runtime is None:
+            raise RuntimeError(
+                f"{type(self).__name__} has no hook runtime; call steer() before generation "
+                "(declarative controls build their runtime in steer())."
+            )
+        return runtime
+
     def get_hooks(
         self,
         input_ids: torch.Tensor,
         runtime_kwargs: dict | None,
+        attention_mask: torch.Tensor | None = None,
         **kwargs,
     ) -> dict[str, list[HookSpec]]:
         """Create hook specifications for the current generation.
 
+        The concrete default routes through `plan()`: it builds a `PromptContext`, calls `plan()`,
+        and compiles the result via `compile_plan_to_hooks`. Hook-level controls override this
+        directly and return hook specs of their own.
+
         Args:
             input_ids: Prompt token ids of shape [batch, seq_len].
             runtime_kwargs: Per-call parameters for the control.
-            **kwargs: Additional generation-time context. In particular, the pipeline forwards
-                `attention_mask` (the prompt attention mask matching `input_ids`, or None) here;
-                controls that score prompt tokens may consume it to align with the real (non-pad)
-                positions instead of re-deriving a mask by token identity.
+            attention_mask: The prompt attention mask matching `input_ids` (or None); forwarded to
+                condition scorers so they align with real (non-pad) positions.
+            **kwargs: Additional generation-time context.
+
+        Raises:
+            NotImplementedError: If neither `plan()` nor `get_hooks()` is overridden.
         """
-        pass
+        from aisteer360.algorithms.state_control._common.intervention import PromptContext
+        from aisteer360.algorithms.state_control._common.runtime import compile_plan_to_hooks
+
+        ids = input_ids if isinstance(input_ids, torch.Tensor) else input_ids["input_ids"]
+        # prefer a live tokenizer pad id (some controls resolve the pad token after steer), falling
+        # back to the id cached at steer time
+        pad_token_id = getattr(getattr(self, "tokenizer", None), "pad_token_id", None)
+        if pad_token_id is None:
+            pad_token_id = getattr(self, "_pad_token_id", None)
+        prompt_ctx = PromptContext.from_ids(ids, attention_mask=attention_mask, pad_token_id=pad_token_id)
+        intervention_plan = self.plan(prompt_ctx, runtime_kwargs)
+        if intervention_plan is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} overrides neither `plan()` nor `get_hooks()`."
+            )
+        return compile_plan_to_hooks(
+            intervention_plan, runtime=self._ensure_runtime(), prompt_ctx=prompt_ctx
+        )
 
     def steer(self,
               model: PreTrainedModel,
@@ -170,6 +270,39 @@ class StateControl(ABC):
         during steering to ensure proper cleanup.
         """
         pass
+
+    def requires(self) -> Requirements:
+        """Return the backend capabilities this control needs at generation time.
+
+        Declarative (`plan`-based) controls need `RESIDUAL_WRITE`, plus `SERVER_GATING | HIDDEN_READ`
+        when the control carries a condition path. Hook-level controls (overriding `get_hooks`)
+        register arbitrary in-process hooks and need `FORWARD_HOOKS`. Disabled controls require
+        nothing. Per-component portability (whether a transform exports to the wire) is refined by
+        the compiler at validation time.
+
+        Returns:
+            The control's `Requirements` (phase `"generate"`).
+        """
+        if not getattr(self, "enabled", True):
+            return Requirements()
+        if type(self).plan is not StateControl.plan:
+            capabilities = Capability.RESIDUAL_WRITE
+            if self._has_condition_path():
+                capabilities |= Capability.SERVER_GATING | Capability.HIDDEN_READ
+            return Requirements(capabilities=capabilities, phase="generate")
+        return Requirements(capabilities=Capability.FORWARD_HOOKS, phase="generate")
+
+    def _has_condition_path(self) -> bool:
+        """Whether this control gates behavior on a runtime condition (override to report `True`)."""
+        return False
+
+    def portability_hint(self) -> bool:
+        """Whether this control's plan is expected to be wire-portable (override as needed).
+
+        Default `True` for declarative controls (refined per-component by the compiler in doc 06)
+        and `False` for hook-level controls.
+        """
+        return type(self).plan is not StateControl.plan
 
 
 class NoStateControl(StateControl):

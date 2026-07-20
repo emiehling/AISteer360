@@ -31,7 +31,8 @@ from dataclasses import fields
 import torch
 from transformers import PreTrainedModel
 
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
+from aisteer360.core.requirements import Capability, Requirements
 
 
 class OutputControl(ABC):
@@ -88,6 +89,19 @@ class OutputControl(ABC):
         (e.g., reward models) during steering to ensure proper cleanup.
         """
         pass
+
+    def requires(self) -> Requirements:
+        """Return the backend capabilities this control needs at generation time.
+
+        Output controls drive decoding directly against the model, requiring `RAW_MODEL`. Disabled
+        controls require nothing.
+
+        Returns:
+            The control's `Requirements` (phase `"generate"`).
+        """
+        if not getattr(self, "enabled", True):
+            return Requirements()
+        return Requirements(capabilities=Capability.RAW_MODEL, phase="generate")
 
 
 class NoOutputControl(OutputControl):

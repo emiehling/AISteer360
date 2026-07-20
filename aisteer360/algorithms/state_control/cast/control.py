@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.utils.tokenization import infer_attention_mask_from_ids
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control._common.estimators import (
     ContrastiveDirectionEstimator,
@@ -20,11 +19,17 @@ from aisteer360.algorithms.state_control._common.gates import (
     ProjectedCosineScorer,
 )
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control._common.intervention import (
+    ConditionSpec,
+    HookTarget,
+    Intervention,
+    InterventionPlan,
+    PromptContext,
+)
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
 from aisteer360.algorithms.state_control._common.selectors.utils.layer_heuristics import late_third
 from aisteer360.algorithms.state_control._common.specs import Comparator, CompMode, VectorTrainSpec
-from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
 from aisteer360.algorithms.state_control._common.transforms import (
     AdditiveTransform,
     NormPreservingTransform,
@@ -184,6 +189,7 @@ class CAST(StateControl):
         self._scorer: ProjectedCosineScorer | None = None
         self._gate: CacheOnceGate | AlwaysOpenGate = AlwaysOpenGate()
         self._threshold_gate: MultiKeyThresholdGate | None = None  # inner gate, for diagnostics
+        self._pad_token_id: int | None = None
         self._runtime = TransformHookRuntime(hook_point="layer_input")
 
     @property
@@ -253,6 +259,7 @@ class CAST(StateControl):
         """
         self.model = model
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
+        self._pad_token_id = getattr(self.tokenizer, "pad_token_id", None) if self.tokenizer else None
         device = next(model.parameters()).device
         _, layer_names = get_model_layer_list(model)
         self._layer_names = layer_names
@@ -374,92 +381,55 @@ class CAST(StateControl):
 
         return model
 
-    def get_hooks(
+    def plan(
         self,
-        input_ids: torch.Tensor,
-        runtime_kwargs: dict | None,
-        attention_mask: torch.Tensor | None = None,
-        **__,
-    ) -> dict[str, list]:
-        """Emit condition (read-only) and behavior pre-hooks for the current generation.
+        prompt_ctx: PromptContext,
+        runtime_kwargs: dict | None = None,
+    ) -> InterventionPlan:
+        """Return one (optionally gated) intervention at the behavior layers' inputs.
 
-        Condition hooks are appended before behavior hooks so that, at a shared layer, the gate
-        update precedes the transform application (registration order = execution order for
-        same-module hooks of the same phase).
+        When conditional, the intervention carries a threshold `ConditionSpec` (the wire-portable
+        form) *and* CAST's pre-built `CacheOnceGate` as its gate, so `compile_plan_to_hooks` drives
+        the same gate instance CAST exposes via `latest_decision` rather than building a fresh one.
 
         Args:
-            input_ids: Input token IDs.
-            runtime_kwargs: Runtime parameters (currently unused).
-            attention_mask: The prompt attention mask matching `input_ids` (forwarded by the
-                pipeline). Used as the pad-aware condition-scoring mask so runtime condition
-                scores align with the selector's calibration mask. When None, the mask is inferred
-                from the prompt ids (leading and trailing pad runs only) rather than by token
-                identity, so an interior pad==eos token (e.g. ChatML `<|im_end|>`) is not wrongly
-                masked.
+            prompt_ctx: Per-generation prompt context (ids, pad-aware mask, prompt lengths).
+            runtime_kwargs: Unused.
 
         Returns:
-            Hook specifications with "pre", "forward", "backward" keys.
+            A one-intervention plan.
         """
-        ids = input_ids if isinstance(input_ids, torch.Tensor) else input_ids["input_ids"]
-        if ids.ndim == 1:
-            ids = ids.unsqueeze(0)
-        pad_id = getattr(self.tokenizer, "pad_token_id", None) if self.tokenizer else None
-        prompt_lens = compute_prompt_lens(ids, pad_id)
-        batch_size = ids.size(0)
-
-        # pad-aware condition-scoring mask: prefer the pipeline-supplied attention mask (identical
-        # to the selector's calibration mask); otherwise infer one from the prompt ids without
-        # masking interior pad==eos tokens
-        if attention_mask is not None:
-            am = attention_mask if isinstance(attention_mask, torch.Tensor) else torch.as_tensor(attention_mask)
-            if am.ndim == 1:
-                am = am.unsqueeze(0)
-            prompt_mask = am.to(torch.bool)
-        elif pad_id is not None:
-            prompt_mask = infer_attention_mask_from_ids(ids, pad_id).to(torch.bool)
-        else:
-            prompt_mask = None
-
-        self._gate.reset(batch_size)
-        self._runtime.reset(prompt_lens, prompt_mask)
-
         cfg = self._cond_config
-        condition_layers = sorted(cfg.layer_ids) if (cfg is not None and cfg.enabled) else []
-        all_layers = condition_layers + self._behavior_layer_ids
-        opener = min(all_layers) if all_layers else None
-        # exactly one hook may open each pass; at a shared opener layer the condition hook
-        # registers (and therefore fires) first, so it takes the opener role
-        behavior_opener = opener if opener not in condition_layers else None
+        condition = None
+        if cfg is not None and cfg.enabled:
+            condition = ConditionSpec(
+                targets=[HookTarget(module=self._layer_names[lid], layer_id=lid) for lid in sorted(cfg.layer_ids)],
+                scorer=self._scorer,
+                threshold=cfg.threshold,
+                comparator=cfg.comparator,
+                comp_mode=cfg.comparison_mode,
+                cache="prompt_once",
+                location="layer_input",
+                aggregate="any",
+            )
 
-        hooks: dict[str, list] = {"pre": [], "forward": [], "backward": []}
+        return [
+            Intervention(
+                targets=[
+                    HookTarget(module=self._layer_names[lid], layer_id=lid) for lid in self._behavior_layer_ids
+                ],
+                hook_point="layer_input",
+                transform=self._transform,
+                scope=self.token_scope,
+                scope_params={"last_k": self.last_k, "from_position": self.from_position},
+                gate=self._gate,
+                condition=condition,
+            )
+        ]
 
-        # condition hooks first (so gate.update precedes transform at a shared layer)
-        for lid in condition_layers:
-            hooks["pre"].append({
-                "module": self._layer_names[lid],
-                "hook_func": self._runtime.build_condition_hook(
-                    layer_id=lid,
-                    scorer=self._scorer,
-                    gate=self._gate,
-                    is_pass_opener=(lid == opener),
-                ),
-            })
-
-        for lid in self._behavior_layer_ids:
-            hooks["pre"].append({
-                "module": self._layer_names[lid],
-                "hook_func": self._runtime.build_behavior_hook(
-                    layer_id=lid,
-                    transform=self._transform,
-                    gate=self._gate,
-                    token_scope=self.token_scope,
-                    last_k=self.last_k,
-                    from_position=self.from_position,
-                    is_pass_opener=(lid == behavior_opener),
-                ),
-            })
-
-        return hooks
+    def _has_condition_path(self) -> bool:
+        """Whether CAST is configured with an enabled condition point."""
+        return self._cond_config is not None and self._cond_config.enabled
 
     def cleanup(self) -> None:
         """Drop references to fitted artifacts and runtime state."""

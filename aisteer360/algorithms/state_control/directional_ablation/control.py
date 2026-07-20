@@ -12,10 +12,15 @@ from aisteer360.algorithms.state_control._common.estimators import (
 )
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control._common.intervention import (
+    HookTarget,
+    Intervention,
+    InterventionPlan,
+    PromptContext,
+)
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import FractionalDepthSelector
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
 from aisteer360.algorithms.state_control._common.transforms import (
     DirectionalAblationTransform,
     NormPreservingTransform,
@@ -145,46 +150,31 @@ class DirectionalAblation(StateControl):
 
         return model
 
-    def get_hooks(
+    def plan(
         self,
-        input_ids: torch.Tensor,
+        prompt_ctx: PromptContext,
         runtime_kwargs: dict | None = None,
-        **__,
-    ) -> dict[str, list]:
-        """Create a forward hook on each target layer's output to ablate the residual stream.
+    ) -> InterventionPlan:
+        """Return one ablation intervention over all target layers' outputs.
 
         Args:
-            input_ids: Input token IDs.
-            runtime_kwargs: Runtime parameters (currently unused).
+            prompt_ctx: Per-generation prompt context.
+            runtime_kwargs: Unused.
 
         Returns:
-            Hook specifications with "pre", "forward", "backward" keys.
+            A one-intervention plan ablating the learned direction at each target layer.
         """
-        ids = input_ids if isinstance(input_ids, torch.Tensor) else input_ids["input_ids"]
-        if ids.ndim == 1:
-            ids = ids.unsqueeze(0)
-
-        prompt_lens = compute_prompt_lens(ids, self._pad_token_id)
-        self._runtime.reset(prompt_lens)
-
-        # the lowest hooked layer opens the pass and advances the shared KV offset once per forward pass
-        opener = min(self._layer_ids) if self._layer_ids else None
-
-        hooks: dict[str, list] = {"pre": [], "forward": [], "backward": []}
-        for layer_id in self._layer_ids:
-            hooks["forward"].append({
-                "module": self._layer_names[layer_id],
-                "hook_func": self._runtime.build_behavior_hook(
-                    layer_id=layer_id,
-                    transform=self._transform,
-                    gate=self._gate,
-                    token_scope=self.token_scope,
-                    last_k=self.last_k,
-                    from_position=self.from_position,
-                    is_pass_opener=(layer_id == opener),
-                ),
-            })
-        return hooks
+        return [
+            Intervention(
+                targets=[
+                    HookTarget(module=self._layer_names[lid], layer_id=lid) for lid in self._layer_ids
+                ],
+                hook_point="layer_output",
+                transform=self._transform,
+                scope=self.token_scope,
+                scope_params={"last_k": self.last_k, "from_position": self.from_position},
+            )
+        ]
 
     def reset(self):
         """Reset internal state between generation calls."""

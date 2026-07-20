@@ -3,7 +3,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Literal
 
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
 from aisteer360.algorithms.state_control._common.specs import (
     ContrastivePairs,
     VectorTrainSpec,

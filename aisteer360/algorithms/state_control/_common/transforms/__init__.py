@@ -8,3 +8,4 @@ from .directional_ablation import DirectionalAblationTransform
 from .head_additive import HeadAdditiveTransform
 from .norm_preserving import NormPreservingTransform
 from .rotation import RotationTransform
+from .target_projection import TargetProjectionTransform

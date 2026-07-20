@@ -8,7 +8,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from tests.conftest import hf_pipeline
 from aisteer360.algorithms.input_control.cpo import CPO, CPOArgs
 from aisteer360.algorithms.input_control.cpo.control import CPOMemory
 from aisteer360.algorithms.input_control.cpo.utils import causal_reward, refinement_meta_prompt
@@ -132,9 +132,7 @@ class TestCPOSteer:
             retained_per_round=2,
             proposer_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
         )
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         assert isinstance(cpo.memory, CPOMemory)
@@ -159,9 +157,7 @@ class TestCPOTreeSearchAndCache:
             retained_per_round=2,
             proposer_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
         )
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         # first call populates the cache
@@ -192,9 +188,7 @@ class TestCPOTreeSearchAndCache:
             cache_queries=False,
             proposer_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
         )
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
         cpo.adapt_messages([[{"role": "user", "content": "hello"}]])
         assert cpo.memory.query_cache == {}
@@ -223,9 +217,7 @@ class TestCPOCacheKeyNormalizer:
         model, tokenizer = tiny_lm
         normalize = lambda q: " ".join(q.split()).lower()
         cpo = self._build(normalize, offline_rows)
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         calls = {"n": 0}
@@ -247,9 +239,7 @@ class TestCPOCacheKeyNormalizer:
     def test_default_keeps_near_duplicates_distinct(self, tiny_lm, offline_rows, monkeypatch):
         model, tokenizer = tiny_lm
         cpo = self._build(None, offline_rows)  # default: raw-query hashing
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         calls = {"n": 0}
@@ -339,9 +329,7 @@ class TestCPOMemoryRoundTrip:
             retained_per_round=2,
             proposer_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
         )
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         cpo.adapt_messages([[{"role": "user", "content": "hi"}]])

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control.pasta.control import PASTA
+from tests.conftest import hf_pipeline
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = (
@@ -45,9 +45,7 @@ def test_pasta(model_and_tokenizer, device: torch.device, conf: dict):
         alpha=conf["alpha"],
         scale_position=conf["scale_position"]
     )
-    pipeline = SteeringPipeline(controls=[pasta], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(controls=[pasta], model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     # prepare prompt & runtime kwargs

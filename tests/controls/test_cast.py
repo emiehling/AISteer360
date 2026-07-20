@@ -1,9 +1,9 @@
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control.cast.control import CAST
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
+from tests.conftest import hf_pipeline
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = (
@@ -54,13 +54,12 @@ def test_cast(model_and_tokenizer, device: torch.device, conf: dict):
         condition_vector_threshold=conf['condition_vector_threshold'],
         condition_comparator_threshold_is='larger',
     )
-    pipeline = SteeringPipeline(
+    pipeline = hf_pipeline(
         controls=[cast],
-        lazy_init=True,
+        model=model,
+        tokenizer=tokenizer,
         device_map=device,
     )
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
     pipeline.steer()
 
     # prepare prompt & runtime kwargs
@@ -104,9 +103,7 @@ def _tiny_pipeline(control, seed: int = 0):
     torch.manual_seed(seed)
     model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=4)
     tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline, model, tokenizer
 

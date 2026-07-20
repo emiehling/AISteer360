@@ -29,7 +29,8 @@ from dataclasses import fields
 
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
+from aisteer360.core.requirements import Capability, Requirements
 
 
 class StructuralControl(ABC):
@@ -76,6 +77,22 @@ class StructuralControl(ABC):
         during steering to ensure proper cleanup.
         """
         pass
+
+    def requires(self) -> Requirements:
+        """Return the backend capabilities this control needs at steer time.
+
+        Structural controls train or transform weights in process, requiring `WEIGHT_TRAINING` and
+        direct model access (`RAW_MODEL`) on the steering backend. Disabled controls require nothing.
+
+        Returns:
+            The control's `Requirements` (phase `"steer"`).
+        """
+        if not getattr(self, "enabled", True):
+            return Requirements()
+        return Requirements(
+            capabilities=Capability.WEIGHT_TRAINING | Capability.RAW_MODEL,
+            phase="steer",
+        )
 
 
 class NoStructuralControl(StructuralControl):

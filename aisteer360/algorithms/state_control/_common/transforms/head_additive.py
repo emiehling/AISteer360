@@ -49,6 +49,7 @@ class HeadAdditiveTransform(BaseTransform):
         self.steering_vector: SteeringVector | None = None
         self.num_heads: int | None = None
         self.head_dim: int | None = None
+        self._folded_residual: dict[int, torch.Tensor] | None = None
 
         if isinstance(artifact, ArtifactSource):
             self._source = artifact
@@ -85,6 +86,50 @@ class HeadAdditiveTransform(BaseTransform):
     @property
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.steering_vector.directions.keys()) if self.steering_vector is not None else None
+
+    def fold_to_residual(self, oproj_weights: Mapping[int, torch.Tensor]) -> None:
+        """Fold the head-space additions through `o_proj` into residual-space `add` vectors.
+
+        For each active layer, build the pre-`o_proj` delta `x` whose head slices hold
+        `strength * direction[h]` for the active heads (zero elsewhere), then compute the
+        residual-space vector `W_o @ x`. Because the addition is a per-token delta, the `o_proj`
+        bias cancels: `o_proj(h + x) - o_proj(h) = W_o x`. Exact for a linear `o_proj`; a quantized
+        projection is only approximate (the wire compiler marks it `degraded`).
+
+        Args:
+            oproj_weights: Mapping from active layer id to its `o_proj` weight `[H_out, num_heads*head_dim]`.
+        """
+        self._require_bound()
+        folded: dict[int, torch.Tensor] = {}
+        for layer_id, heads in self.active_heads.items():
+            weight = oproj_weights.get(layer_id)
+            dirs = self.steering_vector.directions.get(layer_id)
+            if weight is None or dirs is None or not heads:
+                continue
+            in_features = self.num_heads * self.head_dim
+            x = dirs.new_zeros(in_features)
+            for head_id in heads:
+                start = head_id * self.head_dim
+                x[start:start + self.head_dim] = self.strength * dirs[head_id]
+            # W_o @ x  ->  [H_out]; weight is [H_out, in_features]
+            folded[layer_id] = (weight.to(dtype=x.dtype, device=x.device) @ x).detach()
+        self._folded_residual = folded
+
+    def export_payload(self) -> dict | None:
+        """Export the folded residual `add` vectors, or `None` if folding has not run.
+
+        `fold_to_residual` must be called at `steer()` time; without it the head-space transform has
+        no residual-space equivalent and is treated as non-portable.
+        """
+        if self._folded_residual is None:
+            return None
+        from ..intervention import ArtifactHandle
+
+        return {
+            "kind": "add",
+            "scale": 1.0,
+            "vectors": {int(lid): ArtifactHandle(vector, role="direction") for lid, vector in self._folded_residual.items()},
+        }
 
     def apply(
         self,

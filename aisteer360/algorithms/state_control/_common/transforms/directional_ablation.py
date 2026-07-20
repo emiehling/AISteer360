@@ -87,6 +87,18 @@ class DirectionalAblationTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.directions.keys()) if self.directions is not None else None
 
+    def export_payload(self) -> dict | None:
+        """Export as the wire `ablate` kind: an alpha plus per-layer direction handles."""
+        if self.directions is None:
+            return None
+        from ..intervention import ArtifactHandle
+
+        return {
+            "kind": "ablate",
+            "alpha": float(self.alpha),
+            "vectors": {int(lid): ArtifactHandle(tensor, role="direction") for lid, tensor in self.directions.items()},
+        }
+
     def _basis(self, layer_id: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         """Return the cached orthonormal `[K, H]` basis for a layer, computing it on first use."""
         key = (layer_id, device, dtype)

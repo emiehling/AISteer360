@@ -28,7 +28,7 @@ field for `target_modules` must contain `default_factory=list` instead of simply
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
 
 
 @dataclass
@@ -111,7 +111,7 @@ The control can then be called via:
 
 ```python
 from aisteer360.algorithms.structural_control.noise_injection.control import NoiseInjection
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 

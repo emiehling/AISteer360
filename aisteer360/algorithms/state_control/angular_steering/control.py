@@ -9,9 +9,14 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from aisteer360.algorithms.state_control._common.estimators import SteeringPlaneEstimator
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_norm_module_names
+from aisteer360.algorithms.state_control._common.intervention import (
+    HookTarget,
+    Intervention,
+    InterventionPlan,
+    PromptContext,
+)
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
 from aisteer360.algorithms.state_control._common.transforms import (
     AlignmentAdaptiveTransform,
     NormPreservingTransform,
@@ -144,49 +149,33 @@ class AngularSteering(StateControl):
 
         return model
 
-    def get_hooks(
+    def plan(
         self,
-        input_ids: torch.Tensor,
+        prompt_ctx: PromptContext,
         runtime_kwargs: dict | None = None,
-        **__,
-    ) -> dict[str, list]:
-        """Create pre-hooks that rotate the residual stream entering each norm module.
+    ) -> InterventionPlan:
+        """Return one rotation intervention over each active layer's norm sub-modules.
 
-        Position bookkeeping is delegated to the shared runtime. Two norm modules share each
-        `layer_id`, so the pass opener is keyed on `module_path` (the first-firing norm module)
-        rather than `layer_id` — the pre-attention norm sorts and fires first on both supported
-        families.
+        Two norm modules share each `layer_id`; the compiler's pass opener resolves to the first
+        target (the pre-attention norm of the lowest active layer, which sorts first), matching the
+        module-path opener the standalone hook path used.
 
         Args:
-            input_ids: Input token IDs.
-            runtime_kwargs: Runtime parameters (currently unused).
+            prompt_ctx: Per-generation prompt context.
+            runtime_kwargs: Unused.
 
         Returns:
-            Hook specifications with "pre", "forward", "backward" keys.
+            A one-intervention plan targeting the norm sub-modules.
         """
-        ids = input_ids if isinstance(input_ids, torch.Tensor) else input_ids["input_ids"]
-        if ids.ndim == 1:
-            ids = ids.unsqueeze(0)
-
-        prompt_lens = compute_prompt_lens(ids, self._pad_token_id)
-        self._runtime.reset(prompt_lens)
-
-        hooks: dict[str, list] = {"pre": [], "forward": [], "backward": []}
-        opener_path = self._norm_modules[0][1] if self._norm_modules else None
-        for layer_id, module_path in self._norm_modules:
-            hooks["pre"].append({
-                "module": module_path,
-                "hook_func": self._runtime.build_behavior_hook(
-                    layer_id=layer_id,
-                    transform=self._transform,
-                    gate=self._gate,
-                    token_scope=self.token_scope,
-                    last_k=self.last_k,
-                    from_position=self.from_position,
-                    is_pass_opener=(module_path == opener_path),
-                ),
-            })
-        return hooks
+        return [
+            Intervention(
+                targets=[HookTarget(module=path, layer_id=lid) for lid, path in self._norm_modules],
+                hook_point="layer_input",
+                transform=self._transform,
+                scope=self.token_scope,
+                scope_params={"last_k": self.last_k, "from_position": self.from_position},
+            )
+        ]
 
     def reset(self):
         """Reset internal state between generation calls."""

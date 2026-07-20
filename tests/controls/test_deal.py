@@ -3,8 +3,8 @@ import random
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.output_control.deal.control import DeAL
+from tests.conftest import hf_pipeline
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = "Answer concisely. If you make a recommendation, begin with the word 'Yes'."
@@ -58,9 +58,7 @@ def test_deal(model_and_tokenizer, device: torch.device, conf: dict):
     )
 
     # pipeline
-    pipeline = SteeringPipeline(controls=[deal], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(controls=[deal], model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     # prepare inputs & runtime kwargs

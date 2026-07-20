@@ -527,9 +527,9 @@ class TestBeamExpansionMask:
     """CAA under batched beam search: masks align to the repeat_interleave-expanded batch (Issue 4)."""
 
     def test_caa_batch2_beams2_completes_and_steers(self):
-        from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
         from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
         from aisteer360.algorithms.state_control.caa.control import CAA
+        from tests.conftest import hf_pipeline
         from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
         torch.manual_seed(0)
@@ -545,9 +545,7 @@ class TestBeamExpansionMask:
         applied = {"count": 0, "batches": []}
         control = CAA(steering_vector=sv, layer_id=1, multiplier=1.0, token_scope="after_prompt")
 
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[control], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         inner = control._transform
@@ -577,9 +575,9 @@ class TestBeamExpansionMask:
         assert 4 in applied["batches"]
 
     def test_plain_batch2_no_beams_unchanged(self):
-        from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
         from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
         from aisteer360.algorithms.state_control.caa.control import CAA
+        from tests.conftest import hf_pipeline
         from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
         torch.manual_seed(0)
@@ -592,9 +590,7 @@ class TestBeamExpansionMask:
             directions={lid: torch.randn(1, hidden, generator=g) for lid in range(layers)},
         )
         control = CAA(steering_vector=sv, layer_id=1, token_scope="after_prompt")
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[control], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         input_ids = torch.tensor([[3, 4, 5, 6], [7, 8, 9, 3]], dtype=torch.long)

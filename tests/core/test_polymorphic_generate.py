@@ -4,9 +4,10 @@ import warnings
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.core.types import Output
+from aisteer360.core.steering_pipeline import SteeringPipeline
+from aisteer360.core.output import Output
 from aisteer360.algorithms.input_control.base import InputControl
+from tests.conftest import hf_pipeline
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
@@ -14,7 +15,7 @@ TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 
 @pytest.fixture(scope="module")
 def pipeline():
-    p = SteeringPipeline(model_name_or_path=TINY_MODEL)
+    p = hf_pipeline(model_name_or_path=TINY_MODEL)
     p.steer()
     return p
 
@@ -172,7 +173,7 @@ class TestInputControlAppliedExactlyOnce:
     """Regression tests for the exactly-once input-control contract (design doc §3)."""
 
     def _make_pipeline(self, control):
-        pipeline = SteeringPipeline(model_name_or_path=TINY_MODEL, controls=[control])
+        pipeline = hf_pipeline(model_name_or_path=TINY_MODEL, controls=[control])
         pipeline.steer()
         return pipeline
 
@@ -226,9 +227,7 @@ def tiny_pipeline():
     torch.manual_seed(0)
     model = tiny_llama(num_layers=2, hidden=16, heads=2)
     tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline
 

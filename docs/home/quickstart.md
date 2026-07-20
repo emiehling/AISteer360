@@ -63,7 +63,7 @@ output degenerates into repetition. Start near `1.0` and adjust for your model a
 We can then define a `SteeringPipeline` on a given base model using the above control:
 
 ```python
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 adapter_pipeline = SteeringPipeline(

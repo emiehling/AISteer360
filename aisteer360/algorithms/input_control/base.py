@@ -33,7 +33,8 @@ from typing import TYPE_CHECKING
 import torch
 from transformers import PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
+from aisteer360.core.requirements import Capability, Requirements
 
 if TYPE_CHECKING:
     from aisteer360.algorithms.input_control._common.memory.base import Memory
@@ -133,6 +134,22 @@ class InputControl(ABC):
         cleanup.
         """
         pass
+
+    def requires(self) -> Requirements:
+        """Return the backend capabilities this control needs at generation time.
+
+        A control that overrides `adapt_messages` steers at the message level and needs
+        `Capability.MESSAGES`; a token-level-only control needs `Capability.TOKEN_IDS`. Disabled
+        controls require nothing.
+
+        Returns:
+            The control's `Requirements` (phase `"generate"`).
+        """
+        if not getattr(self, "enabled", True):
+            return Requirements()
+        overrides_messages = type(self).adapt_messages is not InputControl.adapt_messages
+        capability = Capability.MESSAGES if overrides_messages else Capability.TOKEN_IDS
+        return Requirements(capabilities=capability, phase="generate")
 
 
 class NoInputControl(InputControl):

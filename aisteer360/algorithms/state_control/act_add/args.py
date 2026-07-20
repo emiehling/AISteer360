@@ -1,7 +1,7 @@
 """ActAdd argument validation."""
 from dataclasses import dataclass
 
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 
 

@@ -5,11 +5,43 @@ import logging
 from importlib import import_module
 from pathlib import Path
 
+import aisteer360.algorithms as _algorithms
+
 logger = logging.getLogger(__name__)
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(_algorithms.__file__).resolve().parent
 
 REGISTRY: dict[str, dict[str, "SteeringMethod"]] = {}
+
+# backend kind -> "module_path:ClassName", resolved lazily by BackendSpec.build to avoid import
+# cycles (backends import core, and BackendSpec lives in backends).
+BACKENDS: dict[str, str] = {
+    "huggingface": "aisteer360.backends.huggingface.backend:HuggingFaceBackend",
+    "openai": "aisteer360.backends.openai_compat.openai:OpenAIBackend",
+    "vllm_hook": "aisteer360.backends.openai_compat.vllm_hook:VLLMHookBackend",
+}
+
+
+def resolve_backend(kind: str) -> type:
+    """Resolve a backend kind to its class via `BACKENDS`.
+
+    Args:
+        kind: A key of `BACKENDS` (e.g. `"huggingface"`).
+
+    Returns:
+        The backend class.
+
+    Raises:
+        KeyError: If `kind` is not a known backend.
+        ImportError: If the backend module cannot be imported (e.g. a missing optional dependency).
+    """
+    try:
+        target = BACKENDS[kind]
+    except KeyError:
+        raise KeyError(f"Unknown backend kind {kind!r}; known kinds: {sorted(BACKENDS)}.") from None
+    module_path, class_name = target.split(":")
+    module = import_module(module_path)
+    return getattr(module, class_name)
 
 
 class SteeringMethod:

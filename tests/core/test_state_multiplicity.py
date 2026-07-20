@@ -8,15 +8,14 @@ chain (so composition is order-sensitive by design), `ExitStack` unwinds cleanly
 Runs hub-free on a tiny randomly-initialized Llama.
 """
 import contextlib
-import warnings
 
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.core.utils.controls import merge_controls
+from aisteer360.core.utils.controls import merge_controls
 from aisteer360.algorithms.input_control.base import NoInputControl
 from aisteer360.algorithms.state_control.base import NoStateControl, StateControl
+from tests.conftest import hf_pipeline
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32
@@ -110,9 +109,7 @@ def _pipeline(controls, model=None):
     if model is None:
         model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
     tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(controls=controls, lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(controls=controls, model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline, model
 
@@ -168,13 +165,15 @@ class TestHookComposition:
 
         def _final_hidden(controls):
             pipeline, model = _pipeline(controls)
-            pipeline._setup_state_controls(input_ids, {})  # sets _model_ref on each control
             captured = {}
 
-            with contextlib.ExitStack() as stack:
-                for control in pipeline.state_controls:
-                    stack.enter_context(control)
+            attention_mask = torch.ones_like(input_ids)
+            entries = pipeline._build_entries(input_ids, attention_mask, {}, {})
+            from aisteer360.core.prompt import PreparedPrompt, Prompt
 
+            prepared = PreparedPrompt(prompt=Prompt.classify(input_ids), adaptation_level="none")
+            session = pipeline._backend.open_session(entries, prepared, {})
+            with session:
                 # register the capture hook AFTER the control hooks so it observes the composed edit
                 def _capture(module, args, kwargs_, output):
                     captured["h"] = (output[0] if isinstance(output, tuple) else output).detach().clone()
@@ -222,13 +221,13 @@ class TestSupportsBatching:
         class _NonBatch(_ConstantAddControl):
             supports_batching = False
 
-        pipeline_all_ok = SteeringPipeline(
-            controls=[_ConstantAddControl(1, 1.0), _ConstantAddControl(2, 1.0)], lazy_init=True
+        pipeline_all_ok = hf_pipeline(
+            controls=[_ConstantAddControl(1, 1.0), _ConstantAddControl(2, 1.0)]
         )
         assert pipeline_all_ok.supports_batching is True
 
-        pipeline_mixed = SteeringPipeline(
-            controls=[_ConstantAddControl(1, 1.0), _NonBatch(2, 1.0)], lazy_init=True
+        pipeline_mixed = hf_pipeline(
+            controls=[_ConstantAddControl(1, 1.0), _NonBatch(2, 1.0)]
         )
         assert pipeline_mixed.supports_batching is False
 
@@ -285,21 +284,3 @@ class TestComputeLogprobsComposition:
         lp_one = p_one.compute_logprobs(input_ids=input_ids, ref_output_ids=ref)
 
         assert torch.allclose(lp_two, lp_one, atol=1e-4)
-
-
-# deprecated property
-class TestDeprecatedStateControlProperty:
-    def test_returns_sole_control_with_warning(self):
-        control = _ConstantAddControl(1, 1.0)
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        with pytest.warns(DeprecationWarning, match="state_control.*deprecated"):
-            assert pipeline.state_control is control
-
-    def test_raises_with_multiple(self):
-        pipeline = SteeringPipeline(
-            controls=[_ConstantAddControl(1, 1.0), _ConstantAddControl(2, 1.0)], lazy_init=True
-        )
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            with pytest.raises(RuntimeError, match="2 state controls"):
-                _ = pipeline.state_control

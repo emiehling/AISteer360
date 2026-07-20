@@ -374,3 +374,152 @@ class TransformHookRuntime:
         if not bool(mask.any()):
             return hidden
         return transform.apply(hidden, layer_id=layer_id, token_mask=mask)
+
+
+def _build_gate_from_condition(condition) -> "BaseGate":
+    """Construct the `CacheOnceGate(MultiKeyThresholdGate)` stack for a `ConditionSpec`.
+
+    Args:
+        condition: The `ConditionSpec` describing threshold gating.
+
+    Returns:
+        A gate whose freeze/evidence contract matches `condition.cache`: a `CacheOnceGate` wrapping a
+        `MultiKeyThresholdGate` for `"prompt_once"`, or a bare `MultiKeyThresholdGate` (never freezes,
+        rescored every pass) for `"dynamic"`.
+    """
+    from .gates import CacheOnceGate, MultiKeyThresholdGate
+
+    inner = MultiKeyThresholdGate(
+        threshold=condition.threshold,
+        comparator=condition.comparator,
+        expected_keys=set(condition.layer_ids),
+        aggregate=condition.aggregate,
+    )
+    return CacheOnceGate(inner) if condition.cache == "prompt_once" else inner
+
+
+def compile_plan_to_hooks(
+    plan,
+    *,
+    runtime: "TransformHookRuntime",
+    prompt_ctx,
+) -> dict[str, list]:
+    """Compile an `InterventionPlan` to a hook-spec dict, wrapping `TransformHookRuntime` unchanged.
+
+    Relocated and generalized from the per-control `get_hooks` bodies (notably
+    `ActivationAdapter.get_hooks`). For a plan whose interventions share this control's single
+    `runtime`, it:
+
+    1. resets the runtime for the logical batch (`runtime.reset(prompt_lens, prompt_mask)`);
+    2. resolves each intervention's gate — built from its `ConditionSpec` when present, its custom
+       `gate` when set, else `AlwaysOpenGate` — and resets each distinct gate once for the batch;
+    3. determines one global pass opener across all interventions: the hook target with the lowest
+       `layer_id`, ties broken by registration order (condition targets register before behavior
+       targets), so exactly one hook advances the shared KV offset per forward pass;
+    4. emits condition hooks (per `ConditionSpec`) before behavior hooks, preserving intervention
+       list order, so at a shared layer the gate update precedes the transform application.
+
+    Args:
+        plan: The `InterventionPlan` (list of `Intervention`).
+        runtime: The control's `TransformHookRuntime` (owns per-generation position/gate state).
+        prompt_ctx: The `PromptContext` for this generation (ids, mask, prompt lengths).
+
+    Returns:
+        A `{"pre": [...], "forward": [...], "backward": [...]}` hook-spec dict.
+    """
+    from .gates import AlwaysOpenGate
+
+    prompt_mask = None
+    if prompt_ctx.attention_mask is not None:
+        prompt_mask = prompt_ctx.attention_mask.to(torch.bool)
+
+    runtime.reset(prompt_ctx.prompt_lens, prompt_mask)
+    num_rows = int(prompt_ctx.prompt_lens.size(0))
+
+    # resolve the gate per intervention: a supplied gate wins (custom / shared in the driver-follower
+    # pattern), else a threshold ConditionSpec builds the gate stack, else the gate is always open
+    gates: list = []
+    for intervention in plan:
+        condition = intervention.condition
+        if intervention.gate is not None:
+            gate = intervention.gate
+        elif condition is not None and condition.is_threshold and not intervention.gate_driven_externally:
+            gate = _build_gate_from_condition(condition)
+        else:
+            gate = AlwaysOpenGate()
+        gates.append(gate)
+
+    # reset each distinct gate exactly once for the logical batch
+    for gate in {id(g): g for g in gates}.values():
+        gate.reset(num_rows)
+
+    # collect ordered hook targets: condition targets (registration-first), then behavior targets;
+    # the global opener is the target with the lowest layer_id, ties broken by this registration order
+    ordered: list[tuple[str, int]] = []  # (kind, layer_id) markers to find the opener index
+    condition_records: list[tuple] = []  # (intervention_index, gate, target, layer_id)
+    behavior_records: list[tuple] = []
+    for index, (intervention, gate) in enumerate(zip(plan, gates)):
+        condition = intervention.condition
+        if condition is not None and not intervention.gate_driven_externally:
+            for target in condition.targets:
+                condition_records.append((index, gate, target))
+                ordered.append(("condition", target.layer_id))
+        for target in intervention.targets:
+            behavior_records.append((index, gate, intervention, target))
+            ordered.append(("behavior", target.layer_id))
+
+    opener_index = _opener_index(ordered)
+
+    phase_for = {"layer_output": "forward", "layer_input": "pre"}
+    hooks: dict[str, list] = {"pre": [], "forward": [], "backward": []}
+
+    registration = 0
+    for _index, gate, target in condition_records:
+        intervention = plan[_index]
+        condition = intervention.condition
+        phase = phase_for[condition.location]
+        hooks[phase].append({
+            "module": target.module,
+            "hook_func": runtime.build_condition_hook(
+                layer_id=target.layer_id,
+                scorer=condition.scorer,
+                gate=gate,
+                is_pass_opener=(registration == opener_index),
+            ),
+        })
+        registration += 1
+
+    for _index, gate, intervention, target in behavior_records:
+        phase = phase_for[intervention.hook_point]
+        hooks[phase].append({
+            "module": target.module,
+            "hook_func": runtime.build_behavior_hook(
+                layer_id=target.layer_id,
+                transform=intervention.transform,
+                gate=gate,
+                token_scope=intervention.scope,
+                last_k=intervention.scope_params.get("last_k"),
+                from_position=intervention.scope_params.get("from_position"),
+                is_pass_opener=(registration == opener_index),
+            ),
+        })
+        registration += 1
+
+    return hooks
+
+
+def _opener_index(ordered: list[tuple[str, int]]) -> int | None:
+    """Return the registration index of the global pass opener, or None for an empty plan.
+
+    The opener is the target with the lowest `layer_id`; ties are broken by registration order
+    (the order targets appear in `ordered`: condition targets first, then behavior targets).
+    """
+    if not ordered:
+        return None
+    best_index = 0
+    best_layer = ordered[0][1]
+    for index, (_kind, layer_id) in enumerate(ordered):
+        if layer_id < best_layer:
+            best_layer = layer_id
+            best_index = index
+    return best_index

@@ -24,3 +24,4 @@ examples/**/profiles_*/
 **/profiles/
 .claude/
 **/CLAUDE.md
+/design_docs

@@ -10,10 +10,10 @@ Runs hub-free on a tiny randomly-initialized Llama.
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
 from aisteer360.algorithms.state_control.iti.control import ITI
+from tests.conftest import hf_pipeline
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32
@@ -60,9 +60,7 @@ def _steered_pipeline(control):
     torch.manual_seed(0)
     model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
     tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline, model, tokenizer
 

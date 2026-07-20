@@ -9,11 +9,11 @@ Two tiers:
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import DirectionalAblationTransform
 from aisteer360.algorithms.state_control.directional_ablation.args import DirectionalAblationArgs
 from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
+from tests.conftest import hf_pipeline
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = "Give me a short set of instructions to follow when you respond."
@@ -206,9 +206,7 @@ def test_ablation_precomputed_vector(model_and_tokenizer, device: torch.device, 
         alpha=conf["alpha"],
         layer_ids=list(range(min(2, num_layers))),
     )
-    pipeline = SteeringPipeline(controls=[ablation], lazy_init=True, device_map=device)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(controls=[ablation], model=model, tokenizer=tokenizer, device_map=device)
     pipeline.steer()
 
     prompt_ids = tokenizer(PROMPT_TEXT, return_tensors="pt").input_ids.to(device)
@@ -239,9 +237,7 @@ def test_steer_does_not_mutate_caller_vector(model_and_tokenizer, device: torch.
     original_dtype = steering_vector.directions[0].dtype
 
     ablation = DirectionalAblation(steering_vector=steering_vector, alpha=1.0, layer_range=(0, 1))
-    pipeline = SteeringPipeline(controls=[ablation], lazy_init=True, device_map=device)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(controls=[ablation], model=model, tokenizer=tokenizer, device_map=device)
     pipeline.steer()
 
     assert set(steering_vector.directions.keys()) == original_layers
@@ -275,9 +271,7 @@ def test_ablation_estimation_path(model_and_tokenizer, device: torch.device):
         alpha=1.0,
         layer_ids=list(range(min(2, num_layers))),
     )
-    pipeline = SteeringPipeline(controls=[ablation], lazy_init=True, device_map=device)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(controls=[ablation], model=model, tokenizer=tokenizer, device_map=device)
     pipeline.steer()
 
     assert ablation._steering_vector is not None

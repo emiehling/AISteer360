@@ -8,10 +8,15 @@ from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control._common.estimators import SinglePairEstimator
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control._common.intervention import (
+    HookTarget,
+    Intervention,
+    InterventionPlan,
+    PromptContext,
+)
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import FixedLayerSelector, FractionalDepthSelector
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
 from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, NormPreservingTransform
 
 from .args import ActAddArgs
@@ -113,49 +118,34 @@ class ActAdd(StateControl):
 
         return model
 
-    def get_hooks(
+    def plan(
         self,
-        input_ids: torch.Tensor,
+        prompt_ctx: PromptContext,
         runtime_kwargs: dict | None = None,
-        **__,
-    ) -> dict[str, list]:
-        """Register a pre-hook on the target layer.
+    ) -> InterventionPlan:
+        """Return a single positional-additive intervention at the target layer's input.
 
-        The paper's Algorithm 1 specifies adding the steering vector to the residual stream
-        *before* the target layer processes it (h_l input), not after (h_l output); a pre-hook
-        ensures correct layer alignment. The token scope is always `"all"` — spatial control comes
-        from the transform's alignment-based positional injection, not the mask. Prefill-only
-        injection emerges from that geometry: each decode pass sees `seq_len == 1`, and the
-        alignment window never intersects it, so the runtime's position bookkeeping is unused here.
+        The paper's Algorithm 1 adds the steering vector to the residual stream *before* the target
+        layer (h_l input), so the intervention uses `hook_point="layer_input"`. The token scope is
+        `"all"` — spatial control comes from the transform's alignment-based positional injection,
+        not the mask; prefill-only injection emerges from that geometry (each decode pass sees
+        `seq_len == 1`, which the alignment window never intersects).
 
         Args:
-            input_ids: Input token IDs (used only to size prompt lengths).
+            prompt_ctx: Per-generation prompt context.
             runtime_kwargs: Unused.
 
         Returns:
-            Hook specifications.
+            A one-intervention plan.
         """
-        ids = input_ids if isinstance(input_ids, torch.Tensor) else input_ids["input_ids"]
-        if ids.ndim == 1:
-            ids = ids.unsqueeze(0)
-
-        prompt_lens = compute_prompt_lens(ids, self._pad_token_id)
-        self._runtime.reset(prompt_lens)
-
-        return {
-            "pre": [{
-                "module": self._layer_names[self._layer_id],
-                "hook_func": self._runtime.build_behavior_hook(
-                    layer_id=self._layer_id,
-                    transform=self._transform,
-                    gate=self._gate,
-                    token_scope="all",
-                    is_pass_opener=True,  # single-layer control: its only hook opens the pass
-                ),
-            }],
-            "forward": [],
-            "backward": [],
-        }
+        return [
+            Intervention(
+                targets=[HookTarget(module=self._layer_names[self._layer_id], layer_id=self._layer_id)],
+                hook_point="layer_input",
+                transform=self._transform,
+                scope="all",
+            )
+        ]
 
     def reset(self):
         """Reset internal state between generation calls."""

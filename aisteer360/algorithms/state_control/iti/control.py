@@ -6,11 +6,16 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
+from aisteer360.algorithms.state_control._common.intervention import (
+    HookTarget,
+    Intervention,
+    InterventionPlan,
+    PromptContext,
+)
 from aisteer360.algorithms.state_control._common.model_layout import resolve_model_layout
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import TopKHeadSelector
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
 from aisteer360.algorithms.state_control._common.transforms import HeadAdditiveTransform, NormPreservingTransform
 
 from .args import ITIArgs
@@ -111,13 +116,24 @@ class ITI(StateControl):
         self._active_layer_ids = set(active_heads.keys())
 
         # build transform
-        transform = HeadAdditiveTransform(
+        head_transform = HeadAdditiveTransform(
             sv,
             active_heads=active_heads,
             strength=self.alpha,
         )
-        if self.use_norm_preservation:
-            transform = NormPreservingTransform(transform)
+
+        # fold head-space additions through each active layer's o_proj into residual-space `add`
+        # vectors so the transform is wire-portable post-steer (exact for a linear o_proj)
+        oproj_weights: dict[int, torch.Tensor] = {}
+        for layer_id in self._active_layer_ids:
+            oproj = model.get_submodule(self._oproj_names[layer_id])
+            weight = getattr(oproj, "weight", None)
+            if weight is not None:
+                oproj_weights[layer_id] = weight.detach()
+        if oproj_weights:
+            head_transform.fold_to_residual(oproj_weights)
+
+        transform = NormPreservingTransform(head_transform) if self.use_norm_preservation else head_transform
         self._transform = transform
 
         # store tokenizer info for hook generation
@@ -125,56 +141,36 @@ class ITI(StateControl):
 
         return model
 
-    def get_hooks(
+    def plan(
         self,
-        input_ids: torch.Tensor,
-        runtime_kwargs: dict | None,  # noqa: ARG002
-        **__,
-    ) -> dict[str, list]:
-        """Create pre-hooks on active o_proj modules for pre-projection intervention.
+        prompt_ctx: PromptContext,
+        runtime_kwargs: dict | None = None,
+    ) -> InterventionPlan:
+        """Return one head-additive intervention over the active layers' `o_proj` inputs.
 
-        Registers a pre-hook on each active layer's o_proj. Each pre-hook modifies the input to
-        o_proj (the concatenated per-head attention outputs) by adding direction vectors to the
-        appropriate head slices, at the positions selected by `token_scope`. This matches the
-        paper's intervention point: after Att, before Q^h_l (the output projection). Position
-        bookkeeping is delegated to the shared runtime (the lowest active layer opens the pass).
+        Each target hooks a layer's `o_proj` submodule as a pre-hook (`hook_point="layer_input"`),
+        so the transform edits the concatenated per-head attention outputs before the output
+        projection — the paper's intervention point (after Att, before Q^h_l).
 
         Args:
-            input_ids: Input token IDs.
-            runtime_kwargs: Runtime parameters (currently unused).
+            prompt_ctx: Per-generation prompt context.
+            runtime_kwargs: Unused.
 
         Returns:
-            Hook specifications with "pre", "forward", "backward" keys.
+            A one-intervention plan, or an empty plan when no heads are active.
         """
-        ids = input_ids if isinstance(input_ids, torch.Tensor) else input_ids["input_ids"]
-        if ids.ndim == 1:
-            ids = ids.unsqueeze(0)
-
-        prompt_lens = compute_prompt_lens(ids, self._pad_token_id)
-        self._runtime.reset(prompt_lens)
-
-        hooks: dict[str, list] = {"pre": [], "forward": [], "backward": []}
-
         active = sorted(self._active_layer_ids)
         if not active:
-            return hooks
-
-        opener = active[0]
-        for layer_id in active:
-            hooks["pre"].append({
-                "module": self._oproj_names[layer_id],
-                "hook_func": self._runtime.build_behavior_hook(
-                    layer_id=layer_id,
-                    transform=self._transform,
-                    gate=self._gate,
-                    token_scope=self.token_scope,
-                    last_k=self.last_k,
-                    from_position=self.from_position,
-                    is_pass_opener=(layer_id == opener),
-                ),
-            })
-
-        return hooks
+            return []
+        return [
+            Intervention(
+                targets=[HookTarget(module=self._oproj_names[lid], layer_id=lid) for lid in active],
+                hook_point="layer_input",
+                transform=self._transform,
+                scope=self.token_scope,
+                scope_params={"last_k": self.last_k, "from_position": self.from_position},
+            )
+        ]
 
     def reset(self):
         """Reset internal state between generation calls."""

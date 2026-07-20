@@ -34,7 +34,7 @@ The control requires two arguments: a list of `blocked_words` to filter, and a `
 by the following `args.py` file:
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
 
 
 @dataclass
@@ -131,7 +131,7 @@ Once the above files are in place, the prompt censor control can be initialized 
 
 ```python
 from aisteer360.algorithms.input_control.prompt_censor.control import PromptCensor
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "microsoft/Phi-3.5-mini-instruct"
 

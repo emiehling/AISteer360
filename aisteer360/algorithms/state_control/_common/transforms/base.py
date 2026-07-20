@@ -102,3 +102,15 @@ class BaseTransform(ABC):
         wrappers delegate to their inner transform.
         """
         return None
+
+    def export_payload(self) -> dict | None:
+        """Return a JSON-safe description of this transform for the wire schema, or `None`.
+
+        Exportable transforms return a dict whose per-layer tensors are `ArtifactHandle`
+        placeholders (encoded by the wire compiler, doc 06); non-exportable transforms return
+        `None`, marking the containing intervention in-process-only. The default is `None`.
+
+        Returns:
+            A wire-schema dict, or `None` when the transform has no declarative form.
+        """
+        return None

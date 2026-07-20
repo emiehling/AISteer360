@@ -13,7 +13,6 @@ import warnings
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common.sources import ArtifactSource, ContrastiveFit
 from aisteer360.algorithms.state_control._common.gates import (
     AlwaysOpenGate,
@@ -36,6 +35,7 @@ from aisteer360.algorithms.state_control.activation_adapter import (
 from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter as _AA
 from aisteer360.algorithms.state_control.caa.control import CAA
 from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
+from tests.conftest import hf_pipeline
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32
@@ -65,24 +65,26 @@ class _StubSource:
 
 def _pipe(control, model):
     tok = wordlevel_tokenizer()
-    p = SteeringPipeline(controls=[control] if not isinstance(control, list) else control, lazy_init=True)
-    p.model = model
-    p.tokenizer = tok
+    p = hf_pipeline(
+        controls=[control] if not isinstance(control, list) else control,
+        model=model,
+        tokenizer=tok,
+    )
     p.steer()
     return p
 
 
 def _hidden_at(model, layer_id, pipeline, input_ids):
     """Capture the (steered) output of `layer_id` under the pipeline's state controls, single pass."""
-    import contextlib
+    from aisteer360.core.prompt import PreparedPrompt, Prompt
 
-    pipeline._setup_state_controls(input_ids, {})
+    attention_mask = torch.ones_like(input_ids)
+    entries = pipeline._build_entries(input_ids, attention_mask, {}, {})
+    prepared = PreparedPrompt(prompt=Prompt.classify(input_ids), adaptation_level="none")
+    session = pipeline._backend.open_session(entries, prepared, {})
     captured = {}
 
-    with contextlib.ExitStack() as stack:
-        for c in pipeline.state_controls:
-            stack.enter_context(c)
-
+    with session:
         def _cap(module, args, kwargs, output):
             captured["h"] = (output[0] if isinstance(output, tuple) else output).detach().clone()
 
@@ -539,7 +541,7 @@ class TestSupportsBatching:
 # registry discovery
 class TestRegistry:
     def test_activation_adapter_registered(self):
-        from aisteer360.algorithms.core.registry import REGISTRY
+        from aisteer360.core.registry import REGISTRY
         assert "activation_adapter" in REGISTRY.get("state_control", {})
         method = REGISTRY["state_control"]["activation_adapter"]
         assert method.control_cls is _AA
@@ -548,7 +550,7 @@ class TestRegistry:
 # ControlSpec sweep + shared-source memoization
 class TestControlSpecSweep:
     def test_grid_over_strength_and_layer(self):
-        from aisteer360.algorithms.core.specs import ControlSpec
+        from aisteer360.core.specs import ControlSpec
 
         sv = _sv(17)
         spec = ControlSpec(

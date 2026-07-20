@@ -16,11 +16,11 @@ import os
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.act_add.control import ActAdd
 from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
 from aisteer360.algorithms.state_control.iti.control import ITI
+from tests.conftest import hf_pipeline
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32
@@ -92,9 +92,7 @@ def _generate(control_name: str, prompt_len: int) -> list[int]:
     tokenizer = wordlevel_tokenizer()
 
     control = CONTROL_FACTORIES[control_name]()
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     input_ids = torch.arange(3, 3 + prompt_len, dtype=torch.long).unsqueeze(0)

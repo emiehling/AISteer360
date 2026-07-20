@@ -84,6 +84,21 @@ class PASTA(StateControl):
     _attn_module_names: dict[int, str] | None = None
     _scale_constant: torch.Tensor | None = None
 
+    def requires(self):
+        """PASTA writes a 4-D attention mask via in-process hooks (in-process only).
+
+        Returns:
+            `Requirements(FORWARD_HOOKS | ATTENTION_WRITE)`.
+        """
+        from aisteer360.core.requirements import Capability, Requirements
+
+        if not self.enabled:
+            return Requirements()
+        return Requirements(
+            capabilities=Capability.FORWARD_HOOKS | Capability.ATTENTION_WRITE,
+            phase="generate",
+        )
+
     def steer(
         self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer | None = None, **__
     ) -> PreTrainedModel:

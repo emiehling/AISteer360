@@ -50,7 +50,7 @@ logic.
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
 
 @dataclass
 class CustomControlArgs(BaseArgs):

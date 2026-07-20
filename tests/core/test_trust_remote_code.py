@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.backends.huggingface.backend import HuggingFaceBackend
 from aisteer360.algorithms.input_control.prewrite import PRewrite
 from aisteer360.algorithms.structural_control.wrappers.trl.sfttrainer import SFT
 
@@ -28,18 +28,19 @@ def _mock_model() -> MagicMock:
 
 class TestSteeringPipelineTrustRemoteCode:
     def _build(self, **kwargs) -> tuple[MagicMock, MagicMock]:
-        """Construct a real SteeringPipeline with both loaders patched; return the two mocks."""
+        """Construct a HuggingFaceBackend (which owns model/tokenizer loading) with both loaders
+        patched; return the two mocks."""
         with (
             patch(
-                "aisteer360.algorithms.core.steering_pipeline.AutoModelForCausalLM"
+                "aisteer360.backends.huggingface.backend.AutoModelForCausalLM"
             ) as model_cls,
             patch(
-                "aisteer360.algorithms.core.steering_pipeline.AutoTokenizer"
+                "aisteer360.backends.huggingface.backend.AutoTokenizer"
             ) as tokenizer_cls,
         ):
             model_cls.from_pretrained.return_value = _mock_model()
             tokenizer_cls.from_pretrained.return_value = _mock_tokenizer()
-            SteeringPipeline(model_name_or_path="some/model", **kwargs)
+            HuggingFaceBackend(model_name_or_path="some/model", **kwargs)
         return model_cls, tokenizer_cls
 
     def test_default_false(self):

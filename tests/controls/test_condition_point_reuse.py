@@ -7,7 +7,6 @@ and dict shapes, alias normalization, conflict errors), and the precedence of a 
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
 from aisteer360.algorithms.state_control._common.selectors.condition_point import ConditionPoint
 from aisteer360.algorithms.state_control._common.specs import (
@@ -17,6 +16,7 @@ from aisteer360.algorithms.state_control._common.specs import (
 )
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.cast.control import CAST
+from tests.conftest import hf_pipeline
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32
@@ -41,9 +41,7 @@ def _steer(control, seed: int = 0):
     torch.manual_seed(seed)
     model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=4)
     tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = hf_pipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline, model, tokenizer
 
@@ -136,9 +134,7 @@ class TestConditionPointExpansion:
             condition_point=point,
         )
         # steer the reuse control on the SAME model/tokenizer so scores are comparable
-        pipe_b = SteeringPipeline(controls=[reuse_control], lazy_init=True)
-        pipe_b.model = model
-        pipe_b.tokenizer = tokenizer
+        pipe_b = hf_pipeline(controls=[reuse_control], model=model, tokenizer=tokenizer)
         pipe_b.steer()
 
         cfg_a = search_control._cond_config

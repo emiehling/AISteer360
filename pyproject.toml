@@ -61,6 +61,7 @@ dependencies = [
 
 # optional groups
 [project.optional-dependencies]
+openai = ["openai>=1.40,<3"]
 docs = [
     "mkdocs-material",
     "mkdocs-jupyter",

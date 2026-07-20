@@ -15,7 +15,7 @@ model name via `base_model_or_path` along with instantiated controls, e.g.,
 [`few_shot`](../examples/notebooks/few_shot.ipynb) and [`dpo`](../examples/notebooks/trl_wrapper.ipynb), as follows:
 
 ```python
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.core.steering_pipeline import SteeringPipeline
 
 pipeline = SteeringPipeline(
     model_name_or_path="meta-llama/Llama-2-7b-hf",

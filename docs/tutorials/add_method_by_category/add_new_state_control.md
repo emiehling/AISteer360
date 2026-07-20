@@ -25,7 +25,7 @@ Next, define the arguments class. This is where we define the required arguments
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
 
 
 @dataclass
@@ -156,7 +156,7 @@ then be called via:
 
 ```python
 from aisteer360.algorithms.state_control.activation_bias.control import ActivationBias
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
 

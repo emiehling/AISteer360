@@ -82,6 +82,15 @@ class CosineDirectionScorer:
         last = aggregate_condition_hidden(hidden, "last", attention_mask=prompt_mask)  # [B, H]
         return F.cosine_similarity(last, direction.unsqueeze(0), dim=-1).float().cpu()
 
+    def export_payload(self) -> dict:
+        """Export as the wire `cosine` scorer kind: per-layer direction handles."""
+        from ..intervention import ArtifactHandle
+
+        return {
+            "kind": "cosine",
+            "vectors": {int(lid): ArtifactHandle(vector, role="direction") for lid, vector in self.directions.items()},
+        }
+
 
 class ProjectedCosineScorer:
     """CAST's condition score: projected-cosine similarity of aggregated prompt states, per row.
@@ -147,3 +156,13 @@ class ProjectedCosineScorer:
         )  # [B, H]
         scores = projected_cosine_similarity_tensor(aggregated, projector.to(aggregated.dtype))
         return scores.float().cpu()
+
+    def export_payload(self) -> dict:
+        """Export as the wire `projected_cosine` scorer kind: per-layer direction handles + comp mode."""
+        from ..intervention import ArtifactHandle
+
+        return {
+            "kind": "projected_cosine",
+            "comp_mode": self.comparison_mode,
+            "vectors": {int(lid): ArtifactHandle(vector, role="direction") for lid, vector in self.directions.items()},
+        }

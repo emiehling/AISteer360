@@ -9,7 +9,7 @@ relies on).
 import pytest
 import torch
 
-from aisteer360.algorithms.core.utils.controls import merge_controls
+from aisteer360.core.utils.controls import merge_controls
 from aisteer360.algorithms.state_control._common.gates import MultiKeyThresholdGate
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform

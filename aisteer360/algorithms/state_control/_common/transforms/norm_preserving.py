@@ -41,6 +41,13 @@ class NormPreservingTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return self._inner.covered_layer_ids
 
+    def export_payload(self) -> dict | None:
+        """Export the inner transform's payload with the `norm_preserving` flag set."""
+        inner_payload = self._inner.export_payload()
+        if inner_payload is None:
+            return None
+        return {**inner_payload, "norm_preserving": True}
+
     def apply(
         self,
         hidden_states: torch.Tensor,

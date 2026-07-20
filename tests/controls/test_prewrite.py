@@ -4,9 +4,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.input_control.prewrite import PRewrite, PRewriteArgs
 from aisteer360.evaluation.metrics.base import Metric
+
+from tests.conftest import hf_pipeline
 
 
 class _ConstantMetric(Metric):
@@ -101,9 +102,7 @@ class TestPRewriteInferenceStrategy:
             strategy="inference",
             rewriter_gen_kwargs={"max_new_tokens": 4, "do_sample": False},
         )
-        pipeline = SteeringPipeline(controls=[prewrite], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[prewrite], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         assert prewrite.memory is not None
@@ -125,9 +124,7 @@ class TestPRewriteSearchStrategy:
             rewriter_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
             eval_gen_kwargs={"max_new_tokens": 2, "do_sample": False},
         )
-        pipeline = SteeringPipeline(controls=[prewrite], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[prewrite], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         assert prewrite.memory is not None
@@ -146,9 +143,7 @@ class TestPRewriteAdaptMessages:
             strategy="inference",
             rewriter_gen_kwargs={"max_new_tokens": 2, "do_sample": False},
         )
-        pipeline = SteeringPipeline(controls=[prewrite], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[prewrite], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         adapted = prewrite.adapt_messages([[{"role": "user", "content": "?"}]])
@@ -165,9 +160,7 @@ class TestPRewriteAdaptMessages:
             strategy="inference",
             rewriter_gen_kwargs={"max_new_tokens": 2, "do_sample": False},
         )
-        pipeline = SteeringPipeline(controls=[prewrite], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[prewrite], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         chat = [

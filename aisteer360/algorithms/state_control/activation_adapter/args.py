@@ -7,7 +7,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import torch
 
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.gates.base import BaseGate
 from aisteer360.algorithms.state_control._common.selectors.base import BaseSelector

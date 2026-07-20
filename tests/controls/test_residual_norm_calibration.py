@@ -7,7 +7,6 @@ Covers `measure_residual_norms` (composition over `render_for_model` + `tokenize
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common import measure_residual_norms
 from aisteer360.algorithms.state_control._common.estimators.utils import layerwise_tokenwise_hidden
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
@@ -15,6 +14,7 @@ from aisteer360.algorithms.state_control._common.transforms import AdditiveTrans
 from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
 from aisteer360.algorithms.state_control.cast.control import CAST
 from aisteer360.utils.rendering import render_for_model
+from tests.conftest import hf_pipeline
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32
@@ -213,9 +213,7 @@ class TestDosedVectorEndToEnd:
             behavior_vector_strength=1.0,
             token_scope="all",
         )
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[control], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         out = pipeline.generate([{"role": "user", "content": "the cat sat"}], max_new_tokens=3, do_sample=False)
@@ -232,9 +230,7 @@ class TestDosedVectorEndToEnd:
             layer_ids=behavior_layers,
             hook_point="layer_input",
         )
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(controls=[control], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         out = pipeline.generate([{"role": "user", "content": "the cat sat"}], max_new_tokens=3, do_sample=False)

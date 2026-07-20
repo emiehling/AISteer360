@@ -78,6 +78,18 @@ class AdditiveTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.directions.keys()) if self.directions is not None else None
 
+    def export_payload(self) -> dict | None:
+        """Export as the wire `add` kind: a scale plus per-layer direction handles."""
+        if self.directions is None:
+            return None
+        from ..intervention import ArtifactHandle
+
+        return {
+            "kind": "add",
+            "scale": float(self.strength),
+            "vectors": {int(lid): ArtifactHandle(tensor, role="direction") for lid, tensor in self.directions.items()},
+        }
+
     def apply(
         self,
         hidden_states: torch.Tensor,

@@ -27,7 +27,7 @@ keywords are passed in at inference time since they are tied to the specific pro
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
 
 
 @dataclass
@@ -135,7 +135,7 @@ The control can then be run as follows:
 
 ```python
 from aisteer360.algorithms.output_control.keyword_reranker.control import KeywordReranker
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "microsoft/Phi-3.5-mini-instruct"
 

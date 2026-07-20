@@ -4,7 +4,7 @@ from typing import Any
 
 from peft import PeftType, TaskType
 
-from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.core.base_args import BaseArgs
 
 
 @dataclass

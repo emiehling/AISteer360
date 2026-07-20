@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline as RealSteeringPipeline
+from aisteer360.core.steering_pipeline import SteeringPipeline as RealSteeringPipeline
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 from tests.conftest import (  # Base classes; Mock controls; Utilities
@@ -1135,12 +1135,12 @@ class TestDuplicateBosGuard:
     """`warn_if_duplicate_bos` warns once when a prompt starts with two BOS tokens."""
 
     def _steered_pipeline(self):
+        from tests.conftest import hf_pipeline
+
         torch.manual_seed(0)
         model = tiny_llama(num_layers=2, hidden=16, heads=2)
         tokenizer = wordlevel_tokenizer()  # bos_token_id == 0
-        pipeline = RealSteeringPipeline(lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = hf_pipeline(model=model, tokenizer=tokenizer)
         pipeline.steer()
         return pipeline, tokenizer
 

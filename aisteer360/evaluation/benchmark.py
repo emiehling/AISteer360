@@ -12,8 +12,9 @@ from typing import Any, Sequence
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.specs import ControlSpec
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.backends.huggingface.backend import HuggingFaceBackend
+from aisteer360.core.specs import ControlSpec
+from aisteer360.core.steering_pipeline import SteeringPipeline
 from aisteer360.utils.tokenization import ensure_pad_token
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.evaluation.use_cases.base import UseCase
@@ -229,31 +230,21 @@ class Benchmark:
             # build model or pipeline once
             if controls:
                 if self._has_structural_control(controls):
-                    pipeline = SteeringPipeline(
+                    backend = HuggingFaceBackend(
                         model_name_or_path=self.base_model_name_or_path,
-                        controls=controls,
                         device_map=self.device_map,
                         hf_model_kwargs=self.hf_model_kwargs,
                     )
-
+                    pipeline = SteeringPipeline(controls=controls, backend=backend)
                     pipeline.steer()
                     tokenizer = pipeline.tokenizer
                     model_or_pipeline: Any = pipeline
                 else:
-                    pipeline = SteeringPipeline(
-                        model_name_or_path=None,
-                        controls=controls,
-                        tokenizer_name_or_path=None,
-                        device_map=self.device_map,
-                        hf_model_kwargs=self.hf_model_kwargs,
-                        lazy_init=True,
-                    )
-
-                    pipeline.model = self._base_model
-                    pipeline.tokenizer = self._base_tokenizer
-                    if self._base_model is not None:
-                        pipeline.device = self._base_model.device
-
+                    # share the already-loaded base model with a lazy backend
+                    backend = HuggingFaceBackend(lazy_init=True)
+                    backend.adopt_model(self._base_model)
+                    backend.tokenizer = self._base_tokenizer
+                    pipeline = SteeringPipeline(controls=controls, backend=backend)
                     pipeline.steer()
                     tokenizer = pipeline.tokenizer
                     model_or_pipeline = pipeline

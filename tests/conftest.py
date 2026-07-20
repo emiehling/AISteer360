@@ -540,6 +540,54 @@ def ensure_pad_token(tokenizer):
     return tokenizer
 
 
+def hf_pipeline(
+    controls=(),
+    *,
+    model=None,
+    tokenizer=None,
+    model_name_or_path=None,
+    steer=False,
+    **backend_kwargs,
+):
+    """Build a backend-centric `SteeringPipeline` over a `HuggingFaceBackend`.
+
+    Two construction modes (doc 04 §6):
+
+    - hub/path load: pass `model_name_or_path=` (and any `HuggingFaceBackend` kwargs).
+    - preloaded model: pass an already-built `model` (and optional `tokenizer`); the backend is
+        lazy and adopts them.
+
+    Args:
+        controls: The pipeline's controls.
+        model: A preloaded model to adopt (uses a lazy backend).
+        tokenizer: A tokenizer for the preloaded-model mode.
+        model_name_or_path: Repo/path to load the model from.
+        steer: When True, call `.steer()` before returning.
+        **backend_kwargs: Extra `HuggingFaceBackend` kwargs (device, device_map, lazy_init, ...).
+
+    Returns:
+        The constructed (optionally steered) `SteeringPipeline`.
+    """
+    from aisteer360.backends.huggingface.backend import HuggingFaceBackend
+    from aisteer360.core.steering_pipeline import SteeringPipeline
+
+    if model is not None:
+        backend = HuggingFaceBackend(lazy_init=True, **backend_kwargs)
+        backend.adopt_model(model)
+        if tokenizer is not None:
+            backend.tokenizer = tokenizer
+    elif model_name_or_path is not None:
+        backend = HuggingFaceBackend(model_name_or_path=model_name_or_path, **backend_kwargs)
+    else:
+        # no model supplied: a lazy backend, for property-only checks (supports_batching, validate)
+        backend = HuggingFaceBackend(lazy_init=True, **backend_kwargs)
+
+    pipeline = SteeringPipeline(controls=list(controls), backend=backend)
+    if steer:
+        pipeline.steer()
+    return pipeline
+
+
 def create_mock_model(device: str = "cpu") -> MagicMock:
     """Create a mock model for testing."""
     model = MagicMock()

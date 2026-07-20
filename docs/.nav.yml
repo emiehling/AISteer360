@@ -67,7 +67,7 @@ nav:
   - API Reference:
     - Overview: reference/index.md
     - Algorithms:
-        - Core: reference/algorithms/core.md
+        - Core: reference/core.md
         - Input control:
             - Base classes: reference/algorithms/input_control/base_input_control.md
             - Common library: reference/algorithms/input_control/_common.md

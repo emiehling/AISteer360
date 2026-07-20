@@ -9,9 +9,15 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control._common.intervention import (
+    ConditionSpec,
+    HookTarget,
+    Intervention,
+    InterventionPlan,
+    PromptContext,
+)
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
-from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
 from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform
 from aisteer360.algorithms.state_control._common.transforms.context import resolve_transform_slot
 
@@ -136,81 +142,49 @@ class ActivationAdapter(StateControl):
         if self._runtime is not None and self._runtime._prompt_lens is not None:
             self._runtime.reset(self._runtime._prompt_lens, self._runtime._prompt_mask)
 
-    def get_hooks(
+    def plan(
         self,
-        input_ids: torch.Tensor,
+        prompt_ctx: PromptContext,
         runtime_kwargs: dict | None = None,
-        attention_mask: torch.Tensor | None = None,
-        **__,
-    ) -> dict[str, list]:
-        """Emit condition (read-only) and behavior hooks for the current generation.
+    ) -> InterventionPlan:
+        """Return one intervention (behavior transform + optional condition path).
 
-        Condition hooks are registered before behavior hooks so that, at a shared layer, the gate
-        update precedes the transform application (registration order = execution order for same-module
-        hooks of the same phase).
+        The condition path is the custom-gate form: an arbitrary `score_fn` feeds the adapter's own
+        gate (shared by identity in the driver/follower pattern). A follower carries the shared gate
+        with `gate_driven_externally=True` and contributes no condition hooks.
 
         Args:
-            input_ids: Prompt token ids of shape `[B, T]` or `[T]`.
+            prompt_ctx: Per-generation prompt context (ids, mask, prompt lengths).
             runtime_kwargs: Unused in v1.
-            attention_mask: The prompt attention mask matching `input_ids` (forwarded by the
-                pipeline). Handed to condition scorers on the prefill pass so condition scores
-                align with real (non-pad) prompt positions.
 
         Returns:
-            Hook specifications with "pre", "forward", "backward" keys.
+            A one-intervention plan.
         """
-        ids = input_ids if isinstance(input_ids, torch.Tensor) else input_ids["input_ids"]
-        if ids.ndim == 1:
-            ids = ids.unsqueeze(0)
+        condition = None
+        if self._condition_layer_ids and not self.gate_driven_externally:
+            condition = ConditionSpec(
+                targets=[HookTarget(module=self._layer_names[lid], layer_id=lid) for lid in self._condition_layer_ids],
+                scorer=self.score_fn,
+                comp_mode="mean",
+                location=self.hook_point,
+            )
 
-        prompt_lens = compute_prompt_lens(ids, self._pad_token_id)
-        if attention_mask is not None:
-            am = attention_mask if isinstance(attention_mask, torch.Tensor) else torch.as_tensor(attention_mask)
-            prompt_mask = (am.unsqueeze(0) if am.ndim == 1 else am).to(torch.bool)
-        else:
-            prompt_mask = None
-        self._gate.reset(ids.size(0))
-        self._runtime.reset(prompt_lens, prompt_mask)
+        return [
+            Intervention(
+                targets=[HookTarget(module=self._layer_names[lid], layer_id=lid) for lid in self._layer_ids],
+                hook_point=self.hook_point,
+                transform=self._transform,
+                scope=self.token_scope,
+                scope_params={"last_k": self.last_k, "from_position": self.from_position},
+                gate=self._gate,
+                condition=condition,
+                gate_driven_externally=self.gate_driven_externally,
+            )
+        ]
 
-        # pass opener = lowest hooked layer (over behavior ∪ condition); exactly one hook may
-        # open each pass — at a shared opener layer the condition hook registers (and therefore
-        # fires) first, so it takes the opener role
-        all_layers = self._layer_ids + self._condition_layer_ids
-        opener = min(all_layers) if all_layers else None
-        behavior_opener = opener if opener not in self._condition_layer_ids else None
-
-        phase = "forward" if self.hook_point == "layer_output" else "pre"
-        hooks: dict[str, list] = {"pre": [], "forward": [], "backward": []}
-
-        # condition hooks first (so gate.update precedes transform at a shared layer)
-        for lid in self._condition_layer_ids:
-            hooks[phase].append({
-                "module": self._layer_names[lid],
-                "hook_func": self._runtime.build_condition_hook(
-                    layer_id=lid,
-                    scorer=self.score_fn,
-                    gate=self._gate,
-                    is_pass_opener=(lid == opener),
-                ),
-            })
-
-        for lid in self._layer_ids:
-            hooks[phase].append({
-                "module": self._layer_names[lid],
-                "hook_func": self._runtime.build_behavior_hook(
-                    layer_id=lid,
-                    transform=self._transform,
-                    gate=self._gate,
-                    token_scope=self.token_scope,
-                    last_k=self.last_k,
-                    from_position=self.from_position,
-                    is_pass_opener=(lid == behavior_opener),
-                ),
-            })
-
-        return hooks
-
-
+    def _has_condition_path(self) -> bool:
+        """Whether this adapter drives a condition (has condition layers and is not a follower)."""
+        return bool(self._condition_layer_ids) and not self.gate_driven_externally
 
     def cleanup(self) -> None:
         """Drop references to the bound transform and runtime."""
