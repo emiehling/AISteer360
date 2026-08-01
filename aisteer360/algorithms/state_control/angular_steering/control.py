@@ -116,8 +116,11 @@ class AngularSteering(StateControl):
         steer = ()
         if self.steering_vector is None:
             steer = needs(
-                Capability.IN_PROCESS_TORCH,
-                hint="supply a fitted `steering_vector`, or steer on the huggingface backend",
+                Capability.HIDDEN_CAPTURE,
+                hint=(
+                    "supply a fitted `steering_vector`, or run the steer phase on a backend "
+                    "with hidden-state capture (huggingface, or offline vLLM with the plugin)"
+                ),
             )
         return Requirements(
             steer=steer,
@@ -181,9 +184,9 @@ class AngularSteering(StateControl):
         if self.steering_vector is not None:
             source = self.steering_vector
         else:
-            if model is None:
-                raise ValueError("Fitting AngularSteering from data requires a live model at steer time.")
-            source = SteeringPlaneEstimator().fit(model, tokenizer, data=self.data, spec=self.train_spec)
+            source = SteeringPlaneEstimator().fit(
+                model, tokenizer, data=self.data, spec=self.train_spec, session=session
+            )
 
         # copy directions into a fresh vector (never mutate a caller-supplied steering_vector in
         # place; a precomputed plane may be reused across controls with different layer_range)

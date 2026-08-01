@@ -11,7 +11,11 @@ import torch
 from safetensors.torch import load_file, save_file
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.capture import HiddenStateLocation, layerwise_tokenwise_hidden
+from aisteer360.algorithms.core.internals.capture import (
+    HiddenStateLocation,
+    capture_hidden,
+    layerwise_tokenwise_hidden,
+)
 from aisteer360.algorithms.core.internals.encoding import tokenize_texts
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.core.internals.pooling import (
@@ -52,12 +56,15 @@ class StatsSpec:
     exclude_first_n: int = 1
     batch_size: int = 8
 
-    def estimate(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> "ActivationStats":
+    def estimate(
+        self, model: PreTrainedModel | None, tokenizer: PreTrainedTokenizerBase, session=None,
+    ) -> "ActivationStats":
         """Estimate `ActivationStats` on `model` with this recipe's settings."""
         return ActivationStats.estimate(
             model,
             tokenizer,
             self.texts,
+            session=session,
             layer_ids=self.layer_ids,
             location=self.location,
             pooling=self.pooling,
@@ -119,6 +126,7 @@ class ActivationStats:
         exclude_first_n: int = 1,
         batch_size: int = 8,
         min_samples: int = 5000,
+        session=None,
     ) -> "ActivationStats":
         """Estimate per-layer activation statistics over `texts`.
 
@@ -177,7 +185,9 @@ class ActivationStats:
             chunk = list(texts[start:start + batch_size])
             enc = tokenize_texts(tokenizer, chunk, device)
             with auxiliary_pass(aligned=True):
-                hidden = layerwise_tokenwise_hidden(model, enc, batch_size=len(chunk), location=location)
+                hidden, chunk_mask = capture_hidden(
+                    enc, model=model, session=session, batch_size=len(chunk), location=location
+                )
 
             if target_layers is None:
                 num_layers = len(hidden)
@@ -189,10 +199,9 @@ class ActivationStats:
                         if not 0 <= lid < num_layers:
                             raise ValueError(f"layer id {lid} out of range [0, {num_layers}).")
 
-            attention_mask = enc.get("attention_mask")
             mask = (
-                attention_mask.to("cpu", torch.bool)
-                if attention_mask is not None
+                chunk_mask.to("cpu", torch.bool)
+                if chunk_mask is not None
                 else torch.ones(hidden[target_layers[0]].shape[:2], dtype=torch.bool)
             )
 

@@ -7,6 +7,74 @@ from transformers import PreTrainedModel
 HiddenStateLocation = Literal["layer_output", "layer_input"]
 
 
+def capture_hidden(
+    enc: dict[str, torch.Tensor],
+    *,
+    model: PreTrainedModel | None = None,
+    session=None,
+    batch_size: int = 8,
+    on_batch: Callable[[], None] | None = None,
+    location: HiddenStateLocation = "layer_output",
+) -> tuple[dict[int, torch.Tensor], torch.Tensor | None]:
+    """Per-layer hidden states for `enc` through the in-process funnel or a capture session.
+
+    With a live model (given directly, or reachable through an in-process session), the
+    extraction runs `layerwise_tokenwise_hidden` with the caller's batch size and progress
+    callback, preserving the in-process layout: the returned mask is `enc`'s own. With a
+    remote capture-capable session, each row of `enc` becomes a token-id prompt (padding
+    positions dropped) served by `session.capture` over every decoder layer; the returned
+    tensors are right-padded to the batch's longest prompt and the returned mask describes
+    that layout, so pooling must use the returned mask rather than `enc`'s.
+
+    Args:
+        enc: Tokenized input with `input_ids` and optionally `attention_mask`.
+        model: A live model, used when no session provides one.
+        session: A `SteeringSession`; in-process sessions expose their live model, remote
+            sessions serve `capture`.
+        batch_size: Forward batch size on the in-process path.
+        on_batch: Per-batch progress callback on the in-process path.
+        location: Which residual-stream boundary each layer key maps to.
+
+    Returns:
+        A `(hidden, attention_mask)` pair with `hidden[l]` of shape `[N, T, H]` on CPU.
+
+    Raises:
+        ValueError: If neither a live model nor a session is available.
+    """
+    live_model = model
+    if live_model is None and session is not None:
+        try:
+            live_model = session.model
+        except (AttributeError, RuntimeError):
+            live_model = None
+    if live_model is not None:
+        hidden = layerwise_tokenwise_hidden(
+            live_model, enc, batch_size=batch_size, on_batch=on_batch, location=location
+        )
+        attention_mask = enc.get("attention_mask")
+        return hidden, attention_mask.cpu() if attention_mask is not None else None
+    if session is None or not callable(getattr(session, "capture", None)):
+        raise ValueError("Hidden-state extraction requires a live model or a capture-capable session.")
+
+    from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
+
+    input_ids = enc["input_ids"]
+    attention_mask = enc.get("attention_mask")
+    prompts = [
+        PreparedPrompt.from_token_ids(
+            input_ids[index:index + 1],
+            attention_mask[index:index + 1] if attention_mask is not None else None,
+        )
+        for index in range(input_ids.size(0))
+    ]
+    result = session.capture(
+        prompts, layers=list(range(session.layout.num_layers)), mode="all_tokens", location=location
+    )
+    if on_batch is not None:
+        on_batch()
+    return dict(result.hidden), result.attention_mask
+
+
 @torch.no_grad()
 def layerwise_tokenwise_hidden(
     model: PreTrainedModel,

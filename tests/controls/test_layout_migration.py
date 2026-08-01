@@ -151,10 +151,10 @@ class TestModelFreeSteerBoundaries:
         with pytest.raises(ValueError, match="session"):
             control.steer(model=None, session=None)
 
-    def test_data_fitted_config_requires_live_model(self, layout_session):
-        control = CAA(data={"positives": ["a"], "negatives": ["b"]}, layer_id=1)
-        with pytest.raises(ValueError, match="live model"):
-            control.steer(model=None, session=layout_session)
+    def test_data_fitted_config_requires_capture_capable_session(self, tokenizer, layout_session):
+        control = CAA(data={"positives": ["the cat"], "negatives": ["the dog"]}, layer_id=1)
+        with pytest.raises(ValueError, match="capture-capable session"):
+            control.steer(model=None, tokenizer=tokenizer, session=layout_session)
 
     def test_get_hooks_without_model_anywhere_raises(self, tokenizer, layout_session):
         control = CAA(steering_vector=_vector(), layer_id=1)

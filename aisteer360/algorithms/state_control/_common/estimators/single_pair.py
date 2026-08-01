@@ -4,6 +4,9 @@ import logging
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from aisteer360.algorithms.core.internals.fingerprint import artifact_provenance_meta
+from aisteer360.algorithms.core.internals.capture import capture_hidden
+
 from ..steering_vector import SteeringVector
 from .base import BaseEstimator
 
@@ -23,17 +26,18 @@ class SinglePairEstimator(BaseEstimator[SteeringVector]):
 
     def fit(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None,
         tokenizer: PreTrainedTokenizerBase,
         *,
         positive_prompt: str,
         negative_prompt: str,
         layer_ids: list[int] | None = None,
+        session=None,
     ) -> SteeringVector:
         """Extract positional steering vector from a single prompt pair.
 
         Args:
-            model: Model to extract hidden states from.
+            model: Model to extract hidden states from, or None to extract through `session`.
             tokenizer: Tokenizer for encoding the prompts.
             positive_prompt: Prompt representing the desired direction
                 (e.g., "Love", "I talk about weddings constantly").
@@ -41,12 +45,16 @@ class SinglePairEstimator(BaseEstimator[SteeringVector]):
                 (e.g., "Hate", "I do not talk about weddings constantly").
             layer_ids: If provided, only compute directions for these layers.
                 If None, compute for all layers.
+            session: A `SteeringSession` serving hidden-state capture when no live model is
+                available.
 
         Returns:
             SteeringVector with [T, H] directions per layer.
         """
-        device = next(model.parameters()).device
-        model_type = getattr(model.config, "model_type", "unknown")
+        device = next(model.parameters()).device if model is not None else torch.device("cpu")
+        model_type = (
+            getattr(model.config, "model_type", "unknown") if model is not None else "unknown"
+        )
 
         # prepend BOS token to ensure positional (not broadcast) injection mode
         # (note: TransformerLens prepends BOS by default)
@@ -78,25 +86,18 @@ class SinglePairEstimator(BaseEstimator[SteeringVector]):
 
         logger.debug("Running forward pass to extract hidden states")
 
-        # forward pass with hidden states
-        with torch.no_grad():
-            outputs = model(
-                **enc,
-                output_hidden_states=True,
-                return_dict=True,
-            )
+        hidden, _ = capture_hidden(enc, model=model, session=session, location="layer_output")
 
-        # outputs.hidden_states: tuple of (num_layers+1) tensors of shape [2, T, H]
-        # index 0 is embedding output; 1..N are layer outputs
         directions: dict[int, torch.Tensor] = {}
 
-        num_layers = len(outputs.hidden_states) - 1  # exclude embedding output
+        num_layers = len(hidden)
         logger.debug("Computing per-token difference for %d layers", num_layers)
 
-        for layer_idx, hs in enumerate(outputs.hidden_states[1:]):
+        for layer_idx in range(num_layers):
             if layer_ids is not None and layer_idx not in layer_ids:
                 continue
 
+            hs = hidden[layer_idx]  # [2, T, H]
             h_pos = hs[0]  # [T, H]
             h_neg = hs[1]  # [T, H]
 
@@ -111,8 +112,10 @@ class SinglePairEstimator(BaseEstimator[SteeringVector]):
         )
 
         logger.debug("Finished fitting single-pair directions with T=%d tokens", direction.size(0))
+        meta = artifact_provenance_meta(model, tokenizer) if model is not None else {}
         return SteeringVector(
             model_type=model_type,
             directions=directions,
+            meta=meta,
         )
     

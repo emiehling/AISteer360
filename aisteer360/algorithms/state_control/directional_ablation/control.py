@@ -112,8 +112,11 @@ class DirectionalAblation(StateControl):
         steer = ()
         if self.steering_vector is None:
             steer = needs(
-                Capability.IN_PROCESS_TORCH,
-                hint="supply a fitted `steering_vector`, or steer on the huggingface backend",
+                Capability.HIDDEN_CAPTURE,
+                hint=(
+                    "supply a fitted `steering_vector`, or run the steer phase on a backend "
+                    "with hidden-state capture (huggingface, or offline vLLM with the plugin)"
+                ),
             )
         hook_only_hint = "subspace ablation has no intervention-spec form; run on the huggingface backend"
         if self.alpha != 1.0:
@@ -174,13 +177,11 @@ class DirectionalAblation(StateControl):
         if self.steering_vector is not None:
             source = self.steering_vector
         else:
-            if model is None:
-                raise ValueError("Fitting DirectionalAblation from data requires a live model at steer time.")
             if self.train_spec.method == "pca_pairwise":
                 estimator = ContrastiveDirectionEstimator()
             else:
                 estimator = MeanDifferenceEstimator()
-            source = estimator.fit(model, tokenizer, data=self.data, spec=self.train_spec)
+            source = estimator.fit(model, tokenizer, data=self.data, spec=self.train_spec, session=session)
 
         # copy directions into a fresh vector (never mutate a caller-supplied steering_vector in
         # place; a precomputed direction may be reused across controls with different filters)

@@ -6,7 +6,8 @@ from typing import Callable
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
+from aisteer360.algorithms.core.internals.fingerprint import artifact_provenance_meta
+from aisteer360.algorithms.core.internals.capture import capture_hidden
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.encoding import tokenize_pairs
 from aisteer360.algorithms.core.internals.pooling import (
@@ -42,28 +43,33 @@ class MeanDifferenceEstimator(BaseEstimator[SteeringVector]):
 
     def fit(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None,
         tokenizer: PreTrainedTokenizerBase,
         *,
         data: ContrastivePairs,
         spec: VectorTrainSpec,
         on_progress: Callable[[int, int], None] | None = None,
+        session=None,
     ) -> SteeringVector:
         """Extract steering vectors using mean difference.
 
         Args:
-            model: Model to extract hidden states from.
+            model: Model to extract hidden states from, or None to extract through `session`.
             tokenizer: Tokenizer for encoding the contrastive pairs.
             data: The positive/negative text pairs.
             spec: Training configuration (method, accumulate, batch_size).
             on_progress: Optional `(completed, total)` callback fired as each forward-pass batch
                 finishes. `total` covers both positive and negative passes.
+            session: A `SteeringSession` serving hidden-state capture when no live model is
+                available.
 
         Returns:
             SteeringVector with one direction per layer.
         """
-        device = next(model.parameters()).device
-        model_type = getattr(model.config, "model_type", "unknown")
+        device = next(model.parameters()).device if model is not None else torch.device("cpu")
+        model_type = (
+            getattr(model.config, "model_type", "unknown") if model is not None else "unknown"
+        )
 
         # render full texts according to prompt_format (shared with inference)
         rendered = render_contrastive(tokenizer, data, spec.prompt_format)
@@ -91,11 +97,13 @@ class MeanDifferenceEstimator(BaseEstimator[SteeringVector]):
 
         if on_progress is not None:
             on_progress(0, total_batches)
-        hs_pos = layerwise_tokenwise_hidden(
-            model, enc_pos, batch_size=spec.batch_size, on_batch=_tick, location=spec.location
+        hs_pos, attn_pos = capture_hidden(
+            enc_pos, model=model, session=session,
+            batch_size=spec.batch_size, on_batch=_tick, location=spec.location,
         )
-        hs_neg = layerwise_tokenwise_hidden(
-            model, enc_neg, batch_size=spec.batch_size, on_batch=_tick, location=spec.location
+        hs_neg, attn_neg = capture_hidden(
+            enc_neg, model=model, session=session,
+            batch_size=spec.batch_size, on_batch=_tick, location=spec.location,
         )
 
         num_samples = len(rendered.pos_texts)
@@ -104,14 +112,6 @@ class MeanDifferenceEstimator(BaseEstimator[SteeringVector]):
 
         # determine how to aggregate hidden states based on accumulate mode
         directions: dict[int, torch.Tensor] = {}
-
-        # get attention masks for position selection
-        attn_pos = enc_pos.get("attention_mask")
-        attn_neg = enc_neg.get("attention_mask")
-        if attn_pos is not None:
-            attn_pos = attn_pos.cpu()
-        if attn_neg is not None:
-            attn_neg = attn_neg.cpu()
 
         for layer_id in range(num_layers):
             hp = hs_pos[layer_id]  # [N, T, H]
@@ -137,7 +137,9 @@ class MeanDifferenceEstimator(BaseEstimator[SteeringVector]):
             directions[layer_id] = direction.unsqueeze(0).to(dtype=torch.float32)  # [1, H]
 
         logger.debug("Finished fitting mean difference directions")
+        meta = artifact_provenance_meta(model, tokenizer) if model is not None else {}
         return SteeringVector(
             model_type=model_type,
             directions=directions,
+            meta=meta,
         )

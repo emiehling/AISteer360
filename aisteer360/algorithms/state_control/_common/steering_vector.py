@@ -3,7 +3,7 @@ import json
 import logging
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -35,6 +35,9 @@ class SteeringVector:
             real variance (e.g., PCA-based). None when not applicable.
         probe_accuracies: Optional mapping from (layer_id, head_id) to linear
             probe validation accuracy (used for head selection in ITI).
+        meta: Provenance record (model, config, tokenizer, and chat-template fingerprints,
+            package version). May be empty for hand-constructed vectors, which disarms
+            cross-backend fingerprint checks.
     """
 
     model_type: str
@@ -43,6 +46,7 @@ class SteeringVector:
     head_dim: int | None = None
     explained_variances: dict[int, float] | None = None
     probe_accuracies: dict[tuple[int, int], float] | None = None
+    meta: dict = field(default_factory=dict)
 
     @property
     def num_tokens(self) -> int:
@@ -81,6 +85,7 @@ class SteeringVector:
             head_dim=self.head_dim,
             explained_variances=dict(self.explained_variances) if self.explained_variances is not None else None,
             probe_accuracies=dict(self.probe_accuracies) if self.probe_accuracies is not None else None,
+            meta=dict(self.meta),
         )
 
     def normalized(self) -> "SteeringVector":
@@ -207,6 +212,8 @@ class SteeringVector:
             data["probe_accuracies"] = {
                 f"{layer}:{head}": acc for (layer, head), acc in self.probe_accuracies.items()
             }
+        if self.meta:
+            data["meta"] = self.meta
 
         with open(file_path, "w") as f:
             json.dump(data, f)
@@ -256,4 +263,5 @@ class SteeringVector:
             head_dim=head_dim,
             explained_variances=explained_variances,
             probe_accuracies=probe_accuracies,
+            meta=data.get("meta", {}),
         )

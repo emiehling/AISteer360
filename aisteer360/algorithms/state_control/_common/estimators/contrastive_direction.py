@@ -7,7 +7,8 @@ import torch
 from sklearn.decomposition import PCA
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
+from aisteer360.algorithms.core.internals.fingerprint import artifact_provenance_meta
+from aisteer360.algorithms.core.internals.capture import capture_hidden
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.encoding import tokenize_texts
 from aisteer360.algorithms.core.internals.pooling import pool_over_spans, select_spans
@@ -117,28 +118,33 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
 
     def fit(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None,
         tokenizer: PreTrainedTokenizerBase,
         *,
         data: ContrastivePairs,
         spec: VectorTrainSpec,
         on_progress: Callable[[int, int], None] | None = None,
+        session=None,
     ) -> SteeringVector:
         """Extract contrastive direction vectors.
 
         Args:
-            model: Model to extract hidden states from.
+            model: Model to extract hidden states from, or None to extract through `session`.
             tokenizer: Tokenizer for encoding the contrastive pairs.
             data: The positive/negative text pairs.
             spec: Training configuration (method, accumulate, batch_size).
             on_progress: Optional `(completed, total)` callback fired as each forward-pass batch
                 finishes. `total` covers both positive and negative passes.
+            session: A `SteeringSession` serving hidden-state capture when no live model is
+                available.
 
         Returns:
             SteeringVector with one direction per layer.
         """
-        device = next(model.parameters()).device
-        model_type = getattr(model.config, "model_type", "unknown")
+        device = next(model.parameters()).device if model is not None else torch.device("cpu")
+        model_type = (
+            getattr(model.config, "model_type", "unknown") if model is not None else "unknown"
+        )
 
         # render full texts according to prompt_format (shared with inference)
         rendered = render_contrastive(tokenizer, data, spec.prompt_format)
@@ -173,20 +179,24 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
 
         if on_progress is not None:
             on_progress(0, total_batches)
-        hs_pos = layerwise_tokenwise_hidden(
-            model, enc_pos, batch_size=spec.batch_size, on_batch=_tick, location=spec.location
+        hs_pos, mask_pos = capture_hidden(
+            enc_pos, model=model, session=session,
+            batch_size=spec.batch_size, on_batch=_tick, location=spec.location,
         )
-        hs_neg = layerwise_tokenwise_hidden(
-            model, enc_neg, batch_size=spec.batch_size, on_batch=_tick, location=spec.location
+        hs_neg, mask_neg = capture_hidden(
+            enc_neg, model=model, session=session,
+            batch_size=spec.batch_size, on_batch=_tick, location=spec.location,
         )
 
-        # move encodings to CPU for span selection
-        enc_pos_cpu = {k: v.cpu() for k, v in enc_pos.items()}
-        enc_neg_cpu = {k: v.cpu() for k, v in enc_neg.items()}
+        # select spans against the returned layout (spans are mask-derived, so the returned
+        # mask keeps them aligned when a remote capture re-packs rows)
+        def _span_enc(enc, mask):
+            if mask is None:
+                return {k: v.cpu() for k, v in enc.items()}
+            return {"input_ids": mask, "attention_mask": mask}
 
-        # select spans
-        spans_pos = select_spans(enc_pos_cpu, prompt_enc, spec.accumulate)
-        spans_neg = select_spans(enc_neg_cpu, prompt_enc, spec.accumulate)
+        spans_pos = select_spans(_span_enc(enc_pos, mask_pos), prompt_enc, spec.accumulate)
+        spans_neg = select_spans(_span_enc(enc_neg, mask_neg), prompt_enc, spec.accumulate)
 
         # compute directions via PCA
         directions: dict[int, torch.Tensor] = {}
@@ -215,8 +225,10 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
             explained_variances[layer_id] = variance
 
         logger.debug("Finished fitting contrastive directions")
+        meta = artifact_provenance_meta(model, tokenizer) if model is not None else {}
         return SteeringVector(
             model_type=model_type,
             directions=directions,
             explained_variances=explained_variances,
+            meta=meta,
         )

@@ -329,6 +329,12 @@ def merge_intervention_specs(specs: Sequence[InterventionSpec]) -> InterventionS
     return InterventionSpec(ops=tuple(ops), artifacts=artifacts)
 
 
+def _load_safetensors_bytes(data: bytes) -> dict[str, torch.Tensor]:
+    import safetensors.torch
+
+    return safetensors.torch.load(data)
+
+
 def remap_spec_for_scoring(spec: InterventionSpec, prompt_len: int) -> InterventionSpec:
     """A scoring copy of `spec` with `after_prompt` scopes rewritten to `from_position`.
 
@@ -770,6 +776,126 @@ class VLLMOfflineSession(_RequestSessionBase):
     Token-id prompts submit as `TokensPrompt`s in one engine call with per-item sampling
     parameters; the engine schedules the batch internally, so no client-side fan-out is needed.
     """
+
+    def capture(
+        self,
+        prompts: list[PreparedPrompt],
+        layers: list[int],
+        mode: Literal["all_tokens", "last_token"],
+        location: Literal["layer_output", "layer_input"] = "layer_output",
+    ) -> CaptureResult:
+        """Hidden-state capture over the plugin's capture surface.
+
+        One request per prompt carries a `capture` spec and a fresh random `cache_salt`
+        (a prefix-cache hit skips forward passes, so capture cannot tolerate reused salts) with
+        `max_tokens=1`; the surplus decode position is truncated by the plugin. Per-layer
+        tensors are stacked and right-padded to the batch's longest prompt.
+
+        Args:
+            prompts: The prompts to capture over.
+            layers: 0-based decoder-layer indices to capture.
+            mode: `"all_tokens"` for every prompt position, `"last_token"` for the final real
+                position per row.
+            location: The residual-stream boundary, `"layer_output"` or `"layer_input"`.
+
+        Returns:
+            The capture result: `[N, T, H]` per layer for `"all_tokens"` or `[N, H]` for
+            `"last_token"`, on CPU in the engine's native dtype, with the derived `[N, T]`
+            attention mask.
+
+        Raises:
+            UnsupportedOperationError: If the spec declares no `hook_plugin`, the negotiated
+                capture kinds lack the requested mode or location, or the engine facts refuse
+                capture (speculative decoding, non-eager execution).
+            ValueError: If `prompts` is empty, a layer id is out of range, or the engine
+                returned no capture payload.
+        """
+        self._ensure_open()
+        backend = self._backend
+        if not backend.spec.get_option("hook_plugin"):
+            raise UnsupportedOperationError(
+                "Hidden-state capture requires the vLLM-Hook plugin; declare hook_plugin=True "
+                "on the vllm backend spec, or run capture on the huggingface backend."
+            )
+        capture_kinds = backend.capture_kinds
+        required = CaptureKinds(
+            kinds=frozenset({"residual"}),
+            locations=frozenset({location}),
+            modes=frozenset({mode}),
+        )
+        if capture_kinds is None or not capture_kinds.contains(required):
+            raise UnsupportedOperationError(
+                f"The serving backend does not advertise capture mode {mode!r} at location "
+                f"{location!r}; update the server's vllm_hook_plugins or run capture on the "
+                "huggingface backend."
+            )
+        _refuse_by_engine_facts(backend._discovery, "capture")
+        if not prompts:
+            raise ValueError("capture() requires at least one prompt.")
+        num_layers = self.layout.num_layers
+        missing = sorted(int(layer) for layer in layers if not 0 <= int(layer) < num_layers)
+        if missing:
+            raise ValueError(
+                f"Requested layer ids {missing} are out of range; the model has {num_layers} layers."
+            )
+
+        from vllm import SamplingParams, TokensPrompt
+
+        layer_ids = [int(layer) for layer in layers]
+        capture_spec = {"layers": layer_ids, "mode": mode, "location": location}
+        engine_prompts = []
+        prompt_lens: list[int] = []
+        for prompt in prompts:
+            resolved = prompt.resolve_token_ids(self.tokenizer)
+            ids = resolved.token_ids[0]
+            if resolved.attention_mask is not None:
+                ids = ids[resolved.attention_mask[0].bool()]
+            ids = ids.tolist()
+            prompt_lens.append(len(ids))
+            engine_prompt = TokensPrompt(prompt_token_ids=ids)
+            engine_prompt["cache_salt"] = uuid.uuid4().hex
+            engine_prompts.append(engine_prompt)
+        sampling = SamplingParams(max_tokens=1, temperature=0.0, extra_args={"capture": capture_spec})
+
+        request_outputs = self._backend._llm.generate(engine_prompts, sampling, use_tqdm=False)
+
+        rows_per_layer: dict[int, list[torch.Tensor]] = {layer: [] for layer in layer_ids}
+        for index, request_output in enumerate(request_outputs):
+            payload = getattr(request_output, "captures", None)
+            if payload is None:
+                raise ValueError(
+                    "The engine returned no capture payload; is the vLLM-Hook unified worker "
+                    "active on this engine?"
+                )
+            manifest_json, data = payload
+            manifest = json.loads(manifest_json)
+            tensors = _load_safetensors_bytes(data)
+            for layer in layer_ids:
+                stacked = tensors.get(f"layer_{layer}")
+                if stacked is None or stacked.size(0) < prompt_lens[index]:
+                    raise ValueError(
+                        f"The capture payload covers layer {layer} at "
+                        f"{0 if stacked is None else stacked.size(0)} of {prompt_lens[index]} "
+                        f"prompt positions for prompt {index}; positions recorded: "
+                        f"{manifest.get('positions', {}).get(str(layer))}."
+                    )
+                rows_per_layer[layer].append(stacked[: prompt_lens[index]])
+
+        max_len = max(prompt_lens)
+        attention_mask = torch.zeros(len(prompts), max_len, dtype=torch.long)
+        for index, length in enumerate(prompt_lens):
+            attention_mask[index, :length] = 1
+
+        hidden: dict[int, torch.Tensor] = {}
+        for layer, rows in rows_per_layer.items():
+            if mode == "last_token":
+                hidden[layer] = torch.stack([row[-1] for row in rows])
+            else:
+                padded = torch.zeros(len(rows), max_len, rows[0].size(-1), dtype=rows[0].dtype)
+                for index, row in enumerate(rows):
+                    padded[index, : row.size(0)] = row
+                hidden[layer] = padded
+        return CaptureResult(hidden=hidden, attention_mask=attention_mask, mode=mode, location=location)
 
     def generate(
         self,

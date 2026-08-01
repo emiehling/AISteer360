@@ -40,12 +40,13 @@ class SteeringPlaneEstimator(BaseEstimator[SteeringVector]):
 
     def fit(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None,
         tokenizer: PreTrainedTokenizerBase,
         *,
         data: ContrastivePairs,
         spec: VectorTrainSpec,
         on_progress: Callable[[int, int], None] | None = None,
+        session=None,
     ) -> SteeringVector:
         """Fit the per-layer steering planes.
 
@@ -66,7 +67,7 @@ class SteeringPlaneEstimator(BaseEstimator[SteeringVector]):
         """
         # step 1: per-layer feature axis (reuse CAA's estimator)
         feature_sv = MeanDifferenceEstimator().fit(
-            model, tokenizer, data=data, spec=spec, on_progress=on_progress
+            model, tokenizer, data=data, spec=spec, on_progress=on_progress, session=session
         )
 
         layer_ids = sorted(feature_sv.directions.keys())
@@ -106,4 +107,5 @@ class SteeringPlaneEstimator(BaseEstimator[SteeringVector]):
             model_type=feature_sv.model_type,
             directions=directions,
             explained_variances={-1: pc0_variance},
+            meta=dict(feature_sv.meta),
         )

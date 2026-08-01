@@ -8,10 +8,13 @@ import torch
 from sklearn.linear_model import LogisticRegression
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
+from aisteer360.algorithms.core.internals.capture import capture_hidden
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.encoding import tokenize_texts
-from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
+from aisteer360.algorithms.core.internals.fingerprint import (
+    artifact_provenance_meta,
+    model_fingerprint,
+)
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.internals.probes.probe import POLARITY_MARKER, Probe
 from aisteer360.algorithms.core.internals.render import render_contrastive
@@ -178,22 +181,21 @@ def _pooled_std(pos: torch.Tensor, neg: torch.Tensor) -> float:
 
 
 def _pooled_features(
-    model: PreTrainedModel,
+    model: PreTrainedModel | None,
     tokenizer: PreTrainedTokenizerBase,
     data: ContrastivePairs,
     spec: ProbeFitSpec,
+    session=None,
 ) -> tuple[dict[int, torch.Tensor], dict[int, torch.Tensor]]:
     """Render, tokenize, capture, and pool contrastive pairs into per-layer `[N, H]` features."""
-    device = next(model.parameters()).device
+    device = next(model.parameters()).device if model is not None else torch.device("cpu")
     rendered = render_contrastive(tokenizer, data, spec.prompt_format)
 
     features: list[dict[int, torch.Tensor]] = []
     for texts in (rendered.pos_texts, rendered.neg_texts):
         enc = tokenize_texts(tokenizer, texts, device, add_special_tokens=rendered.add_special_tokens)
         with auxiliary_pass(aligned=True):
-            hidden = layerwise_tokenwise_hidden(model, enc, location=spec.location)
-        mask = enc.get("attention_mask")
-        mask = mask.cpu() if mask is not None else None
+            hidden, mask = capture_hidden(enc, model=model, session=session, location=spec.location)
         features.append({
             lid: aggregate_condition_hidden(states.to(torch.float32), spec.pooling, attention_mask=mask)
             for lid, states in hidden.items()
@@ -234,7 +236,7 @@ def _fit_direction(
 
 
 def fit_probe(
-    model: PreTrainedModel,
+    model: PreTrainedModel | None,
     tokenizer: PreTrainedTokenizerBase,
     *,
     data: ContrastivePairs,
@@ -242,6 +244,7 @@ def fit_probe(
     stats: ActivationStats | None = None,
     calibration_data: ContrastivePairs | None = None,
     allow_model_mismatch: bool = False,
+    session=None,
 ) -> Probe:
     """Fit a calibrated single-layer `Probe` from contrastive pairs.
 
@@ -288,8 +291,13 @@ def fit_probe(
             "ActivationStats once per model; see core.internals.stats."
         )
 
-    fingerprint = model_fingerprint(model)
-    if stats is not None and stats.model_fingerprint != fingerprint and not allow_model_mismatch:
+    fingerprint = model_fingerprint(model) if model is not None else None
+    if (
+        stats is not None
+        and fingerprint is not None
+        and stats.model_fingerprint != fingerprint
+        and not allow_model_mismatch
+    ):
         raise ValueError(
             "stats were estimated on a different model (fingerprint "
             f"{stats.model_fingerprint!r} vs {fingerprint!r}); whitening with another model's "
@@ -303,9 +311,11 @@ def fit_probe(
             "produces a miscalibrated probe. Re-estimate ActivationStats at the fit location."
         )
 
-    pos_features, neg_features = _pooled_features(model, tokenizer, data, spec)
+    pos_features, neg_features = _pooled_features(model, tokenizer, data, spec, session=session)
     if calibration_data is not None:
-        cal_pos_features, cal_neg_features = _pooled_features(model, tokenizer, calibration_data, spec)
+        cal_pos_features, cal_neg_features = _pooled_features(
+            model, tokenizer, calibration_data, spec, session=session
+        )
     else:
         cal_pos_features, cal_neg_features = pos_features, neg_features
 
@@ -414,11 +424,16 @@ def fit_probe(
         "package_version": _PACKAGE_VERSION,
         "polarity": POLARITY_MARKER,
     }
+    if model is not None:
+        provenance = artifact_provenance_meta(model, tokenizer)
+        for key in ("config_fingerprint", "chat_template_fingerprint"):
+            if key in provenance:
+                meta[key] = provenance[key]
     if meta["stats_used"]:
         meta["stats_fingerprint"] = stats.fingerprint()
 
     return Probe(
-        model_type=getattr(model.config, "model_type", "unknown"),
+        model_type=getattr(model.config, "model_type", "unknown") if model is not None else "unknown",
         location=spec.location,
         pooling=spec.pooling,
         layer_ids=[best["layer_id"]],

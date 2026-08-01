@@ -89,7 +89,7 @@ class ProbeSetFit:
         """The probe names, available before fitting so routing rules validate at construction."""
         return tuple(self.data)
 
-    def fit(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> "ProbeSet":
+    def fit(self, model: PreTrainedModel | None, tokenizer: PreTrainedTokenizerBase, session=None) -> "ProbeSet":
         """Fit the recipe on `model`, resolving a `StatsSpec` on it first.
 
         Args:
@@ -101,7 +101,7 @@ class ProbeSetFit:
         """
         stats = self.stats
         if isinstance(stats, StatsSpec):
-            stats = stats.estimate(model, tokenizer)
+            stats = stats.estimate(model, tokenizer, session=session)
         return ProbeSet.fit(
             model,
             tokenizer,
@@ -109,6 +109,7 @@ class ProbeSetFit:
             spec=self.spec,
             stats=stats,
             calibration_data=self.calibration_data,
+            session=session,
         )
 
 
@@ -198,13 +199,14 @@ class ProbeSet:
     @classmethod
     def fit(
         cls,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None,
         tokenizer: PreTrainedTokenizerBase,
         *,
         data: Mapping[str, ContrastivePairs],
         spec: ProbeFitSpec | Mapping[str, ProbeFitSpec] | None = None,
         stats: ActivationStats | None = None,
         calibration_data: Mapping[str, ContrastivePairs] | None = None,
+        session=None,
     ) -> "ProbeSet":
         """Fit one probe per name and return the set.
 
@@ -241,14 +243,16 @@ class ProbeSet:
                 spec=probe_spec,
                 stats=stats,
                 calibration_data=(calibration_data or {}).get(name),
+                session=session,
             )
         return cls(probes)
 
     def read(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
+        session=None,
     ) -> Readout:
         """Score a batch of prompts against every probe in one read-only forward.
 
@@ -277,12 +281,15 @@ class ProbeSet:
                 `location` is not `"layer_input"`, a probe layer is out of range, or the
                 architecture is unrecognized.
         """
-        live_model_type = getattr(model.config, "model_type", "unknown")
-        if live_model_type != self.model_type:
-            raise ValueError(
-                f"ProbeSet was fitted on model_type {self.model_type!r} but read() received "
-                f"{live_model_type!r}."
-            )
+        if model is not None:
+            live_model_type = getattr(model.config, "model_type", "unknown")
+            if live_model_type != self.model_type:
+                raise ValueError(
+                    f"ProbeSet was fitted on model_type {self.model_type!r} but read() received "
+                    f"{live_model_type!r}."
+                )
+        elif session is None:
+            raise ValueError("ProbeSet.read() requires a live model or a capture-capable session.")
         if self.location != "layer_input":
             raise ValueError(
                 f"ProbeSet.read() serves the 'layer_input' boundary, but this set was fitted at "
@@ -290,12 +297,7 @@ class ProbeSet:
                 "layerwise_tokenwise_hidden and Probe.score_hidden."
             )
 
-        layer_names = _decoder_layer_names(model)
-        for lid in self.layer_ids:
-            if not 0 <= lid < len(layer_names):
-                raise ValueError(f"probe layer {lid} out of range [0, {len(layer_names)}).")
-
-        device = next(model.parameters()).device
+        device = next(model.parameters()).device if model is not None else torch.device("cpu")
         ids = input_ids if isinstance(input_ids, torch.Tensor) else torch.as_tensor(input_ids, dtype=torch.long)
         if ids.ndim == 1:
             ids = ids.unsqueeze(0)
@@ -308,6 +310,14 @@ class ProbeSet:
             mask = mask.to(device)
         else:
             mask = torch.ones_like(ids)
+
+        if model is None:
+            return self._read_via_session(session, ids, mask)
+
+        layer_names = _decoder_layer_names(model)
+        for lid in self.layer_ids:
+            if not 0 <= lid < len(layer_names):
+                raise ValueError(f"probe layer {lid} out of range [0, {len(layer_names)}).")
 
         captured: dict[int, torch.Tensor] = {}
 
@@ -343,6 +353,34 @@ class ProbeSet:
             scores[name] = probe_scores
             decisions[name] = probe_scores >= 0
 
+        readout = Readout(scores=scores, decisions=decisions)
+        self.latest = readout
+        return readout
+
+    def _read_via_session(self, session, ids: torch.Tensor, mask: torch.Tensor) -> Readout:
+        """Score through a capture-capable session's `capture` at the layer-input boundary."""
+        from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
+
+        prompts = [
+            PreparedPrompt.from_token_ids(ids[index:index + 1], mask[index:index + 1])
+            for index in range(ids.size(0))
+        ]
+        result = session.capture(
+            prompts, layers=list(self.layer_ids), mode="all_tokens", location="layer_input"
+        )
+        cpu_mask = result.attention_mask
+        scores: dict[str, torch.Tensor] = {}
+        decisions: dict[str, torch.Tensor] = {}
+        for name, probe in self.probes.items():
+            features = {
+                lid: aggregate_condition_hidden(
+                    result.hidden[lid].to(torch.float32), probe.pooling, attention_mask=cpu_mask
+                )
+                for lid in probe.layer_ids
+            }
+            probe_scores = probe.decision_function(features)
+            scores[name] = probe_scores
+            decisions[name] = probe_scores >= 0
         readout = Readout(scores=scores, decisions=decisions)
         self.latest = readout
         return readout
