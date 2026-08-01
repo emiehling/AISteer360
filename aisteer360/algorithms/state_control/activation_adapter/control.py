@@ -152,9 +152,22 @@ class ActivationAdapter(StateControl):
                 Capability.IN_PROCESS_TORCH,
                 hint="supply a transform with a concrete artifact, or steer on the huggingface backend",
             )
+        if self._gate_kind_plan() is None:
+            hook_only_hint = (
+                "this gate configuration has no intervention-spec serialization (probe-backed "
+                "gating lowers; MultiKeyThresholdGate and custom scorers do not); run on the "
+                "huggingface backend"
+            )
+        else:
+            hook_only_hint = (
+                "this transform configuration has no intervention-spec form; run on the "
+                "huggingface backend"
+            )
         return Requirements(
             steer=steer,
-            generate=intervention_generate_requirement(self._intervention_kind_plan()),
+            generate=intervention_generate_requirement(
+                self._intervention_kind_plan(), hook_only_hint=hook_only_hint,
+            ),
         )
 
     def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> InterventionSpec | None:

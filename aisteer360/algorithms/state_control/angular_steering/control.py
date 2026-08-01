@@ -121,7 +121,13 @@ class AngularSteering(StateControl):
             )
         return Requirements(
             steer=steer,
-            generate=intervention_generate_requirement(self._intervention_kind_plan()),
+            generate=intervention_generate_requirement(
+                self._intervention_kind_plan(),
+                hook_only_hint=(
+                    "norm-input rotation has no intervention-spec form; set "
+                    "intervention_point='layer_output' or run on the huggingface backend"
+                ),
+            ),
         )
 
     def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> InterventionSpec | None:

@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from aisteer360.algorithms.core.execution.capabilities import InterventionKinds
 from aisteer360.utils.optional import require
 
 
@@ -59,6 +60,39 @@ class InterventionSpec:
         found: set[str] = set()
         _collect_artifact_ids(self.to_wire(), found)
         return tuple(sorted(found))
+
+    def required_kinds(self) -> InterventionKinds:
+        """The kind names this spec requires a backend to serve, as an `InterventionKinds`.
+
+        Collects transform, modifier, scope, and gate kind names (including nested inner
+        gates) from the ops; a backend whose negotiated kinds contain them can execute the
+        spec.
+        """
+        transforms: set[str] = set()
+        modifiers: set[str] = set()
+        scopes: set[str] = set()
+        gates: set[str] = set()
+        for op in self.to_wire()["ops"]:
+            transform = op.get("transform", {})
+            if "kind" in transform:
+                transforms.add(transform["kind"])
+            for modifier in transform.get("modifiers", []):
+                if "kind" in modifier:
+                    modifiers.add(modifier["kind"])
+            scope = op.get("scope", {})
+            if "kind" in scope:
+                scopes.add(scope["kind"])
+            gate = op.get("gate")
+            while gate is not None:
+                if "kind" in gate:
+                    gates.add(gate["kind"])
+                gate = gate.get("inner")
+        return InterventionKinds(
+            transforms=frozenset(transforms),
+            modifiers=frozenset(modifiers),
+            scopes=frozenset(scopes),
+            gates=frozenset(gates),
+        )
 
     def canonical(self) -> str:
         """The canonical serialization, the form hashed for cache salting and provenance.

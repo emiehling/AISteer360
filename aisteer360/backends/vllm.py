@@ -87,7 +87,11 @@ _DEFAULT_MAX_ATTEMPTS = 3
 def _vllm_capabilities(spec: BackendSpec, *, offline: bool) -> BackendCapabilities:
     """Capabilities implied by a vLLM spec: the plugin-free baseline, extended when the spec
     declares the vLLM-Hook plugin active. Hidden capture is advertised on the offline engine
-    only, since serve-mode capture needs a bulk-tensor return path."""
+    only, since serve-mode capture needs a bulk-tensor return path.
+
+    Once a backend for the spec has fetched discovery, the advertised kind sets are the
+    intersection of the static tables and the discovery payload, so a server missing a kind
+    stops advertising it."""
     if not spec.get_option("hook_plugin"):
         return VLLM_BASELINE_CAPABILITIES
     atoms = VLLM_BASELINE_CAPABILITIES.atoms | {
@@ -98,10 +102,48 @@ def _vllm_capabilities(spec: BackendSpec, *, offline: bool) -> BackendCapabiliti
     if offline:
         atoms = atoms | {Capability.HIDDEN_CAPTURE}
         capture_kinds = _PLUGIN_CAPTURE_KINDS
-    return BackendCapabilities(
+    capabilities = BackendCapabilities(
         atoms=frozenset(atoms),
         intervention_kinds=_PLUGIN_INTERVENTION_KINDS,
         processor_kinds=_PLUGIN_PROCESSOR_KINDS,
+        capture_kinds=capture_kinds,
+    )
+    payload = _DISCOVERY_CACHE.get(spec.spec_hash)
+    if payload is not None:
+        capabilities = _intersect_with_discovery(capabilities, payload)
+    return capabilities
+
+
+def _intersect_with_discovery(capabilities: BackendCapabilities, payload: dict) -> BackendCapabilities:
+    """The static capability tables narrowed to what the discovery payload confirms."""
+    remote_interventions = payload.get("intervention_kinds") or {}
+    intervention_kinds = capabilities.intervention_kinds
+    if intervention_kinds is not None:
+        intervention_kinds = InterventionKinds(
+            transforms=intervention_kinds.transforms & frozenset(remote_interventions.get("transforms", ())),
+            modifiers=intervention_kinds.modifiers & frozenset(remote_interventions.get("modifiers", ())),
+            scopes=intervention_kinds.scopes & frozenset(remote_interventions.get("scopes", ())),
+            gates=intervention_kinds.gates & frozenset(remote_interventions.get("gates", ())),
+            constraints=dict(remote_interventions.get("constraints", {}) or intervention_kinds.constraints),
+        )
+    remote_processors = payload.get("processor_kinds") or {}
+    processor_kinds = capabilities.processor_kinds
+    if processor_kinds is not None:
+        processor_kinds = ProcessorKinds(
+            processors=processor_kinds.processors & frozenset(remote_processors.get("processors", ())),
+        )
+    remote_capture = payload.get("capture_kinds") or {}
+    capture_kinds = capabilities.capture_kinds
+    if capture_kinds is not None:
+        capture_kinds = CaptureKinds(
+            kinds=capture_kinds.kinds & frozenset(remote_capture.get("kinds", ())),
+            locations=capture_kinds.locations & frozenset(remote_capture.get("locations", ())),
+            modes=capture_kinds.modes & frozenset(remote_capture.get("modes", ())),
+        )
+    return BackendCapabilities(
+        atoms=capabilities.atoms,
+        intervention_kinds=intervention_kinds,
+        processor_kinds=processor_kinds,
         capture_kinds=capture_kinds,
     )
 

@@ -115,9 +115,12 @@ class DirectionalAblation(StateControl):
                 Capability.IN_PROCESS_TORCH,
                 hint="supply a fitted `steering_vector`, or steer on the huggingface backend",
             )
+        hook_only_hint = "subspace ablation has no intervention-spec form; run on the huggingface backend"
+        if self.alpha != 1.0:
+            hook_only_hint = "graded ablation (alpha < 1) has no intervention-spec form; run on the huggingface backend"
         return Requirements(
             steer=steer,
-            generate=intervention_generate_requirement(self._intervention_kind_plan()),
+            generate=intervention_generate_requirement(self._intervention_kind_plan(), hook_only_hint=hook_only_hint),
         )
 
     def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> InterventionSpec | None:

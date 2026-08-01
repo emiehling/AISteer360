@@ -95,7 +95,10 @@ class CAA(StateControl):
             )
         return Requirements(
             steer=steer,
-            generate=intervention_generate_requirement(self._intervention_kind_plan()),
+            generate=intervention_generate_requirement(
+                self._intervention_kind_plan(),
+                hook_only_hint="positional directions have no intervention-spec form; run on the huggingface backend",
+            ),
         )
 
     def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> InterventionSpec | None:

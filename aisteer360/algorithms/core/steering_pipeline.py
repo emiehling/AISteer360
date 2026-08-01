@@ -22,11 +22,17 @@ from transformers import (
 )
 
 from aisteer360.algorithms.core.execution.artifacts import Artifact, ArtifactProvenance
+from aisteer360.algorithms.core.execution.capabilities import (
+    BackendCapabilities,
+    Capability,
+)
 from aisteer360.algorithms.core.execution.items import (
     GenerationItem,
     HookEntry,
+    InterventionEntry,
     ScoringItem,
     StackEntry,
+    StateControlEntry,
 )
 from aisteer360.algorithms.core.execution.params import (
     GenerationParams,
@@ -38,7 +44,11 @@ from aisteer360.algorithms.core.execution.registry import (
     resolve_backend_class,
 )
 from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
-from aisteer360.algorithms.core.execution.support import SupportReport, evaluate_support
+from aisteer360.algorithms.core.execution.support import (
+    SupportReport,
+    UnsupportedOperationError,
+    evaluate_support,
+)
 from aisteer360.algorithms.core.output import (
     Output,
     infer_finish_reasons,
@@ -675,6 +685,56 @@ class SteeringPipeline:
             rows.append(tuple(entries))
         return rows
 
+    def _intervention_entries(
+            self,
+            inference_capabilities: BackendCapabilities,
+            runtime_kwargs: dict | None,
+    ) -> tuple[InterventionEntry, ...]:
+        """One `InterventionEntry` per enabled state control, for intervention-capable backends.
+
+        Each control's exported spec is verified against the backend's negotiated kinds (the
+        intersection of the static tables and discovery), so a server missing a kind yields a
+        verdict naming the kind rather than a wire rejection.
+
+        Args:
+            inference_capabilities: The inference backend's capabilities.
+            runtime_kwargs: Per-call parameters forwarded to `export_intervention_spec`.
+
+        Returns:
+            The intervention entries, in controls-list order.
+
+        Raises:
+            UnsupportedOperationError: If an enabled control has no intervention-spec form, or
+                its spec requires a kind the backend does not advertise.
+        """
+        entries: list[InterventionEntry] = []
+        advertised = inference_capabilities.intervention_kinds
+        for state_control in self.state_controls:
+            if not getattr(state_control, "enabled", True):
+                continue
+            exporter = getattr(state_control, "export_intervention_spec", None)
+            spec = exporter(runtime_kwargs) if callable(exporter) else None
+            if spec is None:
+                raise UnsupportedOperationError(
+                    f"{type(state_control).__name__} has no intervention-spec form for this "
+                    "configuration; run this pipeline on the huggingface backend."
+                )
+            required = spec.required_kinds()
+            if advertised is None or not advertised.contains(required):
+                missing = sorted(
+                    (required.transforms - (advertised.transforms if advertised else frozenset()))
+                    | (required.modifiers - (advertised.modifiers if advertised else frozenset()))
+                    | (required.scopes - (advertised.scopes if advertised else frozenset()))
+                    | (required.gates - (advertised.gates if advertised else frozenset()))
+                )
+                raise UnsupportedOperationError(
+                    f"{type(state_control).__name__} requires intervention kind(s) "
+                    f"{', '.join(missing)} that the serving backend does not advertise; update the "
+                    "server's vllm_hook_plugins or run this pipeline on the huggingface backend."
+                )
+            entries.append(InterventionEntry(spec=spec))
+        return tuple(entries)
+
     def _resolve_decoding_driver(self) -> DecodingDriver:
         """The sole enabled DecodingDriver, else the default (model.generate).
 
@@ -1249,20 +1309,37 @@ class SteeringPipeline:
         inference_spec = self._resolve_backend_spec(self.backend)
         backend = self._backend_for(inference_spec)
         decoding_driver = self._resolve_decoding_driver()
+        inference_capabilities = capabilities_for_spec(inference_spec)
+        hooks_in_process = Capability.IN_PROCESS_TORCH in inference_capabilities.atoms
+        has_enabled_state = any(getattr(control, "enabled", True) for control in self.state_controls)
 
-        # state controls; distinct per-item derived seeds run serially in the in-process session,
-        # so hooks are computed per row there rather than once on the batch
+        # state-control entry selection per backend: an in-process backend gets hooks via the
+        # existing get_hooks path; an intervention-capable backend gets exported specs. On the
+        # in-process path, distinct per-item derived seeds run serially in the session, so hooks
+        # are computed per row there rather than once on the batch.
         state_entry_rows: list[tuple[HookEntry, ...]] | None = None
-        if (
-            decoding_driver is self._default_driver
-            and gen_kwargs.get("seed") is not None
+        state_entries: tuple[StateControlEntry, ...] = ()
+        if decoding_driver is not self._default_driver:
+            if has_enabled_state and not hooks_in_process:
+                raise UnsupportedOperationError(
+                    "Custom decoding drivers execute state controls as in-process hooks, which the "
+                    f"'{inference_spec.kind}' backend does not run; run this pipeline on the "
+                    "huggingface backend."
+                )
+            state_entries = self._setup_state_controls(
+                steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs
+            )
+        elif not hooks_in_process:
+            if has_enabled_state:
+                state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs)
+        elif (
+            gen_kwargs.get("seed") is not None
             and steered_input_ids.size(0) > 1
-            and any(getattr(control, "enabled", True) for control in self.state_controls)
+            and has_enabled_state
         ):
             state_entry_rows = self._per_item_state_entries(
                 steered_input_ids, steered_attention_mask, runtime_kwargs, **gen_kwargs
             )
-            state_entries: tuple[HookEntry, ...] = ()
         else:
             state_entries = self._setup_state_controls(
                 steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs

@@ -39,21 +39,26 @@ logger = logging.getLogger(__name__)
 PLACEMENTS = ("layer_output", "layer_input", "o_proj")
 
 
-def intervention_generate_requirement(plan: InterventionKinds | None) -> tuple[Alternative, ...]:
+def intervention_generate_requirement(
+    plan: InterventionKinds | None,
+    hook_only_hint: str | None = None,
+) -> tuple[Alternative, ...]:
     """The generate-phase requirement for a state control with the given kind plan.
 
     A configuration with a wire form runs in-process or on any backend advertising
     `INTERVENTION_SPECS` with the planned kinds; a configuration without one (`plan` is None)
-    keeps the conservative in-process requirement.
+    keeps the conservative in-process requirement, with `hook_only_hint` naming the gap in the
+    unsupported verdict.
 
     Args:
         plan: The kind names the configuration serializes to, or None when hook-only.
+        hook_only_hint: Verdict hint used when `plan` is None.
 
     Returns:
         The requirement alternatives.
     """
     if plan is None:
-        return needs(Capability.IN_PROCESS_TORCH)
+        return needs(Capability.IN_PROCESS_TORCH, hint=hook_only_hint)
     return any_of(
         needs(Capability.IN_PROCESS_TORCH),
         needs(Capability.INTERVENTION_SPECS, kinds=plan),
