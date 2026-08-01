@@ -112,9 +112,13 @@ class InputControl(BaseControl):
         self,
         model=None,
         tokenizer=None,
+        session=None,
         **kwargs,
     ) -> None:
-        """Optional offline preparation. Default is no-op."""
+        """Optional offline preparation. Default is no-op.
+
+        `session` is a `SteeringSession` on the steering backend, provided by the pipeline.
+        """
         pass
 
 

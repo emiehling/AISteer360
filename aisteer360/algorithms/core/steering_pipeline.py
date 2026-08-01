@@ -19,19 +19,19 @@ from transformers import (
     StoppingCriteriaList,
 )
 
+from aisteer360.algorithms.core.execution.registry import (
+    capabilities_for_spec,
+    resolve_backend_class,
+)
+from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
+from aisteer360.algorithms.core.execution.support import SupportReport, evaluate_support
+from aisteer360.algorithms.core.output import Output, infer_finish_reasons
 from aisteer360.algorithms.core.utils.controls import (
     merge_controls,
     warn_if_adapt_messages_bypassed,
 )
 from aisteer360.algorithms.core.utils.generation import (
     apply_adapt_messages_and_tokenize,
-)
-from aisteer360.algorithms.core.output import Output, infer_finish_reasons
-from aisteer360.utils.tokenization import (
-    ensure_pad_token,
-    infer_attention_mask_from_ids,
-    to_left_pad,
-    warn_if_duplicate_bos,
 )
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.output_control.base import (
@@ -41,6 +41,12 @@ from aisteer360.algorithms.output_control.base import (
 )
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.structural_control.base import StructuralControl
+from aisteer360.utils.tokenization import (
+    ensure_pad_token,
+    infer_attention_mask_from_ids,
+    to_left_pad,
+    warn_if_duplicate_bos,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +88,12 @@ class SteeringPipeline:
             Useful when a `StructuralControl` will itself load or create the final weights
             (e.g., MergeKit). When `False`, the model is loaded during `SteeringPipeline`
             construction. Defaults to `False`.
+        backend (BackendSpec | str, optional): The inference backend. Defaults to the in-process
+            Hugging Face backend described by this pipeline's own construction arguments. A
+            `BackendSpec` of another kind is accepted by `check()` for support reporting;
+            execution is currently implemented for the `"huggingface"` kind only.
+        steer_backend (BackendSpec | str, optional): The steering backend, used for the controls'
+            steer phase. Defaults to `backend`.
 
     Raises:
         RuntimeError: If `generate()` is called before `steer()`
@@ -127,10 +139,13 @@ class SteeringPipeline:
     hf_model_kwargs: dict = field(default_factory=dict)
     trust_remote_code: bool = False
     lazy_init: bool = False
+    backend: BackendSpec | str | None = None
+    steer_backend: BackendSpec | str | None = None
 
     # lazy‑filled fields
     model: PreTrainedModel | None = field(init=False, default=None)
     tokenizer: AutoTokenizer | None = field(init=False, default=None)
+    _support_report: SupportReport | None = field(init=False, default=None, repr=False)
 
     structural_controls: list[StructuralControl] = field(init=False)
     input_controls: list[InputControl] = field(init=False)
@@ -242,6 +257,83 @@ class SteeringPipeline:
                 UserWarning,
             )
 
+    def _resolve_backend_spec(self, value: BackendSpec | str | None) -> BackendSpec:
+        """Resolve a backend argument to a `BackendSpec`.
+
+        None and `"huggingface"` resolve to the implicit in-process spec derived from this
+        pipeline's construction arguments; another known kind name resolves to a bare spec of
+        that kind carrying the pipeline's model reference; a `BackendSpec` passes through.
+
+        Raises:
+            TypeError: If `value` is neither None, a known kind name, nor a `BackendSpec`.
+        """
+        if isinstance(value, BackendSpec):
+            return value
+        model = str(self.model_name_or_path) if self.model_name_or_path is not None else None
+        if value is None or value == "huggingface":
+            return BackendSpec(
+                kind="huggingface",
+                model=model,
+                options={
+                    "hf_model_kwargs": self.hf_model_kwargs,
+                    "device_map": self.device_map,
+                    "trust_remote_code": self.trust_remote_code,
+                    "tokenizer_name_or_path": self.tokenizer_name_or_path,
+                },
+            )
+        if isinstance(value, str) and value in KNOWN_BACKEND_KINDS:
+            return BackendSpec(kind=value, model=model)
+        raise TypeError(
+            f"backend must be a BackendSpec or one of {', '.join(KNOWN_BACKEND_KINDS)}; got {value!r}."
+        )
+
+    def _resolve_backend_pair(self) -> tuple[BackendSpec, BackendSpec]:
+        """The (steering, inference) backend specs; the steering spec defaults to the inference
+        spec."""
+        inference_spec = self._resolve_backend_spec(self.backend)
+        if self.steer_backend is None:
+            return inference_spec, inference_spec
+        return self._resolve_backend_spec(self.steer_backend), inference_spec
+
+    def check(
+        self,
+        steer_backend: BackendSpec | str | None = None,
+        inference_backend: BackendSpec | str | None = None,
+    ) -> SupportReport:
+        """Evaluate every enabled control's backend requirements; support is binary per phase.
+
+        Runs automatically at `steer()` (which raises on steer- or generate-phase failures) and
+        is callable standalone against any backend pair. Disabled controls, including the
+        pipeline's default identity controls, never gate a backend and do not appear in the
+        report.
+
+        Args:
+            steer_backend: Steering backend to evaluate against. Defaults to the pipeline's
+                `steer_backend`, then to the inference backend.
+            inference_backend: Inference backend to evaluate against. Defaults to the pipeline's
+                `backend`, then to the implicit in-process backend.
+
+        Returns:
+            The `SupportReport` with one failure per unsupported (control, phase) pair.
+        """
+        inference_spec = self._resolve_backend_spec(
+            inference_backend if inference_backend is not None else self.backend
+        )
+        if steer_backend is not None:
+            steer_spec = self._resolve_backend_spec(steer_backend)
+        elif self.steer_backend is not None:
+            steer_spec = self._resolve_backend_spec(self.steer_backend)
+        else:
+            steer_spec = inference_spec
+        controls = (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls)
+        return evaluate_support(
+            controls,
+            steer_spec,
+            inference_spec,
+            capabilities_for_spec(steer_spec),
+            capabilities_for_spec(inference_spec),
+        )
+
     def steer(self, **steer_kwargs) -> None:
         """Apply all steering controls to the model in place.
 
@@ -252,6 +344,11 @@ class SteeringPipeline:
         If any control's steer() method returns a PreTrainedModel instance, it replaces the current model for
         subsequent controls, so structural controls thread the model through in list order.
 
+        Before any control runs, `check()` evaluates the configured backend pair and raises on
+        any steer- or generate-phase failure. Each control's `steer()` additionally receives
+        `session=`, a `SteeringSession` on the steering backend, unless the caller supplied its
+        own `session` keyword. The session is closed when `steer()` returns.
+
         Args:
             **steer_kwargs: Keyword arguments passed to all control steer() methods
 
@@ -261,19 +358,46 @@ class SteeringPipeline:
 
         Raises:
             RuntimeError: If called more than once or no model available after steering
+            UnsupportedPipelineError: If any enabled control is unsupported at the steer or
+                generate phase on the configured backends.
+            NotImplementedError: If a configured backend is not of the `"huggingface"` kind;
+                execution on other kinds is not yet implemented.
         """
         if self._is_steered:
             return
 
         self._warn_on_runtime_kwargs_overlap()
 
+        steer_spec, inference_spec = self._resolve_backend_pair()
+        report = self.check(steer_backend=steer_spec, inference_backend=inference_spec)
+        report.raise_for("steer", "generate")
+        self._support_report = report
+
+        for spec in (steer_spec, inference_spec):
+            if spec.kind != "huggingface":
+                raise NotImplementedError(
+                    f"Execution on backend kind '{spec.kind}' is not yet implemented; only "
+                    "'huggingface' execution is available. `check()` reports support for other "
+                    "backend kinds."
+                )
+
+        backend_cls = resolve_backend_class(steer_spec)
+        steering_backend = backend_cls.adopt(
+            steer_spec, lambda: self.model, lambda: self.tokenizer
+        )
+
         # steer each control (bottom-up order: structural -> input -> state -> output)
-        for control in (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls):
-            steer_fn = getattr(control, "steer", None)
-            if callable(steer_fn):
-                maybe_new_model = steer_fn(self.model, tokenizer=self.tokenizer, **steer_kwargs)
-                if isinstance(maybe_new_model, nn.Module):
-                    self.model = maybe_new_model
+        with steering_backend.open_session() as session:
+            if "session" not in steer_kwargs:
+                steer_kwargs = {**steer_kwargs, "session": session}
+            for control in (
+                *self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls,
+            ):
+                steer_fn = getattr(control, "steer", None)
+                if callable(steer_fn):
+                    maybe_new_model = steer_fn(self.model, tokenizer=self.tokenizer, **steer_kwargs)
+                    if isinstance(maybe_new_model, nn.Module):
+                        self.model = maybe_new_model
 
         # safety checks
         if self.model is None:
@@ -1031,11 +1155,15 @@ class SteeringPipeline:
         Raises:
             RuntimeError: If steer() has not been called
             ValueError: If ref_output_ids is None
+            UnsupportedPipelineError: If an enabled control is score-unsupported on the
+                configured inference backend.
         """
         if not self._is_steered:
             raise RuntimeError("Must call `.steer()` before `.compute_logprobs()`.")
         if ref_output_ids is None:
             raise ValueError("`ref_output_ids` is required for `compute_logprobs()`.")
+        if self._support_report is not None:
+            self._support_report.raise_for("score")
 
         runtime_kwargs = runtime_kwargs or {}
         device = self.model.device

@@ -30,6 +30,8 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
+from aisteer360.algorithms.core.execution.capabilities import Capability
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 
 
 class StructuralControl(BaseControl):
@@ -52,10 +54,29 @@ class StructuralControl(BaseControl):
             self,
             model: PreTrainedModel,
             tokenizer: PreTrainedTokenizer = None,
+            session=None,
             **kwargs
     ) -> PreTrainedModel:
-        """Required steering/preparation."""
+        """Required steering/preparation.
+
+        `session` is a `SteeringSession` on the steering backend, provided by the pipeline.
+        """
         pass
+
+    def requirements(self) -> Requirements:
+        """Backend requirements computed from this instance's configuration, per phase.
+
+        Structural controls train against the live model, so the steer phase requires
+        `Capability.IN_PROCESS_TORCH` and `Capability.WEIGHT_TRAINING`. The generate phase
+        requires `Capability.IN_PROCESS_TORCH`, since the returned model is adopted in process.
+
+        Returns:
+            The control's phase-keyed requirements.
+        """
+        return Requirements(
+            steer=needs(Capability.IN_PROCESS_TORCH, Capability.WEIGHT_TRAINING),
+            generate=needs(Capability.IN_PROCESS_TORCH),
+        )
 
 
 class NoStructuralControl(StructuralControl):

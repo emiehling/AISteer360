@@ -31,6 +31,8 @@ from transformers import LogitsProcessorList, PreTrainedModel, StoppingCriteriaL
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
+from aisteer360.algorithms.core.execution.capabilities import Capability
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 
 
 def stack_generate_kwargs(logits_processors, stopping_criteria) -> dict:
@@ -116,9 +118,26 @@ class OutputControl(BaseControl):
         """
         return []
 
-    def steer(self, model: PreTrainedModel, tokenizer=None, **kwargs) -> None:
-        """Optional one-time preparation (e.g., load a reward model, fit a probe)."""
+    def steer(self, model: PreTrainedModel, tokenizer=None, session=None, **kwargs) -> None:
+        """Optional one-time preparation (e.g., load a reward model, fit a probe).
+
+        `session` is a `SteeringSession` on the steering backend, provided by the pipeline.
+        """
         pass
+
+    def requirements(self) -> Requirements:
+        """Backend requirements computed from this instance's configuration, per phase.
+
+        The default requires `Capability.IN_PROCESS_TORCH` at generate and, when
+        `include_in_scoring` is True, at score as well, since remote prompt-logprob computation
+        applies neither live processors nor engine-registered sampling processors to prefill
+        logits. Setting `include_in_scoring=False` removes the score-phase requirement.
+
+        Returns:
+            The control's phase-keyed requirements.
+        """
+        score = needs(Capability.IN_PROCESS_TORCH) if self.include_in_scoring else ()
+        return Requirements(generate=needs(Capability.IN_PROCESS_TORCH), score=score)
 
 
 class DecodingDriver(OutputControl):

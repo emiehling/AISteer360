@@ -21,6 +21,12 @@ PRODUCTION_CLASSES = {
     "DecodingDriver", "HFGenerateDriver",
     "NoInputControl", "NoStructuralControl", "NoStateControl",
     "SteeringPipeline", "Benchmark", "ControlSpec", "Output",
+    "Backend", "BackendSpec", "BackendCapabilities", "Capability",
+    "InterventionKinds", "ProcessorKinds", "CaptureKinds",
+    "Requirements", "SpecConstraint", "SupportReport", "SupportFailure",
+    "HFBackend", "ExclusiveSession", "SteeringSession", "ModelLayout",
+    "PreparedPrompt", "GenerationParams", "GenerationItem", "ScoringItem",
+    "ItemResult", "CaptureResult", "HookEntry", "StackEntry",
 }
 
 PRODUCTION_FUNCTIONS = {

@@ -94,8 +94,12 @@ class StateControl(BaseControl):
     def steer(self,
               model: PreTrainedModel,
               tokenizer: PreTrainedTokenizerBase = None,
+              session=None,
               **kwargs) -> None:
-        """Optional steering/preparation."""
+        """Optional steering/preparation.
+
+        `session` is a `SteeringSession` on the steering backend, provided by the pipeline.
+        """
         pass
 
     def register_hooks(self, model: PreTrainedModel) -> None:

@@ -3,6 +3,8 @@ from abc import ABC
 from dataclasses import fields
 
 from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.algorithms.core.execution.capabilities import Capability
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 
 
 class BaseControl(ABC):
@@ -52,6 +54,20 @@ class BaseControl(ABC):
         reads, so subclasses never bypass a parent `__init__`. Default no-op.
         """
         pass
+
+    def requirements(self) -> Requirements:
+        """Backend requirements computed from this instance's configuration, per phase.
+
+        The default requires `Capability.IN_PROCESS_TORCH` at generate and nothing at steer or
+        score, which only the Hugging Face backend satisfies. A control with portable mechanisms
+        overrides this to state weaker or alternative requirements. Configuration determines the
+        result, so two configurations of one class may differ. Only enabled controls are
+        consulted during support evaluation.
+
+        Returns:
+            The control's phase-keyed requirements.
+        """
+        return Requirements(generate=needs(Capability.IN_PROCESS_TORCH))
 
     def cleanup(self) -> None:
         """Release resources allocated during `steer()`.

@@ -136,3 +136,4 @@ nav:
           - Instruction following: reference/evaluation/use_cases/instruction_following_use_case.md
           - Truthful QA: reference/evaluation/use_cases/truthful_qa_use_case.md
         - Benchmark: reference/evaluation/benchmark.md
+    - Backends: reference/backends.md
