@@ -6,9 +6,17 @@ import logging
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from aisteer360.algorithms.core.execution.capabilities import Capability, InterventionKinds
+from aisteer360.algorithms.core.execution.interventions import InterventionSpec
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 from aisteer360.algorithms.state_control.base import StateControl
-from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
+from aisteer360.algorithms.state_control._common.condition_scorers import ProbeContributionScorer
+from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate, CacheOnceGate, ProbeSumGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control._common.intervention_export import (
+    intervention_generate_requirement,
+    intervention_spec_from_runtime_config,
+)
 from aisteer360.algorithms.state_control._common.layout_facts import resolve_layout
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
@@ -75,9 +83,98 @@ class ActivationAdapter(StateControl):
         self._layer_names: list[str] | None = None
         self._layer_ids: list[int] = []
         self._condition_layer_ids: list[int] = []
+        self._num_layers: int | None = None
         self._gate = AlwaysOpenGate()
         self._pad_token_id: int | None = None
         self._runtime: TransformHookRuntime | None = None
+
+    def _gate_kind_plan(self) -> frozenset[str] | None:
+        """Wire gate kinds for this configuration; None marks the gating hook-only.
+
+        Probe-backed gating is the only conditional configuration with a wire form: the gate
+        must be a `ProbeSumGate` (bare or `cache_once`-wrapped) and, when this adapter drives
+        the condition path, `score_fn` must be the `ProbeContributionScorer` over the same
+        probe with condition layers matching the probe's layers, since the wire gate computes
+        the scorer's affine evidence from the probe weights itself. Threshold-comparator gating
+        (`MultiKeyThresholdGate`) has no wire serialization.
+        """
+        gate = self.gate
+        if gate is None or isinstance(gate, AlwaysOpenGate):
+            return frozenset()
+        inner = gate.inner if isinstance(gate, CacheOnceGate) else gate
+        if not isinstance(inner, ProbeSumGate):
+            return None
+        if self.score_fn is not None:
+            if not isinstance(self.score_fn, ProbeContributionScorer):
+                return None
+            if self.score_fn.probe is not inner.probe:
+                return None
+            if set(self.condition_layer_ids or []) != set(inner.probe.layer_ids):
+                return None
+        return frozenset({"cache_once", "probe_sum"})
+
+    def _intervention_kind_plan(self) -> InterventionKinds | None:
+        """Kind names this configuration lowers to; None marks it hook-only.
+
+        A factory-built transform is unknown before `steer()` and therefore conservative until
+        steered; a pre-hook at layer 0 edits the embedding output, which has no wire form.
+        """
+        transform = self._transform
+        if transform is None and isinstance(self.transform, BaseTransform):
+            transform = self.transform
+        if transform is None:
+            return None
+        plan = transform.wire_kind_plan()
+        if plan is None:
+            return None
+        gates = self._gate_kind_plan()
+        if gates is None:
+            return None
+        layer_ids = self._layer_ids or list(self.layer_ids or [])
+        if self.hook_point == "layer_input" and 0 in layer_ids:
+            return None
+        kind, modifiers = plan
+        return InterventionKinds(
+            transforms=frozenset({kind}),
+            modifiers=modifiers,
+            scopes=frozenset({self.token_scope}),
+            gates=gates,
+        )
+
+    def requirements(self) -> Requirements:
+        """In-process hooks or intervention specs at generate; source fitting steers in-process."""
+        steer = ()
+        fits_at_steer = (
+            not isinstance(self.transform, BaseTransform) or not self.transform.is_bound
+        )
+        if fits_at_steer:
+            steer = needs(
+                Capability.IN_PROCESS_TORCH,
+                hint="supply a transform with a concrete artifact, or steer on the huggingface backend",
+            )
+        return Requirements(
+            steer=steer,
+            generate=intervention_generate_requirement(self._intervention_kind_plan()),
+        )
+
+    def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> InterventionSpec | None:
+        """The spec assembled from the adapter's transform chain, scope, and gate; None when any
+        element has no wire form."""
+        if self._transform is None or self._num_layers is None:
+            return None
+        if self._gate_kind_plan() is None:
+            return None
+        return intervention_spec_from_runtime_config(
+            transform=self._transform,
+            layer_ids=self._layer_ids,
+            token_scope=self.token_scope,
+            gate=self._gate,
+            num_layers=self._num_layers,
+            placement=self.hook_point,
+            last_k=self.last_k,
+            from_position=self.from_position,
+            runtime_kwargs=runtime_kwargs,
+        )
 
     def steer(
         self,
@@ -103,6 +200,7 @@ class ActivationAdapter(StateControl):
         """
         layout = resolve_layout(model, session)
         num_layers = layout.num_layers
+        self._num_layers = num_layers
         self._layer_names = get_model_layer_list(model)[1] if model is not None else None
 
         # behavior-layer resolution

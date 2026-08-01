@@ -103,6 +103,23 @@ class StateControl(BaseControl):
         """
         pass
 
+    def export_intervention_spec(self, runtime_kwargs: dict | None = None):
+        """The control's `InterventionSpec` for intervention-capable backends, or None.
+
+        The spec is the second serialization of the tuple the control's hooks close over,
+        emitted from the same transform, gate, and scope objects. Must be called after
+        `steer()`. Returns None when the configuration has no wire form (the configuration is
+        then hook-only) or when the control does not implement spec export at all.
+
+        Args:
+            runtime_kwargs: Per-call parameters, mirroring `get_hooks`; per-item values
+                (strengths, positions) serialize into the returned spec.
+
+        Returns:
+            The validated `InterventionSpec` with tensor payloads attached, or None.
+        """
+        return None
+
     def register_hooks(self, model: PreTrainedModel) -> None:
         """Attach hooks to model.
 

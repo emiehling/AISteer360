@@ -3,9 +3,16 @@ from __future__ import annotations
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from aisteer360.algorithms.core.execution.capabilities import Capability, InterventionKinds
+from aisteer360.algorithms.core.execution.interventions import InterventionSpec
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control._common.intervention_export import (
+    intervention_generate_requirement,
+    intervention_spec_from_runtime_config,
+)
 from aisteer360.algorithms.state_control._common.layout_facts import cast_steering_vector, resolve_layout
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import FixedLayerSelector, FractionalDepthSelector
@@ -53,9 +60,59 @@ class CAA(StateControl):
         self._transform = None
         self._layer_names: list[str] | None = None
         self._layer_id: int = 0
+        self._num_layers: int | None = None
         self._gate = AlwaysOpenGate()
         self._pad_token_id: int | None = None
         self._runtime = TransformHookRuntime(hook_point="layer_output")
+
+    def _intervention_kind_plan(self) -> InterventionKinds | None:
+        """Kind names this configuration lowers to; None marks it hook-only."""
+        transform = self._transform
+        if transform is not None:
+            plan = transform.wire_kind_plan()
+        else:
+            source = self._steering_vector if self._steering_vector is not None else self.steering_vector
+            if source is not None and source.is_positional:
+                return None
+            modifiers = frozenset({"norm_preserving"}) if self.use_norm_preservation else frozenset()
+            plan = ("additive", modifiers)
+        if plan is None:
+            return None
+        kind, modifiers = plan
+        return InterventionKinds(
+            transforms=frozenset({kind}),
+            modifiers=modifiers,
+            scopes=frozenset({self.token_scope}),
+        )
+
+    def requirements(self) -> Requirements:
+        """In-process hooks or intervention specs at generate; fitting from data steers in-process."""
+        steer = ()
+        if self.steering_vector is None:
+            steer = needs(
+                Capability.IN_PROCESS_TORCH,
+                hint="supply a fitted `steering_vector`, or steer on the huggingface backend",
+            )
+        return Requirements(
+            steer=steer,
+            generate=intervention_generate_requirement(self._intervention_kind_plan()),
+        )
+
+    def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> InterventionSpec | None:
+        """The `additive` spec for the steered layer; None for positional configurations."""
+        if self._transform is None or self._num_layers is None:
+            return None
+        return intervention_spec_from_runtime_config(
+            transform=self._transform,
+            layer_ids=[self._layer_id],
+            token_scope=self.token_scope,
+            gate=self._gate,
+            num_layers=self._num_layers,
+            placement="layer_output",
+            last_k=self.last_k,
+            from_position=self.from_position,
+            runtime_kwargs=runtime_kwargs,
+        )
 
     def steer(
         self,
@@ -81,6 +138,7 @@ class CAA(StateControl):
         """
         layout = resolve_layout(model, session)
         num_layers = layout.num_layers
+        self._num_layers = num_layers
         self._layer_names = get_model_layer_list(model)[1] if model is not None else None
 
         # resolve steering vector

@@ -4,8 +4,15 @@ from __future__ import annotations
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from aisteer360.algorithms.core.execution.capabilities import Capability, InterventionKinds
+from aisteer360.algorithms.core.execution.interventions import InterventionSpec
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
+from aisteer360.algorithms.state_control._common.intervention_export import (
+    intervention_generate_requirement,
+    intervention_spec_from_runtime_config,
+)
 from aisteer360.algorithms.state_control._common.layout_facts import cast_steering_vector, resolve_layout
 from aisteer360.algorithms.state_control._common.model_layout import resolve_model_layout
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
@@ -57,9 +64,71 @@ class ITI(StateControl):
         self._layer_names: list[str] | None = None
         self._oproj_names: list[str] | None = None
         self._active_layer_ids: set[int] = set()
+        self._num_layers: int | None = None
         self._gate = AlwaysOpenGate()
         self._pad_token_id: int | None = None
         self._runtime = TransformHookRuntime(hook_point="layer_input")
+
+    def _intervention_kind_plan(self) -> InterventionKinds | None:
+        """Kind names this configuration lowers to; None marks it hook-only.
+
+        The `norm_preserving` wire modifier rescales the per-head stream rather than the full
+        residual row, so norm-preserving configurations are hook-only. The wire kind carries
+        the `tensor_parallel_size==1` constraint, enforced at submission.
+        """
+        if self.use_norm_preservation:
+            return None
+        if self._transform is not None:
+            plan = self._transform.wire_kind_plan()
+            if plan is None:
+                return None
+            kind, modifiers = plan
+        else:
+            kind, modifiers = "head_additive", frozenset()
+        return InterventionKinds(
+            transforms=frozenset({kind}),
+            modifiers=modifiers,
+            scopes=frozenset({self.token_scope}),
+        )
+
+    def requirements(self) -> Requirements:
+        """In-process hooks or intervention specs at generate; fitting always steers in-process.
+
+        Fitting ITI captures pre-`o_proj` per-head activations, a capture kind no backend
+        advertises, so `data`-fitted configurations require the in-process backend at steer.
+        """
+        steer = ()
+        if self.steering_vector is None:
+            steer = needs(
+                Capability.IN_PROCESS_TORCH,
+                hint=(
+                    "fitting ITI requires head-level capture, which no backend advertises; "
+                    "supply `steering_vector` or steer on huggingface"
+                ),
+            )
+        return Requirements(
+            steer=steer,
+            generate=intervention_generate_requirement(self._intervention_kind_plan()),
+        )
+
+    def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> InterventionSpec | None:
+        """The `head_additive` spec over the active layers; None for norm-preserving
+        configurations."""
+        if self._transform is None or self._num_layers is None:
+            return None
+        if self._intervention_kind_plan() is None:
+            return None
+        return intervention_spec_from_runtime_config(
+            transform=self._transform,
+            layer_ids=sorted(self._active_layer_ids),
+            token_scope=self.token_scope,
+            gate=self._gate,
+            num_layers=self._num_layers,
+            placement="o_proj",
+            last_k=self.last_k,
+            from_position=self.from_position,
+            runtime_kwargs=runtime_kwargs,
+        )
 
     def steer(
         self,
@@ -84,6 +153,7 @@ class ITI(StateControl):
             The input model, unchanged.
         """
         seam_layout = resolve_layout(model, session)
+        self._num_layers = seam_layout.num_layers
         if model is not None:
             module_layout = resolve_model_layout(model)
             self._layer_names = module_layout.layer_names

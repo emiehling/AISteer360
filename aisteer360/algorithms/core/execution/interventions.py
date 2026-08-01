@@ -39,9 +39,14 @@ class InterventionSpec:
     Attributes:
         ops: The intervention ops, each a mapping with keys `"layers"`, `"transform"`,
             `"scope"`, and `"gate"`.
+        artifacts: Tensor payloads keyed by the content-addressed artifact ids the ops
+            reference, each a mapping from tensor name to a float32 contiguous CPU tensor.
+            Sessions materialize these into the registry the serving engine reads before
+            submission. Excluded from equality, the wire form, and the canonical form.
     """
 
     ops: tuple[Mapping[str, Any], ...] = ()
+    artifacts: Mapping[str, Mapping[str, Any]] = field(default_factory=dict, compare=False)
 
     def to_wire(self) -> dict[str, Any]:
         """The plain-data wire form, `{"ops": [...]}`, with nested mappings and sequences

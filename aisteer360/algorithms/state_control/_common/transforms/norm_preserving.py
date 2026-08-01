@@ -41,6 +41,29 @@ class NormPreservingTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return self._inner.covered_layer_ids
 
+    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
+        """The inner plan with the `norm_preserving` modifier added.
+
+        The wire modifier rescales over the last tensor dimension, which matches the hook
+        semantics on the residual stream only; a wrapped `head_additive` (per-head stream)
+        is hook-only.
+        """
+        plan = self._inner.wire_kind_plan()
+        if plan is None:
+            return None
+        kind, modifiers = plan
+        if kind == "head_additive":
+            return None
+        return kind, modifiers | {"norm_preserving"}
+
+    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
+        """The inner transform's wire payload with a `norm_preserving` modifier appended."""
+        payload = self._inner.to_intervention_op_payload(layer_id)
+        if payload is None:
+            return None
+        payload["modifiers"].append({"kind": "norm_preserving", "params": {}, "tensors": {}})
+        return payload
+
     def apply(
         self,
         hidden_states: torch.Tensor,

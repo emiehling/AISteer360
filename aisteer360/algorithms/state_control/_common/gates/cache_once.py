@@ -45,3 +45,14 @@ class CacheOnceGate(BaseGate):
     def is_ready(self) -> bool:
         """True once the decision is frozen or the inner gate is ready."""
         return self._cached is not None or self.inner.is_ready()
+
+    def to_intervention_gate(self) -> dict | None:
+        """The `cache_once` wire payload wrapping the inner gate's payload.
+
+        Returns None when the inner gate has no wire form or is the always-open sentinel,
+        since the wire kind requires a conditional inner gate.
+        """
+        inner = self.inner.to_intervention_gate()
+        if inner is None or inner.get("kind") == "null":
+            return None
+        return {"kind": "cache_once", "params": {}, "tensors": {}, "inner": inner}

@@ -6,12 +6,19 @@ import logging
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from aisteer360.algorithms.core.execution.capabilities import Capability, InterventionKinds
+from aisteer360.algorithms.core.execution.interventions import InterventionSpec
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 from aisteer360.algorithms.state_control._common.estimators import (
     ContrastiveDirectionEstimator,
     MeanDifferenceEstimator,
 )
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control._common.intervention_export import (
+    intervention_generate_requirement,
+    intervention_spec_from_runtime_config,
+)
 from aisteer360.algorithms.state_control._common.layout_facts import layout_torch_dtype, resolve_layout
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import FractionalDepthSelector
@@ -68,9 +75,67 @@ class DirectionalAblation(StateControl):
         self._transform = None
         self._layer_names: list[str] | None = None
         self._layer_ids: list[int] = []
+        self._num_layers: int | None = None
         self._gate = AlwaysOpenGate()
         self._pad_token_id: int | None = None
         self._runtime = TransformHookRuntime(hook_point="layer_output")
+
+    def _intervention_kind_plan(self) -> InterventionKinds | None:
+        """Kind names this configuration lowers to; None marks it hook-only.
+
+        The wire kind removes a single direction's component in full, so graded removal
+        (`alpha < 1.0`) and subspace ablation (`K > 1` directions) have no wire form.
+        """
+        if self._transform is not None:
+            plan = self._transform.wire_kind_plan()
+        else:
+            if self.alpha != 1.0:
+                return None
+            source = self._steering_vector if self._steering_vector is not None else self.steering_vector
+            if source is not None and source.is_positional:
+                return None
+            plan = (
+                "directional_ablation",
+                frozenset({"norm_preserving"}) if self.use_norm_preservation else frozenset(),
+            )
+        if plan is None:
+            return None
+        kind, modifiers = plan
+        return InterventionKinds(
+            transforms=frozenset({kind}),
+            modifiers=modifiers,
+            scopes=frozenset({self.token_scope}),
+        )
+
+    def requirements(self) -> Requirements:
+        """In-process hooks or intervention specs at generate; fitting from data steers in-process."""
+        steer = ()
+        if self.steering_vector is None:
+            steer = needs(
+                Capability.IN_PROCESS_TORCH,
+                hint="supply a fitted `steering_vector`, or steer on the huggingface backend",
+            )
+        return Requirements(
+            steer=steer,
+            generate=intervention_generate_requirement(self._intervention_kind_plan()),
+        )
+
+    def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> InterventionSpec | None:
+        """The `directional_ablation` spec over the target layers; None for graded or subspace
+        configurations."""
+        if self._transform is None or self._num_layers is None:
+            return None
+        return intervention_spec_from_runtime_config(
+            transform=self._transform,
+            layer_ids=self._layer_ids,
+            token_scope=self.token_scope,
+            gate=self._gate,
+            num_layers=self._num_layers,
+            placement="layer_output",
+            last_k=self.last_k,
+            from_position=self.from_position,
+            runtime_kwargs=runtime_kwargs,
+        )
 
     def steer(
         self,
@@ -99,6 +164,7 @@ class DirectionalAblation(StateControl):
         """
         layout = resolve_layout(model, session)
         num_layers = layout.num_layers
+        self._num_layers = num_layers
         self._layer_names = get_model_layer_list(model)[1] if model is not None else None
 
         # resolve the direction (identical to CAA)
