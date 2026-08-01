@@ -30,6 +30,11 @@ class Capability(Enum):
         MODEL_ADOPTION: The backend can adopt an in-memory model produced by a structural control.
         SERVE_CHECKPOINT: The backend can serve a checkpoint directory produced elsewhere.
         SERVE_LORA: The backend can serve a LoRA adapter produced elsewhere.
+        GUIDED_DECODING: The backend hosts declarative constrained decoding natively, rendered
+            from a `ConstraintSource` onto its structured-output request parameters. The
+            Hugging Face backend does not advertise this atom, since the in-process arm serves
+            the constraint class through a client-compiled automaton; requirements state the
+            relationship as alternatives.
     """
 
     IN_PROCESS_TORCH = "in_process_torch"
@@ -41,6 +46,7 @@ class Capability(Enum):
     MODEL_ADOPTION = "model_adoption"
     SERVE_CHECKPOINT = "serve_checkpoint"
     SERVE_LORA = "serve_lora"
+    GUIDED_DECODING = "guided_decoding"
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +124,24 @@ class CaptureKinds:
 
 
 @dataclass(frozen=True, slots=True)
+class ConstraintKinds:
+    """Constrained-decoding kinds a backend hosts natively, by declarative kind name.
+
+    The kind set is static per backend version (the engine's structured-output surface needs no
+    discovery), e.g. `{"json_schema", "regex", "grammar", "choice"}`.
+
+    Attributes:
+        constraints: Constraint kind names.
+    """
+
+    constraints: frozenset[str] = frozenset()
+
+    def contains(self, required: "ConstraintKinds") -> bool:
+        """Return True when every required kind name is advertised."""
+        return required.constraints <= self.constraints
+
+
+@dataclass(frozen=True, slots=True)
 class BackendCapabilities:
     """A backend's full capability advertisement: atoms plus negotiated kind sets.
 
@@ -129,9 +153,12 @@ class BackendCapabilities:
             `Capability.PER_STEP_LOGIT_SPECS` is among the atoms.
         capture_kinds: Advertised capture kinds, present when `Capability.HIDDEN_CAPTURE` is
             among the atoms.
+        constraint_kinds: Advertised constrained-decoding kinds, present when
+            `Capability.GUIDED_DECODING` is among the atoms.
     """
 
     atoms: frozenset[Capability] = frozenset()
     intervention_kinds: InterventionKinds | None = None
     processor_kinds: ProcessorKinds | None = None
     capture_kinds: CaptureKinds | None = None
+    constraint_kinds: ConstraintKinds | None = None

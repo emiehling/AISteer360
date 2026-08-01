@@ -291,3 +291,200 @@ class TestSpecParityOnEngine:
         engine_ids = out.output_ids[0].tolist()
         overlap = min(len(reference_ids), len(engine_ids))
         assert engine_ids[:overlap] == reference_ids[:overlap]
+
+
+class TestCaptureOnEngine:
+    """P3 capture and probe-path fixtures. Skip without a live plugin engine."""
+
+    @pytest.mark.parametrize("location", ["layer_output", "layer_input"])
+    @pytest.mark.parametrize("mode", ["all_tokens", "last_token"])
+    def test_capture_parity_with_in_process_funnel(self, plugin_backend, mode, location):
+        from aisteer360.algorithms.core.execution import BackendSpec
+        from aisteer360.backends.huggingface import HFBackend
+
+        tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
+        prompts = [
+            PreparedPrompt.from_text("The committee reviewed the proposal"),
+            PreparedPrompt.from_text("A short prompt"),
+        ]
+        layers = [1, 2]
+
+        hf_backend = HFBackend.adopt(
+            BackendSpec(kind="huggingface"), lambda: model, lambda: tokenizer,
+        )
+        with hf_backend.open_session() as hf_session:
+            reference = hf_session.capture(prompts, layers, mode, location=location)
+        with plugin_backend.open_session() as session:
+            captured = session.capture(prompts, layers, mode, location=location)
+
+        assert captured.attention_mask.tolist() == reference.attention_mask.tolist()
+        for layer in layers:
+            assert torch.allclose(
+                captured.hidden[layer].float(), reference.hidden[layer].float(),
+                atol=5e-2, rtol=5e-2,
+            )
+
+    def test_vector_fitted_on_engine_steers_in_process(self, plugin_backend):
+        from aisteer360.algorithms.core.internals.data import ContrastivePairs
+        from aisteer360.algorithms.state_control._common.estimators import (
+            MeanDifferenceEstimator,
+        )
+        from aisteer360.algorithms.state_control._common.specs import VectorTrainSpec
+
+        pairs = ContrastivePairs(
+            positives=["the committee approved it", "they agreed at once"],
+            negatives=["the committee rejected it", "they refused at once"],
+        )
+        spec = VectorTrainSpec(method="mean_diff", accumulate="last_token", prompt_format="raw")
+        tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
+
+        with plugin_backend.open_session() as session:
+            remote_vector = MeanDifferenceEstimator().fit(
+                None, tokenizer, data=pairs, spec=spec, session=session,
+            )
+        local_vector = MeanDifferenceEstimator().fit(model, tokenizer, data=pairs, spec=spec)
+        for layer in local_vector.directions:
+            assert torch.allclose(
+                remote_vector.directions[layer], local_vector.directions[layer],
+                atol=5e-2, rtol=5e-2,
+            )
+
+    def test_conditional_gate_open_vs_closed_matches_in_process(self, plugin_backend):
+        """A probe-gated adapter fires on the gate-open prompt and stays inert on the
+        gate-closed prompt, matching in-process decisions (P3.5)."""
+        from aisteer360.algorithms.core.internals.probes import Probe
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
+        from aisteer360.algorithms.state_control.activation_adapter.control import (
+            ActivationAdapter,
+        )
+
+        layout = plugin_backend._layout
+        hidden = layout.hidden_size
+        tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
+
+        open_prompt = "the committee approved the proposal"
+        closed_prompt = "nothing to see here at all"
+        enc_open = tokenizer(open_prompt, return_tensors="pt")
+        enc_closed = tokenizer(closed_prompt, return_tensors="pt")
+
+        # a probe whose weights separate the two prompts at layer 1's input
+        from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
+        hs_open = layerwise_tokenwise_hidden(model, dict(enc_open), location="layer_input")
+        hs_closed = layerwise_tokenwise_hidden(model, dict(enc_closed), location="layer_input")
+        weight = (hs_open[1].mean(dim=(0, 1)) - hs_closed[1].mean(dim=(0, 1))).float()
+        weight = weight / weight.norm()
+        score_open = float(hs_open[1].float().mean(dim=(0, 1)) @ weight)
+        score_closed = float(hs_closed[1].float().mean(dim=(0, 1)) @ weight)
+        bias = -(score_open + score_closed) / 2
+        probe = Probe(
+            model_type=getattr(model.config, "model_type", "unknown"),
+            location="layer_input", pooling="mean", layer_ids=[1],
+            weights={1: weight}, bias=bias, meta={},
+        )
+
+        generator = torch.Generator().manual_seed(9)
+        vector = {2: 6.0 * torch.randn(1, hidden, generator=generator)}
+
+        def factory():
+            return ActivationAdapter(
+                transform=AdditiveTransform(vector, strength=1.0),
+                layer_ids=[2], hook_point="layer_input", token_scope="all",
+                **probe.as_condition(allow_model_mismatch=True),
+            )
+
+        def run(backend_spec, backend=None):
+            pipeline = SteeringPipeline(
+                controls=[factory()], lazy_init=True, backend=backend_spec,
+                steer_backend="huggingface",
+            )
+            pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
+            pipeline.tokenizer = tokenizer
+            if backend is not None:
+                pipeline._backends[backend.spec] = backend
+            pipeline.steer()
+            return [
+                pipeline.generate(text=prompt, max_new_tokens=8, do_sample=False, return_output=True)
+                for prompt in (open_prompt, closed_prompt)
+            ]
+
+        hf_outputs = run("huggingface")
+        engine_outputs = run(plugin_backend.spec, plugin_backend)
+        for hf_out, engine_out in zip(hf_outputs, engine_outputs):
+            hf_ids = hf_out.output_ids[0].tolist()
+            engine_ids = engine_out.output_ids[0].tolist()
+            overlap = min(len(hf_ids), len(engine_ids))
+            assert engine_ids[:overlap] == hf_ids[:overlap]
+
+    def test_routed_decoding_end_to_end_on_engine(self, plugin_backend):
+        from aisteer360.algorithms.core.internals.data import ContrastivePairs
+        from aisteer360.algorithms.core.internals.probes import (
+            P,
+            ProbeFitSpec,
+            ProbeSetFit,
+            RoutingRules,
+            Rule,
+        )
+        from aisteer360.algorithms.output_control.routed_decoding import (
+            RoutedDecoding,
+            respond,
+        )
+
+        pairs = ContrastivePairs(
+            positives=["the committee approved it"],
+            negatives=["nothing to see here"],
+        )
+        control = RoutedDecoding(
+            probes=ProbeSetFit(
+                data={"topic": pairs},
+                spec=ProbeFitSpec(method="mean_diff", pooling="mean", location="layer_input",
+                                  prompt_format="raw", candidate_layers=[1]),
+            ),
+            rules=RoutingRules(rules=[Rule("topic", when=P("topic"), action=respond("ROUTED"))]),
+        )
+        pipeline = SteeringPipeline(
+            controls=[control], lazy_init=True, backend=plugin_backend.spec,
+            steer_backend="huggingface",
+        )
+        pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
+        pipeline.tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        pipeline._backends[plugin_backend.spec] = plugin_backend
+        pipeline.steer()
+        text = pipeline.generate(text="the committee approved it", max_new_tokens=8, do_sample=False)
+        assert isinstance(text, str)
+
+
+class TestConstraintParityOnEngine:
+    """P4 parity fixture: one declarative source constrains identically on both arms."""
+
+    def test_json_schema_constrained_parity(self, engine_backend):
+        import json
+
+        from aisteer360.algorithms.output_control.constrained_decoding import (
+            ConstrainedDecoding,
+        )
+
+        pytest.importorskip("xgrammar")
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+        prompt = "Return a JSON object:"
+
+        def run(backend_spec, backend=None):
+            control = ConstrainedDecoding(json_schema=schema, include_in_scoring=False)
+            pipeline = SteeringPipeline(
+                controls=[control], lazy_init=True, backend=backend_spec,
+                steer_backend="huggingface",
+            )
+            pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
+            pipeline.tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+            if backend is not None:
+                pipeline._backends[backend.spec] = backend
+            pipeline.steer()
+            return pipeline.generate(text=prompt, max_new_tokens=24, do_sample=False)
+
+        hf_text = run("huggingface")
+        engine_text = run(engine_backend.spec, engine_backend)
+        assert json.loads(engine_text) is not None
+        assert json.loads(hf_text) is not None
+        assert engine_text == hf_text

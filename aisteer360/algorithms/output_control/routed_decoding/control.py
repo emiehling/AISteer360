@@ -7,13 +7,15 @@ from dataclasses import replace
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from aisteer360.algorithms.core.execution.capabilities import Capability, CaptureKinds
+from aisteer360.algorithms.core.execution.requirements import Requirements, any_of, needs
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.core.internals.probes import ProbeSetFit
 from aisteer360.algorithms.output_control._common.drivers.phased import (
     Fixed,
     PhasedDriver,
 )
-from aisteer360.algorithms.output_control.base import OutputControl
+from aisteer360.algorithms.output_control.base import OutputControl, resolve_generate_callable
 
 from .actions import Generate, Prefix, Respond
 from .args import RoutedDecodingArgs
@@ -100,12 +102,34 @@ class RoutedDecoding(PhasedDriver):
         self.tokenizer = None
         self.latest_routes: list[str] = []
 
+    def requirements(self) -> Requirements:
+        """In-process torch or hidden-state capture at generate; the probe pass reads the
+        prompt's hidden states, which a backend must either host in process or return."""
+        return Requirements(
+            generate=any_of(
+                needs(Capability.IN_PROCESS_TORCH),
+                needs(
+                    Capability.HIDDEN_CAPTURE,
+                    kinds=CaptureKinds(
+                        kinds=frozenset({"residual"}),
+                        locations=frozenset({"layer_input"}),
+                        modes=frozenset({"all_tokens"}),
+                    ),
+                    hint=(
+                        "the probe pass needs hidden-state capture, which this backend does not "
+                        "return; run on huggingface or the offline vLLM engine"
+                    ),
+                ),
+            ),
+        )
+
     def steer(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None = None,
         tokenizer: PreTrainedTokenizerBase | None = None,
+        session=None,
         **__,
-    ) -> PreTrainedModel:
+    ) -> PreTrainedModel | None:
         """Attach the tokenizer, resolve the probes on the pipeline's model, and validate.
 
         A `ProbeSetFit` is fitted here, on the model the pipeline provides (its `StatsSpec`,
@@ -130,8 +154,8 @@ class RoutedDecoding(PhasedDriver):
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
 
         if isinstance(self.probes, ProbeSetFit):
-            self.probes = self.probes.fit(model, self.tokenizer)
-        elif not self.allow_model_mismatch:
+            self.probes = self.probes.fit(model, self.tokenizer, session=session)
+        elif model is not None and not self.allow_model_mismatch:
             live_fingerprint = model_fingerprint(model)
             mismatched = [
                 name for name, probe in self.probes.probes.items()
@@ -144,18 +168,19 @@ class RoutedDecoding(PhasedDriver):
                     "or set allow_model_mismatch=True."
                 )
 
-        live_model_type = getattr(model.config, "model_type", "unknown")
-        if self.probes.model_type != live_model_type:
-            raise ValueError(
-                f"ProbeSet was fitted on model_type {self.probes.model_type!r} but the "
-                f"pipeline's model is {live_model_type!r}."
-            )
+        if model is not None:
+            live_model_type = getattr(model.config, "model_type", "unknown")
+            if self.probes.model_type != live_model_type:
+                raise ValueError(
+                    f"ProbeSet was fitted on model_type {self.probes.model_type!r} but the "
+                    f"pipeline's model is {live_model_type!r}."
+                )
 
         self.rules.validate_names(set(self.probes.names))
         return model
 
-    def decode(self, input_ids, attention_mask, model: PreTrainedModel, logits_processors,
-               stopping_criteria, runtime_kwargs, **gen_kwargs) -> torch.Tensor:
+    def decode(self, input_ids, attention_mask, model: PreTrainedModel | None, logits_processors,
+               stopping_criteria, runtime_kwargs, session=None, **gen_kwargs) -> torch.Tensor:
         """Read the probes on the prompt, route each row, and execute the routed phase plans.
 
         Args:
@@ -186,7 +211,7 @@ class RoutedDecoding(PhasedDriver):
             raise RuntimeError("RoutedDecoding requires a tokenizer; steer() must run first.")
 
         runtime_kwargs = runtime_kwargs or {}
-        base_generate = runtime_kwargs.get("base_generate") or (model.generate if model is not None else None)
+        base_generate = resolve_generate_callable(model, runtime_kwargs, session)
         overrides = runtime_kwargs.get("canned_responses") or {}
 
         if input_ids.dim() == 1:
@@ -195,7 +220,7 @@ class RoutedDecoding(PhasedDriver):
             attention_mask = attention_mask.unsqueeze(0)
         batch_size = input_ids.size(0)
 
-        readout = self.probes.read(model, input_ids, attention_mask)
+        readout = self.probes.read(model, input_ids, attention_mask, session=session)
         matched = self.rules.route(readout.decisions)
         self.latest_routes = [rule.name if rule is not None else "default" for rule in matched]
 

@@ -136,8 +136,10 @@ class LinearProbeEstimator:
             raise ValueError("LinearProbeEstimator supports pooling='last_token' only.")
         self.pooling = pooling
 
-    def _pool(self, model, tokenizer, sentences, batch_size, max_length, device) -> torch.Tensor:
+    def _pool(self, model, tokenizer, sentences, batch_size, max_length, device, session=None) -> torch.Tensor:
         """Last-non-pad-token hidden states for `sentences`, batched. Returns `[N, H]` on CPU."""
+        from aisteer360.algorithms.core.internals.capture import capture_hidden
+
         embeddings = []
         for start in range(0, len(sentences), batch_size):
             batch_texts = sentences[start:start + batch_size]
@@ -151,9 +153,15 @@ class LinearProbeEstimator:
             batch.pop("token_type_ids", None)
             batch = {k: v.to(device) for k, v in batch.items()}
             with torch.no_grad():
-                outputs = model(**batch, output_hidden_states=True, return_dict=True)
-                last_hidden = outputs.hidden_states[-1]
-            lengths = batch["attention_mask"].sum(-1) - 1
+                hidden, mask = capture_hidden(
+                    batch, model=model, session=session, batch_size=len(batch_texts),
+                    location="layer_output",
+                )
+            last_hidden = hidden[max(hidden)]
+            if mask is None:
+                lengths = torch.full((last_hidden.size(0),), last_hidden.size(1) - 1, dtype=torch.long)
+            else:
+                lengths = mask.sum(-1) - 1
             pooled = last_hidden[range(len(last_hidden)), lengths]
             embeddings.append(pooled.detach().cpu())
         return torch.vstack(embeddings)

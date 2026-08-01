@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
+from aisteer360.algorithms.core.internals.capture import capture_hidden
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.encoding import tokenize_texts
 from aisteer360.algorithms.core.internals.pooling import pool_over_spans, select_spans
@@ -155,7 +155,7 @@ class ConditionPointSelector(BaseSelector[ConditionPoint]):
     def select(
         self,
         *,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None,
         tokenizer: PreTrainedTokenizerBase,
         condition_directions: dict[int, torch.Tensor],
         data: ContrastivePairs,
@@ -163,6 +163,7 @@ class ConditionPointSelector(BaseSelector[ConditionPoint]):
         search_spec: ConditionSearchSpec,
         comparison_mode: CompMode | None = None,
         score: Literal["projected_cosine", "cosine"] = "projected_cosine",
+        session=None,
     ) -> ConditionPoint:
         """Run the grid search.
 
@@ -182,6 +183,8 @@ class ConditionPointSelector(BaseSelector[ConditionPoint]):
             search_spec: Search grid configuration.
             comparison_mode: The runtime condition aggregation mode CAST will use. Accepted for
                 caller symmetry with CAST; calibration pools over `fit_spec.accumulate` spans.
+            session: A `SteeringSession` serving hidden-state capture when no live model is
+                available.
             score: Score function applied to the calibration examples, matching the runtime
                 scorer the caller will build. `"projected_cosine"` scores a state as the cosine
                 similarity with its tanh'd rank-one projection onto the direction, which is
@@ -201,7 +204,7 @@ class ConditionPointSelector(BaseSelector[ConditionPoint]):
                 f"score must be 'projected_cosine' or 'cosine', got {score!r}."
             )
 
-        device = next(model.parameters()).device
+        device = next(model.parameters()).device if model is not None else torch.device("cpu")
 
         if fit_spec.location != "layer_input":
             warnings.warn(
@@ -221,12 +224,19 @@ class ConditionPointSelector(BaseSelector[ConditionPoint]):
         enc_neg = tokenize_texts(tokenizer, rendered.neg_texts, device, add_special_tokens=rendered.add_special_tokens)
 
         # extract hidden states at the layer-input boundary the runtime pre-hook observes
-        hs_pos = layerwise_tokenwise_hidden(model, enc_pos, batch_size=fit_spec.batch_size, location="layer_input")
-        hs_neg = layerwise_tokenwise_hidden(model, enc_neg, batch_size=fit_spec.batch_size, location="layer_input")
+        hs_pos, mask_pos = capture_hidden(
+            enc_pos, model=model, session=session, batch_size=fit_spec.batch_size, location="layer_input"
+        )
+        hs_neg, mask_neg = capture_hidden(
+            enc_neg, model=model, session=session, batch_size=fit_spec.batch_size, location="layer_input"
+        )
 
-        # move encodings to CPU for span selection
-        enc_pos_cpu = {k: v.cpu() for k, v in enc_pos.items()}
-        enc_neg_cpu = {k: v.cpu() for k, v in enc_neg.items()}
+        # spans are mask-derived, so the returned mask keeps them aligned when a remote
+        # capture re-packs rows
+        def _span_enc(enc, mask):
+            if mask is None:
+                return {k: v.cpu() for k, v in enc.items()}
+            return {"input_ids": mask, "attention_mask": mask}
 
         # tokenize prompts separately if needed
         prompt_enc = None
@@ -236,8 +246,8 @@ class ConditionPointSelector(BaseSelector[ConditionPoint]):
             )
             prompt_enc = {k: v.cpu() for k, v in prompt_enc.items()}
 
-        spans_pos = select_spans(enc_pos_cpu, prompt_enc, fit_spec.accumulate)
-        spans_neg = select_spans(enc_neg_cpu, prompt_enc, fit_spec.accumulate)
+        spans_pos = select_spans(_span_enc(enc_pos, mask_pos), prompt_enc, fit_spec.accumulate)
+        spans_neg = select_spans(_span_enc(enc_neg, mask_neg), prompt_enc, fit_spec.accumulate)
 
         # determine layers to search (0-based, matching runtime condition layer ids)
         if search_spec.candidate_layers is not None:

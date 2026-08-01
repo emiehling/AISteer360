@@ -28,9 +28,11 @@ from aisteer360.algorithms.core.execution.capabilities import (
     BackendCapabilities,
     Capability,
     CaptureKinds,
+    ConstraintKinds,
     InterventionKinds,
     ProcessorKinds,
 )
+from aisteer360.algorithms.core.execution.constraints import ConstraintSource
 from aisteer360.algorithms.core.execution.fanout import (
     PartialBatchError,
     TransportError,
@@ -40,6 +42,7 @@ from aisteer360.algorithms.core.execution.fanout import (
 )
 from aisteer360.algorithms.core.execution.items import (
     CaptureResult,
+    ConstraintEntry,
     GenerationItem,
     HookEntry,
     InterventionEntry,
@@ -76,8 +79,16 @@ _PLUGIN_CAPTURE_KINDS = CaptureKinds(
     modes=frozenset({"all_tokens", "last_token"}),
 )
 
+_VLLM_CONSTRAINT_KINDS = ConstraintKinds(
+    constraints=frozenset({"json_schema", "regex", "grammar", "choice"}),
+)
 VLLM_BASELINE_CAPABILITIES = BackendCapabilities(
-    atoms=frozenset({Capability.SERVE_CHECKPOINT, Capability.SERVE_LORA}),
+    atoms=frozenset({
+        Capability.SERVE_CHECKPOINT,
+        Capability.SERVE_LORA,
+        Capability.GUIDED_DECODING,
+    }),
+    constraint_kinds=_VLLM_CONSTRAINT_KINDS,
 )
 
 _DISCOVERY_CACHE: dict[str, dict] = {}
@@ -110,6 +121,7 @@ def _vllm_capabilities(spec: BackendSpec, *, offline: bool) -> BackendCapabiliti
         intervention_kinds=_PLUGIN_INTERVENTION_KINDS,
         processor_kinds=_PLUGIN_PROCESSOR_KINDS,
         capture_kinds=capture_kinds,
+        constraint_kinds=_VLLM_CONSTRAINT_KINDS,
     )
     payload = _DISCOVERY_CACHE.get(spec.spec_hash)
     if payload is not None:
@@ -148,6 +160,7 @@ def _intersect_with_discovery(capabilities: BackendCapabilities, payload: dict) 
         intervention_kinds=intervention_kinds,
         processor_kinds=processor_kinds,
         capture_kinds=capture_kinds,
+        constraint_kinds=capabilities.constraint_kinds,
     )
 
 
@@ -271,22 +284,26 @@ def extract_ref_logprobs(prompt_logprobs: Sequence | None, ref_ids: Sequence[int
     return values
 
 
-def _item_intervention_specs(
+def _split_item_entries(
     items: Sequence[GenerationItem | ScoringItem],
     backend_name: str,
     *,
     plugin_active: bool,
-) -> list[InterventionSpec | None]:
-    """Per-item intervention spec after refusing entries the session cannot execute.
+    allow_constraints: bool = True,
+) -> tuple[list[InterventionSpec | None], list[ConstraintSource | None]]:
+    """Per-item intervention spec and constraint source after refusing unservable entries.
 
     `InterventionEntry` contributions are merged per item (ops concatenated in entry order,
-    tensor payloads unioned); an item without spec entries yields None. Hook and live-processor
-    entries name the in-process gap; intervention entries on a plugin-free backend name the
-    `hook_plugin` fix.
+    tensor payloads unioned); an item without spec entries yields None. A `ConstraintEntry`
+    renders onto the engine's native structured-output parameters, one per item. Hook and
+    live-processor entries name the in-process gap; intervention entries on a plugin-free
+    backend name the `hook_plugin` fix.
     """
     specs: list[InterventionSpec | None] = []
+    constraints: list[ConstraintSource | None] = []
     for item in items:
         item_specs: list[InterventionSpec] = []
+        item_constraint: ConstraintSource | None = None
         for entry in (*item.state_entries, *item.output_entries):
             if isinstance(entry, HookEntry):
                 raise UnsupportedOperationError(
@@ -308,13 +325,40 @@ def _item_intervention_specs(
                         "pipeline on the huggingface backend."
                     )
                 item_specs.append(entry.spec)
+            elif isinstance(entry, ConstraintEntry):
+                if not allow_constraints:
+                    raise UnsupportedOperationError(
+                        "Structured outputs do not apply to prompt logprobs; scoring with an "
+                        "enabled constraint control requires the huggingface backend or "
+                        "include_in_scoring=False."
+                    )
+                if item_constraint is not None:
+                    raise UnsupportedOperationError(
+                        "The engine hosts one structured-output constraint per request; compose "
+                        "constraints into one source or run this pipeline on the huggingface "
+                        "backend."
+                    )
+                item_constraint = entry.source
             elif isinstance(entry, ProcessorSpecEntry):
                 raise NotImplementedError(
                     "ProcessorSpecEntry lowering is not implemented; the plugin serves no "
                     "processor kinds yet."
                 )
         specs.append(merge_intervention_specs(item_specs) if item_specs else None)
-    return specs
+        constraints.append(item_constraint)
+    return specs, constraints
+
+
+def render_guided_decoding_field(source: ConstraintSource) -> tuple[str, Any]:
+    """The vLLM structured-output parameter name and payload for a constraint source."""
+    if source.kind == "json_schema":
+        value = source.value if isinstance(source.value, str) else dict(source.value)
+        return "json", value
+    if source.kind == "regex":
+        return "regex", source.value
+    if source.kind == "grammar":
+        return "grammar", source.value
+    return "choice", list(source.value)
 
 
 def merge_intervention_specs(specs: Sequence[InterventionSpec]) -> InterventionSpec:
@@ -327,6 +371,12 @@ def merge_intervention_specs(specs: Sequence[InterventionSpec]) -> InterventionS
         ops.extend(spec.ops)
         artifacts.update(spec.artifacts)
     return InterventionSpec(ops=tuple(ops), artifacts=artifacts)
+
+
+def _load_safetensors_bytes(data: bytes) -> dict[str, torch.Tensor]:
+    import safetensors.torch
+
+    return safetensors.torch.load(data)
 
 
 def remap_spec_for_scoring(spec: InterventionSpec, prompt_len: int) -> InterventionSpec:
@@ -693,8 +743,9 @@ class _RequestSessionBase:
         self,
         items: Sequence[GenerationItem | ScoringItem],
         backend_name: str,
-    ) -> tuple[list[InterventionSpec | None], list[str] | None]:
-        """Per-item intervention specs and cache salts for a batch of items.
+        allow_constraints: bool = True,
+    ) -> tuple[list[InterventionSpec | None], list[ConstraintSource | None], list[str] | None]:
+        """Per-item intervention specs, constraint sources, and cache salts for a batch.
 
         Spec-bearing items salt with the reference derivation over the spec and its artifact
         ids; spec-free items through a plugin-active backend salt with the backend's constant
@@ -705,7 +756,9 @@ class _RequestSessionBase:
         """
         backend = self._backend
         plugin_active = bool(backend.spec.get_option("hook_plugin"))
-        specs = _item_intervention_specs(items, backend_name, plugin_active=plugin_active)
+        specs, constraints = _split_item_entries(
+            items, backend_name, plugin_active=plugin_active, allow_constraints=allow_constraints,
+        )
         if any(spec is not None for spec in specs):
             discovery = getattr(backend, "_discovery", None)
             _refuse_by_engine_facts(discovery, "intervention")
@@ -718,7 +771,7 @@ class _RequestSessionBase:
             salts = [
                 spec.salt() if spec is not None else backend._plain_salt for spec in specs
             ]
-        return specs, salts
+        return specs, constraints, salts
 
     def _resolve_item_ids(self, item: GenerationItem | ScoringItem) -> list[int]:
         """The prompt's real token ids, with padding positions dropped per the attention mask,
@@ -771,6 +824,126 @@ class VLLMOfflineSession(_RequestSessionBase):
     parameters; the engine schedules the batch internally, so no client-side fan-out is needed.
     """
 
+    def capture(
+        self,
+        prompts: list[PreparedPrompt],
+        layers: list[int],
+        mode: Literal["all_tokens", "last_token"],
+        location: Literal["layer_output", "layer_input"] = "layer_output",
+    ) -> CaptureResult:
+        """Hidden-state capture over the plugin's capture surface.
+
+        One request per prompt carries a `capture` spec and a fresh random `cache_salt`
+        (a prefix-cache hit skips forward passes, so capture cannot tolerate reused salts) with
+        `max_tokens=1`; the surplus decode position is truncated by the plugin. Per-layer
+        tensors are stacked and right-padded to the batch's longest prompt.
+
+        Args:
+            prompts: The prompts to capture over.
+            layers: 0-based decoder-layer indices to capture.
+            mode: `"all_tokens"` for every prompt position, `"last_token"` for the final real
+                position per row.
+            location: The residual-stream boundary, `"layer_output"` or `"layer_input"`.
+
+        Returns:
+            The capture result: `[N, T, H]` per layer for `"all_tokens"` or `[N, H]` for
+            `"last_token"`, on CPU in the engine's native dtype, with the derived `[N, T]`
+            attention mask.
+
+        Raises:
+            UnsupportedOperationError: If the spec declares no `hook_plugin`, the negotiated
+                capture kinds lack the requested mode or location, or the engine facts refuse
+                capture (speculative decoding, non-eager execution).
+            ValueError: If `prompts` is empty, a layer id is out of range, or the engine
+                returned no capture payload.
+        """
+        self._ensure_open()
+        backend = self._backend
+        if not backend.spec.get_option("hook_plugin"):
+            raise UnsupportedOperationError(
+                "Hidden-state capture requires the vLLM-Hook plugin; declare hook_plugin=True "
+                "on the vllm backend spec, or run capture on the huggingface backend."
+            )
+        capture_kinds = backend.capture_kinds
+        required = CaptureKinds(
+            kinds=frozenset({"residual"}),
+            locations=frozenset({location}),
+            modes=frozenset({mode}),
+        )
+        if capture_kinds is None or not capture_kinds.contains(required):
+            raise UnsupportedOperationError(
+                f"The serving backend does not advertise capture mode {mode!r} at location "
+                f"{location!r}; update the server's vllm_hook_plugins or run capture on the "
+                "huggingface backend."
+            )
+        _refuse_by_engine_facts(backend._discovery, "capture")
+        if not prompts:
+            raise ValueError("capture() requires at least one prompt.")
+        num_layers = self.layout.num_layers
+        missing = sorted(int(layer) for layer in layers if not 0 <= int(layer) < num_layers)
+        if missing:
+            raise ValueError(
+                f"Requested layer ids {missing} are out of range; the model has {num_layers} layers."
+            )
+
+        from vllm import SamplingParams, TokensPrompt
+
+        layer_ids = [int(layer) for layer in layers]
+        capture_spec = {"layers": layer_ids, "mode": mode, "location": location}
+        engine_prompts = []
+        prompt_lens: list[int] = []
+        for prompt in prompts:
+            resolved = prompt.resolve_token_ids(self.tokenizer)
+            ids = resolved.token_ids[0]
+            if resolved.attention_mask is not None:
+                ids = ids[resolved.attention_mask[0].bool()]
+            ids = ids.tolist()
+            prompt_lens.append(len(ids))
+            engine_prompt = TokensPrompt(prompt_token_ids=ids)
+            engine_prompt["cache_salt"] = uuid.uuid4().hex
+            engine_prompts.append(engine_prompt)
+        sampling = SamplingParams(max_tokens=1, temperature=0.0, extra_args={"capture": capture_spec})
+
+        request_outputs = self._backend._llm.generate(engine_prompts, sampling, use_tqdm=False)
+
+        rows_per_layer: dict[int, list[torch.Tensor]] = {layer: [] for layer in layer_ids}
+        for index, request_output in enumerate(request_outputs):
+            payload = getattr(request_output, "captures", None)
+            if payload is None:
+                raise ValueError(
+                    "The engine returned no capture payload; is the vLLM-Hook unified worker "
+                    "active on this engine?"
+                )
+            manifest_json, data = payload
+            manifest = json.loads(manifest_json)
+            tensors = _load_safetensors_bytes(data)
+            for layer in layer_ids:
+                stacked = tensors.get(f"layer_{layer}")
+                if stacked is None or stacked.size(0) < prompt_lens[index]:
+                    raise ValueError(
+                        f"The capture payload covers layer {layer} at "
+                        f"{0 if stacked is None else stacked.size(0)} of {prompt_lens[index]} "
+                        f"prompt positions for prompt {index}; positions recorded: "
+                        f"{manifest.get('positions', {}).get(str(layer))}."
+                    )
+                rows_per_layer[layer].append(stacked[: prompt_lens[index]])
+
+        max_len = max(prompt_lens)
+        attention_mask = torch.zeros(len(prompts), max_len, dtype=torch.long)
+        for index, length in enumerate(prompt_lens):
+            attention_mask[index, :length] = 1
+
+        hidden: dict[int, torch.Tensor] = {}
+        for layer, rows in rows_per_layer.items():
+            if mode == "last_token":
+                hidden[layer] = torch.stack([row[-1] for row in rows])
+            else:
+                padded = torch.zeros(len(rows), max_len, rows[0].size(-1), dtype=rows[0].dtype)
+                for index, row in enumerate(rows):
+                    padded[index, : row.size(0)] = row
+                hidden[layer] = padded
+        return CaptureResult(hidden=hidden, attention_mask=attention_mask, mode=mode, location=location)
+
     def generate(
         self,
         items: Sequence[GenerationItem],
@@ -791,7 +964,7 @@ class VLLMOfflineSession(_RequestSessionBase):
         self._ensure_open()
         if not items:
             return []
-        item_specs, item_salts = self._prepare_spec_submission(items, "vllm")
+        item_specs, item_constraints, item_salts = self._prepare_spec_submission(items, "vllm")
         base_args = render_vllm_sampling_args(params)
 
         from vllm import SamplingParams, TokensPrompt
@@ -806,6 +979,11 @@ class VLLMOfflineSession(_RequestSessionBase):
             seed = self._item_seed(item, params, index)
             if seed is not None:
                 args["seed"] = seed
+            if item_constraints[index] is not None:
+                from vllm.sampling_params import GuidedDecodingParams
+
+                field, value = render_guided_decoding_field(item_constraints[index])
+                args["guided_decoding"] = GuidedDecodingParams(**{field: value})
             if item_specs[index] is not None:
                 args["extra_args"] = {"intervention_spec": item_specs[index].to_wire()}
             prompt = TokensPrompt(prompt_token_ids=ids)
@@ -864,7 +1042,9 @@ class VLLMOfflineSession(_RequestSessionBase):
             )
         if not items:
             return torch.zeros((0, 0), dtype=torch.float32)
-        item_specs, item_salts = self._prepare_spec_submission(items, "vllm")
+        item_specs, _, item_salts = self._prepare_spec_submission(
+            items, "vllm", allow_constraints=False,
+        )
         ref_lens = {item.ref_output_ids.shape[-1] for item in items}
         if len(ref_lens) > 1:
             raise ValueError(f"All scoring items must share one reference length; got {sorted(ref_lens)}.")
@@ -1131,7 +1311,7 @@ class VLLMServeSession(_RequestSessionBase):
         self._ensure_open()
         if not items:
             return []
-        item_specs, item_salts = self._prepare_spec_submission(items, "vllm-serve")
+        item_specs, item_constraints, item_salts = self._prepare_spec_submission(items, "vllm-serve")
         base_args = render_vllm_sampling_args(params)
         backend = self._backend
 
@@ -1149,6 +1329,9 @@ class VLLMServeSession(_RequestSessionBase):
                 }
                 if seeds[index] is not None:
                     body["seed"] = seeds[index]
+                if item_constraints[index] is not None:
+                    field, value = render_guided_decoding_field(item_constraints[index])
+                    body[f"guided_{field}"] = value
                 if item_specs[index] is not None:
                     # vllm_xargs is scalar-only, so nested specs travel as JSON strings
                     body["vllm_xargs"] = {
@@ -1214,7 +1397,9 @@ class VLLMServeSession(_RequestSessionBase):
             )
         if not items:
             return torch.zeros((0, 0), dtype=torch.float32)
-        item_specs, item_salts = self._prepare_spec_submission(items, "vllm-serve")
+        item_specs, _, item_salts = self._prepare_spec_submission(
+            items, "vllm-serve", allow_constraints=False,
+        )
         ref_lens = {item.ref_output_ids.shape[-1] for item in items}
         if len(ref_lens) > 1:
             raise ValueError(f"All scoring items must share one reference length; got {sorted(ref_lens)}.")

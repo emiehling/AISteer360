@@ -10,6 +10,11 @@ AISteer360 is a toolkit for steering large language models (Hugging Face causal 
 ("controls") across four model control surfaces, a `SteeringPipeline` that composes controls from any categories into
 one operation on a model, and an evaluation stack (use cases, metrics, benchmarks) for comparing steering pipelines.
 
+Pipelines execute on a configurable backend: the in-process Hugging Face backend (default), the offline vLLM engine
+(`kind="vllm"`), or a vLLM server (`kind="vllm-serve"`). Support is binary per control configuration and backend;
+`pipeline.check()` reports unsupported combinations with a verdict naming the gap and the fix, and unsupported
+operations raise before any work happens (see Execution backends below).
+
 The four control categories, defined by what a method touches:
 
 - **input**: manipulates the prompt only; generations follow `y ~ p_theta(sigma(x))` for a prompt adapter `sigma`.
@@ -30,6 +35,7 @@ Vocabulary used throughout the codebase:
 aisteer360/
 ├── algorithms/
 │   ├── core/                    # SteeringPipeline, registry, ControlSpec, BaseArgs, shared types
+│   │   ├── execution/           # backend seam: BackendSpec, capabilities, requirements, sessions, items, specs
 │   │   ├── internals/           # activation capture, pooling, stats; probes/ (detection + routing rules)
 │   │   └── utils/               # control merging, generation helpers, auxiliary_pass
 │   ├── input_control/           # each category: base.py + one folder per method (triplet layout below)
@@ -40,6 +46,7 @@ aisteer360/
 │   │   └── _common/             # generics: drivers, processors, scorers, values, criteria
 │   └── structural_control/
 │       └── wrappers/            # trl/ (sft, dpo, ppo, grpo, apo) and mergekit/
+├── backends/                    # HFBackend/ExclusiveSession (in-process), VLLMBackend, VLLMServeBackend
 ├── evaluation/
 │   ├── benchmark.py             # Benchmark runner (trials, sweeps, checkpoint/resume)
 │   ├── metrics/                 # base.py, base_judge.py; generic/ and custom/<use_case>/
@@ -62,13 +69,16 @@ source .venv/bin/activate
 ```
 
 On Windows, run the two chained commands separately. Optional extras: `merging` (MergeKit), `cpo` (econml), `plots`
-(matplotlib/seaborn), `all` (all features), `dev` (`all` plus pytest, pre-commit, notebook), `docs` (site tooling).
+(matplotlib/seaborn), `vllm` (the vLLM backends plus the `vllm_hook_plugins` core, git-pinned until its PyPI
+release), `guided` (xgrammar, for in-process constrained decoding), `all` (all features except `vllm`), `dev`
+(`all` plus the plugin core, pytest, pre-commit, notebook), `docs` (site tooling).
 
 Hugging Face access uses a `.env` file at the repo root containing `HUGGINGFACE_TOKEN=hf_***` (see
 `.env.example`). Some models (e.g. `meta-llama/*`) are gated; the account behind the token needs access on the
 model's Hub page. Never commit tokens; a detect-secrets pre-commit hook scans against `.secrets.baseline`.
 
-Models run inside the current process. Real steering runs need GPU memory for the base checkpoint plus the method's
+Models run inside the current process on the default Hugging Face backend; the vLLM backends execute on a local
+engine or a remote server instead. Real steering runs need GPU memory for the base checkpoint plus the method's
 overhead; for smoke tests use the tiny models listed in `tests/utils/ci_models.yaml`
 (e.g. `hf-internal-testing/tiny-random-LlamaForCausalLM`).
 
@@ -148,9 +158,9 @@ The registered names at the time of writing:
 
 - input: `cpo`, `few_shot`, `gepa`, `prewrite`
 - state: `act_add`, `activation_adapter`, `angular_steering`, `caa`, `cast`, `directional_ablation`, `iti`, `pasta`
-- output: `best_of_n`, `budget_forcing`, `contrastive_decoding`, `contrastive_guidance`, `deal`, `dexperts`,
-  `phased_decoding`, `rad`, `routed_decoding`, `sasa`, `search_decoding`, `stopping_rules`, `thinking_intervention`,
-  `value_guidance`
+- output: `best_of_n`, `budget_forcing`, `constrained_decoding`, `contrastive_decoding`, `contrastive_guidance`,
+  `deal`, `dexperts`, `phased_decoding`, `rad`, `routed_decoding`, `sasa`, `search_decoding`, `stopping_rules`,
+  `thinking_intervention`, `value_guidance`
 - structural: `mergekit`, `sft`, `dpo`, `ppo`, `grpo`, `apo` (MergeKit and TRL wrappers)
 
 ### Pipeline semantics
@@ -171,9 +181,12 @@ Behaviors that differ from bare Hugging Face usage:
 
 - Returned token ids exclude the prompt by default. Do not slice the result by prompt length; pass
   `return_full_sequence=True` for HF-style prompt-plus-continuation output.
-- `generate(..., return_output=True)` returns an `Output` object (or list of them) with three fields: `output_ids`,
-  `adapted_input_ids` (the prompt after input controls, useful for inspecting the steered prompt), and a per-item
-  `finish_reason` (`"eos"`, `"length"`, or `None`). Import it via `from aisteer360.algorithms.core import Output`.
+- Token ids are returned as generated on every backend (stop text and any token-boundary overrun stay in the ids);
+  decoded continuation text is truncated at the first stop-string occurrence by one client-side rule.
+- `generate(..., return_output=True)` returns an `Output` object (or list of them) with fields `output_ids`,
+  `adapted_input_ids` (the prompt after input controls, useful for inspecting the steered prompt), a per-item
+  `finish_reason` (`"stop"`, `"eos"`, `"length"`, or `None`, with that precedence), and `finish_reasons` (one reason
+  per candidate for `n > 1`). Import it via `from aisteer360.algorithms.core import Output`.
 - `generate()` before `steer()` raises `RuntimeError`; a second `steer()` call is a silent no-op.
 - `attention_mask` is valid only with `input_ids=`; it is derived automatically for `text=` and `messages=`, and passing it with either (or with positional text) raises a `TypeError`.
 - `device` and a non-default `device_map` are mutually exclusive on the `SteeringPipeline` constructor.
@@ -184,6 +197,37 @@ Behaviors that differ from bare Hugging Face usage:
 - `pipeline.compute_logprobs(input_ids, ref_output_ids=...)` scores reference tokens teacher-forced with the full
   steering applied; output controls with `include_in_scoring=False` are excluded from scoring.
 - Controls with a `tokenizer` attribute left as `None` get the pipeline tokenizer injected automatically.
+
+### Execution backends
+
+`SteeringPipeline` takes `backend=` (inference) and `steer_backend=` (steer phase; defaults to the inference spec),
+each a `BackendSpec` or a kind string. The default is the in-process Hugging Face backend, and pipelines that never
+name a backend behave exactly as before.
+
+```python
+from aisteer360.algorithms.core.execution import BackendSpec
+
+pipeline = SteeringPipeline(
+    controls=[caa],
+    backend=BackendSpec(kind="vllm", model="meta-llama/Llama-3.1-8B-Instruct", options={"hook_plugin": True}),
+    steer_backend="huggingface",
+    lazy_init=True,
+)
+```
+
+- `pipeline.check()` returns a `SupportReport` without doing any work; `steer()` runs it and raises
+  `UnsupportedPipelineError` for unsupported control/backend combinations. Verdict messages are stable tested
+  strings naming the gap and the fix. The per-control support boundary is the compatibility matrix in
+  `docs/reference/backends.md`.
+- Activation-steering state controls execute on vLLM through the vLLM-Hook plugin (`hook_plugin: True` on the
+  spec): the control's steering tuple serializes as an intervention spec, and tensor payloads travel as
+  content-addressed artifacts (`artifact_dir` option; on serve this must be a filesystem shared with the server).
+  A configuration either serializes exactly or is honestly in-process-only; there is no approximate lowering.
+- Structural controls steer on Hugging Face and serve their artifacts (checkpoint or LoRA) on vLLM backends.
+- Declarative constrained decoding lowers to vLLM's native structured outputs; hidden-state capture (probe
+  fitting and reads, routed decoding) is served in process and on the offline plugin engine, not on serve.
+- `compute_logprobs` scores through the inference backend; an enabled output control with
+  `include_in_scoring=True` keeps scoring in-process.
 
 ### Composition rules
 
@@ -294,11 +338,21 @@ own in the common case. Required hooks per category:
   each call. Loop-owning methods subclass `DecodingDriver` and implement `decode(input_ids, attention_mask, model,
   logits_processors, stopping_criteria, runtime_kwargs, **gen_kwargs)`, returning full prompt-plus-continuation ids
   and applying the received stacks at every scoring step.
-- **all categories**: optional `steer()` for one-time preparation and `cleanup()` for releasing resources.
+- **all categories**: optional `steer()` for one-time preparation and `cleanup()` for releasing resources. The
+  pipeline passes `session=` (a `SteeringSession` on the steering backend) into `steer()`; controls that only need
+  structural facts read `session.layout` rather than the live model, and fitting call sites accept `session=` for
+  capture-backed extraction.
 
 Declare the class attributes the pipeline reads: `supports_batching` (default `False`; set `True` only
 when the control is batch-safe), `enabled`, `RUNTIME_KWARGS_SCHEMA` (a list of `{"name": ...}` entries), and for
 output controls `include_in_scoring` and `same_model_forwards`.
+
+Backend support is declared through `requirements()`. The default (`IN_PROCESS_TORCH` at generate) is honest for a
+new control and keeps it Hugging Face-only; do not widen it speculatively. A state control in the transform-runtime
+family becomes vLLM-portable by implementing `export_intervention_spec()` through
+`state_control/_common/intervention_export.py` (the requirement and the export must share one code path, pinned by
+`tests/core/test_spec_hook_equivalence.py`); an output control whose behavior is sampling-expressible lowers via
+`export_generation_params()`, and a declarative constraint via `export_constraint()`.
 
 `__init__.py` exports the discovery dict:
 

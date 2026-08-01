@@ -26,7 +26,9 @@ from aisteer360.algorithms.core.execution.capabilities import (
     BackendCapabilities,
     Capability,
 )
+from aisteer360.algorithms.core.execution.constraints import ConstraintSource
 from aisteer360.algorithms.core.execution.items import (
+    ConstraintEntry,
     GenerationItem,
     HookEntry,
     InterventionEntry,
@@ -689,16 +691,20 @@ class SteeringPipeline:
             self,
             inference_capabilities: BackendCapabilities,
             runtime_kwargs: dict | None,
+            backend=None,
     ) -> tuple[InterventionEntry, ...]:
         """One `InterventionEntry` per enabled state control, for intervention-capable backends.
 
         Each control's exported spec is verified against the backend's negotiated kinds (the
         intersection of the static tables and discovery), so a server missing a kind yields a
-        verdict naming the kind rather than a wire rejection.
+        verdict naming the kind rather than a wire rejection. When the backend carries a
+        discovery payload, a control's steering-artifact provenance fingerprints are
+        cross-checked against the served model's, and a mismatch warns.
 
         Args:
             inference_capabilities: The inference backend's capabilities.
             runtime_kwargs: Per-call parameters forwarded to `export_intervention_spec`.
+            backend: The inference backend instance, consulted for its discovery payload.
 
         Returns:
             The intervention entries, in controls-list order.
@@ -709,9 +715,12 @@ class SteeringPipeline:
         """
         entries: list[InterventionEntry] = []
         advertised = inference_capabilities.intervention_kinds
+        served_model = ((getattr(backend, "_discovery", None) or {}).get("model") or {})
         for state_control in self.state_controls:
             if not getattr(state_control, "enabled", True):
                 continue
+            if served_model:
+                self._warn_on_provenance_mismatch(state_control, served_model)
             exporter = getattr(state_control, "export_intervention_spec", None)
             spec = exporter(runtime_kwargs) if callable(exporter) else None
             if spec is None:
@@ -734,6 +743,39 @@ class SteeringPipeline:
                 )
             entries.append(InterventionEntry(spec=spec))
         return tuple(entries)
+
+    @staticmethod
+    def _warn_on_provenance_mismatch(state_control, served_model: Mapping) -> None:
+        """Warn when a control's steering-artifact fingerprints differ from the served model's."""
+        artifact = getattr(state_control, "_steering_vector", None)
+        meta = getattr(artifact, "meta", None) or {}
+        for key in ("config_fingerprint", "chat_template_fingerprint"):
+            local = meta.get(key)
+            remote = served_model.get(key)
+            if local and remote and local != remote:
+                warnings.warn(
+                    f"{type(state_control).__name__}'s steering artifact records a {key} of "
+                    f"{local}, but the serving engine reports {remote}; the artifact was fitted "
+                    "on a different model or tokenizer configuration than the one serving it.",
+                    UserWarning,
+                )
+
+    def _constraint_contributions(self, runtime_kwargs: dict | None) -> dict[int, ConstraintSource]:
+        """Declarative constraint sources from enabled output controls, keyed by `id()`.
+
+        A control that returns a source from `export_constraint` is lowered for that call on
+        backends hosting structured outputs natively: the source renders onto the engine's
+        request parameters and the control's live processor is not collected.
+        """
+        contributions: dict[int, ConstraintSource] = {}
+        for control in self.output_controls:
+            if not getattr(control, "enabled", True):
+                continue
+            exporter = getattr(control, "export_constraint", None)
+            source = exporter(runtime_kwargs) if callable(exporter) else None
+            if source is not None:
+                contributions[id(control)] = source
+        return contributions
 
     def _resolve_decoding_driver(self) -> DecodingDriver:
         """The sole enabled DecodingDriver, else the default (model.generate).
@@ -1331,7 +1373,7 @@ class SteeringPipeline:
             )
         elif not hooks_in_process:
             if has_enabled_state:
-                state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs)
+                state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs, backend=backend)
         elif (
             gen_kwargs.get("seed") is not None
             and steered_input_ids.size(0) > 1
@@ -1387,11 +1429,20 @@ class SteeringPipeline:
                     tokenizer=self.tokenizer,
                 )
             else:
-                # default path: per-prompt items executed by the session
+                # default path: per-prompt items executed by the session; on backends hosting
+                # structured outputs natively, declarative constraints lower in place of their
+                # live processors
+                constraint_sources: dict[int, ConstraintSource] = {}
+                if not hooks_in_process:
+                    constraint_sources = self._constraint_contributions(runtime_kwargs)
                 output_entries = self._collect_output_entries(
                     steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
-                    skip_ids=skip_ids, **gen_kwargs,
+                    skip_ids=skip_ids | frozenset(constraint_sources), **gen_kwargs,
                 )
+                if constraint_sources:
+                    output_entries = output_entries + tuple(
+                        ConstraintEntry(source=source) for source in constraint_sources.values()
+                    )
                 user_processors = gen_kwargs.pop("logits_processor", None) or []
                 user_criteria = gen_kwargs.pop("stopping_criteria", None) or []
                 params = GenerationParams.from_gen_kwargs(**gen_kwargs)
@@ -1584,7 +1635,7 @@ class SteeringPipeline:
                     **forward_kwargs,
                 )
             elif has_enabled_state:
-                state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs)
+                state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs, backend=backend)
             else:
                 state_entries = ()
             output_entries = self._collect_output_entries(
@@ -1641,7 +1692,7 @@ class SteeringPipeline:
                         **forward_kwargs,
                     )
                 elif has_enabled_state:
-                    state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs)
+                    state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs, backend=backend)
                 else:
                     state_entries = ()
                 output_entries = self._collect_output_entries(

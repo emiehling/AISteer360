@@ -141,7 +141,9 @@ class ActAdd(StateControl):
         self._num_layers = num_layers
         self._layer_names = get_model_layer_list(model)[1] if model is not None else None
 
-        # resolve steering vector
+        # resolve steering vector; the pair is co-padded with a real space token whose masked
+        # activations feed the positional diff, which remote capture cannot reproduce, so
+        # fitting stays on a live model
         if self.steering_vector is not None:
             sv = self.steering_vector
         else:

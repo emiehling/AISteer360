@@ -14,10 +14,12 @@ from aisteer360.algorithms.core.execution.artifacts import (
     ModelArtifact,
 )
 from aisteer360.algorithms.core.execution.backend import Backend
+from aisteer360.algorithms.core.execution.constraints import ConstraintSource, as_constraint_source
 from aisteer360.algorithms.core.execution.capabilities import (
     BackendCapabilities,
     Capability,
     CaptureKinds,
+    ConstraintKinds,
     InterventionKinds,
     ProcessorKinds,
 )
@@ -33,6 +35,7 @@ from aisteer360.algorithms.core.execution.interventions import (
     ProcessorSpec,
 )
 from aisteer360.algorithms.core.execution.items import (
+    ConstraintEntry,
     CaptureResult,
     GenerationItem,
     HookEntry,
@@ -79,6 +82,10 @@ __all__ = [
     "BackendSpec",
     "Capability",
     "CaptureKinds",
+    "ConstraintEntry",
+    "ConstraintKinds",
+    "ConstraintSource",
+    "as_constraint_source",
     "CaptureResult",
     "CheckpointArtifact",
     "GenerationItem",

@@ -90,8 +90,11 @@ class CAA(StateControl):
         steer = ()
         if self.steering_vector is None:
             steer = needs(
-                Capability.IN_PROCESS_TORCH,
-                hint="supply a fitted `steering_vector`, or steer on the huggingface backend",
+                Capability.HIDDEN_CAPTURE,
+                hint=(
+                    "supply a fitted `steering_vector`, or run the steer phase on a backend "
+                    "with hidden-state capture (huggingface, or offline vLLM with the plugin)"
+                ),
             )
         return Requirements(
             steer=steer,
@@ -148,13 +151,11 @@ class CAA(StateControl):
         if self.steering_vector is not None:
             sv = self.steering_vector
         else:
-            if model is None:
-                raise ValueError("Fitting CAA from data requires a live model at steer time.")
             if self.train_spec.method == "pca_pairwise":
                 estimator = ContrastiveDirectionEstimator()
             else:
                 estimator = MeanDifferenceEstimator()
-            sv = estimator.fit(model, tokenizer, data=self.data, spec=self.train_spec)
+            sv = estimator.fit(model, tokenizer, data=self.data, spec=self.train_spec, session=session)
 
         # clone before the in-place cast/normalize so a caller-supplied vector is never mutated
         sv = cast_steering_vector(sv, layout)

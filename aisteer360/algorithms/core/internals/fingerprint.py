@@ -44,3 +44,37 @@ def model_fingerprint(model: PreTrainedModel) -> str:
             digest.update(sample.numpy().tobytes())
 
     return digest.hexdigest()[:16]
+
+
+def artifact_provenance_meta(model, tokenizer=None) -> dict:
+    """Provenance fingerprints for a fitted steering artifact.
+
+    Always records the toolkit model fingerprint; when `vllm_hook_plugins` is installed, adds
+    the plugin's config and chat-template fingerprint recipes, which cross-check against a
+    serving engine's discovery payload.
+
+    Args:
+        model: The model the artifact was fitted on.
+        tokenizer: The tokenizer used during fitting, for the chat-template fingerprint.
+
+    Returns:
+        The provenance mapping. Keys: `"model_fingerprint"`, and when the plugin is installed,
+        `"config_fingerprint"` and (with a tokenizer) `"chat_template_fingerprint"`.
+    """
+    meta = {"model_fingerprint": model_fingerprint(model)}
+    try:
+        from vllm_hook_plugins.core.fingerprints import (
+            chat_template_fingerprint,
+            config_fingerprint,
+        )
+    except ImportError:
+        return meta
+    try:
+        meta["config_fingerprint"] = config_fingerprint(model.config.to_dict())
+    except (TypeError, ValueError):
+        pass
+    if tokenizer is not None:
+        meta["chat_template_fingerprint"] = chat_template_fingerprint(
+            getattr(tokenizer, "chat_template", None)
+        )
+    return meta
