@@ -13,6 +13,7 @@ OPTIONAL_MODULE_EXTRAS: dict[str, str] = {
     "matplotlib": "plots",
     "seaborn": "plots",
     "vllm": "vllm",
+    "vllm_hook_plugins": "vllm",
 }
 
 

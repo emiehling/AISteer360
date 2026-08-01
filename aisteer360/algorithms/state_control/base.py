@@ -27,6 +27,7 @@ See Also:
 - `aisteer360.algorithms.state_control`: Implementations of state control methods
 - `aisteer360.core.steering_pipeline`: Integration with steering pipeline
 """
+import copy
 from abc import abstractmethod
 from typing import Callable
 
@@ -149,6 +150,31 @@ class StateControl(BaseControl):
     def __exit__(self, exc_type, exc, tb):
         """Context manager exit: clean up all hooks."""
         self.remove_hooks()
+
+    def clone_for_call(self, seed: int | None = None):
+        """A per-call clone with independent per-generation mutable state.
+
+        Extends the base shallow clone with fresh hook and handle containers, a deep copy of the
+        `_gate` and `_runtime` attributes when present (so the clone's `get_hooks` closures never
+        share position or gate state with the original or with sibling clones), and a cleared
+        model reference. Steer-time artifacts (steering vectors, transforms, tokenizers) stay
+        shared with the original.
+
+        Args:
+            seed: Optional seed forwarded to the clone's `reseed()`.
+
+        Returns:
+            The clone.
+        """
+        clone = super().clone_for_call(seed)
+        clone.hooks = {"pre": [], "forward": [], "backward": []}
+        clone.registered = []
+        if getattr(self, "_runtime", None) is not None:
+            clone._runtime = copy.deepcopy(self._runtime)
+        if getattr(self, "_gate", None) is not None:
+            clone._gate = copy.deepcopy(self._gate)
+        clone._model_ref = None
+        return clone
 
     def reset(self) -> None:
         """Between-generations reset for runtime-backed controls.

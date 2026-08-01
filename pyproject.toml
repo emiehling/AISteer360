@@ -67,6 +67,7 @@ plots = [
 ]
 vllm = [
     "vllm>=0.8.5,<1.0.0",
+    "vllm-hook-plugins @ git+https://github.com/emiehling/vLLM-Hook.git@steerability-interface#subdirectory=vllm_hook_plugins",
 ]
 all = [
     "aisteer360[merging,cpo,plots]",
@@ -87,6 +88,7 @@ docs = [
 
 dev = [
     "aisteer360[all]",
+    "vllm-hook-plugins @ git+https://github.com/emiehling/vLLM-Hook.git@steerability-interface#subdirectory=vllm_hook_plugins",
     "notebook>=7.4.5",
     "pytest>=8.3.2,<9.0.0",
     "pre-commit>=4.3.0",

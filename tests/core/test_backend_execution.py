@@ -43,6 +43,11 @@ from aisteer360.algorithms.output_control.stopping_rules.control import Stopping
 from aisteer360.algorithms.output_control.thinking_intervention.control import (
     ThinkingIntervention,
 )
+from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
+from aisteer360.algorithms.state_control.activation_adapter.control import (
+    ActivationAdapter,
+)
+from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.backends.huggingface import HFBackend
 from aisteer360.backends.vllm import (
@@ -50,6 +55,7 @@ from aisteer360.backends.vllm import (
     map_vllm_finish_reason,
     render_vllm_sampling_args,
 )
+from tests.utils.runtime_helpers import RecordingTransform
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HF_SPEC = BackendSpec(kind="huggingface")
@@ -643,3 +649,52 @@ class TestOutputRecord:
         )
         assert out.finish_reasons == ("eos", "length")
         assert dataclasses.fields(Output)[3].name == "finish_reasons"
+
+
+class _RowRecordingStateControl(StateControl):
+    """Records the input_ids shape of every get_hooks call into a shared list."""
+
+    Args = None
+
+    def _configure(self):
+        self.seen_shapes: list[tuple[int, ...]] = []
+
+    def get_hooks(self, input_ids, runtime_kwargs, **kwargs):
+        self.seen_shapes.append(tuple(input_ids.shape))
+        return {"pre": [], "forward": [], "backward": []}
+
+
+class TestSerialSeedStateHooks:
+    """Distinct per-item derived seeds force the serial session path; state hooks are computed
+    per row there rather than once on the batch."""
+
+    def test_seeded_multi_prompt_batch_computes_hooks_per_row(self, model, tokenizer):
+        control = _RowRecordingStateControl()
+        pipeline = _pipeline(model, tokenizer, controls=[control])
+        pipeline.generate(text=["the cat sat on the mat", "the dog"], seed=7, max_new_tokens=2)
+        assert len(control.seen_shapes) == 2
+        assert all(shape[0] == 1 for shape in control.seen_shapes)
+
+    def test_unseeded_multi_prompt_batch_keeps_batch_hooks(self, model, tokenizer):
+        control = _RowRecordingStateControl()
+        pipeline = _pipeline(model, tokenizer, controls=[control])
+        pipeline.generate(text=["the cat sat on the mat", "the dog"], max_new_tokens=2)
+        assert len(control.seen_shapes) == 1
+        assert control.seen_shapes[0][0] == 2
+
+    def test_seeded_batch_runs_runtime_backed_control_per_row(self, model, tokenizer):
+        transform = RecordingTransform()
+        control = ActivationAdapter(transform=transform, layer_ids=[1], token_scope="after_prompt")
+        pipeline = _pipeline(model, tokenizer, controls=[control])
+        pipeline.generate(text=["the cat sat on the mat", "the dog"], seed=7, max_new_tokens=2)
+        assert transform.masks
+        assert all(mask.size(0) == 1 for mask in transform.masks)
+
+    def test_clone_for_call_isolates_runtime_and_gate_state(self):
+        control = ActivationAdapter(transform=RecordingTransform(), layer_ids=[1])
+        control._runtime = TransformHookRuntime(hook_point="layer_output")
+        clone = control.clone_for_call()
+        assert clone._runtime is not control._runtime
+        assert clone._gate is not control._gate
+        assert clone.hooks is not control.hooks
+        assert clone._model_ref is None

@@ -635,6 +635,45 @@ class SteeringPipeline:
             entries.append(HookEntry(hooks=hooks))
         return tuple(entries)
 
+    def _per_item_state_entries(
+            self,
+            steered_input_ids: torch.Tensor,
+            steered_attention_mask: torch.Tensor,
+            runtime_kwargs: dict | None,
+            **kwargs,
+    ) -> list[tuple[HookEntry, ...]]:
+        """Per-row state entries computed by per-call control clones.
+
+        Distinct per-item derived seeds force the in-process session onto its serial path, where
+        each row runs its own forward. Hooks computed once on the batch hold batch-sized position
+        and gate state, so each row instead gets hooks computed by a fresh clone on that row's
+        prompt tensors.
+
+        Args:
+            steered_input_ids: Adapted prompt ids of shape `[batch, seq_len]`.
+            steered_attention_mask: Attention mask matching `steered_input_ids`.
+            runtime_kwargs: Per-call parameters for state controls.
+            **kwargs: Additional arguments passed to `get_hooks()`.
+
+        Returns:
+            One tuple of `HookEntry` per row, each in controls-list order.
+        """
+        rows: list[tuple[HookEntry, ...]] = []
+        for index in range(steered_input_ids.size(0)):
+            entries: list[HookEntry] = []
+            for state_control in self.state_controls:
+                clone = state_control.clone_for_call()
+                clone.reset()
+                hooks = clone.get_hooks(
+                    steered_input_ids[index:index + 1],
+                    runtime_kwargs,
+                    attention_mask=steered_attention_mask[index:index + 1],
+                    **kwargs,
+                )
+                entries.append(HookEntry(hooks=hooks))
+            rows.append(tuple(entries))
+        return rows
+
     def _resolve_decoding_driver(self) -> DecodingDriver:
         """The sole enabled DecodingDriver, else the default (model.generate).
 
@@ -1206,14 +1245,27 @@ class SteeringPipeline:
         lowered = self._lowered_contributions(runtime_kwargs)
         skip_ids = frozenset(lowered)
 
-        # state controls
-        state_entries = self._setup_state_controls(
-            steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs
-        )
-
         inference_spec = self._resolve_backend_spec(self.backend)
         backend = self._backend_for(inference_spec)
         decoding_driver = self._resolve_decoding_driver()
+
+        # state controls; distinct per-item derived seeds run serially in the in-process session,
+        # so hooks are computed per row there rather than once on the batch
+        state_entry_rows: list[tuple[HookEntry, ...]] | None = None
+        if (
+            decoding_driver is self._default_driver
+            and gen_kwargs.get("seed") is not None
+            and steered_input_ids.size(0) > 1
+            and any(getattr(control, "enabled", True) for control in self.state_controls)
+        ):
+            state_entry_rows = self._per_item_state_entries(
+                steered_input_ids, steered_attention_mask, runtime_kwargs, **gen_kwargs
+            )
+            state_entries: tuple[HookEntry, ...] = ()
+        else:
+            state_entries = self._setup_state_controls(
+                steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs
+            )
 
         with backend.open_session() as session:
             if decoding_driver is not self._default_driver:
@@ -1280,7 +1332,7 @@ class SteeringPipeline:
                         prompt=PreparedPrompt.from_token_ids(
                             steered_input_ids[i:i + 1], steered_attention_mask[i:i + 1],
                         ),
-                        state_entries=state_entries,
+                        state_entries=state_entry_rows[i] if state_entry_rows is not None else state_entries,
                         output_entries=output_entries,
                     )
                     for i in range(steered_input_ids.size(0))
