@@ -30,8 +30,9 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
+from aisteer360.algorithms.core.execution.artifacts import Artifact
 from aisteer360.algorithms.core.execution.capabilities import Capability
-from aisteer360.algorithms.core.execution.requirements import Requirements, needs
+from aisteer360.algorithms.core.execution.requirements import Requirements, any_of, needs
 
 
 class StructuralControl(BaseControl):
@@ -63,19 +64,55 @@ class StructuralControl(BaseControl):
         """
         pass
 
+    def artifact_capability(self) -> Capability | None:
+        """The serve capability implied by this configuration's steer-time artifact, or None.
+
+        Controls whose `steer()` writes a servable product to disk return
+        `Capability.SERVE_CHECKPOINT` for a full-weights checkpoint or `Capability.SERVE_LORA`
+        for an adapter, so the generate phase gains a serving alternative. The default returns
+        None (no on-disk artifact), which keeps the generate phase in-process only.
+
+        Returns:
+            The capability, or None.
+        """
+        return None
+
+    def export_artifact(self) -> Artifact | None:
+        """The steer-time artifact this control produced, or None.
+
+        Called by the pipeline after `steer()` completes. The returned artifact must exist on
+        disk and correspond to `artifact_capability()` (a `CheckpointArtifact` for
+        `Capability.SERVE_CHECKPOINT`, a `LoRAArtifact` for `Capability.SERVE_LORA`). The
+        default returns None.
+
+        Returns:
+            The artifact, or None.
+        """
+        return None
+
     def requirements(self) -> Requirements:
         """Backend requirements computed from this instance's configuration, per phase.
 
         Structural controls train against the live model, so the steer phase requires
         `Capability.IN_PROCESS_TORCH` and `Capability.WEIGHT_TRAINING`. The generate phase
-        requires `Capability.IN_PROCESS_TORCH`, since the returned model is adopted in process.
+        requires `Capability.IN_PROCESS_TORCH` for in-process adoption of the returned model;
+        when the configuration produces an on-disk artifact (`artifact_capability()`), serving
+        that artifact is an alternative, so a backend advertising the matching serve capability
+        also supports the generate phase.
 
         Returns:
             The control's phase-keyed requirements.
         """
+        generate = needs(Capability.IN_PROCESS_TORCH)
+        capability = self.artifact_capability()
+        if capability is not None:
+            generate = any_of(
+                generate,
+                needs(capability, hint="serve the steer-time artifact on a vLLM backend"),
+            )
         return Requirements(
             steer=needs(Capability.IN_PROCESS_TORCH, Capability.WEIGHT_TRAINING),
-            generate=needs(Capability.IN_PROCESS_TORCH),
+            generate=generate,
         )
 
 

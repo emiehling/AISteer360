@@ -14,8 +14,13 @@ from typing import Callable
 import torch
 from transformers import PreTrainedModel, StoppingCriteriaList
 
+from aisteer360.algorithms.core.execution.requirements import Requirements
 from aisteer360.algorithms.output_control._common.criteria import BudgetTokens, StopOnSubstring
-from aisteer360.algorithms.output_control.base import DecodingDriver, stack_generate_kwargs
+from aisteer360.algorithms.output_control.base import (
+    DecodingDriver,
+    resolve_generate_callable,
+    stack_generate_kwargs,
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,11 @@ class PhasedDriver(DecodingDriver):
         self.extract_after = extract_after
         self.tokenizer = None  # injected by the pipeline
 
+    def requirements(self) -> Requirements:
+        """Phase splicing is client-side and generated phases run through the session, so no
+        phase requires anything beyond the session contract."""
+        return Requirements()
+
     def plan(self, prompt_text: str, params: dict) -> list:
         """Return the phase plan for one example. Subclasses override."""
         raise NotImplementedError
@@ -92,13 +102,14 @@ class PhasedDriver(DecodingDriver):
             return out
         return [params_agg] * batch_size
 
-    def decode(self, input_ids, attention_mask, model: PreTrainedModel, logits_processors,
-               stopping_criteria, runtime_kwargs, **gen_kwargs) -> torch.Tensor:
+    def decode(self, input_ids, attention_mask, model: PreTrainedModel | None, logits_processors,
+               stopping_criteria, runtime_kwargs, session=None, **gen_kwargs) -> torch.Tensor:
         if self.tokenizer is None:
             raise RuntimeError("PhasedDriver requires a tokenizer; steer() must run first.")
 
         runtime_kwargs = runtime_kwargs or {}
-        base_generate = runtime_kwargs.get("base_generate") or (model.generate if model is not None else None)
+        via_session = session is not None and runtime_kwargs.get("base_generate") is None
+        base_generate = resolve_generate_callable(model, runtime_kwargs, session=session)
 
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
@@ -114,7 +125,7 @@ class PhasedDriver(DecodingDriver):
             params = params_per_example[i]
             plan = self.plan(prompt_text, params)
             full = self._run_plan(
-                plan, row_ids, prompt_text, params, model, base_generate,
+                plan, row_ids, prompt_text, params, base_generate, via_session,
                 logits_processors, stopping_criteria, gen_kwargs,
             )
             final_sequences.append(self._finalize(full[0], original_lengths[i]))
@@ -126,7 +137,7 @@ class PhasedDriver(DecodingDriver):
         ).to(input_ids.device)
         return padded["input_ids"]
 
-    def _run_plan(self, plan, row_ids, prompt_text, params, model, base_generate,
+    def _run_plan(self, plan, row_ids, prompt_text, params, base_generate, via_session,
                   logits_processors, stopping_criteria, gen_kwargs) -> torch.Tensor:
         """Execute one example's plan; return the full spliced sequence `[1, L]`."""
         current = row_ids
@@ -139,28 +150,43 @@ class PhasedDriver(DecodingDriver):
                 current = fixed_ids if phase.replace else torch.cat([current, fixed_ids], dim=1)
             elif isinstance(phase, Generated):
                 current = self._generate_phase(
-                    phase, current, model, base_generate,
+                    phase, current, base_generate, via_session,
                     logits_processors, stopping_criteria, gen_kwargs,
                 )
             else:
                 raise TypeError(f"Unknown phase type: {type(phase).__name__}")
         return current
 
-    def _generate_phase(self, phase: Generated, current, model, base_generate,
+    def _generate_phase(self, phase: Generated, current, base_generate, via_session,
                         logits_processors, stopping_criteria, gen_kwargs) -> torch.Tensor:
-        """Run one Generated phase, composing its boundary criteria with the pipeline's."""
+        """Run one Generated phase, composing its boundary with the pipeline's stop rules.
+
+        On the session path the boundary lowers to normalized parameters (`until` as a stop
+        string, `budget` as a tightened `max_new_tokens`), so the phase runs on any backend; a
+        raw generate callable receives the boundary as prompt-anchored criteria instead.
+        """
         criteria = list(stopping_criteria) if stopping_criteria is not None else []
-        current_len = current.size(1)
-        if phase.until is not None:
-            criteria.append(StopOnSubstring(self.tokenizer, phase.until, current_len))
-        if phase.budget is not None:
-            criteria.append(BudgetTokens(phase.budget, current_len))
+        kwargs = dict(gen_kwargs)
+
+        if via_session:
+            if phase.until is not None:
+                existing = kwargs.get("stop_strings") or ()
+                if isinstance(existing, str):
+                    existing = (existing,)
+                kwargs["stop_strings"] = (*existing, phase.until)
+            if phase.budget is not None:
+                cap = kwargs.get("max_new_tokens")
+                kwargs["max_new_tokens"] = phase.budget if cap is None else min(cap, phase.budget)
+        else:
+            current_len = current.size(1)
+            if phase.until is not None:
+                criteria.append(StopOnSubstring(self.tokenizer, phase.until, current_len))
+            if phase.budget is not None:
+                criteria.append(BudgetTokens(phase.budget, current_len))
+                if "max_new_tokens" not in kwargs:
+                    kwargs["max_new_tokens"] = phase.budget
 
         extra = stack_generate_kwargs(logits_processors, StoppingCriteriaList(criteria))
-
-        kwargs = dict(gen_kwargs)
-        if phase.budget is not None and "max_new_tokens" not in kwargs:
-            kwargs["max_new_tokens"] = phase.budget
 
         attention_mask = torch.ones_like(current)
         outputs = base_generate(input_ids=current, attention_mask=attention_mask, **extra, **kwargs)

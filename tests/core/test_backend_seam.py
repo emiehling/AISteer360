@@ -1,6 +1,7 @@
 """Tests for the execution seam: `BackendSpec`, capability tables, the requirement language,
 and `SteeringPipeline.check()` with its steer-time enforcement."""
 import dataclasses
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,8 @@ from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 
 class _TokenPassthroughControl(InputControl):
-    """Enabled input control with the conservative default requirements."""
+    """Enabled input control declaring the conservative in-process generate requirement
+    (the `BaseControl` default; the `InputControl` base is prompt-only and requires nothing)."""
 
     def __init__(self):
         self._steer_called = False
@@ -41,6 +43,9 @@ class _TokenPassthroughControl(InputControl):
     def steer(self, model=None, tokenizer=None, **kwargs):
         self._steer_called = True
         self._steer_kwargs = kwargs
+
+    def requirements(self) -> Requirements:
+        return Requirements(generate=needs(Capability.IN_PROCESS_TORCH))
 
 
 class _ModelSwappingControl(StructuralControl):
@@ -300,9 +305,13 @@ class TestCheck:
             pipeline.steer()
         assert control._steer_called is False
 
-    def test_steer_on_vllm_backend_not_implemented(self):
+    @pytest.mark.skipif(
+        importlib.util.find_spec("vllm") is not None,
+        reason="vLLM installed; steer() would boot an engine instead of raising.",
+    )
+    def test_steer_on_vllm_backend_requires_vllm_extra(self):
         pipeline = SteeringPipeline(lazy_init=True, backend=BackendSpec(kind="vllm", model="m"))
-        with pytest.raises(NotImplementedError, match="not yet implemented"):
+        with pytest.raises(ModuleNotFoundError, match=r"aisteer360\[vllm\]"):
             pipeline.steer()
 
     def test_compute_logprobs_raises_on_score_failure(self):

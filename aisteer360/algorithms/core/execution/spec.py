@@ -49,6 +49,40 @@ def canonicalize_option_value(value: Any) -> Any:
     return f"{type(value).__qualname__}:{value!r}"
 
 
+_ENCODER_DECODER_CACHE: dict[tuple[str, bool], bool] = {}
+
+
+def _reject_encoder_decoder_if_resolvable(model_ref: str, trust_remote_code: bool) -> None:
+    """Reject encoder-decoder models on vLLM specs when the config resolves locally.
+
+    Encoder-decoder execution is in-process only. The check consults only locally available
+    files (a local path or the local hub cache); an unresolvable reference passes, and backend
+    construction repeats the check authoritatively. Results are memoized per
+    `(model_ref, trust_remote_code)`, since equal specs are re-constructed per call.
+
+    Raises:
+        ValueError: If the locally resolved config declares an encoder-decoder model.
+    """
+    key = (model_ref, trust_remote_code)
+    is_encoder_decoder = _ENCODER_DECODER_CACHE.get(key)
+    if is_encoder_decoder is None:
+        try:
+            from transformers import AutoConfig
+
+            config = AutoConfig.from_pretrained(
+                model_ref, local_files_only=True, trust_remote_code=trust_remote_code,
+            )
+            is_encoder_decoder = bool(getattr(config, "is_encoder_decoder", False))
+        except Exception:
+            is_encoder_decoder = False
+        _ENCODER_DECODER_CACHE[key] = is_encoder_decoder
+    if is_encoder_decoder:
+        raise ValueError(
+            f"Model {model_ref!r} is an encoder-decoder model; encoder-decoder execution is "
+            "in-process only. Run this pipeline on the huggingface backend."
+        )
+
+
 def _decanonicalize(value: Any) -> Any:
     """Rebuild plain dicts and lists from a canonical option value.
 
@@ -77,7 +111,9 @@ class BackendSpec:
     vLLM-Hook plugin active (`hook_plugin` option) and speculative decoding configured
     (`speculative_config` option, top-level or under `engine_kwargs`) is rejected, since
     draft-model forwards are unhooked and verification passes break the worker's per-request
-    position accounting.
+    position accounting. A `"vllm"`/`"vllm-serve"` spec naming an encoder-decoder model is
+    rejected when the model config resolves locally (encoder-decoder execution is in-process
+    only); an unresolvable reference passes here and is re-checked at backend construction.
 
     Attributes:
         kind: Backend kind, one of `"huggingface"`, `"vllm"`, or `"vllm-serve"`.
@@ -86,8 +122,9 @@ class BackendSpec:
         options: Canonicalized option mapping, stored as sorted tuples.
 
     Raises:
-        ValueError: If `kind` is unknown, or a vLLM spec combines the vLLM-Hook plugin with
-            speculative decoding.
+        ValueError: If `kind` is unknown, a vLLM spec combines the vLLM-Hook plugin with
+            speculative decoding, or a vLLM spec names a locally resolvable encoder-decoder
+            model.
         TypeError: If `options` is neither a mapping nor a canonical options tuple.
     """
 
@@ -113,16 +150,21 @@ class BackendSpec:
                 f"{type(raw_options).__name__}."
             )
 
-        if self.kind in ("vllm", "vllm-serve") and self.get_option("hook_plugin"):
-            speculative = (
-                self.get_option("speculative_config")
-                or self.get_option("engine_kwargs", "speculative_config")
-            )
-            if speculative:
-                raise ValueError(
-                    "Speculative decoding cannot be combined with the vLLM-Hook plugin: "
-                    "draft-model forwards are unhooked and verification passes break the "
-                    "worker's per-request position accounting."
+        if self.kind in ("vllm", "vllm-serve"):
+            if self.get_option("hook_plugin"):
+                speculative = (
+                    self.get_option("speculative_config")
+                    or self.get_option("engine_kwargs", "speculative_config")
+                )
+                if speculative:
+                    raise ValueError(
+                        "Speculative decoding cannot be combined with the vLLM-Hook plugin: "
+                        "draft-model forwards are unhooked and verification passes break the "
+                        "worker's per-request position accounting."
+                    )
+            if self.model is not None:
+                _reject_encoder_decoder_if_resolvable(
+                    self.model, bool(self.get_option("trust_remote_code", default=False)),
                 )
 
     def __eq__(self, other: object) -> bool:

@@ -21,6 +21,13 @@ from aisteer360.algorithms.core.execution.capabilities import (
     InterventionKinds,
     ProcessorKinds,
 )
+from aisteer360.algorithms.core.execution.fanout import (
+    PartialBatchError,
+    TransportError,
+    derive_item_seed,
+    run_bounded,
+    with_transport_retries,
+)
 from aisteer360.algorithms.core.execution.interventions import (
     InterventionSpec,
     ProcessorSpec,
@@ -38,7 +45,10 @@ from aisteer360.algorithms.core.execution.items import (
     StateControlEntry,
 )
 from aisteer360.algorithms.core.execution.layout import ModelLayout
-from aisteer360.algorithms.core.execution.params import GenerationParams
+from aisteer360.algorithms.core.execution.params import (
+    GenerationParams,
+    merge_lowered_params,
+)
 from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
 from aisteer360.algorithms.core.execution.registry import (
     capabilities_for_spec,
@@ -97,9 +107,15 @@ __all__ = [
     "SupportReport",
     "UnsupportedOperationError",
     "UnsupportedPipelineError",
+    "PartialBatchError",
+    "TransportError",
     "any_of",
     "capabilities_for_spec",
+    "derive_item_seed",
     "evaluate_support",
+    "merge_lowered_params",
     "needs",
     "resolve_backend_class",
+    "run_bounded",
+    "with_transport_retries",
 ]

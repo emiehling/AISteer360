@@ -18,6 +18,7 @@ from aisteer360.algorithms.core.execution.capabilities import (
     Capability,
     CaptureKinds,
 )
+from aisteer360.algorithms.core.execution.fanout import derive_item_seed
 from aisteer360.algorithms.core.execution.items import (
     CaptureResult,
     GenerationItem,
@@ -32,6 +33,10 @@ from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
 from aisteer360.algorithms.core.execution.spec import BackendSpec
 from aisteer360.algorithms.core.execution.support import UnsupportedOperationError
 from aisteer360.algorithms.core.output import Output, infer_finish_reasons
+from aisteer360.algorithms.output_control._common.criteria import (
+    StopOnSubstring,
+    StopOnTokens,
+)
 from aisteer360.algorithms.output_control.base import stack_generate_kwargs
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
 from aisteer360.utils.tokenization import (
@@ -63,7 +68,9 @@ def render_hf_gen_kwargs(params: GenerationParams) -> dict:
 
     Keys in `params.extra` pass through untouched; a normalized field always takes precedence
     over a same-named extra key. `seed` is not rendered here, since the session applies it as a
-    `fork_rng`-scoped `manual_seed` around the item's decode.
+    `fork_rng`-scoped `manual_seed` around the item's decode; the stop fields are not rendered
+    either, since the session composes them as prompt-anchored stop criteria
+    (`compose_stop_criteria`).
 
     Args:
         params: The normalized parameters.
@@ -89,6 +96,31 @@ def render_hf_gen_kwargs(params: GenerationParams) -> dict:
     if params.n is not None:
         gen_kwargs["num_return_sequences"] = params.n
     return gen_kwargs
+
+
+def compose_stop_criteria(params: GenerationParams, prompt_len: int, tokenizer) -> list:
+    """The stop criteria implied by the normalized stop fields, anchored at `prompt_len`.
+
+    Args:
+        params: The normalized parameters carrying `stop_strings` and `stop_token_ids`.
+        prompt_len: Prompt length the substring criteria decode past.
+        tokenizer: Tokenizer for substring decoding; required when stop strings are set.
+
+    Returns:
+        The composed criteria (possibly empty).
+
+    Raises:
+        ValueError: If stop strings are set and no tokenizer is available.
+    """
+    criteria: list = []
+    if params.stop_strings:
+        if tokenizer is None:
+            raise ValueError("stop_strings require a tokenizer on the session.")
+        for text in params.stop_strings:
+            criteria.append(StopOnSubstring(tokenizer, text, prompt_len))
+    if params.stop_token_ids:
+        criteria.append(StopOnTokens(params.stop_token_ids))
+    return criteria
 
 
 def register_hook_specs(model: PreTrainedModel, hooks) -> list:
@@ -244,6 +276,7 @@ class ExclusiveSession:
     def __init__(self, backend: HFBackend) -> None:
         self._backend = backend
         self._closed = False
+        self._generate_count = 0
 
     @property
     def closed(self) -> bool:
@@ -387,25 +420,85 @@ class ExclusiveSession:
         elif device.type == "mps":
             torch.mps.manual_seed(seed)
 
+    def _item_seeds(self, items: Sequence[GenerationItem], params: GenerationParams) -> list[int | None]:
+        """Effective per-item seeds: the item's own seed, else a per-item derivation from
+        `params.seed` under this call's operation id, else None."""
+        operation_id = f"generate-{self._generate_count}"
+        seeds: list[int | None] = []
+        for index, item in enumerate(items):
+            if item.seed is not None:
+                seeds.append(item.seed)
+            elif params.seed is not None:
+                seeds.append(derive_item_seed(params.seed, operation_id, index))
+            else:
+                seeds.append(None)
+        return seeds
+
+    @staticmethod
+    def _entries_identical(items: Sequence[GenerationItem | ScoringItem]) -> bool:
+        """True when every item carries the same state and output entry objects."""
+        first = items[0]
+        for item in items[1:]:
+            if len(item.state_entries) != len(first.state_entries) or any(
+                a is not b for a, b in zip(item.state_entries, first.state_entries)
+            ):
+                return False
+            if len(item.output_entries) != len(first.output_entries) or any(
+                a is not b for a, b in zip(item.output_entries, first.output_entries)
+            ):
+                return False
+        return True
+
+    def _stack_prompt_rows(self, rows: list[tuple[torch.Tensor, torch.Tensor]]):
+        """Stack resolved single-row prompts into one right-padded batch."""
+        pad_token_id = getattr(self.tokenizer, "pad_token_id", None) or 0
+        max_len = max(ids.size(1) for ids, _ in rows)
+        device = rows[0][0].device
+        input_ids = torch.full((len(rows), max_len), pad_token_id, dtype=torch.long, device=device)
+        attention_mask = torch.zeros((len(rows), max_len), dtype=rows[0][1].dtype, device=device)
+        for row, (ids, mask) in enumerate(rows):
+            length = ids.size(1)
+            input_ids[row, :length] = ids[0]
+            attention_mask[row, :length] = mask[0]
+        return input_ids, attention_mask
+
+    def _classify(self, new_tokens: torch.Tensor, gen_kwargs: dict, params: GenerationParams) -> list[str | None]:
+        """Per-row finish reasons under the pinned precedence, from the composed stop rules."""
+        tokenizer = self.tokenizer
+        return infer_finish_reasons(
+            new_tokens,
+            gen_kwargs,
+            eos_token_id=getattr(tokenizer, "eos_token_id", None),
+            pad_token_id=getattr(tokenizer, "pad_token_id", None),
+            stop_strings=params.stop_strings,
+            stop_token_ids=params.stop_token_ids,
+            tokenizer=tokenizer,
+        )
+
     def generate(
         self,
         items: Sequence[GenerationItem],
         params: GenerationParams,
     ) -> list[ItemResult]:
-        """Generate one result per item, serially, each under its own hook registrations.
+        """Generate one result per item, each under its own hook registrations.
 
-        Every item's decode delegates to `model.generate` with the item's composed processor and
-        criteria stacks; caller-supplied `logits_processor` and `stopping_criteria` entries in
-        `params.extra` append after the item's own contributions. A seeded item decodes inside a
-        seeded RNG fork, so seeded runs are reproducible and the covered generator state (CPU,
-        plus the model device's) is restored afterwards.
+        Items sharing identical state entries, identical output entries, and identical-or-absent
+        effective seeds execute in one batched `model.generate` pass (right-padded to a common
+        prompt length); otherwise items decode serially. Caller-supplied `logits_processor` and
+        `stopping_criteria` entries in `params.extra` append after the items' own contributions,
+        and the normalized stop fields compose as stop rules anchored at the prompt length. A
+        seeded item decodes inside a seeded RNG fork, so seeded runs are reproducible and the
+        covered generator state (CPU, plus the model device's) is restored afterwards; when
+        `params.seed` is set and an item carries no seed of its own, the item's seed derives per
+        index, so multi-item fan-outs sample distinct streams.
 
         Args:
             items: The generation items.
             params: Normalized generation parameters shared by all items.
 
         Returns:
-            One `ItemResult` per item, in item order.
+            One `ItemResult` per item, in item order. Each result's `finish_reasons` carries one
+            reason per candidate with the precedence stop, then eos, then length, then None.
         """
         self._ensure_open()
         model = self.model
@@ -414,8 +507,20 @@ class ExclusiveSession:
         user_processors = tuple(gen_kwargs.pop("logits_processor", None) or ())
         user_criteria = tuple(gen_kwargs.pop("stopping_criteria", None) or ())
 
-        eos_token_id = getattr(tokenizer, "eos_token_id", None)
-        pad_token_id = getattr(tokenizer, "pad_token_id", None)
+        if not items:
+            return []
+        seeds = self._item_seeds(items, params)
+        self._generate_count += 1
+
+        batchable = (
+            len(items) > 1
+            and self._entries_identical(items)
+            and len(set(seeds)) == 1
+        )
+        if batchable:
+            return self._generate_batched(
+                items, params, gen_kwargs, user_processors, user_criteria, seeds[0],
+            )
 
         results: list[ItemResult] = []
         for index, item in enumerate(items):
@@ -423,10 +528,11 @@ class ExclusiveSession:
             processors, criteria = self._compose_entry_stacks(
                 item.output_entries, extra_processors=user_processors, extra_criteria=user_criteria,
             )
+            criteria.extend(compose_stop_criteria(params, input_ids.size(1), tokenizer))
             stacks = stack_generate_kwargs(processors, criteria)
             handles = self._register_state_entries(model, item.state_entries)
             try:
-                seed = item.seed if item.seed is not None else params.seed
+                seed = seeds[index]
                 with self._seeded(seed):
                     if seed is not None:
                         self._apply_seed(seed)
@@ -441,15 +547,65 @@ class ExclusiveSession:
                     handle.remove()
 
             new_tokens = full_ids[:, input_ids.size(1):]
-            reasons = infer_finish_reasons(
-                new_tokens, gen_kwargs, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
-            )
+            reasons = self._classify(new_tokens, gen_kwargs, params)
             results.append(ItemResult(
                 index=index,
                 output=Output(
                     output_ids=new_tokens,
                     adapted_input_ids=input_ids,
                     finish_reason=reasons[0],
+                    finish_reasons=tuple(reasons),
+                ),
+            ))
+        return results
+
+    def _generate_batched(
+        self,
+        items: Sequence[GenerationItem],
+        params: GenerationParams,
+        gen_kwargs: dict,
+        user_processors: tuple,
+        user_criteria: tuple,
+        seed: int | None,
+    ) -> list[ItemResult]:
+        """One `model.generate` pass over all items (identical entries, one shared seed)."""
+        model = self.model
+        rows = [self._resolve_prompt_tensors(item.prompt) for item in items]
+        input_ids, attention_mask = self._stack_prompt_rows(rows)
+        processors, criteria = self._compose_entry_stacks(
+            items[0].output_entries, extra_processors=user_processors, extra_criteria=user_criteria,
+        )
+        criteria.extend(compose_stop_criteria(params, input_ids.size(1), self.tokenizer))
+        stacks = stack_generate_kwargs(processors, criteria)
+        handles = self._register_state_entries(model, items[0].state_entries)
+        try:
+            with self._seeded(seed):
+                if seed is not None:
+                    self._apply_seed(seed)
+                full_ids = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    **stacks,
+                    **gen_kwargs,
+                )
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        prompt_len = input_ids.size(1)
+        new_tokens = full_ids[:, prompt_len:]
+        num_candidates = params.n or 1
+        results: list[ItemResult] = []
+        for index in range(len(items)):
+            item_rows = new_tokens[index * num_candidates:(index + 1) * num_candidates]
+            reasons = self._classify(item_rows, gen_kwargs, params)
+            results.append(ItemResult(
+                index=index,
+                output=Output(
+                    output_ids=item_rows,
+                    adapted_input_ids=input_ids[index:index + 1],
+                    finish_reason=reasons[0],
+                    finish_reasons=tuple(reasons),
                 ),
             ))
         return results
@@ -465,8 +621,10 @@ class ExclusiveSession:
         reference follows the prompt's last real token, then prompt and reference concatenate
         into one causal forward pass under the item's hook registrations; the item's logits
         processors replay position-by-position with the same `(prefix_ids, scores)` view they
-        receive during generation. Stopping criteria never apply. Decoder-only models only; the
-        pipeline's `compute_logprobs` serves encoder-decoder models in-process.
+        receive during generation. Items sharing identical state and output entries score in one
+        batched forward pass (prompts right-padded to a common length, then left-packed
+        together); otherwise items score serially. Stopping criteria never apply. Decoder-only
+        models only; the pipeline's `compute_logprobs` serves encoder-decoder models in-process.
 
         Args:
             items: The scoring items. Every item must carry the same reference length.
@@ -494,6 +652,9 @@ class ExclusiveSession:
         ref_lens = {item.ref_output_ids.shape[-1] for item in items}
         if len(ref_lens) > 1:
             raise ValueError(f"All scoring items must share one reference length; got {sorted(ref_lens)}.")
+
+        if len(items) > 1 and self._entries_identical(items):
+            return self._score_batched(items, forward_kwargs)
 
         all_logprobs: list[torch.Tensor] = []
         for item in items:
@@ -537,6 +698,51 @@ class ExclusiveSession:
                     handle.remove()
 
         return torch.cat(all_logprobs, dim=0)
+
+    def _score_batched(self, items: Sequence[ScoringItem], forward_kwargs: dict) -> torch.Tensor:
+        """One causal forward pass over all items (identical entries)."""
+        model = self.model
+        device = model.device
+        rows = [self._resolve_prompt_tensors(item.prompt) for item in items]
+        input_ids, attention_mask = self._stack_prompt_rows(rows)
+        input_ids, attention_mask = to_left_pad(input_ids, attention_mask)
+
+        refs: list[torch.Tensor] = []
+        for item in items:
+            ref = item.ref_output_ids
+            if ref.ndim == 1:
+                ref = ref.unsqueeze(0)
+            refs.append(ref.to(device))
+        ref_output_ids = torch.cat(refs, dim=0)
+        ref_len = ref_output_ids.size(1)
+        if ref_len == 0:
+            return torch.zeros((len(items), 0), device=device, dtype=torch.float32)
+
+        processors, _ = self._compose_entry_stacks(items[0].output_entries)
+        handles = self._register_state_entries(model, items[0].state_entries)
+        try:
+            with torch.no_grad():
+                combined_ids = torch.cat([input_ids, ref_output_ids], dim=1)
+                combined_mask = torch.cat([
+                    attention_mask,
+                    torch.ones(len(items), ref_len, device=device, dtype=attention_mask.dtype),
+                ], dim=1)
+                outputs = model(
+                    input_ids=combined_ids,
+                    attention_mask=combined_mask,
+                    **forward_kwargs,
+                )
+                input_len = input_ids.size(1)
+                logits = outputs.logits[:, input_len - 1: input_len + ref_len - 1, :]
+                if len(processors):
+                    for t in range(logits.size(1)):
+                        prefix = torch.cat([input_ids, ref_output_ids[:, :t]], dim=1)
+                        logits[:, t, :] = processors(prefix, logits[:, t, :])
+                logprobs = torch.log_softmax(logits, dim=-1)
+                return logprobs.gather(dim=-1, index=ref_output_ids.unsqueeze(-1)).squeeze(-1)
+        finally:
+            for handle in handles:
+                handle.remove()
 
     def capture(
         self,

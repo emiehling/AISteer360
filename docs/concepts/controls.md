@@ -169,7 +169,7 @@ The toolkit implements the following step-level controls:
 - [`ContrastiveDecoding`](../reference/algorithms/output_control/contrastive_decoding.md) — contrastive decoding[@li2022contrastive]; favors tokens the base (expert) scores higher than a weaker amateur, over an expert-plausibility-masked set. See the notebook: [ContrastiveDecoding](../examples/notebooks/algorithms/contrastive_decoding.ipynb).
 - [`ValueGuidance`](../reference/algorithms/output_control/value_guidance.md) — the config-first generic over the step shape (candidates → value → normalize → shift); FUDGE, ARGS, RAD, and SASA are assignments of its config. See the notebook: [ValueGuidance](../examples/notebooks/generics/value_guidance.ipynb).
 - [`ContrastiveGuidance`](../reference/algorithms/output_control/contrastive_guidance.md) — the config-first generic over the distribution shape (mix weighted log-prob sources); DExperts, contrastive decoding, and proxy-tuning are assignments of its config. See the notebook: [ContrastiveGuidance](../examples/notebooks/generics/contrastive_guidance.ipynb).
-- [`StoppingRules`](../reference/algorithms/output_control/stopping_rules.md) — the config-first generic over the stopping-criteria composition; substring / token / budget stops as pipeline configuration rather than a class. See the notebook: [StoppingRules](../examples/notebooks/generics/stopping_rules.ipynb).
+- [`StoppingRules`](../reference/algorithms/output_control/stopping_rules.md) — the config-first generic for stop rules; substring / token / budget stops as pipeline configuration rather than a class. Its stops merge into the call's generation parameters, so rows halted by them report `finish_reason="stop"` and the pipeline truncates decoded text at the stop string. See the notebook: [StoppingRules](../examples/notebooks/generics/stopping_rules.ipynb).
 
 and the following decoding drivers:
 
@@ -202,7 +202,7 @@ component specs (name / instance / callable / dict-with-`kind`) at `steer()` tim
 | [`ContrastiveGuidance`](../reference/algorithms/output_control/contrastive_guidance.md) | step-level (logits processors) | distribution | DExperts, contrastive decoding, proxy-tuning |
 | [`SearchDecoding`](../reference/algorithms/output_control/search_decoding.md) | driver | segment | best-of-N, self-consistency, DeAL-equivalent |
 | [`PhasedDecoding`](../reference/algorithms/output_control/phased_decoding.md) | driver | phase | budget forcing, response prefill, ThinkingIntervention-equivalent |
-| [`StoppingRules`](../reference/algorithms/output_control/stopping_rules.md) | step-level (stopping criteria) | — | substring / token / budget stops |
+| [`StoppingRules`](../reference/algorithms/output_control/stopping_rules.md) | sampling-mapped (stop rules) | — | substring / token / budget stops |
 
 The named methods are siblings, not children, of these generics: they sit directly on the same `_common` parts and
 each keeps the one thing its class adds beyond a config (RAD's dynamic candidate sizing, SASA's probe fitting, and so

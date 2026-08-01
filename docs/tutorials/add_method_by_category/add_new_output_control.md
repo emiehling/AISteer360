@@ -211,8 +211,10 @@ class ShortestOfN(DecodingDriver):
     every forward pass. `gen_kwargs` reaching `decode` never contains `logits_processor` / `stopping_criteria` (the
     pipeline pops caller-supplied ones and composes them into the stacks), so a driver that deep-copies its `gen_kwargs`
     is safe by construction. `decode` returns the full sequence ids (prompt + continuation); the pipeline strips the
-    prompt prefix. Resolve `model.generate` lazily (`runtime_kwargs.get("base_generate") or model.generate`) if you want
-    callers to inject a generate function in tests.
+    prompt prefix. The pipeline also passes `session=`, the `SteeringSession` for this generation; resolve your rollout
+    callable with `resolve_generate_callable(model, runtime_kwargs, session=session)` so the driver runs on any backend
+    whose session serves its rollout parameters (the `runtime_kwargs["base_generate"]` override is deprecated but still
+    honored, with a `DeprecationWarning`).
 
 ## Prefer the `_common` library
 

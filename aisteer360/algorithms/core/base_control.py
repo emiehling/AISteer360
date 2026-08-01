@@ -1,4 +1,5 @@
 """Shared base class for steering controls across all four categories."""
+import copy
 from abc import ABC
 from dataclasses import fields
 
@@ -68,6 +69,27 @@ class BaseControl(ABC):
             The control's phase-keyed requirements.
         """
         return Requirements(generate=needs(Capability.IN_PROCESS_TORCH))
+
+    def clone_for_call(self, seed: int | None = None):
+        """A configuration-preserving shallow clone for one generation call.
+
+        The clone shares steer-time artifacts (memories, steering vectors, attached tokenizers)
+        with the original but has its own attribute namespace, so per-call attribute mutation on
+        the clone never races another call using the original. When `seed` is given and the
+        control defines `reseed(seed)`, the clone's client-side RNG is re-seeded.
+
+        Args:
+            seed: Optional seed forwarded to the clone's `reseed()`.
+
+        Returns:
+            The clone.
+        """
+        clone = copy.copy(self)
+        if seed is not None:
+            reseed = getattr(clone, "reseed", None)
+            if callable(reseed):
+                reseed(seed)
+        return clone
 
     def cleanup(self) -> None:
         """Release resources allocated during `steer()`.
