@@ -65,6 +65,9 @@ plots = [
     "matplotlib>=3.8.0,<4.0.0",
     "seaborn>=0.13.2,<0.14.0",
 ]
+guided = [
+    "xgrammar>=0.1.19",
+]
 vllm = [
     "vllm>=0.8.5,<1.0.0",
     "vllm-hook-plugins @ git+https://github.com/emiehling/vLLM-Hook.git@steerability-interface#subdirectory=vllm_hook_plugins",

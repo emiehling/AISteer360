@@ -112,6 +112,7 @@ nav:
             - BudgetForcing: reference/algorithms/output_control/budget_forcing.md
             - ContrastiveDecoding: reference/algorithms/output_control/contrastive_decoding.md
             - ContrastiveGuidance: reference/algorithms/output_control/contrastive_guidance.md
+            - ConstrainedDecoding: reference/algorithms/output_control/constrained_decoding.md
             - DeAL: reference/algorithms/output_control/deal.md
             - DExperts: reference/algorithms/output_control/dexperts.md
             - PhasedDecoding: reference/algorithms/output_control/phased_decoding.md

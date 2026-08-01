@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added: declarative constrained decoding (P4)
+
+- New output control `ConstrainedDecoding`: one declarative `ConstraintSource` (JSON schema,
+  regex, EBNF grammar, or choice set) renders per execution arm. In process it compiles into a
+  client-side automaton (the `aisteer360[guided]` extra, xgrammar) driving the existing
+  `ConstraintProcessor`; on vLLM backends it renders onto the engine's native structured-output
+  parameters (`guided_decoding` offline, `guided_*` fields on serve) in place of the live
+  processor. A control constructed with a live automaton object stays in-process-only with a
+  tested verdict.
+- New capability atom `GUIDED_DECODING` with a static `ConstraintKinds` set
+  (`{json_schema, regex, grammar, choice}`), advertised by both vLLM kinds and not by
+  Hugging Face; requirements for declarative configurations are in-process torch or guided
+  decoding with the source's kind.
+- Structured outputs do not apply to prompt logprobs: `include_in_scoring=True` keeps scoring
+  in-process, sessions refuse scoring items carrying constraints, and
+  `include_in_scoring=False` opts out.
+
 ### Added: state specs and scoring on vLLM (P2)
 
 - The transform-runtime state controls (`CAA`, `ActAdd`, `DirectionalAblation`,

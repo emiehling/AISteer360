@@ -26,7 +26,9 @@ from aisteer360.algorithms.core.execution.capabilities import (
     BackendCapabilities,
     Capability,
 )
+from aisteer360.algorithms.core.execution.constraints import ConstraintSource
 from aisteer360.algorithms.core.execution.items import (
+    ConstraintEntry,
     GenerationItem,
     HookEntry,
     InterventionEntry,
@@ -758,6 +760,23 @@ class SteeringPipeline:
                     UserWarning,
                 )
 
+    def _constraint_contributions(self, runtime_kwargs: dict | None) -> dict[int, ConstraintSource]:
+        """Declarative constraint sources from enabled output controls, keyed by `id()`.
+
+        A control that returns a source from `export_constraint` is lowered for that call on
+        backends hosting structured outputs natively: the source renders onto the engine's
+        request parameters and the control's live processor is not collected.
+        """
+        contributions: dict[int, ConstraintSource] = {}
+        for control in self.output_controls:
+            if not getattr(control, "enabled", True):
+                continue
+            exporter = getattr(control, "export_constraint", None)
+            source = exporter(runtime_kwargs) if callable(exporter) else None
+            if source is not None:
+                contributions[id(control)] = source
+        return contributions
+
     def _resolve_decoding_driver(self) -> DecodingDriver:
         """The sole enabled DecodingDriver, else the default (model.generate).
 
@@ -1410,11 +1429,20 @@ class SteeringPipeline:
                     tokenizer=self.tokenizer,
                 )
             else:
-                # default path: per-prompt items executed by the session
+                # default path: per-prompt items executed by the session; on backends hosting
+                # structured outputs natively, declarative constraints lower in place of their
+                # live processors
+                constraint_sources: dict[int, ConstraintSource] = {}
+                if not hooks_in_process:
+                    constraint_sources = self._constraint_contributions(runtime_kwargs)
                 output_entries = self._collect_output_entries(
                     steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
-                    skip_ids=skip_ids, **gen_kwargs,
+                    skip_ids=skip_ids | frozenset(constraint_sources), **gen_kwargs,
                 )
+                if constraint_sources:
+                    output_entries = output_entries + tuple(
+                        ConstraintEntry(source=source) for source in constraint_sources.values()
+                    )
                 user_processors = gen_kwargs.pop("logits_processor", None) or []
                 user_criteria = gen_kwargs.pop("stopping_criteria", None) or []
                 params = GenerationParams.from_gen_kwargs(**gen_kwargs)

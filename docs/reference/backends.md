@@ -22,6 +22,7 @@ fix. The generate-phase matrix by control:
 | `best_of_n`, `search_decoding`, `phased_decoding`, `thinking_intervention` | yes | yes | drivers over `session.generate` |
 | `deal` | yes | no | `BEAM_PROPOSALS`; sampled-proposal search available as its own configuration |
 | `routed_decoding` | yes | offline only | probe pass needs `HIDDEN_CAPTURE` at generate; serve has no capture return path |
+| `constrained_decoding` (declarative source) | yes | yes | in-process automaton (`aisteer360[guided]`) / native structured outputs under `GUIDED_DECODING`; automaton-object configurations stay HF-only |
 | `rad`, `sasa`, `dexperts`, `contrastive_decoding`, `contrastive_guidance`, `value_guidance` | yes | no | model-backed per-step logit math is in-process-only |
 
 Scoring phase: decoder-only scoring with intervention specs is supported on vLLM backends under

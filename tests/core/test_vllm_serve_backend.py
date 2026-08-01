@@ -508,3 +508,86 @@ class TestMergeInterventionSpecs:
         merged = merge_intervention_specs([first, second])
         assert len(merged.ops) == 2
         assert set(merged.artifacts) == set(first.artifacts) | set(second.artifacts)
+
+
+class TestServeConstraintLowering:
+
+    def test_constraint_entry_renders_guided_field(self, fake_server):
+        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
+
+        backend = VLLMServeBackend(_serve_spec())
+        item = GenerationItem(
+            prompt=PreparedPrompt.from_token_ids([0, 3]),
+            output_entries=(ConstraintEntry(
+                source=ConstraintSource(kind="json_schema", value={"type": "object"}),
+            ),),
+        )
+        with backend.open_session() as session:
+            session.generate([item], GenerationParams(max_new_tokens=4))
+        body = next(p for path, p in fake_server.requests if path == "/v1/completions")
+        assert body["guided_json"] == {"type": "object"}
+
+    def test_choice_constraint_renders_guided_choice(self, fake_server):
+        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
+
+        backend = VLLMServeBackend(_serve_spec())
+        item = GenerationItem(
+            prompt=PreparedPrompt.from_token_ids([0, 3]),
+            output_entries=(ConstraintEntry(
+                source=ConstraintSource(kind="choice", value=("cat", "dog")),
+            ),),
+        )
+        with backend.open_session() as session:
+            session.generate([item], GenerationParams())
+        body = next(p for path, p in fake_server.requests if path == "/v1/completions")
+        assert body["guided_choice"] == ["cat", "dog"]
+
+    def test_scoring_with_constraint_entry_refused(self, fake_server):
+        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
+
+        backend = VLLMServeBackend(_serve_spec())
+        item = ScoringItem(
+            prompt=PreparedPrompt.from_token_ids([0, 3]),
+            ref_output_ids=torch.tensor([[5, 6]]),
+            output_entries=(ConstraintEntry(
+                source=ConstraintSource(kind="regex", value="cat"),
+            ),),
+        )
+        with backend.open_session() as session:
+            with pytest.raises(UnsupportedOperationError, match="prompt logprobs"):
+                session.score([item], GenerationParams())
+
+    def test_two_constraints_per_item_refused(self, fake_server):
+        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
+
+        backend = VLLMServeBackend(_serve_spec())
+        item = GenerationItem(
+            prompt=PreparedPrompt.from_token_ids([0, 3]),
+            output_entries=(
+                ConstraintEntry(source=ConstraintSource(kind="regex", value="cat")),
+                ConstraintEntry(source=ConstraintSource(kind="regex", value="dog")),
+            ),
+        )
+        with backend.open_session() as session:
+            with pytest.raises(UnsupportedOperationError, match="one structured-output constraint"):
+                session.generate([item], GenerationParams())
+
+    def test_pipeline_lowers_declarative_constraint_to_serve(self, fake_server):
+        from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+        from aisteer360.algorithms.output_control.constrained_decoding import (
+            ConstrainedDecoding,
+        )
+        from tests.utils.tiny_models import tiny_llama
+
+        control = ConstrainedDecoding(regex="cat|dog", include_in_scoring=False)
+        pipeline = SteeringPipeline(
+            controls=[control], lazy_init=True,
+            backend=_serve_spec(), steer_backend="huggingface",
+        )
+        pipeline.model = tiny_llama(num_layers=2, hidden=16, heads=2)
+        pipeline.tokenizer = wordlevel_tokenizer()
+        pipeline.steer()
+        text = pipeline.generate(text="the cat", max_new_tokens=4, do_sample=False)
+        assert isinstance(text, str)
+        body = next(p for path, p in fake_server.requests if path == "/v1/completions")
+        assert body["guided_regex"] == "cat|dog"

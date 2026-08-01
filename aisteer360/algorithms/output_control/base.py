@@ -230,6 +230,23 @@ class OutputControl(BaseControl):
         """
         return None
 
+    def export_constraint(self, runtime_kwargs: dict | None = None):
+        """The control's declarative constrained-decoding source, or None.
+
+        A control whose per-step masking compiles from a declarative source returns a
+        `ConstraintSource`; on a backend advertising `Capability.GUIDED_DECODING` the pipeline
+        renders it onto the engine's native structured-output parameters in place of the
+        control's live processor. The default returns None, which keeps the control on the live
+        processor mechanism.
+
+        Args:
+            runtime_kwargs: Per-call parameters supplied to `generate()`.
+
+        Returns:
+            The constraint source, or None.
+        """
+        return None
+
     def steer(self, model: PreTrainedModel, tokenizer=None, session=None, **kwargs) -> None:
         """Optional one-time preparation (e.g., load a reward model, fit a probe).
 

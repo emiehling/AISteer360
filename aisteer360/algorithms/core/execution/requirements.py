@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from aisteer360.algorithms.core.execution.capabilities import (
+    ConstraintKinds,
     BackendCapabilities,
     Capability,
     CaptureKinds,
@@ -19,7 +20,7 @@ from aisteer360.algorithms.core.execution.capabilities import (
 )
 from aisteer360.algorithms.core.execution.spec import BackendSpec
 
-KindSet = InterventionKinds | ProcessorKinds | CaptureKinds
+KindSet = InterventionKinds | ProcessorKinds | CaptureKinds | ConstraintKinds
 
 PHASES: tuple[str, ...] = ("steer", "generate", "score")
 
@@ -66,6 +67,8 @@ def _advertised_for(kind_set: KindSet, capabilities: BackendCapabilities) -> Kin
         return capabilities.intervention_kinds
     if isinstance(kind_set, ProcessorKinds):
         return capabilities.processor_kinds
+    if isinstance(kind_set, ConstraintKinds):
+        return capabilities.constraint_kinds
     return capabilities.capture_kinds
 
 
@@ -75,6 +78,8 @@ def _kind_names(kind_set: KindSet) -> str:
         names = kind_set.transforms | kind_set.modifiers | kind_set.scopes | kind_set.gates
     elif isinstance(kind_set, ProcessorKinds):
         names = kind_set.processors
+    elif isinstance(kind_set, ConstraintKinds):
+        names = kind_set.constraints
     else:
         names = kind_set.kinds | kind_set.locations | kind_set.modes
     return ", ".join(sorted(names))

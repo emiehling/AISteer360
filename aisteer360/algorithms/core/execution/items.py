@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import torch
 
+from aisteer360.algorithms.core.execution.constraints import ConstraintSource
 from aisteer360.algorithms.core.execution.interventions import (
     InterventionSpec,
     ProcessorSpec,
@@ -60,6 +61,20 @@ class StackEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class ConstraintEntry:
+    """An output control's contribution as a declarative constrained-decoding source.
+
+    Consumed by backends advertising `Capability.GUIDED_DECODING`, rendered onto the engine's
+    native structured-output request parameters in place of the control's live processor.
+
+    Attributes:
+        source: The declarative constraint.
+    """
+
+    source: ConstraintSource
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessorSpecEntry:
     """One output control's engine-hosted processor contribution.
 
@@ -70,7 +85,7 @@ class ProcessorSpecEntry:
     spec: ProcessorSpec
 
 
-OutputControlEntry = StackEntry | ProcessorSpecEntry
+OutputControlEntry = StackEntry | ProcessorSpecEntry | ConstraintEntry
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -157,4 +172,5 @@ __all__ = [
     "ScoringItem",
     "ItemResult",
     "CaptureResult",
+    "ConstraintEntry",
 ]

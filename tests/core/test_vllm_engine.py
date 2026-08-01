@@ -454,3 +454,37 @@ class TestCaptureOnEngine:
         pipeline.steer()
         text = pipeline.generate(text="the committee approved it", max_new_tokens=8, do_sample=False)
         assert isinstance(text, str)
+
+
+class TestConstraintParityOnEngine:
+    """P4 parity fixture: one declarative source constrains identically on both arms."""
+
+    def test_json_schema_constrained_parity(self, engine_backend):
+        import json
+
+        from aisteer360.algorithms.output_control.constrained_decoding import (
+            ConstrainedDecoding,
+        )
+
+        pytest.importorskip("xgrammar")
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+        prompt = "Return a JSON object:"
+
+        def run(backend_spec, backend=None):
+            control = ConstrainedDecoding(json_schema=schema, include_in_scoring=False)
+            pipeline = SteeringPipeline(
+                controls=[control], lazy_init=True, backend=backend_spec,
+                steer_backend="huggingface",
+            )
+            pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
+            pipeline.tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+            if backend is not None:
+                pipeline._backends[backend.spec] = backend
+            pipeline.steer()
+            return pipeline.generate(text=prompt, max_new_tokens=24, do_sample=False)
+
+        hf_text = run("huggingface")
+        engine_text = run(engine_backend.spec, engine_backend)
+        assert json.loads(engine_text) is not None
+        assert json.loads(hf_text) is not None
+        assert engine_text == hf_text

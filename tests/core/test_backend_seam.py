@@ -157,8 +157,15 @@ class TestCapabilityTables:
 
     def test_vllm_baseline_atoms(self):
         capabilities = capabilities_for_spec(BackendSpec(kind="vllm", model="m"))
-        assert capabilities.atoms == frozenset({Capability.SERVE_CHECKPOINT, Capability.SERVE_LORA})
+        assert capabilities.atoms == frozenset({
+            Capability.SERVE_CHECKPOINT,
+            Capability.SERVE_LORA,
+            Capability.GUIDED_DECODING,
+        })
         assert capabilities.intervention_kinds is None
+        assert capabilities.constraint_kinds.constraints == frozenset(
+            {"json_schema", "regex", "grammar", "choice"}
+        )
 
     def test_vllm_plugin_adds_interventions_and_offline_capture(self):
         capabilities = capabilities_for_spec(
