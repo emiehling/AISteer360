@@ -1555,6 +1555,9 @@ class SteeringPipeline:
         inference_spec = self._resolve_backend_spec(self.backend)
         backend = self._backend_for(inference_spec)
         score_params = GenerationParams(extra=forward_kwargs)
+        inference_capabilities = capabilities_for_spec(inference_spec)
+        hooks_in_process = Capability.IN_PROCESS_TORCH in inference_capabilities.atoms
+        has_enabled_state = any(getattr(control, "enabled", True) for control in self.state_controls)
 
         # batched path (all controls are batch-safe): one left-packed pass over shared entries
         if self.supports_batching:
@@ -1575,10 +1578,15 @@ class SteeringPipeline:
             steered_input_ids, steered_attention_mask = to_left_pad(
                 steered_input_ids, steered_attention_mask
             )
-            state_entries = self._setup_state_controls(
-                steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
-                **forward_kwargs,
-            )
+            if hooks_in_process:
+                state_entries = self._setup_state_controls(
+                    steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
+                    **forward_kwargs,
+                )
+            elif has_enabled_state:
+                state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs)
+            else:
+                state_entries = ()
             output_entries = self._collect_output_entries(
                 steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
                 for_scoring=True, **forward_kwargs,
@@ -1627,10 +1635,15 @@ class SteeringPipeline:
                     attention_mask=single_attention_mask,
                     runtime_kwargs=runtime_kwargs,
                 )
-                state_entries = self._setup_state_controls(
-                    steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
-                    **forward_kwargs,
-                )
+                if hooks_in_process:
+                    state_entries = self._setup_state_controls(
+                        steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
+                        **forward_kwargs,
+                    )
+                elif has_enabled_state:
+                    state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs)
+                else:
+                    state_entries = ()
                 output_entries = self._collect_output_entries(
                     steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
                     for_scoring=True, **forward_kwargs,

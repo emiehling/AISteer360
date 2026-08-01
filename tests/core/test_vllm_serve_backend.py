@@ -29,6 +29,7 @@ class _FakeServer:
         self.completions = completions or {}
         self.version = version
         self.prompt_logprobs = prompt_logprobs
+        self.discovery: dict | None = None
         self.requests: list[tuple[str, dict | None]] = []
         self.fail_prompts: dict[tuple[int, ...], int] = {}
 
@@ -38,6 +39,10 @@ class _FakeServer:
             if self.version:
                 return {"version": "0.10.0"}
             raise ValueError("HTTP 404 from /version: not found")
+        if path == "/v1/hook/capabilities":
+            if self.discovery is not None:
+                return self.discovery
+            raise ValueError("HTTP 404 from /v1/hook/capabilities: not found")
         if path == "/v1/models":
             return {"data": [{"id": self.model_id}]}
         if path == "/v1/completions":
@@ -80,6 +85,7 @@ def fake_server(monkeypatch):
         "aisteer360.backends.vllm._config_layout",
         lambda source, trust_remote_code=False: None,
     )
+    monkeypatch.setattr("aisteer360.backends.vllm._DISCOVERY_CACHE", {})
     return server
 
 
@@ -214,14 +220,14 @@ class TestServeSessionGenerate:
             with pytest.raises(UnsupportedOperationError, match="huggingface"):
                 session.generate([item], GenerationParams())
 
-    def test_intervention_entries_not_implemented(self, fake_server):
+    def test_intervention_entries_require_hook_plugin(self, fake_server):
         backend = VLLMServeBackend(_serve_spec())
         item = GenerationItem(
             prompt=PreparedPrompt.from_token_ids([0, 3]),
             state_entries=(InterventionEntry(spec=InterventionSpec()),),
         )
         with backend.open_session() as session:
-            with pytest.raises(NotImplementedError, match="lowering"):
+            with pytest.raises(UnsupportedOperationError, match="hook_plugin"):
                 session.generate([item], GenerationParams())
 
 
@@ -314,3 +320,191 @@ class TestEncoderDecoderSpecRejection:
     def test_unresolvable_reference_passes(self):
         spec = BackendSpec(kind="vllm", model="m")
         assert spec.model == "m"
+
+
+def _discovery_payload(**engine_overrides):
+    return {
+        "plugin_version": "0.3.0",
+        "vllm_version": "0.10.0",
+        "active_worker": "unified",
+        "intervention_kinds": {
+            "transforms": ["additive", "directional_ablation", "rotation", "head_additive"],
+            "modifiers": ["norm_preserving", "alignment_adaptive"],
+            "scopes": ["all", "after_prompt", "last_k", "from_position"],
+            "gates": ["null", "cache_once", "probe_sum", "multi_key_threshold"],
+            "constraints": {"head_additive": "tensor_parallel_size==1"},
+        },
+        "processor_kinds": {"processors": []},
+        "capture_kinds": {
+            "kinds": ["residual"],
+            "locations": ["layer_output", "layer_input"],
+            "modes": ["all_tokens", "last_token"],
+        },
+        "artifact_transports": ["shared_fs"],
+        "engine": {
+            "enforce_eager": True,
+            "prefix_caching": True,
+            "speculative_decoding": False,
+            "tensor_parallel_size": 1,
+            "pipeline_parallel_size": 1,
+            **engine_overrides,
+        },
+        "model": {"id": "m"},
+    }
+
+
+def _mini_spec(scope=None, kind="additive"):
+    from aisteer360.algorithms.state_control._common.intervention_export import artifact_id_for
+
+    params = {"strength": 1.0} if kind in ("additive", "head_additive") else {}
+    artifact_id, prepared = artifact_id_for({"vector": torch.ones(4)})
+    op = {
+        "layers": [0],
+        "transform": {"kind": kind, **params, "modifiers": [], "artifact": artifact_id},
+        "scope": scope or {"kind": "all"},
+        "gate": None,
+    }
+    return InterventionSpec(ops=(op,), artifacts={artifact_id: prepared})
+
+
+def _spec_item(spec, prompt=(0, 3)):
+    return GenerationItem(
+        prompt=PreparedPrompt.from_token_ids(list(prompt)),
+        state_entries=(InterventionEntry(spec=spec),),
+    )
+
+
+class TestServeSpecLowering:
+
+    def _plugin_backend(self, fake_server, tmp_path, **engine_overrides):
+        fake_server.discovery = _discovery_payload(**engine_overrides)
+        return VLLMServeBackend(_serve_spec(hook_plugin=True, artifact_dir=str(tmp_path)))
+
+    def test_spec_bearing_request_carries_xargs_and_salt(self, fake_server, tmp_path):
+        backend = self._plugin_backend(fake_server, tmp_path)
+        spec = _mini_spec()
+        with backend.open_session() as session:
+            session.generate([_spec_item(spec)], GenerationParams(max_new_tokens=2))
+        body = next(p for path, p in fake_server.requests if path == "/v1/completions")
+        assert body["vllm_xargs"]["intervention_spec"] == spec.canonical()
+        assert body["cache_salt"] == spec.salt()
+
+    def test_spec_artifacts_materialize_into_artifact_dir(self, fake_server, tmp_path):
+        backend = self._plugin_backend(fake_server, tmp_path)
+        spec = _mini_spec()
+        with backend.open_session() as session:
+            session.generate([_spec_item(spec)], GenerationParams(max_new_tokens=2))
+        (artifact_id,) = spec.artifact_ids()
+        sha = artifact_id.removeprefix("sha256:")
+        assert (tmp_path / sha[:2] / f"{sha}.safetensors").exists()
+
+    def test_spec_free_requests_share_constant_backend_salt(self, fake_server, tmp_path):
+        backend = self._plugin_backend(fake_server, tmp_path)
+        items = [
+            GenerationItem(prompt=PreparedPrompt.from_token_ids([0, 3])),
+            GenerationItem(prompt=PreparedPrompt.from_token_ids([0, 4])),
+        ]
+        with backend.open_session() as session:
+            session.generate(items, GenerationParams(max_new_tokens=2))
+        salts = {p["cache_salt"] for path, p in fake_server.requests if path == "/v1/completions"}
+        assert salts == {backend._plain_salt}
+        assert backend._plain_salt != _mini_spec().salt()
+
+    def test_plugin_free_requests_carry_no_salt(self, fake_server):
+        backend = VLLMServeBackend(_serve_spec())
+        with backend.open_session() as session:
+            session.generate(
+                [GenerationItem(prompt=PreparedPrompt.from_token_ids([0, 3]))],
+                GenerationParams(max_new_tokens=2),
+            )
+        body = next(p for path, p in fake_server.requests if path == "/v1/completions")
+        assert "cache_salt" not in body
+
+    def test_speculative_decoding_engine_refuses_specs(self, fake_server, tmp_path):
+        backend = self._plugin_backend(fake_server, tmp_path, speculative_decoding=True)
+        with backend.open_session() as session:
+            with pytest.raises(UnsupportedOperationError, match="speculative decoding"):
+                session.generate([_spec_item(_mini_spec())], GenerationParams())
+
+    def test_non_eager_engine_refuses_specs(self, fake_server, tmp_path):
+        backend = self._plugin_backend(fake_server, tmp_path, enforce_eager=False)
+        with backend.open_session() as session:
+            with pytest.raises(UnsupportedOperationError, match="enforce_eager"):
+                session.generate([_spec_item(_mini_spec())], GenerationParams())
+
+    def test_constrained_kind_refused_under_tensor_parallelism(self, fake_server, tmp_path):
+        backend = self._plugin_backend(fake_server, tmp_path, tensor_parallel_size=2)
+        with backend.open_session() as session:
+            with pytest.raises(UnsupportedOperationError, match="tensor_parallel_size=2"):
+                session.generate([_spec_item(_mini_spec(kind="head_additive"))], GenerationParams())
+
+    def test_scoring_remaps_after_prompt_to_from_position(self, fake_server, tmp_path):
+        fake_server.prompt_logprobs = -0.5
+        backend = self._plugin_backend(fake_server, tmp_path)
+        spec = _mini_spec(scope={"kind": "after_prompt"})
+        item = ScoringItem(
+            prompt=PreparedPrompt.from_token_ids([0, 3, 4]),
+            ref_output_ids=torch.tensor([[5, 6]]),
+            state_entries=(InterventionEntry(spec=spec),),
+        )
+        with backend.open_session() as session:
+            session.score([item], GenerationParams())
+        body = next(p for path, p in fake_server.requests if path == "/v1/completions")
+        import json as json_module
+        sent = json_module.loads(body["vllm_xargs"]["intervention_spec"])
+        assert sent["ops"][0]["scope"] == {"kind": "from_position", "position": 3}
+        assert body["cache_salt"] != spec.salt()
+
+    def test_scoring_all_scope_travels_unchanged(self, fake_server, tmp_path):
+        fake_server.prompt_logprobs = -0.5
+        backend = self._plugin_backend(fake_server, tmp_path)
+        spec = _mini_spec(scope={"kind": "all"})
+        item = ScoringItem(
+            prompt=PreparedPrompt.from_token_ids([0, 3, 4]),
+            ref_output_ids=torch.tensor([[5, 6]]),
+            state_entries=(InterventionEntry(spec=spec),),
+        )
+        with backend.open_session() as session:
+            session.score([item], GenerationParams())
+        body = next(p for path, p in fake_server.requests if path == "/v1/completions")
+        assert body["cache_salt"] == spec.salt()
+
+
+class TestSpecRejectionMapping:
+
+    def test_kind_and_constraint_codes_are_support_facts(self):
+        from aisteer360.backends.vllm import raise_for_spec_rejection
+
+        with pytest.raises(UnsupportedOperationError, match="E_UNKNOWN_KIND"):
+            raise_for_spec_rejection(
+                "HTTP 400: E_UNKNOWN_KIND at ops[0].gate.kind: gate kind 'probe_sum' is not served"
+            )
+        with pytest.raises(UnsupportedOperationError, match="E_CONSTRAINT"):
+            raise_for_spec_rejection(
+                "HTTP 400: E_CONSTRAINT at ops[0].transform.kind: kind 'head_additive' requires tensor_parallel_size==1"
+            )
+
+    def test_malformed_spec_codes_raise_value_error(self):
+        from aisteer360.backends.vllm import raise_for_spec_rejection
+
+        with pytest.raises(ValueError, match="E_BAD_PARAM at ops\\[0\\]\\.transform\\.strength"):
+            raise_for_spec_rejection(
+                "HTTP 400: E_BAD_PARAM at ops[0].transform.strength: 'strength' must be a number"
+            )
+
+    def test_plain_message_does_not_raise(self):
+        from aisteer360.backends.vllm import raise_for_spec_rejection
+
+        raise_for_spec_rejection("HTTP 400: model not found")
+
+
+class TestMergeInterventionSpecs:
+
+    def test_ops_concatenate_and_artifacts_union(self):
+        from aisteer360.backends.vllm import merge_intervention_specs
+
+        first = _mini_spec()
+        second = _mini_spec(scope={"kind": "after_prompt"})
+        merged = merge_intervention_specs([first, second])
+        assert len(merged.ops) == 2
+        assert set(merged.artifacts) == set(first.artifacts) | set(second.artifacts)

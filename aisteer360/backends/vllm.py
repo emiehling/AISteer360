@@ -9,8 +9,10 @@ engine); `VLLMServeBackend` needs only a reachable vLLM server.
 import hashlib
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Sequence
 from typing import Any, Literal
 
@@ -46,6 +48,7 @@ from aisteer360.algorithms.core.execution.items import (
     ScoringItem,
     StackEntry,
 )
+from aisteer360.algorithms.core.execution.interventions import InterventionSpec
 from aisteer360.algorithms.core.execution.layout import ModelLayout
 from aisteer360.algorithms.core.execution.params import GenerationParams
 from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
@@ -268,9 +271,22 @@ def extract_ref_logprobs(prompt_logprobs: Sequence | None, ref_ids: Sequence[int
     return values
 
 
-def _reject_entries(items: Sequence[GenerationItem | ScoringItem], backend_name: str) -> None:
-    """Refuse control entries a request session cannot execute, naming the gap."""
+def _item_intervention_specs(
+    items: Sequence[GenerationItem | ScoringItem],
+    backend_name: str,
+    *,
+    plugin_active: bool,
+) -> list[InterventionSpec | None]:
+    """Per-item intervention spec after refusing entries the session cannot execute.
+
+    `InterventionEntry` contributions are merged per item (ops concatenated in entry order,
+    tensor payloads unioned); an item without spec entries yields None. Hook and live-processor
+    entries name the in-process gap; intervention entries on a plugin-free backend name the
+    `hook_plugin` fix.
+    """
+    specs: list[InterventionSpec | None] = []
     for item in items:
+        item_specs: list[InterventionSpec] = []
         for entry in (*item.state_entries, *item.output_entries):
             if isinstance(entry, HookEntry):
                 raise UnsupportedOperationError(
@@ -285,15 +301,145 @@ def _reject_entries(items: Sequence[GenerationItem | ScoringItem], backend_name:
                         "huggingface backend."
                     )
             elif isinstance(entry, InterventionEntry):
-                raise NotImplementedError(
-                    "InterventionEntry lowering to the vLLM-Hook worker is not implemented in "
-                    "this toolkit version."
-                )
+                if not plugin_active:
+                    raise UnsupportedOperationError(
+                        f"InterventionEntry requires the vLLM-Hook plugin; declare "
+                        f"hook_plugin=True on the {backend_name} backend spec, or run this "
+                        "pipeline on the huggingface backend."
+                    )
+                item_specs.append(entry.spec)
             elif isinstance(entry, ProcessorSpecEntry):
                 raise NotImplementedError(
                     "ProcessorSpecEntry lowering is not implemented; the plugin serves no "
                     "processor kinds yet."
                 )
+        specs.append(merge_intervention_specs(item_specs) if item_specs else None)
+    return specs
+
+
+def merge_intervention_specs(specs: Sequence[InterventionSpec]) -> InterventionSpec:
+    """One spec carrying every op of `specs`, in order, with tensor payloads unioned."""
+    if len(specs) == 1:
+        return specs[0]
+    ops: list = []
+    artifacts: dict = {}
+    for spec in specs:
+        ops.extend(spec.ops)
+        artifacts.update(spec.artifacts)
+    return InterventionSpec(ops=tuple(ops), artifacts=artifacts)
+
+
+def remap_spec_for_scoring(spec: InterventionSpec, prompt_len: int) -> InterventionSpec:
+    """A scoring copy of `spec` with `after_prompt` scopes rewritten to `from_position`.
+
+    The teacher-forced reference is part of the server-side prompt, so the worker's "after the
+    prompt" would select nothing; the rewrite anchors the scope at the original prompt length,
+    the position of the first reference token in the submitted ids.
+    """
+    ops = []
+    changed = False
+    for op in spec.to_wire()["ops"]:
+        if op.get("scope", {}).get("kind") == "after_prompt":
+            op = {**op, "scope": {"kind": "from_position", "position": int(prompt_len)}}
+            changed = True
+        ops.append(op)
+    if not changed:
+        return spec
+    return InterventionSpec(ops=tuple(ops), artifacts=spec.artifacts)
+
+
+# spec-rejection codes that are support facts (a capability or constraint the backend lacks)
+# rather than malformed payloads
+_SUPPORT_FACT_CODES = ("E_UNKNOWN_KIND", "E_CONSTRAINT")
+_SPEC_ERROR_RE = re.compile(r"\bE_[A-Z_]+ at \S+:")
+
+
+def raise_for_spec_rejection(message: str) -> None:
+    """Raise the toolkit error for a server-side spec rejection message carrying an `E_*` code.
+
+    Kind and constraint gaps (`E_UNKNOWN_KIND`, `E_CONSTRAINT`) are support facts a stale
+    client missed and raise `UnsupportedOperationError`; every other `E_*` rejection is a
+    malformed spec and raises `ValueError`. The code and JSON path are preserved verbatim.
+    A message without an `E_*` code returns without raising.
+    """
+    if not _SPEC_ERROR_RE.search(message):
+        return
+    if any(code in message for code in _SUPPORT_FACT_CODES):
+        raise UnsupportedOperationError(message)
+    raise ValueError(message)
+
+
+def _refuse_by_engine_facts(discovery: dict | None, operation: str) -> None:
+    """Refuse intervention or capture submission when discovery reports incompatible engine facts."""
+    engine = (discovery or {}).get("engine", {})
+    if engine.get("speculative_decoding"):
+        raise UnsupportedOperationError(
+            f"The serving engine runs speculative decoding, so {operation} requests are refused: "
+            "draft-model forwards are unhooked and verification passes break the worker's "
+            "position accounting. Disable speculative decoding on the engine."
+        )
+    if engine.get("enforce_eager") is False:
+        raise UnsupportedOperationError(
+            f"The serving engine compiles CUDA graphs, so {operation} requests are refused: "
+            "worker hooks do not run under CUDA-graph replay. Start the engine with "
+            "enforce_eager=True / --enforce-eager."
+        )
+
+
+def _refuse_by_constraints(
+    specs: Sequence[InterventionSpec | None],
+    discovery: dict | None,
+    advertised: InterventionKinds | None,
+) -> None:
+    """Refuse specs whose kinds violate an advertised engine constraint, naming the fix.
+
+    The only shipped constraint is `head_additive: tensor_parallel_size==1`; the check reads
+    the constraint table from the negotiated kinds and the live value from discovery's engine
+    facts, so the refusal matches what server-side staging would reject with `E_CONSTRAINT`.
+    """
+    constraints = dict(advertised.constraints) if advertised is not None else {}
+    if not constraints or discovery is None:
+        return
+    tensor_parallel_size = (discovery.get("engine") or {}).get("tensor_parallel_size", 1)
+    if tensor_parallel_size == 1:
+        return
+    for spec in specs:
+        if spec is None:
+            continue
+        constrained = spec.required_kinds().transforms & set(constraints)
+        if constrained:
+            kind = sorted(constrained)[0]
+            raise UnsupportedOperationError(
+                f"Intervention kind {kind!r} requires {constraints[kind]}, but the serving engine "
+                f"reports tensor_parallel_size={tensor_parallel_size}; serve the model with "
+                "tensor_parallel_size=1 or run this pipeline on the huggingface backend."
+            )
+
+
+class _ArtifactUploader:
+    """Materializes spec tensor payloads into the registry root the serving engine reads."""
+
+    def __init__(self, root: str | None):
+        self._root = root
+        self._registry = None
+        self._written: set[str] = set()
+
+    def upload(self, spec: InterventionSpec) -> None:
+        if not spec.artifacts:
+            return
+        if self._registry is None:
+            artifacts_module = require("vllm_hook_plugins.core.artifacts")
+            self._registry = artifacts_module.ArtifactRegistry(self._root)
+        for artifact_id, tensors in spec.artifacts.items():
+            if artifact_id in self._written:
+                continue
+            written_id = self._registry.write(dict(tensors))
+            if written_id != artifact_id:
+                raise ValueError(
+                    f"Artifact registry wrote {written_id} for a payload the spec references as "
+                    f"{artifact_id}; the client and registry disagree on content addressing."
+                )
+            self._written.add(artifact_id)
 
 
 def _reject_encoder_decoder(model_ref: str, trust_remote_code: bool = False) -> None:
@@ -418,6 +564,10 @@ class VLLMBackend(Backend):
             engine_kwargs.setdefault("enable_lora", True)
         if trust_remote_code:
             engine_kwargs.setdefault("trust_remote_code", True)
+        if spec.get_option("hook_plugin"):
+            # worker hooks do not run under CUDA-graph replay; spec construction rejects an
+            # explicit False, so this only fills the default
+            engine_kwargs.setdefault("enforce_eager", True)
 
         # the worker-selection variable is scoped to this engine's boot so a later plugin-free
         # engine in the same process is unaffected
@@ -444,6 +594,8 @@ class VLLMBackend(Backend):
         )
         self.tokenizer = _client_tokenizer(tokenizer_source, trust_remote_code)
         self._layout = _config_layout(model_ref, trust_remote_code)
+        self._plain_salt = uuid.uuid4().hex
+        self._artifact_uploader = _ArtifactUploader(spec.get_option("artifact_dir"))
         self._discovery: dict | None = None
         if spec.get_option("hook_plugin"):
             self._discovery = self._fetch_discovery()
@@ -537,6 +689,37 @@ class _RequestSessionBase:
             return derive_item_seed(params.seed, f"generate-{self._generate_count}", index)
         return None
 
+    def _prepare_spec_submission(
+        self,
+        items: Sequence[GenerationItem | ScoringItem],
+        backend_name: str,
+    ) -> tuple[list[InterventionSpec | None], list[str] | None]:
+        """Per-item intervention specs and cache salts for a batch of items.
+
+        Spec-bearing items salt with the reference derivation over the spec and its artifact
+        ids; spec-free items through a plugin-active backend salt with the backend's constant
+        salt (structural KV isolation; the worker cannot police requests that carry no
+        new-surface keys). Engine-fact refusals and constraint checks run before any artifact
+        is written; artifact payloads are then materialized into the registry root the engine
+        reads.
+        """
+        backend = self._backend
+        plugin_active = bool(backend.spec.get_option("hook_plugin"))
+        specs = _item_intervention_specs(items, backend_name, plugin_active=plugin_active)
+        if any(spec is not None for spec in specs):
+            discovery = getattr(backend, "_discovery", None)
+            _refuse_by_engine_facts(discovery, "intervention")
+            _refuse_by_constraints(specs, discovery, backend.intervention_kinds)
+            for spec in specs:
+                if spec is not None:
+                    backend._artifact_uploader.upload(spec)
+        salts: list[str] | None = None
+        if plugin_active:
+            salts = [
+                spec.salt() if spec is not None else backend._plain_salt for spec in specs
+            ]
+        return specs, salts
+
     def _resolve_item_ids(self, item: GenerationItem | ScoringItem) -> list[int]:
         """The prompt's real token ids, with padding positions dropped per the attention mask,
         since a padded batch row would otherwise submit its pad tokens as prompt content."""
@@ -596,8 +779,9 @@ class VLLMOfflineSession(_RequestSessionBase):
         """Generate one result per item through the engine.
 
         Args:
-            items: The generation items; entries must be empty (no client-side hooks or live
-                processors execute here).
+            items: The generation items; state entries lower as intervention specs on
+                plugin-active backends, and no client-side hooks or live processors execute
+                here.
             params: Normalized generation parameters shared by all items; unmapped `extra` keys
                 raise.
 
@@ -607,7 +791,7 @@ class VLLMOfflineSession(_RequestSessionBase):
         self._ensure_open()
         if not items:
             return []
-        _reject_entries(items, "vllm")
+        item_specs, item_salts = self._prepare_spec_submission(items, "vllm")
         base_args = render_vllm_sampling_args(params)
 
         from vllm import SamplingParams, TokensPrompt
@@ -622,7 +806,12 @@ class VLLMOfflineSession(_RequestSessionBase):
             seed = self._item_seed(item, params, index)
             if seed is not None:
                 args["seed"] = seed
-            prompts.append(TokensPrompt(prompt_token_ids=ids))
+            if item_specs[index] is not None:
+                args["extra_args"] = {"intervention_spec": item_specs[index].to_wire()}
+            prompt = TokensPrompt(prompt_token_ids=ids)
+            if item_salts is not None:
+                prompt["cache_salt"] = item_salts[index]
+            prompts.append(prompt)
             sampling.append(SamplingParams(**args))
         self._generate_count += 1
 
@@ -675,7 +864,7 @@ class VLLMOfflineSession(_RequestSessionBase):
             )
         if not items:
             return torch.zeros((0, 0), dtype=torch.float32)
-        _reject_entries(items, "vllm")
+        item_specs, item_salts = self._prepare_spec_submission(items, "vllm")
         ref_lens = {item.ref_output_ids.shape[-1] for item in items}
         if len(ref_lens) > 1:
             raise ValueError(f"All scoring items must share one reference length; got {sorted(ref_lens)}.")
@@ -686,13 +875,23 @@ class VLLMOfflineSession(_RequestSessionBase):
         from vllm import SamplingParams, TokensPrompt
 
         prompts = []
+        sampling = []
         ref_ids_per_item: list[list[int]] = []
-        for item in items:
+        for index, item in enumerate(items):
             prompt_ids = self._resolve_item_ids(item)
             ref_ids = item.ref_output_ids.reshape(-1).tolist()
             ref_ids_per_item.append(ref_ids)
-            prompts.append(TokensPrompt(prompt_token_ids=[*prompt_ids, *ref_ids]))
-        sampling = SamplingParams(max_tokens=1, temperature=0.0, prompt_logprobs=0)
+            prompt = TokensPrompt(prompt_token_ids=[*prompt_ids, *ref_ids])
+            args: dict[str, Any] = {"max_tokens": 1, "temperature": 0.0, "prompt_logprobs": 0}
+            if item_specs[index] is not None:
+                scoring_spec = remap_spec_for_scoring(item_specs[index], len(prompt_ids))
+                args["extra_args"] = {"intervention_spec": scoring_spec.to_wire()}
+                if item_salts is not None:
+                    item_salts[index] = scoring_spec.salt()
+            if item_salts is not None:
+                prompt["cache_salt"] = item_salts[index]
+            prompts.append(prompt)
+            sampling.append(SamplingParams(**args))
 
         generate_kwargs: dict[str, Any] = {"use_tqdm": False}
         if self._backend._lora_request is not None:
@@ -790,6 +989,10 @@ class VLLMServeBackend(Backend):
             (checkpoint.path if checkpoint is not None else None) or spec.model or self._served_model,
             trust_remote_code,
         )
+        self._plain_salt = uuid.uuid4().hex
+        # spec artifacts write to the registry root the server reads; the shared_fs transport
+        # assumes this filesystem is shared with the server
+        self._artifact_uploader = _ArtifactUploader(spec.get_option("artifact_dir"))
         if self._discovery is not None:
             self._verify_fingerprints(tokenizer_source)
 
@@ -870,6 +1073,8 @@ class VLLMServeBackend(Backend):
             # 5xx, timeouts, and rate limiting are transport-level and safe to retry
             if error.code >= 500 or error.code in (408, 429):
                 raise TransportError(f"HTTP {error.code} from {url}: {body}") from error
+            # admission rejections carry the plugin's E_* code and JSON path verbatim
+            raise_for_spec_rejection(body)
             raise ValueError(f"HTTP {error.code} from {url}: {body}") from error
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise TransportError(f"Request to {url} failed: {error}") from error
@@ -926,7 +1131,7 @@ class VLLMServeSession(_RequestSessionBase):
         self._ensure_open()
         if not items:
             return []
-        _reject_entries(items, "vllm-serve")
+        item_specs, item_salts = self._prepare_spec_submission(items, "vllm-serve")
         base_args = render_vllm_sampling_args(params)
         backend = self._backend
 
@@ -944,6 +1149,13 @@ class VLLMServeSession(_RequestSessionBase):
                 }
                 if seeds[index] is not None:
                     body["seed"] = seeds[index]
+                if item_specs[index] is not None:
+                    # vllm_xargs is scalar-only, so nested specs travel as JSON strings
+                    body["vllm_xargs"] = {
+                        "intervention_spec": item_specs[index].canonical(),
+                    }
+                if item_salts is not None:
+                    body["cache_salt"] = item_salts[index]
                 payload = with_transport_retries(
                     lambda: backend._post_json("/v1/completions", body),
                     max_attempts=backend.max_attempts,
@@ -1002,7 +1214,7 @@ class VLLMServeSession(_RequestSessionBase):
             )
         if not items:
             return torch.zeros((0, 0), dtype=torch.float32)
-        _reject_entries(items, "vllm-serve")
+        item_specs, item_salts = self._prepare_spec_submission(items, "vllm-serve")
         ref_lens = {item.ref_output_ids.shape[-1] for item in items}
         if len(ref_lens) > 1:
             raise ValueError(f"All scoring items must share one reference length; got {sorted(ref_lens)}.")
@@ -1023,6 +1235,12 @@ class VLLMServeSession(_RequestSessionBase):
                     "temperature": 0.0,
                     "prompt_logprobs": 0,
                 }
+                if item_specs[index] is not None:
+                    scoring_spec = remap_spec_for_scoring(item_specs[index], len(prompt_ids[index]))
+                    body["vllm_xargs"] = {"intervention_spec": scoring_spec.canonical()}
+                    body["cache_salt"] = scoring_spec.salt()
+                elif item_salts is not None:
+                    body["cache_salt"] = item_salts[index]
                 payload = with_transport_retries(
                     lambda: backend._post_json("/v1/completions", body),
                     max_attempts=backend.max_attempts,

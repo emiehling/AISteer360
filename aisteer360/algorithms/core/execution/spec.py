@@ -162,6 +162,15 @@ class BackendSpec:
                         "draft-model forwards are unhooked and verification passes break the "
                         "worker's per-request position accounting."
                     )
+                if (
+                    self.kind == "vllm"
+                    and self.get_option("engine_kwargs", "enforce_eager") is False
+                ):
+                    raise ValueError(
+                        "enforce_eager=False cannot be combined with the vLLM-Hook plugin: "
+                        "worker hooks do not run under CUDA-graph replay. Drop the option "
+                        "(hook_plugin engines default to eager execution) or disable the plugin."
+                    )
             if self.model is not None:
                 _reject_encoder_decoder_if_resolvable(
                     self.model, bool(self.get_option("trust_remote_code", default=False)),
