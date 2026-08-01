@@ -6,10 +6,10 @@ import logging
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control._common.layout_facts import resolve_layout
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
 from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
@@ -72,7 +72,7 @@ class ActivationAdapter(StateControl):
 
         # populated in steer()
         self._transform: BaseTransform | None = None
-        self._layer_names: list[str] = []
+        self._layer_names: list[str] | None = None
         self._layer_ids: list[int] = []
         self._condition_layer_ids: list[int] = []
         self._gate = AlwaysOpenGate()
@@ -81,22 +81,29 @@ class ActivationAdapter(StateControl):
 
     def steer(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None = None,
         tokenizer: PreTrainedTokenizerBase | None = None,
+        session=None,
         **__,
-    ) -> PreTrainedModel:
+    ) -> PreTrainedModel | None:
         """Resolve the behavior layers, bind the transform, verify coverage, and build the hook runtime.
 
+        Structural facts (layer count, sizes, dtype) come from the steering session's layout when a
+        session is given; a configuration whose transform carries a concrete artifact therefore
+        steers with `model=None`. A transform carrying a fit source requires a live model.
+
         Args:
-            model: The base language model to be steered.
+            model: The base language model to be steered, or None for concrete-artifact
+                configurations steered against a session layout.
             tokenizer: Tokenizer for encoding training data (when the transform carries a source).
+            session: `SteeringSession` on the steering backend, provided by the pipeline.
 
         Returns:
             The input model, unchanged.
         """
-        _, layer_names = get_model_layer_list(model)
-        self._layer_names = layer_names
-        num_layers = len(layer_names)
+        layout = resolve_layout(model, session)
+        num_layers = layout.num_layers
+        self._layer_names = get_model_layer_list(model)[1] if model is not None else None
 
         # behavior-layer resolution
         if self.layer_ids is not None:
@@ -132,7 +139,7 @@ class ActivationAdapter(StateControl):
             )
         scorer_fingerprint = getattr(self.score_fn, "model_fingerprint", None)
         if scorer_fingerprint is not None:
-            live_fingerprint = model_fingerprint(model)
+            live_fingerprint = layout.model_fingerprint
             if scorer_fingerprint != live_fingerprint:
                 raise ValueError(
                     f"Condition scorer was fitted on a different model (fingerprint "
@@ -142,7 +149,7 @@ class ActivationAdapter(StateControl):
                 )
 
         # transform resolution (no artifact logic; the transform carries its own)
-        self._transform = resolve_transform_slot(self.transform, model, tokenizer, layer_ids)
+        self._transform = resolve_transform_slot(self.transform, model, tokenizer, layer_ids, layout=layout)
 
         self._gate = self.gate if self.gate is not None else AlwaysOpenGate()
         self._pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer else None
@@ -150,12 +157,24 @@ class ActivationAdapter(StateControl):
 
         return model
 
+    def _module_names(self, model) -> list[str]:
+        """Layer module names, resolved from the module tree on first use."""
+        if self._layer_names is None:
+            source = model if model is not None else self._model_ref
+            if source is None:
+                raise RuntimeError(
+                    "ActivationAdapter was steered without a live model, so hook module names are "
+                    "unresolved; pass `model=` to get_hooks (the pipeline does) or steer with a model."
+                )
+            _, self._layer_names = get_model_layer_list(source)
+        return self._layer_names
+
     def get_hooks(
         self,
         input_ids: torch.Tensor,
         runtime_kwargs: dict | None = None,
         attention_mask: torch.Tensor | None = None,
-        **__,
+        **kwargs,
     ) -> dict[str, list]:
         """Emit condition (read-only) and behavior hooks for the current generation.
 
@@ -169,6 +188,8 @@ class ActivationAdapter(StateControl):
             attention_mask: The prompt attention mask matching `input_ids` (forwarded by the
                 pipeline). Handed to condition scorers on the prefill pass so condition scores
                 align with real (non-pad) prompt positions.
+            **kwargs: Generation-time context; `model` is consulted to resolve hook module names
+                when steering ran without a live model.
 
         Returns:
             Hook specifications with "pre", "forward", "backward" keys.
@@ -177,6 +198,7 @@ class ActivationAdapter(StateControl):
         if ids.ndim == 1:
             ids = ids.unsqueeze(0)
 
+        layer_names = self._module_names(kwargs.get("model"))
         prompt_lens = compute_prompt_lens(ids, self._pad_token_id)
         if attention_mask is not None:
             am = attention_mask if isinstance(attention_mask, torch.Tensor) else torch.as_tensor(attention_mask)
@@ -199,7 +221,7 @@ class ActivationAdapter(StateControl):
         # condition hooks first (so gate.update precedes transform at a shared layer)
         for lid in self._condition_layer_ids:
             hooks[phase].append({
-                "module": self._layer_names[lid],
+                "module": layer_names[lid],
                 "hook_func": self._runtime.build_condition_hook(
                     layer_id=lid,
                     scorer=self.score_fn,
@@ -210,7 +232,7 @@ class ActivationAdapter(StateControl):
 
         for lid in self._layer_ids:
             hooks[phase].append({
-                "module": self._layer_names[lid],
+                "module": layer_names[lid],
                 "hook_func": self._runtime.build_behavior_hook(
                     layer_id=lid,
                     transform=self._transform,

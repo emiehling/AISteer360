@@ -627,11 +627,11 @@ class SteeringPipeline:
         entries: list[HookEntry] = []
         for state_control in self.state_controls:
             state_control.reset()  # reset before get_hooks() to clear state from previous generation
+            state_control._model_ref = self.model
             hooks = state_control.get_hooks(
-                steered_input_ids, runtime_kwargs, attention_mask=attention_mask, **kwargs
+                steered_input_ids, runtime_kwargs, attention_mask=attention_mask, model=self.model, **kwargs
             )
             state_control.set_hooks(hooks)
-            state_control._model_ref = self.model
             entries.append(HookEntry(hooks=hooks))
         return tuple(entries)
 
@@ -668,6 +668,7 @@ class SteeringPipeline:
                     steered_input_ids[index:index + 1],
                     runtime_kwargs,
                     attention_mask=steered_attention_mask[index:index + 1],
+                    model=self.model,
                     **kwargs,
                 )
                 entries.append(HookEntry(hooks=hooks))

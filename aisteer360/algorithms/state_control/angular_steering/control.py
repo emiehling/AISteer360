@@ -9,6 +9,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from aisteer360.algorithms.state_control._common.estimators import SteeringPlaneEstimator
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_norm_module_names
+from aisteer360.algorithms.state_control._common.layout_facts import layout_torch_dtype, resolve_layout
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
@@ -68,21 +69,28 @@ class AngularSteering(StateControl):
         self._steering_vector: SteeringVector | None = None
         self._transform = None
         self._gate = AlwaysOpenGate()
-        self._norm_modules: list[tuple[int, str]] = []
+        self._norm_modules: list[tuple[int, str]] | None = None
         self._pad_token_id: int | None = None
         self._runtime = TransformHookRuntime(hook_point="layer_input")
 
     def steer(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None = None,
         tokenizer: PreTrainedTokenizerBase | None = None,
+        session=None,
         **__,
-    ) -> PreTrainedModel:
+    ) -> PreTrainedModel | None:
         """Fit or load the steering plane and locate the norm modules to hook.
 
+        Structural facts (dtype) come from the steering session's layout when a session is given;
+        a vector-supplied configuration therefore steers with `model=None`. Fitting from `data`
+        requires a live model.
+
         Args:
-            model: The base language model to be steered.
+            model: The base language model to be steered, or None for vector-supplied
+                configurations steered against a session layout.
             tokenizer: Tokenizer for encoding training data (when fitting the plane).
+            session: `SteeringSession` on the steering backend, provided by the pipeline.
 
         Returns:
             The input model, unchanged.
@@ -91,19 +99,22 @@ class AngularSteering(StateControl):
             ValueError: If no layers remain after `layer_range` filtering, or if no normalization
                 sub-modules can be located for the active layers.
         """
-        device = next(model.parameters()).device
+        layout = resolve_layout(model, session)
 
         # resolve the plane
         if self.steering_vector is not None:
             source = self.steering_vector
         else:
+            if model is None:
+                raise ValueError("Fitting AngularSteering from data requires a live model at steer time.")
             source = SteeringPlaneEstimator().fit(model, tokenizer, data=self.data, spec=self.train_spec)
 
         # copy directions into a fresh vector (never mutate a caller-supplied steering_vector in
         # place; a precomputed plane may be reused across controls with different layer_range)
+        dtype = layout_torch_dtype(layout)
         start, end = self.layer_range if self.layer_range is not None else (None, None)
         directions = {
-            lid: d.clone().to(device=device, dtype=model.dtype)
+            lid: d.clone().to(dtype=dtype)
             for lid, d in source.directions.items()
             if self.layer_range is None or start <= lid < end
         }
@@ -133,22 +144,32 @@ class AngularSteering(StateControl):
         self._transform = transform
 
         # locate the normalization sub-modules to hook (only for active layers)
-        self._norm_modules = [
-            (lid, path) for lid, path in get_norm_module_names(model) if lid in active_layer_ids
-        ]
-        if not self._norm_modules:
-            raise ValueError("Could not locate any normalization sub-modules to hook.")
+        self._norm_modules = self._locate_norm_modules(model) if model is not None else None
 
         # store tokenizer info for hook generation
         self._pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer else None
 
         return model
 
+    def _locate_norm_modules(self, model) -> list[tuple[int, str]]:
+        """The `(layer_id, module_path)` pairs to hook, restricted to active layers.
+
+        Raises:
+            ValueError: If no normalization sub-modules can be located for the active layers.
+        """
+        active_layer_ids = set(self._steering_vector.directions.keys())
+        norm_modules = [
+            (lid, path) for lid, path in get_norm_module_names(model) if lid in active_layer_ids
+        ]
+        if not norm_modules:
+            raise ValueError("Could not locate any normalization sub-modules to hook.")
+        return norm_modules
+
     def get_hooks(
         self,
         input_ids: torch.Tensor,
         runtime_kwargs: dict | None = None,
-        **__,
+        **kwargs,
     ) -> dict[str, list]:
         """Create pre-hooks that rotate the residual stream entering each norm module.
 
@@ -159,6 +180,8 @@ class AngularSteering(StateControl):
         Args:
             input_ids: Input token IDs.
             runtime_kwargs: Runtime parameters (currently unused).
+            **kwargs: Generation-time context; `model` is consulted to resolve hook module names
+                when steering ran without a live model.
 
         Returns:
             Hook specifications with "pre", "forward", "backward" keys.
@@ -166,6 +189,15 @@ class AngularSteering(StateControl):
         ids = input_ids if isinstance(input_ids, torch.Tensor) else input_ids["input_ids"]
         if ids.ndim == 1:
             ids = ids.unsqueeze(0)
+
+        if self._norm_modules is None:
+            source = kwargs.get("model") if kwargs.get("model") is not None else self._model_ref
+            if source is None:
+                raise RuntimeError(
+                    "AngularSteering was steered without a live model, so hook module names are "
+                    "unresolved; pass `model=` to get_hooks (the pipeline does) or steer with a model."
+                )
+            self._norm_modules = self._locate_norm_modules(source)
 
         prompt_lens = compute_prompt_lens(ids, self._pad_token_id)
         self._runtime.reset(prompt_lens)
