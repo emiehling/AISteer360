@@ -49,28 +49,44 @@ class TransformContext:
 
 
 def _build_context(
-    model: PreTrainedModel,
+    model: PreTrainedModel | None,
     tokenizer: PreTrainedTokenizerBase | None,
     layer_ids: Sequence[int],
+    layout=None,
 ) -> TransformContext:
-    """Introspect the model and build the `TransformContext` for the given behavior layers.
+    """Build the `TransformContext` for the given behavior layers.
 
-    Reads device/dtype/layer-count from the model and `hidden_size`/`num_heads`/`head_dim` from its
-    config (deriving `head_dim` as `hidden_size // num_heads` when absent), then wraps a resolve
-    closure that coerces any artifact to a source, resolves it against the model, and moves the
-    result onto the model's device and dtype.
+    With a live model, reads device/dtype/layer-count from the model and
+    `hidden_size`/`num_heads`/`head_dim` from its config (deriving `head_dim` as
+    `hidden_size // num_heads` when absent), then wraps a resolve closure that coerces any
+    artifact to a source, resolves it against the model, and moves the result onto the model's
+    device and dtype. With `model=None`, sizes come from `layout` (a structural
+    `core.execution.ModelLayout`), the device is CPU, and the resolve closure serves concrete
+    artifacts only, since fitting a source requires a live model.
     """
-    device = next(model.parameters()).device
-    dtype = model.dtype
-    _, layer_names = get_model_layer_list(model)
-    num_layers = len(layer_names)
+    if model is not None:
+        device = next(model.parameters()).device
+        dtype = model.dtype
+        _, layer_names = get_model_layer_list(model)
+        num_layers = len(layer_names)
 
-    config = model.config
-    hidden_size = getattr(config, "hidden_size")
-    num_heads = getattr(config, "num_attention_heads", None)
-    head_dim = getattr(config, "head_dim", None)
-    if head_dim is None and num_heads:
-        head_dim = hidden_size // num_heads
+        config = model.config
+        hidden_size = getattr(config, "hidden_size")
+        num_heads = getattr(config, "num_attention_heads", None)
+        head_dim = getattr(config, "head_dim", None)
+        if head_dim is None and num_heads:
+            head_dim = hidden_size // num_heads
+    else:
+        if layout is None:
+            raise ValueError("Building a TransformContext requires a live model or a structural layout.")
+        device = torch.device("cpu")
+        dtype = getattr(torch, layout.dtype, None)
+        if not isinstance(dtype, torch.dtype):
+            raise ValueError(f"Layout dtype {layout.dtype!r} does not name a torch dtype.")
+        num_layers = layout.num_layers
+        hidden_size = layout.hidden_size
+        num_heads = layout.num_attention_heads
+        head_dim = layout.head_dim
 
     def resolve(artifact) -> SteeringVector:
         source = _as_artifact_source(artifact)
@@ -90,9 +106,10 @@ def _build_context(
 
 def resolve_transform_slot(
     slot: BaseTransform | Callable[[TransformContext], BaseTransform],
-    model: PreTrainedModel,
+    model: PreTrainedModel | None,
     tokenizer: PreTrainedTokenizerBase | None,
     layer_ids: Sequence[int],
+    layout=None,
 ) -> BaseTransform:
     """Turn a transform slot into a bound, coverage-checked `BaseTransform` for the given model.
 
@@ -111,9 +128,11 @@ def resolve_transform_slot(
 
     Args:
         slot: A `BaseTransform` (bound or source-carrying) or a factory taking the context.
-        model: The steered model to introspect and resolve sources against.
+        model: The steered model to introspect and resolve sources against, or None to build the
+            context from `layout` (concrete artifacts only; fitting a source requires a model).
         tokenizer: Tokenizer used when a source fits from data; may be None for concrete artifacts.
         layer_ids: The resolved behavior layers the transform must cover.
+        layout: Structural `core.execution.ModelLayout` consulted when `model` is None.
 
     Returns:
         A bound `BaseTransform` ready for `apply`.
@@ -123,7 +142,7 @@ def resolve_transform_slot(
             transform.
         ValueError: If the transform covers only some of `layer_ids`.
     """
-    ctx = _build_context(model, tokenizer, layer_ids)
+    ctx = _build_context(model, tokenizer, layer_ids, layout=layout)
 
     if isinstance(slot, BaseTransform):
         built = slot if slot.is_bound else slot.bind(ctx)

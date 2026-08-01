@@ -21,11 +21,22 @@ PRODUCTION_CLASSES = {
     "DecodingDriver", "HFGenerateDriver",
     "NoInputControl", "NoStructuralControl", "NoStateControl",
     "SteeringPipeline", "Benchmark", "ControlSpec", "Output",
+    "Backend", "BackendSpec", "BackendCapabilities", "Capability",
+    "InterventionKinds", "ProcessorKinds", "CaptureKinds",
+    "Requirements", "SpecConstraint", "SupportReport", "SupportFailure",
+    "HFBackend", "ExclusiveSession", "SteeringSession", "ModelLayout",
+    "PreparedPrompt", "GenerationParams", "GenerationItem", "ScoringItem",
+    "ItemResult", "CaptureResult", "HookEntry", "StackEntry",
+    "VLLMBackend", "VLLMServeBackend", "VLLMOfflineSession", "VLLMServeSession",
+    "PartialBatchError", "TransportError",
+    "Artifact", "ArtifactProvenance", "ModelArtifact", "CheckpointArtifact", "LoRAArtifact",
 }
 
 PRODUCTION_FUNCTIONS = {
     "merge_controls", "ensure_pad_token", "warn_if_adapt_messages_bypassed",
     "infer_attention_mask_from_ids", "to_left_pad", "warn_if_duplicate_bos",
+    "derive_item_seed", "run_bounded", "with_transport_retries",
+    "render_vllm_sampling_args", "truncate_at_stop_strings", "merge_lowered_params",
 }
 
 

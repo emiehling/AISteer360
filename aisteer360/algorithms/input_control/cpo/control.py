@@ -18,6 +18,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from aisteer360.algorithms.core.execution.capabilities import Capability
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.input_control._common.formatters.system_prompt import (
     SystemPromptFormatter,
@@ -118,6 +120,11 @@ class CPO(InputControl):
     _formatter: SystemPromptFormatter | None = None
     _proposer: LLMMetaPromptProposer | None = None
     _encoder: TextEncoder | None = None
+
+    def requirements(self) -> Requirements:
+        """The steer phase reads the live pipeline model for rollouts and scoring, so it
+        requires `Capability.IN_PROCESS_TORCH`; the generate phase is prompt-only."""
+        return Requirements(steer=needs(Capability.IN_PROCESS_TORCH))
 
     def steer(
         self,

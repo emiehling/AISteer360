@@ -86,6 +86,32 @@ class HeadAdditiveTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.steering_vector.directions.keys()) if self.steering_vector is not None else None
 
+    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
+        """`head_additive`, valid under the wire's `tensor_parallel_size==1` constraint."""
+        return "head_additive", frozenset()
+
+    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
+        """The `head_additive` wire payload for `layer_id`.
+
+        The wire vector is `[num_heads, head_dim]` with zeros at heads outside `active_heads`,
+        so the broadcast wire addition reproduces the selective per-head addition exactly.
+        """
+        if self.steering_vector is None:
+            return None
+        heads = self.active_heads.get(layer_id)
+        dirs = self.steering_vector.directions.get(layer_id)
+        if not heads or dirs is None:
+            return None
+        vector = torch.zeros(self.num_heads, self.head_dim, dtype=dirs.dtype)
+        for head_id in heads:
+            vector[head_id] = dirs[head_id]
+        return {
+            "kind": "head_additive",
+            "params": {"strength": float(self.strength)},
+            "tensors": {"vector": vector},
+            "modifiers": [],
+        }
+
     def apply(
         self,
         hidden_states: torch.Tensor,

@@ -64,9 +64,10 @@ class SearchDecoding(SearchDriver):
         # already mirrored from SearchDecodingArgs; the driver reads them under the same names
         self.tokenizer = None
 
-    def steer(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer | None = None, **_) -> PreTrainedModel:
+    def steer(self, model: PreTrainedModel | None = None, tokenizer: PreTrainedTokenizer | None = None,
+              **_) -> PreTrainedModel | None:
         """Attach the tokenizer and resolve the scorer spec (a device is needed for reward models)."""
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
-        device = next(model.parameters()).device
+        device = next(model.parameters()).device if model is not None else None
         self.scorer = resolve_scorer(self.scorer, device=device)
         return model

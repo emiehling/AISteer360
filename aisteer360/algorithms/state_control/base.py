@@ -27,6 +27,7 @@ See Also:
 - `aisteer360.algorithms.state_control`: Implementations of state control methods
 - `aisteer360.core.steering_pipeline`: Integration with steering pipeline
 """
+import copy
 from abc import abstractmethod
 from typing import Callable
 
@@ -94,9 +95,30 @@ class StateControl(BaseControl):
     def steer(self,
               model: PreTrainedModel,
               tokenizer: PreTrainedTokenizerBase = None,
+              session=None,
               **kwargs) -> None:
-        """Optional steering/preparation."""
+        """Optional steering/preparation.
+
+        `session` is a `SteeringSession` on the steering backend, provided by the pipeline.
+        """
         pass
+
+    def export_intervention_spec(self, runtime_kwargs: dict | None = None):
+        """The control's `InterventionSpec` for intervention-capable backends, or None.
+
+        The spec is the second serialization of the tuple the control's hooks close over,
+        emitted from the same transform, gate, and scope objects. Must be called after
+        `steer()`. Returns None when the configuration has no wire form (the configuration is
+        then hook-only) or when the control does not implement spec export at all.
+
+        Args:
+            runtime_kwargs: Per-call parameters, mirroring `get_hooks`; per-item values
+                (strengths, positions) serialize into the returned spec.
+
+        Returns:
+            The validated `InterventionSpec` with tensor payloads attached, or None.
+        """
+        return None
 
     def register_hooks(self, model: PreTrainedModel) -> None:
         """Attach hooks to model.
@@ -145,6 +167,31 @@ class StateControl(BaseControl):
     def __exit__(self, exc_type, exc, tb):
         """Context manager exit: clean up all hooks."""
         self.remove_hooks()
+
+    def clone_for_call(self, seed: int | None = None):
+        """A per-call clone with independent per-generation mutable state.
+
+        Extends the base shallow clone with fresh hook and handle containers, a deep copy of the
+        `_gate` and `_runtime` attributes when present (so the clone's `get_hooks` closures never
+        share position or gate state with the original or with sibling clones), and a cleared
+        model reference. Steer-time artifacts (steering vectors, transforms, tokenizers) stay
+        shared with the original.
+
+        Args:
+            seed: Optional seed forwarded to the clone's `reseed()`.
+
+        Returns:
+            The clone.
+        """
+        clone = super().clone_for_call(seed)
+        clone.hooks = {"pre": [], "forward": [], "backward": []}
+        clone.registered = []
+        if getattr(self, "_runtime", None) is not None:
+            clone._runtime = copy.deepcopy(self._runtime)
+        if getattr(self, "_gate", None) is not None:
+            clone._gate = copy.deepcopy(self._gate)
+        clone._model_ref = None
+        return clone
 
     def reset(self) -> None:
         """Between-generations reset for runtime-backed controls.

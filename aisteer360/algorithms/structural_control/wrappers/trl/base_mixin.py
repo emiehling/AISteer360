@@ -2,12 +2,20 @@ import inspect
 from dataclasses import fields, is_dataclass
 from typing import Any
 
+from peft import PeftType
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     PreTrainedModel,
     PreTrainedTokenizer,
 )
+
+from aisteer360.algorithms.core.execution.artifacts import (
+    Artifact,
+    CheckpointArtifact,
+    LoRAArtifact,
+)
+from aisteer360.algorithms.core.execution.capabilities import Capability
 
 
 class TRLMixin:
@@ -95,6 +103,44 @@ class TRLMixin:
                 self.tokenizer.save_pretrained(output_dir)
             except Exception:
                 pass
+
+    def _resolved_output_dir(self) -> str | None:
+        return self.training_args.get("output_dir") or self.output_dir
+
+    def artifact_capability(self) -> Capability | None:
+        """The serve capability implied by this training configuration.
+
+        Training runs only when `train_dataset` is set, so a configuration without one produces
+        no artifact. A LoRA run without merge-back saves an adapter to the output directory
+        (`Capability.SERVE_LORA`); a full fine-tune saves a checkpoint there
+        (`Capability.SERVE_CHECKPOINT`); a merged LoRA run yields a checkpoint only when
+        `merged_output_dir` is set.
+        """
+        if getattr(self, "train_dataset", None) is None:
+            return None
+        is_lora = bool(self.use_peft) and self.peft_type == PeftType.LORA
+        if is_lora and not self.merge_lora_after_train:
+            return Capability.SERVE_LORA if self._resolved_output_dir() else None
+        if is_lora and self.merge_lora_after_train:
+            return Capability.SERVE_CHECKPOINT if self.merged_output_dir else None
+        return Capability.SERVE_CHECKPOINT if self._resolved_output_dir() else None
+
+    def export_artifact(self) -> Artifact | None:
+        """The on-disk product of this configuration's `steer()`, matching
+        `artifact_capability()`."""
+        capability = self.artifact_capability()
+        if capability is None:
+            return None
+        if capability == Capability.SERVE_LORA:
+            base = (
+                self.base_model_name_or_path
+                or getattr(self.model, "name_or_path", None)
+                or ""
+            )
+            return LoRAArtifact(path=str(self._resolved_output_dir()), base_model=str(base))
+        is_lora = bool(self.use_peft) and self.peft_type == PeftType.LORA
+        path = self.merged_output_dir if (is_lora and self.merge_lora_after_train) else self._resolved_output_dir()
+        return CheckpointArtifact(path=str(path))
 
     def _maybe_merge_lora_in_place(self) -> None:
         """Optionally merge LoRA into the base weights."""

@@ -92,6 +92,39 @@ class AlignmentAdaptiveTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return self.inner.covered_layer_ids
 
+    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
+        """The inner plan with the `alignment_adaptive` modifier added.
+
+        Like `norm_preserving`, the wire modifier operates on the residual stream; a wrapped
+        `head_additive` is hook-only.
+        """
+        plan = self.inner.wire_kind_plan()
+        if plan is None:
+            return None
+        kind, modifiers = plan
+        if kind == "head_additive":
+            return None
+        return kind, modifiers | {"alignment_adaptive"}
+
+    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
+        """The inner transform's wire payload with an `alignment_adaptive` modifier appended.
+
+        The modifier's wire vector is the resolved per-layer alignment axis
+        (`directions[layer_id][direction_index]`). A layer without an alignment axis appends no
+        modifier, matching the in-process behavior where the mask is left unnarrowed there.
+        """
+        payload = self.inner.to_intervention_op_payload(layer_id)
+        if payload is None or self.steering_vector is None:
+            return None
+        dirs = self.steering_vector.directions.get(layer_id)
+        if dirs is not None:
+            payload["modifiers"].append({
+                "kind": "alignment_adaptive",
+                "params": {"threshold": float(self.threshold), "use_cosine": bool(self.use_cosine)},
+                "tensors": {"vector": dirs[self.direction_index]},
+            })
+        return payload
+
     def apply(
         self,
         hidden_states: torch.Tensor,

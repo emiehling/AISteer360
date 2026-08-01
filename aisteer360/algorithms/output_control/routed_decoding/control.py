@@ -232,7 +232,7 @@ class RoutedDecoding(PhasedDriver):
             else:
                 row_ids = row_full
             full = self._run_plan(
-                plan, row_ids, prompts[i], {}, model, base_generate,
+                plan, row_ids, prompts[i], {}, base_generate, False,
                 logits_processors, stopping_criteria, gen_kwargs,
             )
             continuation = full[0][row_ids.size(1):]

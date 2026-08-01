@@ -10,9 +10,14 @@ import copy
 import torch
 from transformers import PreTrainedModel
 
+from aisteer360.algorithms.core.execution.capabilities import Capability
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 from aisteer360.algorithms.output_control._common.drivers.frontier import Frontier
 from aisteer360.algorithms.output_control._common.drivers.proposer import SegmentProposer
-from aisteer360.algorithms.output_control.base import DecodingDriver
+from aisteer360.algorithms.output_control.base import (
+    DecodingDriver,
+    resolve_generate_callable,
+)
 from aisteer360.utils.tokenization import infer_attention_mask_from_ids
 
 
@@ -53,17 +58,25 @@ class SearchDriver(DecodingDriver):
         self.propose_mode = propose_mode
         self.tokenizer = None  # injected by the pipeline
 
-    def decode(self, input_ids, attention_mask, model: PreTrainedModel, logits_processors,
-               stopping_criteria, runtime_kwargs, **gen_kwargs) -> torch.Tensor:
+    def requirements(self) -> Requirements:
+        """Rollouts run through the session, so sampled proposals require nothing beyond the
+        session contract; beam proposals require `Capability.BEAM_PROPOSALS`."""
+        if getattr(self, "propose_mode", "sample") == "beam":
+            return Requirements(generate=needs(
+                Capability.BEAM_PROPOSALS,
+                hint="use propose_mode='sample' or run this pipeline on the huggingface backend",
+            ))
+        return Requirements()
+
+    def decode(self, input_ids, attention_mask, model: PreTrainedModel | None, logits_processors,
+               stopping_criteria, runtime_kwargs, session=None, **gen_kwargs) -> torch.Tensor:
         if input_ids.dim() != 2 or input_ids.size(0) != 1:
             raise NotImplementedError("SearchDriver handles one prompt at a time (batch size 1).")
         if self.tokenizer is None:
             raise RuntimeError("SearchDriver requires a tokenizer; steer() must run first.")
 
         runtime_kwargs = runtime_kwargs or {}
-        base_generate = runtime_kwargs.get("base_generate") or (model.generate if model is not None else None)
-        if not callable(base_generate):
-            raise ValueError("'base_generate' must be callable.")
+        base_generate = resolve_generate_callable(model, runtime_kwargs, session=session)
 
         prompt_text = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
         input_length = input_ids.size(1)

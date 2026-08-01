@@ -8,6 +8,8 @@ import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.utils.tokenization import infer_attention_mask_from_ids
+from aisteer360.algorithms.core.execution.capabilities import Capability
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control._common.estimators import (
     ContrastiveDirectionEstimator,
@@ -167,6 +169,19 @@ class CAST(StateControl):
 
     Args = CASTArgs
     supports_batching = True
+
+    def requirements(self):
+        """In-process only; the projected-cosine condition has no intervention-spec gate kind."""
+        return Requirements(
+            steer=needs(Capability.IN_PROCESS_TORCH),
+            generate=needs(
+                Capability.IN_PROCESS_TORCH,
+                hint=(
+                    "CAST's projected-cosine condition has no intervention-spec gate kind; "
+                    "run this pipeline on the huggingface backend"
+                ),
+            ),
+        )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

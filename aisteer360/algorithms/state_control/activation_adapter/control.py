@@ -6,10 +6,18 @@ import logging
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
+from aisteer360.algorithms.core.execution.capabilities import Capability, InterventionKinds
+from aisteer360.algorithms.core.execution.interventions import InterventionSpec
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 from aisteer360.algorithms.state_control.base import StateControl
-from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
+from aisteer360.algorithms.state_control._common.condition_scorers import ProbeContributionScorer
+from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate, CacheOnceGate, ProbeSumGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control._common.intervention_export import (
+    intervention_generate_requirement,
+    intervention_spec_from_runtime_config,
+)
+from aisteer360.algorithms.state_control._common.layout_facts import resolve_layout
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
 from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
@@ -72,31 +80,141 @@ class ActivationAdapter(StateControl):
 
         # populated in steer()
         self._transform: BaseTransform | None = None
-        self._layer_names: list[str] = []
+        self._layer_names: list[str] | None = None
         self._layer_ids: list[int] = []
         self._condition_layer_ids: list[int] = []
+        self._num_layers: int | None = None
         self._gate = AlwaysOpenGate()
         self._pad_token_id: int | None = None
         self._runtime: TransformHookRuntime | None = None
 
+    def _gate_kind_plan(self) -> frozenset[str] | None:
+        """Wire gate kinds for this configuration; None marks the gating hook-only.
+
+        Probe-backed gating is the only conditional configuration with a wire form: the gate
+        must be a `ProbeSumGate` (bare or `cache_once`-wrapped) and, when this adapter drives
+        the condition path, `score_fn` must be the `ProbeContributionScorer` over the same
+        probe with condition layers matching the probe's layers, since the wire gate computes
+        the scorer's affine evidence from the probe weights itself. Threshold-comparator gating
+        (`MultiKeyThresholdGate`) has no wire serialization.
+        """
+        gate = self.gate
+        if gate is None or isinstance(gate, AlwaysOpenGate):
+            return frozenset()
+        inner = gate.inner if isinstance(gate, CacheOnceGate) else gate
+        if not isinstance(inner, ProbeSumGate):
+            return None
+        if self.score_fn is not None:
+            if not isinstance(self.score_fn, ProbeContributionScorer):
+                return None
+            if self.score_fn.probe is not inner.probe:
+                return None
+            if set(self.condition_layer_ids or []) != set(inner.probe.layer_ids):
+                return None
+        return frozenset({"cache_once", "probe_sum"})
+
+    def _intervention_kind_plan(self) -> InterventionKinds | None:
+        """Kind names this configuration lowers to; None marks it hook-only.
+
+        A factory-built transform is unknown before `steer()` and therefore conservative until
+        steered; a pre-hook at layer 0 edits the embedding output, which has no wire form.
+        """
+        transform = self._transform
+        if transform is None and isinstance(self.transform, BaseTransform):
+            transform = self.transform
+        if transform is None:
+            return None
+        plan = transform.wire_kind_plan()
+        if plan is None:
+            return None
+        gates = self._gate_kind_plan()
+        if gates is None:
+            return None
+        layer_ids = self._layer_ids or list(self.layer_ids or [])
+        if self.hook_point == "layer_input" and 0 in layer_ids:
+            return None
+        kind, modifiers = plan
+        return InterventionKinds(
+            transforms=frozenset({kind}),
+            modifiers=modifiers,
+            scopes=frozenset({self.token_scope}),
+            gates=gates,
+        )
+
+    def requirements(self) -> Requirements:
+        """In-process hooks or intervention specs at generate; source fitting steers in-process."""
+        steer = ()
+        fits_at_steer = (
+            not isinstance(self.transform, BaseTransform) or not self.transform.is_bound
+        )
+        if fits_at_steer:
+            steer = needs(
+                Capability.IN_PROCESS_TORCH,
+                hint="supply a transform with a concrete artifact, or steer on the huggingface backend",
+            )
+        if self._gate_kind_plan() is None:
+            hook_only_hint = (
+                "this gate configuration has no intervention-spec serialization (probe-backed "
+                "gating lowers; MultiKeyThresholdGate and custom scorers do not); run on the "
+                "huggingface backend"
+            )
+        else:
+            hook_only_hint = (
+                "this transform configuration has no intervention-spec form; run on the "
+                "huggingface backend"
+            )
+        return Requirements(
+            steer=steer,
+            generate=intervention_generate_requirement(
+                self._intervention_kind_plan(), hook_only_hint=hook_only_hint,
+            ),
+        )
+
+    def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> InterventionSpec | None:
+        """The spec assembled from the adapter's transform chain, scope, and gate; None when any
+        element has no wire form."""
+        if self._transform is None or self._num_layers is None:
+            return None
+        if self._gate_kind_plan() is None:
+            return None
+        return intervention_spec_from_runtime_config(
+            transform=self._transform,
+            layer_ids=self._layer_ids,
+            token_scope=self.token_scope,
+            gate=self._gate,
+            num_layers=self._num_layers,
+            placement=self.hook_point,
+            last_k=self.last_k,
+            from_position=self.from_position,
+            runtime_kwargs=runtime_kwargs,
+        )
+
     def steer(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None = None,
         tokenizer: PreTrainedTokenizerBase | None = None,
+        session=None,
         **__,
-    ) -> PreTrainedModel:
+    ) -> PreTrainedModel | None:
         """Resolve the behavior layers, bind the transform, verify coverage, and build the hook runtime.
 
+        Structural facts (layer count, sizes, dtype) come from the steering session's layout when a
+        session is given; a configuration whose transform carries a concrete artifact therefore
+        steers with `model=None`. A transform carrying a fit source requires a live model.
+
         Args:
-            model: The base language model to be steered.
+            model: The base language model to be steered, or None for concrete-artifact
+                configurations steered against a session layout.
             tokenizer: Tokenizer for encoding training data (when the transform carries a source).
+            session: `SteeringSession` on the steering backend, provided by the pipeline.
 
         Returns:
             The input model, unchanged.
         """
-        _, layer_names = get_model_layer_list(model)
-        self._layer_names = layer_names
-        num_layers = len(layer_names)
+        layout = resolve_layout(model, session)
+        num_layers = layout.num_layers
+        self._num_layers = num_layers
+        self._layer_names = get_model_layer_list(model)[1] if model is not None else None
 
         # behavior-layer resolution
         if self.layer_ids is not None:
@@ -132,7 +250,7 @@ class ActivationAdapter(StateControl):
             )
         scorer_fingerprint = getattr(self.score_fn, "model_fingerprint", None)
         if scorer_fingerprint is not None:
-            live_fingerprint = model_fingerprint(model)
+            live_fingerprint = layout.model_fingerprint
             if scorer_fingerprint != live_fingerprint:
                 raise ValueError(
                     f"Condition scorer was fitted on a different model (fingerprint "
@@ -142,7 +260,7 @@ class ActivationAdapter(StateControl):
                 )
 
         # transform resolution (no artifact logic; the transform carries its own)
-        self._transform = resolve_transform_slot(self.transform, model, tokenizer, layer_ids)
+        self._transform = resolve_transform_slot(self.transform, model, tokenizer, layer_ids, layout=layout)
 
         self._gate = self.gate if self.gate is not None else AlwaysOpenGate()
         self._pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer else None
@@ -150,12 +268,24 @@ class ActivationAdapter(StateControl):
 
         return model
 
+    def _module_names(self, model) -> list[str]:
+        """Layer module names, resolved from the module tree on first use."""
+        if self._layer_names is None:
+            source = model if model is not None else self._model_ref
+            if source is None:
+                raise RuntimeError(
+                    "ActivationAdapter was steered without a live model, so hook module names are "
+                    "unresolved; pass `model=` to get_hooks (the pipeline does) or steer with a model."
+                )
+            _, self._layer_names = get_model_layer_list(source)
+        return self._layer_names
+
     def get_hooks(
         self,
         input_ids: torch.Tensor,
         runtime_kwargs: dict | None = None,
         attention_mask: torch.Tensor | None = None,
-        **__,
+        **kwargs,
     ) -> dict[str, list]:
         """Emit condition (read-only) and behavior hooks for the current generation.
 
@@ -169,6 +299,8 @@ class ActivationAdapter(StateControl):
             attention_mask: The prompt attention mask matching `input_ids` (forwarded by the
                 pipeline). Handed to condition scorers on the prefill pass so condition scores
                 align with real (non-pad) prompt positions.
+            **kwargs: Generation-time context; `model` is consulted to resolve hook module names
+                when steering ran without a live model.
 
         Returns:
             Hook specifications with "pre", "forward", "backward" keys.
@@ -177,6 +309,7 @@ class ActivationAdapter(StateControl):
         if ids.ndim == 1:
             ids = ids.unsqueeze(0)
 
+        layer_names = self._module_names(kwargs.get("model"))
         prompt_lens = compute_prompt_lens(ids, self._pad_token_id)
         if attention_mask is not None:
             am = attention_mask if isinstance(attention_mask, torch.Tensor) else torch.as_tensor(attention_mask)
@@ -199,7 +332,7 @@ class ActivationAdapter(StateControl):
         # condition hooks first (so gate.update precedes transform at a shared layer)
         for lid in self._condition_layer_ids:
             hooks[phase].append({
-                "module": self._layer_names[lid],
+                "module": layer_names[lid],
                 "hook_func": self._runtime.build_condition_hook(
                     layer_id=lid,
                     scorer=self.score_fn,
@@ -210,7 +343,7 @@ class ActivationAdapter(StateControl):
 
         for lid in self._layer_ids:
             hooks[phase].append({
-                "module": self._layer_names[lid],
+                "module": layer_names[lid],
                 "hook_func": self._runtime.build_behavior_hook(
                     layer_id=lid,
                     transform=self._transform,

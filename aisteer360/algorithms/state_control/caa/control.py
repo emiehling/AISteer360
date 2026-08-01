@@ -3,9 +3,17 @@ from __future__ import annotations
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from aisteer360.algorithms.core.execution.capabilities import Capability, InterventionKinds
+from aisteer360.algorithms.core.execution.interventions import InterventionSpec
+from aisteer360.algorithms.core.execution.requirements import Requirements, needs
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
+from aisteer360.algorithms.state_control._common.intervention_export import (
+    intervention_generate_requirement,
+    intervention_spec_from_runtime_config,
+)
+from aisteer360.algorithms.state_control._common.layout_facts import cast_steering_vector, resolve_layout
 from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control._common.selectors import FixedLayerSelector, FractionalDepthSelector
 from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
@@ -50,44 +58,106 @@ class CAA(StateControl):
         # populated in steer()
         self._steering_vector: SteeringVector | None = None
         self._transform = None
-        self._layer_names: list[str] = []
+        self._layer_names: list[str] | None = None
         self._layer_id: int = 0
+        self._num_layers: int | None = None
         self._gate = AlwaysOpenGate()
         self._pad_token_id: int | None = None
         self._runtime = TransformHookRuntime(hook_point="layer_output")
 
+    def _intervention_kind_plan(self) -> InterventionKinds | None:
+        """Kind names this configuration lowers to; None marks it hook-only."""
+        transform = self._transform
+        if transform is not None:
+            plan = transform.wire_kind_plan()
+        else:
+            source = self._steering_vector if self._steering_vector is not None else self.steering_vector
+            if source is not None and source.is_positional:
+                return None
+            modifiers = frozenset({"norm_preserving"}) if self.use_norm_preservation else frozenset()
+            plan = ("additive", modifiers)
+        if plan is None:
+            return None
+        kind, modifiers = plan
+        return InterventionKinds(
+            transforms=frozenset({kind}),
+            modifiers=modifiers,
+            scopes=frozenset({self.token_scope}),
+        )
+
+    def requirements(self) -> Requirements:
+        """In-process hooks or intervention specs at generate; fitting from data steers in-process."""
+        steer = ()
+        if self.steering_vector is None:
+            steer = needs(
+                Capability.IN_PROCESS_TORCH,
+                hint="supply a fitted `steering_vector`, or steer on the huggingface backend",
+            )
+        return Requirements(
+            steer=steer,
+            generate=intervention_generate_requirement(
+                self._intervention_kind_plan(),
+                hook_only_hint="positional directions have no intervention-spec form; run on the huggingface backend",
+            ),
+        )
+
+    def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> InterventionSpec | None:
+        """The `additive` spec for the steered layer; None for positional configurations."""
+        if self._transform is None or self._num_layers is None:
+            return None
+        return intervention_spec_from_runtime_config(
+            transform=self._transform,
+            layer_ids=[self._layer_id],
+            token_scope=self.token_scope,
+            gate=self._gate,
+            num_layers=self._num_layers,
+            placement="layer_output",
+            last_k=self.last_k,
+            from_position=self.from_position,
+            runtime_kwargs=runtime_kwargs,
+        )
+
     def steer(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | None = None,
         tokenizer: PreTrainedTokenizerBase | None = None,
+        session=None,
         **__,
-    ) -> PreTrainedModel:
+    ) -> PreTrainedModel | None:
         """Initialize CAA by training or loading the steering vector.
 
+        Structural facts (layer count, dtype) come from the steering session's layout when a
+        session is given; a vector-supplied configuration therefore steers with `model=None`.
+        Fitting from `data` requires a live model.
+
         Args:
-            model: The base language model to be steered.
+            model: The base language model to be steered, or None for vector-supplied
+                configurations steered against a session layout.
             tokenizer: Tokenizer for encoding training data.
+            session: `SteeringSession` on the steering backend, provided by the pipeline.
 
         Returns:
             The input model, unchanged.
         """
-        device = next(model.parameters()).device
-        _, layer_names = get_model_layer_list(model)
-        self._layer_names = layer_names
-        num_layers = len(layer_names)
+        layout = resolve_layout(model, session)
+        num_layers = layout.num_layers
+        self._num_layers = num_layers
+        self._layer_names = get_model_layer_list(model)[1] if model is not None else None
 
         # resolve steering vector
         if self.steering_vector is not None:
             sv = self.steering_vector
         else:
+            if model is None:
+                raise ValueError("Fitting CAA from data requires a live model at steer time.")
             if self.train_spec.method == "pca_pairwise":
                 estimator = ContrastiveDirectionEstimator()
             else:
                 estimator = MeanDifferenceEstimator()
             sv = estimator.fit(model, tokenizer, data=self.data, spec=self.train_spec)
 
-        # clone before the in-place move/normalize so a caller-supplied vector is never mutated
-        sv = sv.clone().to(device, dtype=model.dtype)
+        # clone before the in-place cast/normalize so a caller-supplied vector is never mutated
+        sv = cast_steering_vector(sv, layout)
 
         # optionally normalize the vector
         if self.normalize_vector:
@@ -124,11 +194,23 @@ class CAA(StateControl):
 
         return model
 
+    def _module_names(self, model) -> list[str]:
+        """Layer module names, resolved from the module tree on first use."""
+        if self._layer_names is None:
+            source = model if model is not None else self._model_ref
+            if source is None:
+                raise RuntimeError(
+                    "CAA was steered without a live model, so hook module names are unresolved; "
+                    "pass `model=` to get_hooks (the pipeline does) or steer with a model."
+                )
+            _, self._layer_names = get_model_layer_list(source)
+        return self._layer_names
+
     def get_hooks(
         self,
         input_ids: torch.Tensor,
         runtime_kwargs: dict | None,
-        **__,
+        **kwargs,
     ) -> dict[str, list]:
         """Create forward hook for activation addition at the target layer.
 
@@ -138,6 +220,8 @@ class CAA(StateControl):
         Args:
             input_ids: Input token IDs.
             runtime_kwargs: Runtime parameters (currently unused).
+            **kwargs: Generation-time context; `model` is consulted to resolve hook module names
+                when steering ran without a live model.
 
         Returns:
             Hook specifications with "pre", "forward", "backward" keys.
@@ -146,13 +230,14 @@ class CAA(StateControl):
         if ids.ndim == 1:
             ids = ids.unsqueeze(0)
 
+        layer_names = self._module_names(kwargs.get("model"))
         prompt_lens = compute_prompt_lens(ids, self._pad_token_id)
         self._runtime.reset(prompt_lens)
 
         return {
             "pre": [],
             "forward": [{
-                "module": self._layer_names[self._layer_id],
+                "module": layer_names[self._layer_id],
                 "hook_func": self._runtime.build_behavior_hook(
                     layer_id=self._layer_id,
                     transform=self._transform,

@@ -2,6 +2,8 @@
 Core steering pipeline for composing and applying multiple LLM control methods.
 """
 import contextlib
+import dataclasses
+import inspect
 import logging
 import warnings
 from collections.abc import Mapping
@@ -19,19 +21,45 @@ from transformers import (
     StoppingCriteriaList,
 )
 
+from aisteer360.algorithms.core.execution.artifacts import Artifact, ArtifactProvenance
+from aisteer360.algorithms.core.execution.capabilities import (
+    BackendCapabilities,
+    Capability,
+)
+from aisteer360.algorithms.core.execution.items import (
+    GenerationItem,
+    HookEntry,
+    InterventionEntry,
+    ScoringItem,
+    StackEntry,
+    StateControlEntry,
+)
+from aisteer360.algorithms.core.execution.params import (
+    GenerationParams,
+    merge_lowered_params,
+)
+from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
+from aisteer360.algorithms.core.execution.registry import (
+    capabilities_for_spec,
+    resolve_backend_class,
+)
+from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
+from aisteer360.algorithms.core.execution.support import (
+    SupportReport,
+    UnsupportedOperationError,
+    evaluate_support,
+)
+from aisteer360.algorithms.core.output import (
+    Output,
+    infer_finish_reasons,
+    truncate_at_stop_strings,
+)
 from aisteer360.algorithms.core.utils.controls import (
     merge_controls,
     warn_if_adapt_messages_bypassed,
 )
 from aisteer360.algorithms.core.utils.generation import (
     apply_adapt_messages_and_tokenize,
-)
-from aisteer360.algorithms.core.output import Output, infer_finish_reasons
-from aisteer360.utils.tokenization import (
-    ensure_pad_token,
-    infer_attention_mask_from_ids,
-    to_left_pad,
-    warn_if_duplicate_bos,
 )
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.output_control.base import (
@@ -41,6 +69,12 @@ from aisteer360.algorithms.output_control.base import (
 )
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.structural_control.base import StructuralControl
+from aisteer360.utils.tokenization import (
+    ensure_pad_token,
+    infer_attention_mask_from_ids,
+    to_left_pad,
+    warn_if_duplicate_bos,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +116,13 @@ class SteeringPipeline:
             Useful when a `StructuralControl` will itself load or create the final weights
             (e.g., MergeKit). When `False`, the model is loaded during `SteeringPipeline`
             construction. Defaults to `False`.
+        backend (BackendSpec | str, optional): The inference backend. Defaults to the in-process
+            Hugging Face backend described by this pipeline's own construction arguments. A
+            `"vllm"` spec boots an offline engine (requires the `vllm` extra) and a
+            `"vllm-serve"` spec targets a running vLLM server; `check()` reports which enabled
+            controls each backend pair supports before anything executes.
+        steer_backend (BackendSpec | str, optional): The steering backend, used for the controls'
+            steer phase. Defaults to `backend`.
 
     Raises:
         RuntimeError: If `generate()` is called before `steer()`
@@ -127,10 +168,15 @@ class SteeringPipeline:
     hf_model_kwargs: dict = field(default_factory=dict)
     trust_remote_code: bool = False
     lazy_init: bool = False
+    backend: BackendSpec | str | None = None
+    steer_backend: BackendSpec | str | None = None
 
     # lazy‑filled fields
     model: PreTrainedModel | None = field(init=False, default=None)
     tokenizer: AutoTokenizer | None = field(init=False, default=None)
+    _support_report: SupportReport | None = field(init=False, default=None, repr=False)
+    _backends: dict = field(init=False, default_factory=dict, repr=False)
+    _structural_artifacts: tuple = field(init=False, default=(), repr=False)
 
     structural_controls: list[StructuralControl] = field(init=False)
     input_controls: list[InputControl] = field(init=False)
@@ -242,6 +288,100 @@ class SteeringPipeline:
                 UserWarning,
             )
 
+    def _resolve_backend_spec(self, value: BackendSpec | str | None) -> BackendSpec:
+        """Resolve a backend argument to a `BackendSpec`.
+
+        None and `"huggingface"` resolve to the implicit in-process spec derived from this
+        pipeline's construction arguments; another known kind name resolves to a bare spec of
+        that kind carrying the pipeline's model reference; a `BackendSpec` passes through.
+
+        Raises:
+            TypeError: If `value` is neither None, a known kind name, nor a `BackendSpec`.
+        """
+        if isinstance(value, BackendSpec):
+            return value
+        model = str(self.model_name_or_path) if self.model_name_or_path is not None else None
+        if value is None or value == "huggingface":
+            return BackendSpec(
+                kind="huggingface",
+                model=model,
+                options={
+                    "hf_model_kwargs": self.hf_model_kwargs,
+                    "device_map": self.device_map,
+                    "trust_remote_code": self.trust_remote_code,
+                    "tokenizer_name_or_path": self.tokenizer_name_or_path,
+                },
+            )
+        if isinstance(value, str) and value in KNOWN_BACKEND_KINDS:
+            return BackendSpec(kind=value, model=model)
+        raise TypeError(
+            f"backend must be a BackendSpec or one of {', '.join(KNOWN_BACKEND_KINDS)}; got {value!r}."
+        )
+
+    def _resolve_backend_pair(self) -> tuple[BackendSpec, BackendSpec]:
+        """The (steering, inference) backend specs; the steering spec defaults to the inference
+        spec."""
+        inference_spec = self._resolve_backend_spec(self.backend)
+        if self.steer_backend is None:
+            return inference_spec, inference_spec
+        return self._resolve_backend_spec(self.steer_backend), inference_spec
+
+    def _backend_for(self, spec: BackendSpec):
+        """The backend instance for `spec`, constructed on first use and cached by spec.
+
+        The `"huggingface"` kind adopts this pipeline's live model and tokenizer (providers are
+        re-read per access, so structural replacement stays visible); other kinds construct from
+        the spec and receive the pipeline's structural artifacts to serve.
+        """
+        backend = self._backends.get(spec)
+        if backend is None:
+            backend_cls = resolve_backend_class(spec)
+            if spec.kind == "huggingface":
+                backend = backend_cls.adopt(spec, lambda: self.model, lambda: self.tokenizer)
+            else:
+                backend = backend_cls(spec, artifacts=self._structural_artifacts)
+            self._backends[spec] = backend
+        return backend
+
+    def check(
+        self,
+        steer_backend: BackendSpec | str | None = None,
+        inference_backend: BackendSpec | str | None = None,
+    ) -> SupportReport:
+        """Evaluate every enabled control's backend requirements; support is binary per phase.
+
+        Runs automatically at `steer()` (which raises on steer- or generate-phase failures) and
+        is callable standalone against any backend pair. Disabled controls, including the
+        pipeline's default identity controls, never gate a backend and do not appear in the
+        report.
+
+        Args:
+            steer_backend: Steering backend to evaluate against. Defaults to the pipeline's
+                `steer_backend`, then to the inference backend.
+            inference_backend: Inference backend to evaluate against. Defaults to the pipeline's
+                `backend`, then to the implicit in-process backend.
+
+        Returns:
+            The `SupportReport` with one failure per unsupported (control, phase) pair.
+        """
+        inference_spec = self._resolve_backend_spec(
+            inference_backend if inference_backend is not None else self.backend
+        )
+        if steer_backend is not None:
+            steer_spec = self._resolve_backend_spec(steer_backend)
+        elif self.steer_backend is not None:
+            steer_spec = self._resolve_backend_spec(self.steer_backend)
+        else:
+            steer_spec = inference_spec
+        controls = (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls)
+        return evaluate_support(
+            controls,
+            steer_spec,
+            inference_spec,
+            capabilities_for_spec(steer_spec),
+            capabilities_for_spec(inference_spec),
+        )
+
     def steer(self, **steer_kwargs) -> None:
         """Apply all steering controls to the model in place.
 
@@ -252,6 +392,11 @@ class SteeringPipeline:
         If any control's steer() method returns a PreTrainedModel instance, it replaces the current model for
         subsequent controls, so structural controls thread the model through in list order.
 
+        Before any control runs, `check()` evaluates the configured backend pair and raises on
+        any steer- or generate-phase failure. Each control's `steer()` additionally receives
+        `session=`, a `SteeringSession` on the steering backend, unless the caller supplied its
+        own `session` keyword. The session is closed when `steer()` returns.
+
         Args:
             **steer_kwargs: Keyword arguments passed to all control steer() methods
 
@@ -261,22 +406,61 @@ class SteeringPipeline:
 
         Raises:
             RuntimeError: If called more than once or no model available after steering
+            UnsupportedPipelineError: If any enabled control is unsupported at the steer or
+                generate phase on the configured backends.
+            ModuleNotFoundError: If a configured backend kind requires an optional dependency
+                that is not installed (e.g. the `vllm` extra).
         """
         if self._is_steered:
             return
 
         self._warn_on_runtime_kwargs_overlap()
 
+        steer_spec, inference_spec = self._resolve_backend_pair()
+        report = self.check(steer_backend=steer_spec, inference_backend=inference_spec)
+        report.raise_for("steer", "generate")
+        self._support_report = report
+
+        steering_backend = self._backend_for(steer_spec)
+
+        # a remote inference backend still needs a client-side tokenizer for the controls
+        if self.tokenizer is None and inference_spec.kind != "huggingface":
+            tokenizer = getattr(steering_backend, "tokenizer", None)
+            if tokenizer is None or callable(tokenizer):
+                source = (
+                    inference_spec.get_option("tokenizer_name_or_path")
+                    or inference_spec.model
+                )
+                if source is not None:
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        source, trust_remote_code=self.trust_remote_code,
+                    )
+            if tokenizer is not None:
+                self.tokenizer = ensure_pad_token(tokenizer)
+                for control in (
+                    *self.structural_controls, *self.input_controls,
+                    *self.state_controls, *self.output_controls,
+                ):
+                    if hasattr(control, "tokenizer") and getattr(control, "tokenizer") is None:
+                        setattr(control, "tokenizer", self.tokenizer)
+
         # steer each control (bottom-up order: structural -> input -> state -> output)
-        for control in (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls):
-            steer_fn = getattr(control, "steer", None)
-            if callable(steer_fn):
-                maybe_new_model = steer_fn(self.model, tokenizer=self.tokenizer, **steer_kwargs)
-                if isinstance(maybe_new_model, nn.Module):
-                    self.model = maybe_new_model
+        with steering_backend.open_session() as session:
+            if "session" not in steer_kwargs:
+                steer_kwargs = {**steer_kwargs, "session": session}
+            for control in (
+                *self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls,
+            ):
+                steer_fn = getattr(control, "steer", None)
+                if callable(steer_fn):
+                    maybe_new_model = steer_fn(self.model, tokenizer=self.tokenizer, **steer_kwargs)
+                    if isinstance(maybe_new_model, nn.Module):
+                        self.model = maybe_new_model
+
+        self._structural_artifacts = self._collect_structural_artifacts(steer_spec)
 
         # safety checks
-        if self.model is None:
+        if self.model is None and inference_spec.kind == "huggingface":
             raise RuntimeError(
                 "No model is available after steering. Either provide a base model (lazy_init=False) or ensure a "
                 "`StructuralControl` returns one."
@@ -303,6 +487,38 @@ class SteeringPipeline:
 
         # return steered pipeline
         self._is_steered = True
+
+    def _collect_structural_artifacts(self, steer_spec: BackendSpec) -> tuple[Artifact, ...]:
+        """Enabled structural controls' steer-time artifacts, provenance-stamped.
+
+        Provenance carries the steering backend's spec hash and, when a live model is present,
+        its fingerprint.
+        """
+        artifacts: list[Artifact] = []
+        for control in self.structural_controls:
+            if not getattr(control, "enabled", True):
+                continue
+            exporter = getattr(control, "export_artifact", None)
+            artifact = exporter() if callable(exporter) else None
+            if artifact is not None:
+                artifacts.append(artifact)
+        if not artifacts:
+            return ()
+
+        model_fingerprint = None
+        if self.model is not None:
+            from aisteer360.algorithms.core.internals.fingerprint import (
+                model_fingerprint as compute_model_fingerprint,
+            )
+            try:
+                model_fingerprint = compute_model_fingerprint(self.model)
+            except Exception:
+                logger.debug("Model fingerprint unavailable for artifact provenance.")
+        provenance = ArtifactProvenance(
+            backend_spec_hash=steer_spec.spec_hash,
+            model_fingerprint=model_fingerprint,
+        )
+        return tuple(dataclasses.replace(artifact, provenance=provenance) for artifact in artifacts)
 
     def _structural_out_path(self) -> Path | None:
         """The last structural control's non-empty `args.out_path`, as a tokenizer-directory fallback.
@@ -351,7 +567,7 @@ class SteeringPipeline:
             tuple[torch.Tensor, torch.Tensor]: (steered_input_ids, attention_mask), both as 2D tensors on model device
         """
         runtime_kwargs = runtime_kwargs or {}
-        device = self.model.device
+        device = self.model.device if self.model is not None else torch.device("cpu")
 
         # token-phase chain (controls already handled at message level are skipped)
         steered_input_ids = input_ids
@@ -400,7 +616,7 @@ class SteeringPipeline:
             runtime_kwargs: dict | None,
             attention_mask: torch.Tensor | None = None,
             **kwargs,
-    ) -> None:
+    ) -> tuple[HookEntry, ...]:
         """Configure every state control's hooks for the current forward/generate call.
 
         Prepares each state control (in list order) by computing hooks based on the (already
@@ -413,14 +629,111 @@ class SteeringPipeline:
                 `get_hooks` so controls (e.g. CAST) score conditions on the real prompt tokens rather
                 than re-deriving a pad mask by token identity.
             **kwargs: Additional arguments passed to get_hooks()
+
+        Returns:
+            One `HookEntry` per state control, in controls-list order, carrying the hooks the
+            control computed for this call.
         """
+        entries: list[HookEntry] = []
         for state_control in self.state_controls:
             state_control.reset()  # reset before get_hooks() to clear state from previous generation
+            state_control._model_ref = self.model
             hooks = state_control.get_hooks(
-                steered_input_ids, runtime_kwargs, attention_mask=attention_mask, **kwargs
+                steered_input_ids, runtime_kwargs, attention_mask=attention_mask, model=self.model, **kwargs
             )
             state_control.set_hooks(hooks)
-            state_control._model_ref = self.model
+            entries.append(HookEntry(hooks=hooks))
+        return tuple(entries)
+
+    def _per_item_state_entries(
+            self,
+            steered_input_ids: torch.Tensor,
+            steered_attention_mask: torch.Tensor,
+            runtime_kwargs: dict | None,
+            **kwargs,
+    ) -> list[tuple[HookEntry, ...]]:
+        """Per-row state entries computed by per-call control clones.
+
+        Distinct per-item derived seeds force the in-process session onto its serial path, where
+        each row runs its own forward. Hooks computed once on the batch hold batch-sized position
+        and gate state, so each row instead gets hooks computed by a fresh clone on that row's
+        prompt tensors.
+
+        Args:
+            steered_input_ids: Adapted prompt ids of shape `[batch, seq_len]`.
+            steered_attention_mask: Attention mask matching `steered_input_ids`.
+            runtime_kwargs: Per-call parameters for state controls.
+            **kwargs: Additional arguments passed to `get_hooks()`.
+
+        Returns:
+            One tuple of `HookEntry` per row, each in controls-list order.
+        """
+        rows: list[tuple[HookEntry, ...]] = []
+        for index in range(steered_input_ids.size(0)):
+            entries: list[HookEntry] = []
+            for state_control in self.state_controls:
+                clone = state_control.clone_for_call()
+                clone.reset()
+                hooks = clone.get_hooks(
+                    steered_input_ids[index:index + 1],
+                    runtime_kwargs,
+                    attention_mask=steered_attention_mask[index:index + 1],
+                    model=self.model,
+                    **kwargs,
+                )
+                entries.append(HookEntry(hooks=hooks))
+            rows.append(tuple(entries))
+        return rows
+
+    def _intervention_entries(
+            self,
+            inference_capabilities: BackendCapabilities,
+            runtime_kwargs: dict | None,
+    ) -> tuple[InterventionEntry, ...]:
+        """One `InterventionEntry` per enabled state control, for intervention-capable backends.
+
+        Each control's exported spec is verified against the backend's negotiated kinds (the
+        intersection of the static tables and discovery), so a server missing a kind yields a
+        verdict naming the kind rather than a wire rejection.
+
+        Args:
+            inference_capabilities: The inference backend's capabilities.
+            runtime_kwargs: Per-call parameters forwarded to `export_intervention_spec`.
+
+        Returns:
+            The intervention entries, in controls-list order.
+
+        Raises:
+            UnsupportedOperationError: If an enabled control has no intervention-spec form, or
+                its spec requires a kind the backend does not advertise.
+        """
+        entries: list[InterventionEntry] = []
+        advertised = inference_capabilities.intervention_kinds
+        for state_control in self.state_controls:
+            if not getattr(state_control, "enabled", True):
+                continue
+            exporter = getattr(state_control, "export_intervention_spec", None)
+            spec = exporter(runtime_kwargs) if callable(exporter) else None
+            if spec is None:
+                raise UnsupportedOperationError(
+                    f"{type(state_control).__name__} has no intervention-spec form for this "
+                    "configuration; run this pipeline on the huggingface backend."
+                )
+            required = spec.required_kinds()
+            if advertised is None or not advertised.contains(required):
+                missing = sorted(
+                    (required.transforms - (advertised.transforms if advertised else frozenset()))
+                    | (required.modifiers - (advertised.modifiers if advertised else frozenset()))
+                    | (required.scopes - (advertised.scopes if advertised else frozenset()))
+                    | (required.gates - (advertised.gates if advertised else frozenset()))
+                )
+                raise UnsupportedOperationError(
+                    f"{type(state_control).__name__} requires intervention kind(s) "
+                    f"{', '.join(missing)} that the serving backend does not advertise; update the "
+                    "server's vllm_hook_plugins or run this pipeline on the huggingface backend."
+                )
+            entries.append(InterventionEntry(spec=spec))
+        return tuple(entries)
 
     def _resolve_decoding_driver(self) -> DecodingDriver:
         """The sole enabled DecodingDriver, else the default (model.generate).
@@ -433,17 +746,37 @@ class SteeringPipeline:
                 return control
         return self._default_driver
 
+    def _lowered_contributions(self, runtime_kwargs: dict | None) -> dict[int, Mapping]:
+        """Sampling-expressible contributions from enabled output controls, keyed by `id()`.
+
+        A control that returns a mapping from `export_generation_params` is lowered for this
+        call: its contribution merges into the call's `GenerationParams` and its live processor
+        and criteria hooks are not collected.
+        """
+        contributions: dict[int, Mapping] = {}
+        for control in self.output_controls:
+            if not getattr(control, "enabled", True):
+                continue
+            exporter = getattr(control, "export_generation_params", None)
+            contribution = exporter(runtime_kwargs) if callable(exporter) else None
+            if contribution is not None:
+                contributions[id(control)] = contribution
+        return contributions
+
     def _collect_processors_and_criteria(
-        self, input_ids, runtime_kwargs, attention_mask=None, for_scoring=False, **kwargs,
+        self, input_ids, runtime_kwargs, attention_mask=None, for_scoring=False,
+        skip_ids=frozenset(), **kwargs,
     ) -> tuple[list, list]:
         """(processors, criteria) from enabled output controls, in controls-list order.
 
         With `for_scoring=True`, only `include_in_scoring` controls contribute processors and
-        criteria are skipped (there is no loop to stop). Each hook result is guarded with `or []`.
+        criteria are skipped (there is no loop to stop). Controls whose `id()` is in `skip_ids`
+        (lowered to generation parameters for this call) contribute nothing. Each hook result is
+        guarded with `or []`.
         """
         processors, criteria = [], []
         for control in self.output_controls:
-            if not getattr(control, "enabled", True):
+            if not getattr(control, "enabled", True) or id(control) in skip_ids:
                 continue
             if for_scoring and not getattr(control, "include_in_scoring", True):
                 logger.info(
@@ -459,7 +792,38 @@ class SteeringPipeline:
                     input_ids, runtime_kwargs, attention_mask=attention_mask, **kwargs) or [])
         return processors, criteria
 
+    def _collect_output_entries(
+        self, input_ids, runtime_kwargs, attention_mask=None, for_scoring=False,
+        skip_ids=frozenset(), **kwargs,
+    ) -> tuple[StackEntry, ...]:
+        """One `StackEntry` per contributing output control, in controls-list order.
+
+        Same collection rules as `_collect_processors_and_criteria`, per control instead of
+        composed; controls contributing neither processors nor criteria yield no entry.
+        """
+        entries: list[StackEntry] = []
+        for control in self.output_controls:
+            if not getattr(control, "enabled", True) or id(control) in skip_ids:
+                continue
+            if for_scoring and not getattr(control, "include_in_scoring", True):
+                logger.info(
+                    "compute_logprobs: skipping %s (include_in_scoring=False); scored logprobs will "
+                    "not reflect this control's logits processors.",
+                    type(control).__name__,
+                )
+                continue
+            processors = control.get_logits_processors(
+                input_ids, runtime_kwargs, attention_mask=attention_mask, **kwargs) or []
+            criteria = [] if for_scoring else (control.get_stopping_criteria(
+                input_ids, runtime_kwargs, attention_mask=attention_mask, **kwargs) or [])
+            if processors or criteria:
+                entries.append(StackEntry(
+                    logits_processors=tuple(processors), stopping_criteria=tuple(criteria),
+                ))
+        return tuple(entries)
+
     def _compose_stacks(self, input_ids, runtime_kwargs, attention_mask, gen_kwargs,
+                        skip_ids=frozenset(),
                         ) -> tuple[LogitsProcessorList, StoppingCriteriaList]:
         """Compose the controls' processors and criteria, then append caller extras popped from
         `gen_kwargs` (mutates `gen_kwargs`).
@@ -473,7 +837,7 @@ class SteeringPipeline:
         visibly ignores named parameters.
         """
         processors, criteria = self._collect_processors_and_criteria(
-            input_ids, runtime_kwargs, attention_mask=attention_mask, **gen_kwargs
+            input_ids, runtime_kwargs, attention_mask=attention_mask, skip_ids=skip_ids, **gen_kwargs
         )
         user_processors = gen_kwargs.pop("logits_processor", None) or []
         user_criteria = gen_kwargs.pop("stopping_criteria", None) or []
@@ -831,7 +1195,9 @@ class SteeringPipeline:
             messages: Chat prompt as one conversation (a sequence of mappings) or a batch (a sequence
                 of sequences of mappings).
             input_ids: Token prompt as a 1-D/2-D integer tensor, `list[int]`, or `list[list[int]]`.
-            **gen_kwargs: Generation parameters passed to `model.generate()`. May include
+            **gen_kwargs: Generation parameters in `model.generate` vocabulary, normalized
+                through `GenerationParams` and executed by the inference backend's session
+                (unlisted keys pass through in process and raise on API backends). May include
                 `return_full_sequence: bool` to include the prompt in the returned token IDs.
 
         Returns:
@@ -899,9 +1265,13 @@ class SteeringPipeline:
     ) -> str | list[str] | torch.Tensor | Output | list[Output]:
         """Run the shared generation tail from prompt tensors through the shaped return.
 
-        Applies the token-level input-control chain, configures state hooks, composes the output
-        processor and stopping-criteria stacks, drives decoding under the state-control context, and
-        shapes the return. The prompt slice is removed by default (`return_full_sequence=False`
+        Applies the token-level input-control chain, merges sampling-expressible output
+        controls into the call's `GenerationParams`, and configures state hooks. With the
+        default decoding driver, each prompt row becomes a `GenerationItem` executed by the
+        inference backend's session; an explicit `DecodingDriver` instead runs client-side
+        under the state-control hook context with `session=` passed for its rollouts. The
+        return is then shaped per modality: decoded continuation text truncates at the first
+        stop string, and the prompt slice is removed by default (`return_full_sequence=False`
         returns continuation tokens only).
 
         Args:
@@ -932,53 +1302,146 @@ class SteeringPipeline:
             message_handled=frozenset(message_handled),
         )
 
-        # state controls
-        self._setup_state_controls(
-            steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs
-        )
+        # sampling-expressible output controls lower to generation parameters for this call
+        lowered = self._lowered_contributions(runtime_kwargs)
+        skip_ids = frozenset(lowered)
 
-        # output controls: compose the processor and criteria stacks (list order), then drive the loop
-        logits_processors, stopping_criteria = self._compose_stacks(
-            steered_input_ids, runtime_kwargs, steered_attention_mask, gen_kwargs
-        )
+        inference_spec = self._resolve_backend_spec(self.backend)
+        backend = self._backend_for(inference_spec)
         decoding_driver = self._resolve_decoding_driver()
+        inference_capabilities = capabilities_for_spec(inference_spec)
+        hooks_in_process = Capability.IN_PROCESS_TORCH in inference_capabilities.atoms
+        has_enabled_state = any(getattr(control, "enabled", True) for control in self.state_controls)
 
-        with contextlib.ExitStack() as stack:  # hooks live only for duration of decoding
-            for state_control in self.state_controls:
-                stack.enter_context(state_control)
-            full_output_ids = decoding_driver.decode(
-                input_ids=steered_input_ids,
-                attention_mask=steered_attention_mask,
-                model=self.model,
-                logits_processors=logits_processors,
-                stopping_criteria=stopping_criteria,
-                runtime_kwargs=runtime_kwargs,
-                **gen_kwargs,
+        # state-control entry selection per backend: an in-process backend gets hooks via the
+        # existing get_hooks path; an intervention-capable backend gets exported specs. On the
+        # in-process path, distinct per-item derived seeds run serially in the session, so hooks
+        # are computed per row there rather than once on the batch.
+        state_entry_rows: list[tuple[HookEntry, ...]] | None = None
+        state_entries: tuple[StateControlEntry, ...] = ()
+        if decoding_driver is not self._default_driver:
+            if has_enabled_state and not hooks_in_process:
+                raise UnsupportedOperationError(
+                    "Custom decoding drivers execute state controls as in-process hooks, which the "
+                    f"'{inference_spec.kind}' backend does not run; run this pipeline on the "
+                    "huggingface backend."
+                )
+            state_entries = self._setup_state_controls(
+                steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs
+            )
+        elif not hooks_in_process:
+            if has_enabled_state:
+                state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs)
+        elif (
+            gen_kwargs.get("seed") is not None
+            and steered_input_ids.size(0) > 1
+            and has_enabled_state
+        ):
+            state_entry_rows = self._per_item_state_entries(
+                steered_input_ids, steered_attention_mask, runtime_kwargs, **gen_kwargs
+            )
+        else:
+            state_entries = self._setup_state_controls(
+                steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs
             )
 
-        prompt_len = steered_input_ids.size(1)
-        new_tokens = full_output_ids[:, prompt_len:]
+        with backend.open_session() as session:
+            if decoding_driver is not self._default_driver:
+                # client-side driver path: composed stacks, ambient hooks, rollouts on the session
+                logits_processors, stopping_criteria = self._compose_stacks(
+                    steered_input_ids, runtime_kwargs, steered_attention_mask, gen_kwargs,
+                    skip_ids=skip_ids,
+                )
+                params = GenerationParams.from_gen_kwargs(**gen_kwargs)
+                for contribution in lowered.values():
+                    params = merge_lowered_params(params, contribution)
+                driver = decoding_driver
+                driver_kwargs: dict[str, Any] = {}
+                try:
+                    if "session" in inspect.signature(driver.decode).parameters:
+                        driver_kwargs["session"] = session
+                except (TypeError, ValueError):
+                    driver_kwargs["session"] = session
+                with contextlib.ExitStack() as stack:  # hooks live only for duration of decoding
+                    for state_control in self.state_controls:
+                        stack.enter_context(state_control)
+                    full_output_ids = driver.decode(
+                        input_ids=steered_input_ids,
+                        attention_mask=steered_attention_mask,
+                        model=self.model,
+                        logits_processors=logits_processors,
+                        stopping_criteria=stopping_criteria,
+                        runtime_kwargs=runtime_kwargs,
+                        **driver_kwargs,
+                        **params.to_gen_kwargs(),
+                    )
+                prompt_len = steered_input_ids.size(1)
+                new_tokens = full_output_ids[:, prompt_len:]
+                reasons = infer_finish_reasons(
+                    new_tokens,
+                    {"max_new_tokens": params.max_new_tokens},
+                    eos_token_id=self.tokenizer.eos_token_id,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    stop_strings=params.stop_strings,
+                    stop_token_ids=params.stop_token_ids,
+                    tokenizer=self.tokenizer,
+                )
+            else:
+                # default path: per-prompt items executed by the session
+                output_entries = self._collect_output_entries(
+                    steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
+                    skip_ids=skip_ids, **gen_kwargs,
+                )
+                user_processors = gen_kwargs.pop("logits_processor", None) or []
+                user_criteria = gen_kwargs.pop("stopping_criteria", None) or []
+                params = GenerationParams.from_gen_kwargs(**gen_kwargs)
+                for contribution in lowered.values():
+                    params = merge_lowered_params(params, contribution)
+                if user_processors or user_criteria:
+                    extra = dict(params.extra)
+                    if user_processors:
+                        extra["logits_processor"] = user_processors
+                    if user_criteria:
+                        extra["stopping_criteria"] = user_criteria
+                    params = dataclasses.replace(params, extra=extra)
+
+                items = [
+                    GenerationItem(
+                        prompt=PreparedPrompt.from_token_ids(
+                            steered_input_ids[i:i + 1], steered_attention_mask[i:i + 1],
+                        ),
+                        state_entries=state_entry_rows[i] if state_entry_rows is not None else state_entries,
+                        output_entries=output_entries,
+                    )
+                    for i in range(steered_input_ids.size(0))
+                ]
+                results = session.generate(items, params)
+                new_tokens, reasons = self._assemble_item_outputs(results)
+                num_candidates = params.n or 1
+                if return_full_sequence:
+                    repeated = steered_input_ids.repeat_interleave(num_candidates, dim=0)
+                    full_output_ids = torch.cat([repeated, new_tokens.to(repeated.device)], dim=1)
+                else:
+                    full_output_ids = None
+
         returned_ids = full_output_ids if return_full_sequence else new_tokens
 
         # shape return per modality + flag
+        num_candidates = params.n or 1
         if return_output:
-            reasons = infer_finish_reasons(
-                new_tokens,
-                gen_kwargs,
-                eos_token_id=self.tokenizer.eos_token_id,
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
             if is_single:
                 return Output(
                     output_ids=new_tokens,
                     adapted_input_ids=steered_input_ids,
                     finish_reason=reasons[0],
+                    finish_reasons=tuple(reasons),
                 )
             return [
                 Output(
                     output_ids=new_tokens[i:i + 1],
-                    adapted_input_ids=steered_input_ids[i:i + 1],
+                    adapted_input_ids=steered_input_ids[i // num_candidates:i // num_candidates + 1],
                     finish_reason=reasons[i],
+                    finish_reasons=(reasons[i],),
                 )
                 for i in range(new_tokens.size(0))
             ]
@@ -986,13 +1449,38 @@ class SteeringPipeline:
         if not decode_text:
             return returned_ids
 
-        # text / chat → decode
+        # text / chat → decode; decoded continuation text truncates at the first stop string
         decoded = self.tokenizer.batch_decode(
             returned_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True
         )
+        if params.stop_strings and not return_full_sequence:
+            decoded = [truncate_at_stop_strings(text, params.stop_strings) for text in decoded]
         if is_single:
             return decoded[0]
         return decoded
+
+    def _assemble_item_outputs(self, results) -> tuple[torch.Tensor, list[str | None]]:
+        """Stack item results into one `[batch * n, gen_len]` tensor plus flat per-row reasons.
+
+        Rows pad to the longest continuation with the tokenizer's pad token, matching the
+        right-padding a single batched `generate` call produces.
+        """
+        pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+        rows: list[torch.Tensor] = []
+        reasons: list[str | None] = []
+        for result in results:
+            output = result.output
+            rows.append(output.output_ids)
+            if output.finish_reasons is not None:
+                reasons.extend(output.finish_reasons)
+            else:
+                reasons.extend([output.finish_reason] * output.output_ids.size(0))
+        max_len = max((row.size(1) for row in rows), default=0)
+        padded = [
+            torch.nn.functional.pad(row, (0, max_len - row.size(1)), value=pad_token_id)
+            for row in rows
+        ]
+        return torch.cat(padded, dim=0), reasons
 
     def compute_logprobs(
             self,
@@ -1014,8 +1502,11 @@ class SteeringPipeline:
         Uses teacher forcing to compute log P(ref_t | steered_input, ref_1, ..., ref_{t-1}) for each
         token in the reference sequence.
 
-        When all pipeline controls support batching, a single batched forward pass is used (inputs are left-padded
-        internally for correct positional alignment). Otherwise, falls back to sequential per-item processing.
+        Decoder-only scoring executes through the inference backend's session as `ScoringItem`s.
+        When all pipeline controls support batching, the items share one set of control entries
+        and score in a single pass (inputs are left-padded internally for correct positional
+        alignment); otherwise each item is prepared and scored sequentially. Encoder-decoder
+        models score in process against the live model.
 
         Args:
             input_ids: Input token IDs as list or tensor [seq_len] or [batch, seq_len]
@@ -1031,14 +1522,27 @@ class SteeringPipeline:
         Raises:
             RuntimeError: If steer() has not been called
             ValueError: If ref_output_ids is None
+            UnsupportedPipelineError: If an enabled control is score-unsupported on the
+                configured inference backend.
         """
         if not self._is_steered:
             raise RuntimeError("Must call `.steer()` before `.compute_logprobs()`.")
         if ref_output_ids is None:
             raise ValueError("`ref_output_ids` is required for `compute_logprobs()`.")
+        if self._support_report is not None:
+            self._support_report.raise_for("score")
 
         runtime_kwargs = runtime_kwargs or {}
-        device = self.model.device
+
+        is_encoder_decoder = (
+            self.model is not None and getattr(self.model.config, "is_encoder_decoder", False)
+        )
+        if is_encoder_decoder:
+            return self._compute_logprobs_encoder_decoder(
+                input_ids, attention_mask, ref_output_ids, runtime_kwargs, **forward_kwargs,
+            )
+
+        device = self.model.device if self.model is not None else torch.device("cpu")
 
         # normalize ref_output_ids
         if isinstance(ref_output_ids, list):
@@ -1048,7 +1552,130 @@ class SteeringPipeline:
         ref_output_ids = ref_output_ids.to(device)
         ref_len = ref_output_ids.size(1)
 
-        is_encoder_decoder = getattr(self.model.config, "is_encoder_decoder", False)
+        inference_spec = self._resolve_backend_spec(self.backend)
+        backend = self._backend_for(inference_spec)
+        score_params = GenerationParams(extra=forward_kwargs)
+        inference_capabilities = capabilities_for_spec(inference_spec)
+        hooks_in_process = Capability.IN_PROCESS_TORCH in inference_capabilities.atoms
+        has_enabled_state = any(getattr(control, "enabled", True) for control in self.state_controls)
+
+        # batched path (all controls are batch-safe): one left-packed pass over shared entries
+        if self.supports_batching:
+            steered_input_ids, steered_attention_mask = self._prepare_inputs(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                runtime_kwargs=runtime_kwargs,
+            )
+            batch_size = steered_input_ids.size(0)
+            if ref_output_ids.size(0) == 1 and batch_size > 1:
+                ref_output_ids = ref_output_ids.expand(batch_size, -1)
+            if ref_len == 0:
+                return torch.zeros((batch_size, 0), device=device, dtype=torch.float32)
+
+            # left-pad for correct positional alignment in causal models; with right-padding, pad
+            # tokens between the real input and the appended ref tokens corrupt positional
+            # encodings and the causal attention chain
+            steered_input_ids, steered_attention_mask = to_left_pad(
+                steered_input_ids, steered_attention_mask
+            )
+            if hooks_in_process:
+                state_entries = self._setup_state_controls(
+                    steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
+                    **forward_kwargs,
+                )
+            elif has_enabled_state:
+                state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs)
+            else:
+                state_entries = ()
+            output_entries = self._collect_output_entries(
+                steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
+                for_scoring=True, **forward_kwargs,
+            )
+            items = [
+                ScoringItem(
+                    prompt=PreparedPrompt.from_token_ids(
+                        steered_input_ids[i:i + 1], steered_attention_mask[i:i + 1],
+                    ),
+                    ref_output_ids=ref_output_ids[i:i + 1],
+                    state_entries=state_entries,
+                    output_entries=output_entries,
+                )
+                for i in range(batch_size)
+            ]
+            with backend.open_session() as session:
+                return session.score(items, score_params)
+
+        # sequential fallback (one or more controls do not support batching): per-item
+        # preparation and entries, one scoring pass per item
+        if isinstance(input_ids, list):
+            input_ids = torch.tensor(input_ids, dtype=torch.long)
+        if input_ids.ndim == 1:
+            input_ids = input_ids.unsqueeze(0)
+        input_ids = input_ids.to(device)
+
+        if attention_mask is not None:
+            if isinstance(attention_mask, list):
+                attention_mask = torch.as_tensor(attention_mask, dtype=torch.long)
+            if attention_mask.ndim == 1:
+                attention_mask = attention_mask.unsqueeze(0)
+            attention_mask = attention_mask.to(device)
+
+        num_inputs = input_ids.size(0)
+        if ref_output_ids.size(0) == 1 and num_inputs > 1:
+            ref_output_ids = ref_output_ids.expand(num_inputs, -1)
+        if ref_len == 0:
+            return torch.zeros((num_inputs, 0), device=device, dtype=torch.float32)
+
+        all_logprobs = []
+        with backend.open_session() as session:
+            for i in range(num_inputs):
+                single_attention_mask = attention_mask[i:i + 1] if attention_mask is not None else None
+                steered_input_ids, steered_attention_mask = self._prepare_inputs(
+                    input_ids=input_ids[i:i + 1],
+                    attention_mask=single_attention_mask,
+                    runtime_kwargs=runtime_kwargs,
+                )
+                if hooks_in_process:
+                    state_entries = self._setup_state_controls(
+                        steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
+                        **forward_kwargs,
+                    )
+                elif has_enabled_state:
+                    state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs)
+                else:
+                    state_entries = ()
+                output_entries = self._collect_output_entries(
+                    steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
+                    for_scoring=True, **forward_kwargs,
+                )
+                item = ScoringItem(
+                    prompt=PreparedPrompt.from_token_ids(steered_input_ids, steered_attention_mask),
+                    ref_output_ids=ref_output_ids[i:i + 1],
+                    state_entries=state_entries,
+                    output_entries=output_entries,
+                )
+                all_logprobs.append(session.score([item], score_params))
+        return torch.cat(all_logprobs, dim=0)
+
+    def _compute_logprobs_encoder_decoder(
+            self,
+            input_ids: list[int] | torch.LongTensor,
+            attention_mask: torch.Tensor | None,
+            ref_output_ids: list[int] | torch.LongTensor,
+            runtime_kwargs: dict,
+            **forward_kwargs: Any,
+    ) -> torch.Tensor:
+        """Teacher-forced scoring for encoder-decoder models, run in process against the live
+        model (a batched pass when every control is batch-safe, else a sequential fallback)."""
+        device = self.model.device
+
+        # normalize ref_output_ids
+        if isinstance(ref_output_ids, list):
+            ref_output_ids = torch.tensor(ref_output_ids, dtype=torch.long)
+        if ref_output_ids.ndim == 1:
+            ref_output_ids = ref_output_ids.unsqueeze(0)
+        ref_output_ids = ref_output_ids.to(device)
+        ref_len = ref_output_ids.size(1)
 
         # batched path (all controls are batch-safe)
         if self.supports_batching:
@@ -1067,11 +1694,6 @@ class SteeringPipeline:
             if ref_len == 0:
                 return torch.zeros((batch_size, 0), device=device, dtype=torch.float32)
 
-            # left-pad for correct positional alignment in causal models; with right-padding, pad tokens between the
-            # real input and the appended ref tokens corrupt positional encodings and the causal attention chain
-            if not is_encoder_decoder:
-                steered_input_ids, attention_mask = to_left_pad(steered_input_ids, attention_mask)
-
             # state controls
             self._setup_state_controls(
                 steered_input_ids, runtime_kwargs, attention_mask=attention_mask, **forward_kwargs
@@ -1082,41 +1704,21 @@ class SteeringPipeline:
                 for state_control in self.state_controls:
                     stack.enter_context(state_control)
                 with torch.no_grad():
-                    if is_encoder_decoder:
-                        outputs = self.model(
-                            input_ids=steered_input_ids,
-                            attention_mask=attention_mask,
-                            decoder_input_ids=ref_output_ids,
-                            **forward_kwargs,
-                        )
-                        # predicts ref[t+1] from ref[0:t]; logits[:, t, :] -> ref[t+1]
-                        # logits[:, :-1, :] aligns with targets ref[:, 1:]
-                        logits = outputs.logits[:, :-1, :]
-                        target_ids = ref_output_ids[:, 1:]
-                    else:
-                        # concatenate input + ref for causal teacher forcing
-                        combined_ids = torch.cat([steered_input_ids, ref_output_ids], dim=1)
-                        combined_mask = torch.cat([
-                            attention_mask,
-                            torch.ones(batch_size, ref_len, device=device, dtype=attention_mask.dtype),
-                        ], dim=1)
-
-                        outputs = self.model(
-                            input_ids=combined_ids,
-                            attention_mask=combined_mask,
-                            **forward_kwargs,
-                        )
-
-                        # logits at [input_len - 1] predicts ref[0]
-                        # logits at [input_len + ref_len - 2] predicts ref[ref_len - 1]
-                        input_len = steered_input_ids.size(1)
-                        logits = outputs.logits[:, input_len - 1: input_len + ref_len - 1, :]
-                        target_ids = ref_output_ids
+                    outputs = self.model(
+                        input_ids=steered_input_ids,
+                        attention_mask=attention_mask,
+                        decoder_input_ids=ref_output_ids,
+                        **forward_kwargs,
+                    )
+                    # predicts ref[t+1] from ref[0:t]; logits[:, t, :] -> ref[t+1]
+                    # logits[:, :-1, :] aligns with targets ref[:, 1:]
+                    logits = outputs.logits[:, :-1, :]
+                    target_ids = ref_output_ids[:, 1:]
 
                 # apply output-control scoring processors under the steered distribution
                 logits = self._apply_scoring_processors(
                     logits, steered_input_ids, ref_output_ids, runtime_kwargs,
-                    attention_mask, is_encoder_decoder, **forward_kwargs,
+                    attention_mask, True, **forward_kwargs,
                 )
 
                 # compute logprobs
@@ -1172,36 +1774,19 @@ class SteeringPipeline:
                 for state_control in self.state_controls:
                     stack.enter_context(state_control)
                 with torch.no_grad():
-                    if is_encoder_decoder:
-                        outputs = self.model(
-                            input_ids=steered_input_ids,
-                            attention_mask=steered_attention_mask,
-                            decoder_input_ids=single_ref,
-                            **forward_kwargs,
-                        )
-                        logits = outputs.logits[:, :-1, :]
-                        target_ids = single_ref[:, 1:]
-                    else:
-                        combined_ids = torch.cat([steered_input_ids, single_ref], dim=1)
-                        combined_mask = torch.cat([
-                            steered_attention_mask,
-                            torch.ones(1, ref_len, device=device, dtype=steered_attention_mask.dtype),
-                        ], dim=1)
-
-                        outputs = self.model(
-                            input_ids=combined_ids,
-                            attention_mask=combined_mask,
-                            **forward_kwargs,
-                        )
-
-                        input_len = steered_input_ids.size(1)
-                        logits = outputs.logits[:, input_len - 1: input_len + ref_len - 1, :]
-                        target_ids = single_ref
+                    outputs = self.model(
+                        input_ids=steered_input_ids,
+                        attention_mask=steered_attention_mask,
+                        decoder_input_ids=single_ref,
+                        **forward_kwargs,
+                    )
+                    logits = outputs.logits[:, :-1, :]
+                    target_ids = single_ref[:, 1:]
 
                 # apply output-control scoring processors under the steered distribution
                 logits = self._apply_scoring_processors(
                     logits, steered_input_ids, single_ref, runtime_kwargs,
-                    steered_attention_mask, is_encoder_decoder, **forward_kwargs,
+                    steered_attention_mask, True, **forward_kwargs,
                 )
 
                 # compute logprobs

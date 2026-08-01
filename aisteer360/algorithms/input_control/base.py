@@ -34,6 +34,7 @@ from transformers import PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
+from aisteer360.algorithms.core.execution.requirements import Requirements
 
 if TYPE_CHECKING:
     from aisteer360.algorithms.input_control._common.memory.base import Memory
@@ -112,10 +113,27 @@ class InputControl(BaseControl):
         self,
         model=None,
         tokenizer=None,
+        session=None,
         **kwargs,
     ) -> None:
-        """Optional offline preparation. Default is no-op."""
+        """Optional offline preparation. Default is no-op.
+
+        `session` is a `SteeringSession` on the steering backend, provided by the pipeline.
+        """
         pass
+
+    def requirements(self) -> Requirements:
+        """Backend requirements computed from this instance's configuration, per phase.
+
+        Input controls transform the prompt client-side, so the generate phase requires nothing
+        beyond the session contract on any backend. A control whose `steer()` reads the live
+        pipeline model (e.g. for rollouts or scoring) overrides this with a steer-phase
+        `Capability.IN_PROCESS_TORCH` requirement.
+
+        Returns:
+            The control's phase-keyed requirements.
+        """
+        return Requirements()
 
 
 class NoInputControl(InputControl):

@@ -12,11 +12,17 @@ T = TypeVar("T")
 class RandomSelector(BaseSelector[T]):
     """Sample `k` items uniformly without replacement.
 
-    If `k >= len(items)`, returns a copy of all items in random order.
+    If `k >= len(items)`, returns a copy of all items in random order. The selector owns its
+    RNG, so `reseed()` gives per-call determinism without disturbing other consumers of the
+    process-global generator.
     """
 
     def __init__(self, seed: int | None = None) -> None:
-        self._rng = random.Random(seed) if seed is not None else random
+        self._rng = random.Random(seed)
+
+    def reseed(self, seed: int) -> None:
+        """Re-seed the owned RNG for one call's deterministic selection."""
+        self._rng.seed(seed)
 
     def select(
         self,

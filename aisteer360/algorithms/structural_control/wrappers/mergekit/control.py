@@ -14,6 +14,8 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
+from aisteer360.algorithms.core.execution.artifacts import CheckpointArtifact
+from aisteer360.algorithms.core.execution.capabilities import Capability
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.algorithms.structural_control.wrappers.mergekit.args import MergeKitArgs
 
@@ -48,6 +50,14 @@ class MergeKit(StructuralControl):
     """
 
     Args = MergeKitArgs
+
+    def artifact_capability(self) -> Capability:
+        """Merging always leaves a full-weights checkpoint at `out_path`."""
+        return Capability.SERVE_CHECKPOINT
+
+    def export_artifact(self) -> CheckpointArtifact:
+        """The merged checkpoint directory written (or reused) by `steer()`."""
+        return CheckpointArtifact(path=str(self.args.out_path))
 
     def steer(
             self,
