@@ -165,29 +165,6 @@ class BaseTransform(ABC):
         """
         return None
 
-    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
-        """The wire payload this transform contributes to an intervention op at `layer_id`.
-
-        A payload is a dict with keys `"kind"` (the wire transform kind), `"params"` (scalar
-        parameters), `"tensors"` (tensor name to tensor, per the wire kind's artifact contract),
-        and `"modifiers"` (ordered modifier payloads, innermost-first, matching wire
-        composition). Wrapper transforms return their inner transform's payload with their own
-        modifier entry appended. Returns None when this transform's configuration at `layer_id`
-        has no wire form, which marks the configuration hook-only.
-
-        The default returns None.
-        """
-        return None
-
-    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
-        """The wire kind names this configuration serializes to, or None when hook-only.
-
-        Returns the transform kind name and the set of modifier kind names contributed by
-        wrapper transforms. Requirements are computed from this plan and exports emit payloads
-        with exactly these kinds, so the two cannot drift. The default returns None.
-        """
-        return None
-
 
 def unwrap_modifiers(transform: BaseTransform) -> tuple[BaseTransform, tuple[BaseTransform, ...]]:
     """Split a possibly wrapper-chained transform into its core and its modifiers.

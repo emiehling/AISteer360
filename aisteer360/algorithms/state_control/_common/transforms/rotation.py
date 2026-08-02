@@ -114,9 +114,6 @@ class RotationTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.steering_vector.directions.keys()) if self.steering_vector is not None else None
 
-    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
-        """`rotation`; both modes serialize."""
-        return "rotation", frozenset()
 
     def export(self, layer_id: int) -> "WireForm | None":
         """The `rotation` wire form for `layer_id` (angle, mode, and the `[2, H]` basis)."""
@@ -133,19 +130,6 @@ class RotationTransform(BaseTransform):
             tensors={"basis": basis},
         )
 
-    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
-        """The `rotation` wire payload for `layer_id` (angle, mode, and the `[2, H]` basis)."""
-        if self.steering_vector is None:
-            return None
-        basis = self.steering_vector.directions.get(layer_id)
-        if basis is None:
-            return None
-        return {
-            "kind": "rotation",
-            "params": {"angle": float(self.angle), "mode": self.mode},
-            "tensors": {"basis": basis},
-            "modifiers": [],
-        }
 
     def _basis(self, layer_id: int, device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
         """Return the cached orthonormal `(b1, b2)` for a layer, computing it on first use."""

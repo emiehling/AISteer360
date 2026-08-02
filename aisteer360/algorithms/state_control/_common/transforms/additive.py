@@ -86,13 +86,6 @@ class AdditiveTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.directions.keys()) if self.directions is not None else None
 
-    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
-        """`additive` for broadcast directions; None once a positional direction is present."""
-        if self.directions is not None and any(
-            direction.ndim == 2 and direction.size(0) > 1 for direction in self.directions.values()
-        ):
-            return None
-        return "additive", frozenset()
 
     def wire_plan(self) -> str | None:
         """`"additive"` for broadcast directions; None once a positional direction is present.
@@ -130,27 +123,6 @@ class AdditiveTransform(BaseTransform):
             tensors={"vector": direction},
         )
 
-    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
-        """The `additive` wire payload for `layer_id`, or None for positional directions.
-
-        Semantics are defined for broadcast directions only (`T == 1`), where every steered
-        token receives the same vector; a positional direction (`T > 1`) has no wire form.
-        """
-        if self.directions is None:
-            return None
-        direction = self.directions.get(layer_id)
-        if direction is None:
-            return None
-        if direction.ndim == 2:
-            if direction.size(0) != 1:
-                return None
-            direction = direction.squeeze(0)
-        return {
-            "kind": "additive",
-            "params": {"strength": float(self.strength)},
-            "tensors": {"vector": direction},
-            "modifiers": [],
-        }
 
     def apply(
         self,

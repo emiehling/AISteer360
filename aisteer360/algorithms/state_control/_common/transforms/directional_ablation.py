@@ -92,15 +92,6 @@ class DirectionalAblationTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.directions.keys()) if self.directions is not None else None
 
-    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
-        """`directional_ablation` for single-direction full removal; None otherwise."""
-        if self.alpha != 1.0:
-            return None
-        if self.directions is not None and any(
-            direction.ndim == 2 and direction.size(0) > 1 for direction in self.directions.values()
-        ):
-            return None
-        return "directional_ablation", frozenset()
 
     def wire_plan(self) -> str | None:
         """`"directional_ablation"` for single-direction full removal; None otherwise.
@@ -133,28 +124,6 @@ class DirectionalAblationTransform(BaseTransform):
             direction = direction.squeeze(0)
         return WireForm(kind="directional_ablation", tensors={"vector": direction})
 
-    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
-        """The `directional_ablation` wire payload for `layer_id`.
-
-        The wire kind removes a single direction's component in full, so only `K == 1`
-        directions at `alpha == 1.0` have a wire form; subspace ablation (`K > 1`) and graded
-        removal (`alpha < 1.0`) are hook-only.
-        """
-        if self.directions is None or self.alpha != 1.0:
-            return None
-        direction = self.directions.get(layer_id)
-        if direction is None:
-            return None
-        if direction.ndim == 2:
-            if direction.size(0) != 1:
-                return None
-            direction = direction.squeeze(0)
-        return {
-            "kind": "directional_ablation",
-            "params": {},
-            "tensors": {"vector": direction},
-            "modifiers": [],
-        }
 
     def _basis(self, layer_id: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         """Return the cached orthonormal `[K, H]` basis for a layer, computing it on first use."""

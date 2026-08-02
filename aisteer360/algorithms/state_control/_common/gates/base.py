@@ -90,17 +90,6 @@ class BaseGate(ABC):
         """
         return None
 
-    def to_intervention_gate(self) -> dict | None:
-        """The wire gate payload for intervention-capable backends, or None.
-
-        A payload is a dict with keys `"kind"`, `"params"`, `"tensors"` (per the wire kind's
-        artifact contract), and optionally `"inner"` (a nested gate payload for wrapper kinds).
-        Returning None marks the gate hook-only; a semantically trivial gate returns the
-        `{"kind": "null"}` sentinel instead, which lowers to an ungated op.
-
-        The default returns None.
-        """
-        return None
 
     def _coerce_scores(self, scores: torch.Tensor | float) -> torch.Tensor:
         """Normalize `scores` to a float32 `[num_rows]` CPU tensor, enforcing the row contract."""
@@ -139,6 +128,3 @@ class AlwaysOpenGate(BaseGate):
 
         return WireForm(kind="null")
 
-    def to_intervention_gate(self) -> dict | None:
-        """The `{"kind": "null"}` sentinel; an always-open gate lowers to an ungated op."""
-        return {"kind": "null"}

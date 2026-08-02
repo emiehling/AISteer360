@@ -133,7 +133,10 @@ class TestEntrySelection:
         from aisteer360.algorithms.core.execution import InterventionEntry
 
         pipeline = self._steered_pipeline(self._caa())
-        (entry,) = pipeline._intervention_entries(self._capabilities(), None)
+        control = pipeline.state_controls[0]
+        entry = pipeline._lower_control(
+            control, self._capabilities().intervention_kinds, {}, {},
+        )
         assert isinstance(entry, InterventionEntry)
         assert entry.spec.ops[0]["transform"]["kind"] == "additive"
 
@@ -141,9 +144,10 @@ class TestEntrySelection:
         from aisteer360.algorithms.core.execution import UnsupportedOperationError
 
         pipeline = self._steered_pipeline(self._caa())
+        control = pipeline.state_controls[0]
         narrowed = self._capabilities(transforms=frozenset({"rotation"}))
         with pytest.raises(UnsupportedOperationError, match="additive"):
-            pipeline._intervention_entries(narrowed, None)
+            pipeline._lower_control(control, narrowed.intervention_kinds, {}, {})
 
     def test_hook_only_control_yields_verdict(self):
         from aisteer360.algorithms.core.execution import UnsupportedOperationError
@@ -155,8 +159,9 @@ class TestEntrySelection:
             layer_id=1,
         )
         pipeline = self._steered_pipeline(positional)
+        control = pipeline.state_controls[0]
         with pytest.raises(UnsupportedOperationError, match="no intervention-spec form"):
-            pipeline._intervention_entries(self._capabilities(), None)
+            pipeline._lower_control(control, self._capabilities().intervention_kinds, {}, {})
 
 
 class TestVerdictStrings:

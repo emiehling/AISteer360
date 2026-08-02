@@ -178,6 +178,7 @@ class SteeringPipeline:
     _support_report: SupportReport | None = field(init=False, default=None, repr=False)
     _backends: dict = field(init=False, default_factory=dict, repr=False)
     _structural_artifacts: tuple = field(init=False, default=(), repr=False)
+    _lowered_state: dict = field(init=False, default_factory=dict, repr=False)
 
     structural_controls: list[StructuralControl] = field(init=False)
     input_controls: list[InputControl] = field(init=False)
@@ -484,6 +485,11 @@ class SteeringPipeline:
             if hasattr(control, "tokenizer") and getattr(control, "tokenizer", None) is None:
                 setattr(control, "tokenizer", self.tokenizer)
 
+        # a spec-consuming inference backend gets every enabled control's interventions lowered
+        # now, so inexpressible configurations fail before the first generate and artifacts are
+        # staged once
+        self._lower_state_controls(inference_spec)
+
         # return steered pipeline
         self._is_steered = True
 
@@ -634,7 +640,27 @@ class SteeringPipeline:
         Returns:
             One `HookEntry` per enabled state control, in controls-list order.
         """
-        entries: list[HookEntry] = []
+        if self._lowered_state:  # populated at steer() for spec-consuming inference backends
+            entries = []
+            for state_control in self.state_controls:
+                if not getattr(state_control, "enabled", True):
+                    continue
+                entry = self._lowered_state.get(id(state_control))
+                if entry is None:  # enabled after steer(); lower it now
+                    inference_spec = self._resolve_backend_spec(self.backend)
+                    capabilities = capabilities_for_spec(inference_spec)
+                    backend = self._backend_for(inference_spec)
+                    served = ((getattr(backend, "_discovery", None) or {}).get("model") or {})
+                    payloads: dict = {}
+                    entry = self._lower_control(
+                        state_control, capabilities.intervention_kinds, served, payloads,
+                    )
+                    backend.stage_artifacts(payloads)
+                    self._lowered_state[id(state_control)] = entry
+                entries.append(entry)
+            return tuple(entries)
+
+        entries = []
         for state_control in self.state_controls:
             if not getattr(state_control, "enabled", True):
                 continue
@@ -685,62 +711,86 @@ class SteeringPipeline:
             rows.append(tuple(entries))
         return rows
 
-    def _intervention_entries(
-            self,
-            inference_capabilities: BackendCapabilities,
-            runtime_kwargs: dict | None,
-            backend=None,
-    ) -> tuple[InterventionEntry, ...]:
-        """One `InterventionEntry` per enabled state control, for intervention-capable backends.
+    def _lower_state_controls(self, inference_spec: BackendSpec) -> None:
+        """Lower every enabled state control's interventions for a spec-consuming inference
+        backend, cache the entries, and stage their artifacts.
 
-        Each control's exported spec is verified against the backend's negotiated kinds (the
-        intersection of the static tables and discovery), so a server missing a kind yields a
-        verdict naming the kind rather than a wire rejection. When the backend carries a
-        discovery payload, a control's steering-artifact provenance fingerprints are
-        cross-checked against the served model's, and a mismatch warns.
-
-        Args:
-            inference_capabilities: The inference backend's capabilities.
-            runtime_kwargs: Per-call parameters forwarded to `export_intervention_spec`.
-            backend: The inference backend instance, consulted for its discovery payload.
-
-        Returns:
-            The intervention entries, in controls-list order.
+        Runs at the end of `steer()` when the inference backend executes interventions as
+        specs rather than in-process hooks. Specs are per-steer artifacts: the worker anchors
+        positions per request server-side and the spec is prompt-independent by construction,
+        so one lowering serves every subsequent generation. Each spec is verified against the
+        backend's negotiated kinds (the intersection of the static tables and discovery), and
+        a control's steering-artifact provenance is cross-checked against the served model's
+        when the backend carries a discovery payload.
 
         Raises:
-            UnsupportedOperationError: If an enabled control has no intervention-spec form, or
-                its spec requires a kind the backend does not advertise.
+            UnsupportedOperationError: If an enabled control's configuration has no wire form
+                (the failure names the control, the intervention, and the reason), or its spec
+                requires a kind the backend does not advertise.
         """
-        entries: list[InterventionEntry] = []
-        advertised = inference_capabilities.intervention_kinds
+        capabilities = capabilities_for_spec(inference_spec)
+        if Capability.IN_PROCESS_TORCH in capabilities.atoms:
+            return
+        if Capability.INTERVENTION_SPECS not in capabilities.atoms:
+            return
+        enabled = [c for c in self.state_controls if getattr(c, "enabled", True)]
+        if not enabled:
+            return
+
+        backend = self._backend_for(inference_spec)
+        advertised = capabilities.intervention_kinds
         served_model = ((getattr(backend, "_discovery", None) or {}).get("model") or {})
-        for state_control in self.state_controls:
-            if not getattr(state_control, "enabled", True):
-                continue
-            if served_model:
-                self._warn_on_provenance_mismatch(state_control, served_model)
-            exporter = getattr(state_control, "export_intervention_spec", None)
-            spec = exporter(runtime_kwargs) if callable(exporter) else None
-            if spec is None:
-                raise UnsupportedOperationError(
-                    f"{type(state_control).__name__} has no intervention-spec form for this "
-                    "configuration; run this pipeline on the huggingface backend."
-                )
-            required = spec.required_kinds()
-            if advertised is None or not advertised.contains(required):
-                missing = sorted(
-                    (required.transforms - (advertised.transforms if advertised else frozenset()))
-                    | (required.modifiers - (advertised.modifiers if advertised else frozenset()))
-                    | (required.scopes - (advertised.scopes if advertised else frozenset()))
-                    | (required.gates - (advertised.gates if advertised else frozenset()))
-                )
-                raise UnsupportedOperationError(
-                    f"{type(state_control).__name__} requires intervention kind(s) "
-                    f"{', '.join(missing)} that the serving backend does not advertise; update the "
-                    "server's vllm_hook_plugins or run this pipeline on the huggingface backend."
-                )
-            entries.append(InterventionEntry(spec=spec))
-        return tuple(entries)
+        payloads: dict = {}
+        for state_control in enabled:
+            self._lowered_state[id(state_control)] = self._lower_control(
+                state_control, advertised, served_model, payloads,
+            )
+        backend.stage_artifacts(payloads)
+
+    def _lower_control(self, state_control, advertised, served_model, payloads) -> InterventionEntry:
+        """Lower one control to an `InterventionEntry`, verifying kinds and provenance."""
+        if served_model:
+            self._warn_on_provenance_mismatch(state_control, served_model)
+        exporter = getattr(state_control, "export_intervention_spec", None)
+        spec = exporter() if callable(exporter) else None
+        if spec is None:
+            reason = self._lowering_failure_reason(state_control)
+            raise UnsupportedOperationError(
+                f"{type(state_control).__name__} has no intervention-spec form for this "
+                f"configuration ({reason}); run this pipeline on the huggingface backend."
+            )
+        required = spec.required_kinds()
+        if advertised is None or not advertised.contains(required):
+            missing = sorted(
+                (required.transforms - (advertised.transforms if advertised else frozenset()))
+                | (required.modifiers - (advertised.modifiers if advertised else frozenset()))
+                | (required.scopes - (advertised.scopes if advertised else frozenset()))
+                | (required.gates - (advertised.gates if advertised else frozenset()))
+            )
+            raise UnsupportedOperationError(
+                f"{type(state_control).__name__} requires intervention kind(s) "
+                f"{', '.join(missing)} that the serving backend does not advertise; update the "
+                "server's vllm_hook_plugins or run this pipeline on the huggingface backend."
+            )
+        payloads.update(spec.artifacts)
+        return InterventionEntry(spec=spec)
+
+    @staticmethod
+    def _lowering_failure_reason(state_control) -> str:
+        """Name the intervention (and hint) behind a lowering failure, for the raised error."""
+        from aisteer360.algorithms.state_control._common.specs import lower_interventions
+
+        interventions = getattr(state_control, "interventions", ())
+        num_layers = getattr(state_control, "_num_layers", None)
+        if interventions and num_layers:
+            for index, intervention in enumerate(interventions):
+                if lower_interventions([intervention], num_layers=num_layers) is None:
+                    core = type(intervention.transform).__name__
+                    hint = getattr(state_control, "hook_only_hint", None)
+                    detail = f"intervention {index} ({core}) has no wire form"
+                    return f"{detail}; {hint}" if hint else detail
+        hint = getattr(state_control, "hook_only_hint", None)
+        return hint or "the configuration has no wire form"
 
     @staticmethod
     def _warn_on_provenance_mismatch(state_control, served_model: Mapping) -> None:
@@ -1373,7 +1423,9 @@ class SteeringPipeline:
             )
         elif not hooks_in_process:
             if has_enabled_state:
-                state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs, backend=backend)
+                state_entries = self._collect_state_entries(
+                    steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs
+                )
         elif (
             gen_kwargs.get("seed") is not None
             and steered_input_ids.size(0) > 1
@@ -1629,15 +1681,10 @@ class SteeringPipeline:
             steered_input_ids, steered_attention_mask = to_left_pad(
                 steered_input_ids, steered_attention_mask
             )
-            if hooks_in_process:
-                state_entries = self._collect_state_entries(
-                    steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
-                    **forward_kwargs,
-                )
-            elif has_enabled_state:
-                state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs, backend=backend)
-            else:
-                state_entries = ()
+            state_entries = self._collect_state_entries(
+                steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
+                **forward_kwargs,
+            )
             output_entries = self._collect_output_entries(
                 steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
                 for_scoring=True, **forward_kwargs,
@@ -1686,15 +1733,10 @@ class SteeringPipeline:
                     attention_mask=single_attention_mask,
                     runtime_kwargs=runtime_kwargs,
                 )
-                if hooks_in_process:
-                    state_entries = self._collect_state_entries(
-                        steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
-                        **forward_kwargs,
-                    )
-                elif has_enabled_state:
-                    state_entries = self._intervention_entries(inference_capabilities, runtime_kwargs, backend=backend)
-                else:
-                    state_entries = ()
+                state_entries = self._collect_state_entries(
+                    steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
+                    **forward_kwargs,
+                )
                 output_entries = self._collect_output_entries(
                     steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
                     for_scoring=True, **forward_kwargs,

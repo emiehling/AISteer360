@@ -354,7 +354,7 @@ def _discovery_payload(**engine_overrides):
 
 
 def _mini_spec(scope=None, kind="additive"):
-    from aisteer360.algorithms.state_control._common.intervention_export import artifact_id_for
+    from aisteer360.algorithms.state_control._common.specs import artifact_id_for
 
     params = {"strength": 1.0} if kind in ("additive", "head_additive") else {}
     artifact_id, prepared = artifact_id_for({"vector": torch.ones(4)})

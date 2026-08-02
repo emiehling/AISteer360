@@ -102,9 +102,6 @@ class HeadAdditiveTransform(BaseTransform):
             if self.active_heads.get(layer_id)
         }
 
-    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
-        """`head_additive`, valid under the wire's `tensor_parallel_size==1` constraint."""
-        return "head_additive", frozenset()
 
     def export(self, layer_id: int) -> "WireForm | None":
         """The `head_additive` wire form for `layer_id`.
@@ -129,27 +126,6 @@ class HeadAdditiveTransform(BaseTransform):
             tensors={"vector": vector},
         )
 
-    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
-        """The `head_additive` wire payload for `layer_id`.
-
-        The wire vector is `[num_heads, head_dim]` with zeros at heads outside `active_heads`,
-        so the broadcast wire addition reproduces the selective per-head addition exactly.
-        """
-        if self.steering_vector is None:
-            return None
-        heads = self.active_heads.get(layer_id)
-        dirs = self.steering_vector.directions.get(layer_id)
-        if not heads or dirs is None:
-            return None
-        vector = torch.zeros(self.num_heads, self.head_dim, dtype=dirs.dtype)
-        for head_id in heads:
-            vector[head_id] = dirs[head_id]
-        return {
-            "kind": "head_additive",
-            "params": {"strength": float(self.strength)},
-            "tensors": {"vector": vector},
-            "modifiers": [],
-        }
 
     def apply(
         self,

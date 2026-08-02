@@ -55,3 +55,17 @@ class Backend(ABC):
     def capture_kinds(self) -> CaptureKinds | None:
         """The advertised capture kinds, when `Capability.HIDDEN_CAPTURE` is present."""
         return self.capabilities_for_spec(self.spec).capture_kinds
+
+    def stage_artifacts(self, payloads) -> None:
+        """Make each content-addressed artifact available to the execution side.
+
+        Called by the pipeline at the end of `steer()` with the tensor payloads of every
+        lowered intervention spec, keyed by content-addressed artifact id. Staging is
+        idempotent: an artifact that already exists at the destination is success. The
+        in-process backend keeps live tensors and needs no staging; engine-backed backends
+        write into the registry the serving engine reads.
+
+        Args:
+            payloads: Mapping from artifact id to a name-to-tensor mapping.
+        """
+        return None

@@ -86,23 +86,3 @@ class ProbeSumGate(BaseGate):
             tensors={"weights": weights, "bias": torch.tensor(float(self.probe.bias))},
         )
 
-    def to_intervention_gate(self) -> dict | None:
-        """The `probe_sum` wire payload built from the probe.
-
-        The `weights` tensor stacks the probe's per-layer weight vectors row-aligned with the
-        `condition_layers` order, and the calibrated bias travels as the artifact's scalar
-        `bias` tensor. Condition layers are the probe's layer ids at the probe's fitted
-        location; the exporter maps them onto wire layer-input indices.
-        """
-        weights = torch.stack(
-            [self.probe.weights[layer_id].to(torch.float32) for layer_id in self.probe.layer_ids]
-        )
-        return {
-            "kind": "probe_sum",
-            "params": {
-                "condition_layers": [int(layer_id) for layer_id in self.probe.layer_ids],
-                "pooling": self.probe.pooling,
-            },
-            "tensors": {"weights": weights, "bias": torch.tensor(float(self.probe.bias))},
-            "condition_placement": self.probe.location,
-        }

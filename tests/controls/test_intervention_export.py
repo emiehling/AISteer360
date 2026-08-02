@@ -11,10 +11,7 @@ from aisteer360.algorithms.state_control._common.gates import (
     MultiKeyThresholdGate,
     ProbeSumGate,
 )
-from aisteer360.algorithms.state_control._common.intervention_export import (
-    artifact_id_for,
-    intervention_spec_from_runtime_config,
-)
+from aisteer360.algorithms.state_control._common.specs import artifact_id_for
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (
     AdditiveTransform,
@@ -274,12 +271,17 @@ class TestAdapterExports:
 class TestExportMechanics:
 
     def test_modifier_order_is_innermost_first(self):
+        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope, lower_interventions
+
         vector = _vector(k=2)
         transform = NormPreservingTransform(
             AlignmentAdaptiveTransform(RotationTransform(vector, angle=0.2, mode="offset"), vector)
         )
-        payload = transform.to_intervention_op_payload(1)
-        assert [modifier["kind"] for modifier in payload["modifiers"]] == [
+        spec = lower_interventions(
+            [Intervention(layers=(1,), transform=transform, scope=TokenScope("all"))],
+            num_layers=LAYERS,
+        )
+        assert [modifier["kind"] for modifier in spec.ops[0]["transform"]["modifiers"]] == [
             "alignment_adaptive",
             "norm_preserving",
         ]
