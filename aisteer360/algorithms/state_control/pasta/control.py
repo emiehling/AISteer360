@@ -7,8 +7,8 @@ from typing import Sequence
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.core.execution.capabilities import Capability
-from aisteer360.algorithms.core.execution.requirements import (
+from aisteer360.algorithms.core.execution.contracts import Capability
+from aisteer360.algorithms.core.execution.contracts import (
     Requirements,
     SpecConstraint,
     needs,

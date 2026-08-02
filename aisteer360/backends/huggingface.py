@@ -13,13 +13,13 @@ from transformers import (
 )
 
 from aisteer360.algorithms.core.execution.backend import Backend
-from aisteer360.algorithms.core.execution.capabilities import (
+from aisteer360.algorithms.core.execution.contracts import (
     BackendCapabilities,
     Capability,
     CaptureKinds,
 )
 from aisteer360.algorithms.core.execution.fanout import derive_item_seed
-from aisteer360.algorithms.core.execution.items import (
+from aisteer360.algorithms.core.execution.payloads import (
     CaptureResult,
     GenerationItem,
     HookEntry,
@@ -27,11 +27,11 @@ from aisteer360.algorithms.core.execution.items import (
     ScoringItem,
     StackEntry,
 )
-from aisteer360.algorithms.core.execution.layout import ModelLayout
+from aisteer360.algorithms.core.execution.payloads import ModelFacts
 from aisteer360.algorithms.core.execution.params import GenerationParams
-from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
+from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
 from aisteer360.algorithms.core.execution.spec import BackendSpec
-from aisteer360.algorithms.core.execution.support import UnsupportedOperationError
+from aisteer360.algorithms.core.execution.contracts import UnsupportedOperationError
 from aisteer360.algorithms.core.output import Output, infer_finish_reasons
 from aisteer360.algorithms.output_control._common.criteria import (
     StopOnSubstring,
@@ -284,7 +284,7 @@ class ExclusiveSession:
         return self._backend._tokenizer_provider()
 
     @property
-    def layout(self) -> ModelLayout:
+    def layout(self) -> ModelFacts:
         """Structural facts derived from the loaded model, computed on every access so weight
         edits and model replacements are always reflected.
 
@@ -304,7 +304,7 @@ class ExclusiveSession:
         head_dim = getattr(config, "head_dim", None)
         if head_dim is None and num_heads:
             head_dim = hidden_size // num_heads
-        return ModelLayout(
+        return ModelFacts(
             num_layers=len(layer_names),
             hidden_size=hidden_size,
             num_attention_heads=num_heads,

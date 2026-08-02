@@ -30,7 +30,7 @@ PRODUCTION_CLASSES = {
     "ConstraintEntry",
     "InterventionSpec",
     "InterventionEntry",
-    "HFBackend", "ExclusiveSession", "SteeringSession", "ModelLayout",
+    "HFBackend", "ExclusiveSession", "SteeringSession", "ModelLayout", "ModelFacts",
     "PreparedPrompt", "GenerationParams", "GenerationItem", "ScoringItem",
     "ItemResult", "CaptureResult", "HookEntry", "StackEntry",
     "VLLMBackend", "VLLMServeBackend", "VLLMOfflineSession", "VLLMServeSession",

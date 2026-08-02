@@ -33,7 +33,7 @@ from transformers import PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
-from aisteer360.algorithms.core.execution.requirements import Requirements
+from aisteer360.algorithms.core.execution.contracts import Requirements
 
 if TYPE_CHECKING:
     from aisteer360.algorithms.input_control._common.memory.base import Memory

@@ -244,7 +244,7 @@ class TestDiscoveryIntersection:
             negotiated = capabilities_for_spec(spec)
             assert "rotation" not in negotiated.intervention_kinds.transforms
             assert "additive" in negotiated.intervention_kinds.transforms
-            assert negotiated.processor_kinds.processors == frozenset()
+            assert negotiated.processor_kinds is None
             assert negotiated.capture_kinds.locations == frozenset({"layer_output"})
             assert negotiated.atoms == static.atoms
         finally:

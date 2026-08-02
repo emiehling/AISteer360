@@ -10,8 +10,8 @@ import dataclasses
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution.capabilities import InterventionKinds
-from aisteer360.algorithms.core.execution.layout import ModelLayout
+from aisteer360.algorithms.core.execution.contracts import InterventionKinds
+from aisteer360.algorithms.core.execution.payloads import ModelFacts
 from aisteer360.algorithms.core.internals.probes.probe import Probe
 from aisteer360.algorithms.state_control._common.condition_scorers import (
     ProbeContributionScorer,
@@ -60,8 +60,8 @@ def _probe(layer_ids=(2,), hidden=H) -> Probe:
     )
 
 
-def _layout(num_layers=8) -> ModelLayout:
-    return ModelLayout(
+def _layout(num_layers=8) -> ModelFacts:
+    return ModelFacts(
         num_layers=num_layers, hidden_size=H, num_attention_heads=4, head_dim=H // 4,
         dtype="float32", model_fingerprint="test-fingerprint",
     )

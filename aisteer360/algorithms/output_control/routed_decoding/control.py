@@ -7,8 +7,8 @@ from dataclasses import replace
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.execution.capabilities import Capability, CaptureKinds
-from aisteer360.algorithms.core.execution.requirements import Requirements, any_of, needs
+from aisteer360.algorithms.core.execution.contracts import Capability, CaptureKinds
+from aisteer360.algorithms.core.execution.contracts import Requirements, any_of, needs
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.core.internals.probes import ProbeSetFit
 from aisteer360.algorithms.output_control._common.drivers.phased import (

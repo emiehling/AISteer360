@@ -5,7 +5,7 @@ from typing import Any
 
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.core.execution.requirements import Requirements
+from aisteer360.algorithms.core.execution.contracts import Requirements
 from aisteer360.algorithms.output_control._common.criteria import (
     BudgetTokens,
     StopOnSubstring,

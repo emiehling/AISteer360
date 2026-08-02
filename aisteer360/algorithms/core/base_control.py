@@ -4,8 +4,8 @@ from abc import ABC
 from dataclasses import fields
 
 from aisteer360.algorithms.core.base_args import BaseArgs
-from aisteer360.algorithms.core.execution.capabilities import Capability
-from aisteer360.algorithms.core.execution.requirements import Requirements, needs
+from aisteer360.algorithms.core.execution.contracts import Capability
+from aisteer360.algorithms.core.execution.contracts import Requirements, needs
 
 
 class BaseControl(ABC):

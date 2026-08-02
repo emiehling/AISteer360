@@ -14,7 +14,7 @@ from typing import Callable
 import torch
 from transformers import PreTrainedModel, StoppingCriteriaList
 
-from aisteer360.algorithms.core.execution.requirements import Requirements
+from aisteer360.algorithms.core.execution.contracts import Requirements
 from aisteer360.algorithms.output_control._common.criteria import BudgetTokens, StopOnSubstring
 from aisteer360.algorithms.output_control.base import (
     DecodingDriver,

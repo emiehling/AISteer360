@@ -62,7 +62,7 @@ def _build_context(
     `hidden_size // num_heads` when absent), then wraps a resolve closure that coerces any
     artifact to a source, resolves it against the model, and moves the result onto the model's
     device and dtype. With `model=None`, sizes come from `layout` (a structural
-    `core.execution.ModelLayout`), the device is CPU, and the resolve closure serves concrete
+    `core.execution.ModelFacts`), the device is CPU, and the resolve closure serves concrete
     artifacts only, since fitting a source requires a live model.
     """
     if model is not None:
@@ -139,7 +139,7 @@ def resolve_transform_slot(
             context from `layout` (concrete artifacts only; fitting a source requires a model).
         tokenizer: Tokenizer used when a source fits from data; may be None for concrete artifacts.
         layer_ids: The resolved behavior layers the transform must cover.
-        layout: Structural `core.execution.ModelLayout` consulted when `model` is None.
+        layout: Structural `core.execution.ModelFacts` consulted when `model` is None.
         require_coverage: When False, skip the coverage check; uncovered layers are hooked and
             pass through unchanged at apply time.
         session: Optional `SteeringSession` forwarded to sources whose fit runs through

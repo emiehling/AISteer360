@@ -153,7 +153,7 @@ class ITI(InterventionControl):
         preservation is on (the wire modifier rescales the residual row, not the per-head
         stream).
         """
-        from aisteer360.algorithms.core.execution.capabilities import InterventionKinds
+        from aisteer360.algorithms.core.execution.contracts import InterventionKinds
         from aisteer360.algorithms.state_control._common.specs import combine_kinds
 
         if self.interventions:

@@ -15,12 +15,12 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Mapping, Protocol, Seq
 
 import torch
 
-from aisteer360.algorithms.core.execution.capabilities import InterventionKinds
+from aisteer360.algorithms.core.execution.contracts import InterventionKinds
 from aisteer360.algorithms.core.internals.capture import HiddenStateLocation
 from aisteer360.utils.rendering import PromptFormat
 
 if TYPE_CHECKING:
-    from aisteer360.algorithms.core.execution.interventions import InterventionSpec
+    from aisteer360.algorithms.core.execution.payloads import InterventionSpec
 
     from .condition_scorers import ConditionScorer
     from .gates.base import BaseGate
@@ -394,7 +394,7 @@ class Intervention:
             model: The live model, or None for concrete-artifact configurations bound
                 against a session layout.
             tokenizer: Tokenizer used when fitting sources.
-            layout: Structural facts (`ModelLayout`) used when `model` is None.
+            layout: Structural facts (`ModelFacts`) used when `model` is None.
             session: Optional `SteeringSession` forwarded to sources for capture-backed
                 fitting and searching.
 
@@ -761,7 +761,7 @@ def lower_interventions(
             gate/condition merge is ambiguous.
         ModuleNotFoundError: If `vllm_hook_plugins` is not installed.
     """
-    from aisteer360.algorithms.core.execution.interventions import InterventionSpec
+    from aisteer360.algorithms.core.execution.payloads import InterventionSpec
     from aisteer360.utils.optional import require
 
     from .gates.probe_sum import ProbeSumGate

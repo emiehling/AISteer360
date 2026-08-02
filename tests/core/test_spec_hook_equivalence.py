@@ -12,7 +12,7 @@ from vllm_hook_plugins.core.interpreter import apply_op, build_gate
 from vllm_hook_plugins.core.interpreter.gates import CacheOnceGate as WireCacheOnceGate
 from vllm_hook_plugins.core.schema import parse_intervention_spec
 
-from aisteer360.algorithms.core.execution import ModelLayout
+from aisteer360.algorithms.core.execution import ModelFacts
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.internals.probes import Probe
 from aisteer360.algorithms.state_control._common.condition_scorers import (
@@ -46,12 +46,12 @@ SEQ = 6
 
 
 class _LayoutOnlySession:
-    def __init__(self, layout: ModelLayout):
+    def __init__(self, layout: ModelFacts):
         self.layout = layout
 
 
 def _session(dtype: str = "float32") -> _LayoutOnlySession:
-    return _LayoutOnlySession(ModelLayout(
+    return _LayoutOnlySession(ModelFacts(
         num_layers=LAYERS,
         hidden_size=HIDDEN,
         num_attention_heads=HEADS,

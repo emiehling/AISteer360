@@ -35,7 +35,7 @@ Vocabulary used throughout the codebase:
 aisteer360/
 ├── algorithms/
 │   ├── core/                    # SteeringPipeline, registry, ControlSpec, BaseArgs, shared types
-│   │   ├── execution/           # backend seam: BackendSpec, capabilities, requirements, sessions, items, specs
+│   │   ├── execution/           # backend seam: spec, contracts, payloads, backend/session/registry, params, fanout
 │   │   ├── internals/           # activation capture, pooling, stats; probes/ (detection + routing rules)
 │   │   └── utils/               # control merging, generation helpers, auxiliary_pass
 │   ├── input_control/           # each category: base.py + one folder per method (triplet layout below)
@@ -330,10 +330,15 @@ own in the common case. Required hooks per category:
   runtime_kwargs) -> messages | None` for pre-template chat editing. A non-`None` return from `adapt_messages` skips
   that control's token-level `adapt` for the call, so implementing both does not double-apply.
 - **structural**: `steer(model, tokenizer, **kwargs) -> PreTrainedModel`; return the new or modified model.
-- **state**: `get_hooks(input_ids, runtime_kwargs, **kwargs) -> {"pre": [...], "forward": [...], "backward": [...]}`
-  where each spec is `{"module": <dotted submodule path>, "hook_func": <callable>}`. Registration, context-managed
-  lifetime, and removal are provided by the base; a default `reset()` covers the `_gate`/`_runtime`
-  convention, so override (optionally calling `super().reset()`) only for additional per-generation state.
+- **state**: residual-stream methods subclass `InterventionControl` and declare an unbound intervention template
+  in `_configure()` (a tuple of `Intervention` objects from `state_control/_common/specs.py`: layers or a selector,
+  a transform possibly carrying an `ArtifactSource`, a `TokenScope`, an optional gate/condition); the base `steer()`
+  binds it, `build_hooks` compiles it to torch hooks per generation, and `lower_interventions` compiles it to an
+  `InterventionSpec` per steer, so the control contains no hook code, no per-generation state, and no backend
+  knowledge. Methods hooking other mechanisms subclass `HookControl` and implement
+  `get_hooks(input_ids, runtime_kwargs, **kwargs) -> {"pre": [...], "forward": [...], "backward": [...]}` where each
+  spec is `{"module": <dotted submodule path>, "hook_func": <callable>}`, fully re-deriving per-generation state on
+  every call. The session that executes forwards owns registration.
 - **output**, step-level: `get_logits_processors(...)` and `get_stopping_criteria(...)`, returning fresh instances on
   each call. Loop-owning methods subclass `DecodingDriver` and implement `decode(input_ids, attention_mask, model,
   logits_processors, stopping_criteria, runtime_kwargs, **gen_kwargs)`, returning full prompt-plus-continuation ids
@@ -348,11 +353,14 @@ when the control is batch-safe), `enabled`, `RUNTIME_KWARGS_SCHEMA` (a list of `
 output controls `include_in_scoring` and `same_model_forwards`.
 
 Backend support is declared through `requirements()`. The default (`IN_PROCESS_TORCH` at generate) is honest for a
-new control and keeps it Hugging Face-only; do not widen it speculatively. A state control in the transform-runtime
-family becomes vLLM-portable by implementing `export_intervention_spec()` through
-`state_control/_common/intervention_export.py` (the requirement and the export must share one code path, pinned by
-`tests/core/test_spec_hook_equivalence.py`); an output control whose behavior is sampling-expressible lowers via
-`export_generation_params()`, and a declarative constraint via `export_constraint()`.
+new control and keeps it Hugging Face-only; do not widen it speculatively. An `InterventionControl` derives its
+requirements from the template: generate offers the intervention-spec alternative exactly when every component has
+a wire form (`Intervention.wire_kinds()` reads component and source declarations before `steer()`), steer requires
+model-side work exactly when the template carries unbound sources, and score is in-process. Components describe
+their own wire form (`wire_kind` class attribute, `export()` per configuration), and the equivalence of hooks and
+specs is pinned by `tests/core/test_spec_hook_equivalence.py`. An output control whose behavior is
+sampling-expressible lowers via `export_generation_params()`, a declarative constraint via `export_constraint()`,
+and an engine-hosted per-step processor via `export_processor_spec()`.
 
 `__init__.py` exports the discovery dict:
 
@@ -484,7 +492,9 @@ Rules that hold regardless of task:
 
 1. `steer()` must run before `generate()` or `compute_logprobs()`; it runs once per pipeline and heavy work belongs
    there, not in control constructors.
-2. Steering order is fixed (structural, input, state, output); list order within a category is the composition order.
+2. Steering order is fixed (structural, input, state, output); list order within a category is the composition
+   order. For state controls, entry order equals spec op order equals worker application order, so an in-process
+   composition and its wire form apply edits in the same sequence.
 3. The decode loop does not compose; at most one enabled `DecodingDriver` exists per pipeline, and a driver must
    apply the received `logits_processors` and `stopping_criteria` at every scoring step of every forward pass it
    issues.
@@ -493,17 +503,24 @@ Rules that hold regardless of task:
    call.
 5. Extra forward passes through the pipeline's own model during decoding are wrapped in `auxiliary_pass()` (from
    `core/utils/auxiliary_pass.py`), and the component declares `same_model_forwards = True`.
-6. State hooks live only inside the pipeline-managed context; do not register hooks outside the
-   `get_hooks`/`register_hooks` flow, and rely on the base class for cleanup.
+6. Hooks exist only inside a session's execution of work (per item, or for the span of a driver decode the
+   session hosts); controls never register hooks and hold no model reference. Hooks travel exclusively as
+   `HookEntry` contributions built by the pipeline.
 7. Never mutate caller-supplied artifacts (steering vectors, probes, configs); clone before moving devices or
    normalizing.
-8. Controls hold per-generation state on `self`; one in-flight generation per control instance, so do not share
-   instances across concurrently running pipelines.
+8. One in-flight generation per control instance: gate instances embedded in a control's interventions carry
+   per-generation decisions, so do not share control instances across concurrently running pipelines.
 9. `generate()` returns continuation-only ids by default; never re-slice its result by prompt length.
 10. `runtime_kwargs` is a single shared namespace per call; declare consumed names in `RUNTIME_KWARGS_SCHEMA` and
     expect shared values on name collisions.
 11. Declare `supports_batching=True` only when a control is safe under batched prompts; the pipeline and the
     evaluation utilities read it to choose between batched and per-example generation.
+12. A control's behavior has exactly one declarative statement (the adapted prompt, a structural artifact, an
+    intervention tuple, or exported params/specs); every backend consumes the highest representation it supports;
+    hooks are per-generation products of the pipeline and specs are per-steer products of it; and no code path
+    reconstructs a control's configuration by inspecting another representation of it.
+13. Prompt-relative scope kinds (`after_prompt`, `last_k`) are client-side sugar; their wire form inside a driver
+    generation is absolute (`from_position` at the generation's original prompt boundary).
 
 ## Pointers
 

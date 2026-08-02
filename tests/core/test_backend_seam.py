@@ -172,12 +172,13 @@ class TestCapabilityTables:
             BackendSpec(kind="vllm", model="m", options={"hook_plugin": True})
         )
         assert Capability.INTERVENTION_SPECS in capabilities.atoms
-        assert Capability.PER_STEP_LOGIT_SPECS in capabilities.atoms
         assert Capability.HIDDEN_CAPTURE in capabilities.atoms
         assert Capability.IN_PROCESS_TORCH not in capabilities.atoms
         assert "additive" in capabilities.intervention_kinds.transforms
         assert "cache_once" in capabilities.intervention_kinds.gates
-        assert "constraint" in capabilities.processor_kinds.processors
+        # no processor kinds are advertised until a control exports a ProcessorSpec
+        assert Capability.PER_STEP_LOGIT_SPECS not in capabilities.atoms
+        assert capabilities.processor_kinds is None
 
     def test_vllm_serve_plugin_has_no_hidden_capture(self):
         capabilities = capabilities_for_spec(

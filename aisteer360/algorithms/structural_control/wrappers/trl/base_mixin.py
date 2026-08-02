@@ -10,12 +10,12 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
-from aisteer360.algorithms.core.execution.artifacts import (
+from aisteer360.algorithms.core.execution.payloads import (
     Artifact,
     CheckpointArtifact,
     LoRAArtifact,
 )
-from aisteer360.algorithms.core.execution.capabilities import Capability
+from aisteer360.algorithms.core.execution.contracts import Capability
 
 
 class TRLMixin:

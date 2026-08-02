@@ -40,7 +40,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
-from aisteer360.algorithms.core.execution.requirements import Requirements
+from aisteer360.algorithms.core.execution.contracts import Requirements
 
 PreHook = Callable[[nn.Module, tuple], tuple | torch.Tensor]
 ForwardHook = Callable[[nn.Module, tuple, torch.Tensor], torch.Tensor]
@@ -299,8 +299,8 @@ class InterventionControl(StateControl):
         templates whose unbound sources all declare `steer_needs = "hidden_capture"` require
         `HIDDEN_CAPTURE`.
         """
-        from aisteer360.algorithms.core.execution.capabilities import Capability
-        from aisteer360.algorithms.core.execution.requirements import needs
+        from aisteer360.algorithms.core.execution.contracts import Capability
+        from aisteer360.algorithms.core.execution.contracts import needs
         from aisteer360.algorithms.state_control._common.transforms.base import (
             BaseTransform,
             unwrap_modifiers,
@@ -355,8 +355,8 @@ class InterventionControl(StateControl):
         request's prompt end (the end of the prompt-plus-reference concatenation), which would
         silently unanchor prompt-relative interventions.
         """
-        from aisteer360.algorithms.core.execution.capabilities import Capability
-        from aisteer360.algorithms.core.execution.requirements import Requirements, any_of, needs
+        from aisteer360.algorithms.core.execution.contracts import Capability
+        from aisteer360.algorithms.core.execution.contracts import Requirements, any_of, needs
 
         kinds = self.wire_kinds()
         in_process = needs(Capability.IN_PROCESS_TORCH)

@@ -32,11 +32,11 @@ from transformers import LogitsProcessorList, PreTrainedModel, StoppingCriteriaL
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
-from aisteer360.algorithms.core.execution.capabilities import Capability
-from aisteer360.algorithms.core.execution.items import GenerationItem
+from aisteer360.algorithms.core.execution.contracts import Capability
+from aisteer360.algorithms.core.execution.payloads import GenerationItem
 from aisteer360.algorithms.core.execution.params import GenerationParams
-from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
-from aisteer360.algorithms.core.execution.requirements import Requirements, needs
+from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
+from aisteer360.algorithms.core.execution.contracts import Requirements, needs
 
 
 def stack_generate_kwargs(logits_processors, stopping_criteria) -> dict:
@@ -214,6 +214,23 @@ class OutputControl(BaseControl):
 
         Returns:
             The parameter contribution, or None.
+        """
+        return None
+
+    def export_processor_spec(self, runtime_kwargs: dict | None = None):
+        """The control's engine-hosted processor form, or None.
+
+        A control whose per-step logit math is expressible in an engine's served processor
+        vocabulary returns a `ProcessorSpec`; on a backend advertising
+        `Capability.PER_STEP_LOGIT_SPECS` with the spec's kind, the pipeline submits it as a
+        `ProcessorSpecEntry` in place of the control's live processor. The default returns
+        None, which keeps the control on the live processor mechanism.
+
+        Args:
+            runtime_kwargs: Per-call parameters supplied to `generate()`.
+
+        Returns:
+            The processor spec, or None.
         """
         return None
 

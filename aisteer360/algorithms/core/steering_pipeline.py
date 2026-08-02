@@ -20,35 +20,36 @@ from transformers import (
     StoppingCriteriaList,
 )
 
-from aisteer360.algorithms.core.execution.artifacts import Artifact, ArtifactProvenance
-from aisteer360.algorithms.core.execution.capabilities import (
+from aisteer360.algorithms.core.execution.payloads import Artifact, ArtifactProvenance
+from aisteer360.algorithms.core.execution.contracts import (
     BackendCapabilities,
     Capability,
 )
-from aisteer360.algorithms.core.execution.constraints import ConstraintSource
-from aisteer360.algorithms.core.execution.items import (
+from aisteer360.algorithms.core.execution.payloads import ConstraintSource
+from aisteer360.algorithms.core.execution.payloads import (
     ConstraintEntry,
     GenerationItem,
     HookEntry,
     InterventionEntry,
+    ProcessorSpecEntry,
     ScoringItem,
     StackEntry,
     StateControlEntry,
 )
-from aisteer360.algorithms.core.execution.interventions import (
+from aisteer360.algorithms.core.execution.payloads import (
     remap_prompt_relative_scopes,
 )
 from aisteer360.algorithms.core.execution.params import (
     GenerationParams,
     merge_lowered_params,
 )
-from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
-from aisteer360.algorithms.core.execution.registry import (
+from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
+from aisteer360.algorithms.core.execution.backend import (
     capabilities_for_spec,
     resolve_backend_class,
 )
 from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
-from aisteer360.algorithms.core.execution.support import (
+from aisteer360.algorithms.core.execution.contracts import (
     SupportReport,
     UnsupportedOperationError,
     evaluate_support,
@@ -66,7 +67,7 @@ from aisteer360.algorithms.core.utils.generation import (
     apply_adapt_messages_and_tokenize,
 )
 from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.core.execution.session import SteeredSession
+from aisteer360.algorithms.core.execution.backend import SteeredSession
 from aisteer360.algorithms.output_control.base import (
     DecodingDriver,
     OutputControl,
@@ -237,11 +238,7 @@ class SteeringPipeline:
                 )
                 self.tokenizer = ensure_pad_token(self.tokenizer)
 
-        # late‑inject tokenizer into controls that accept it
-        controls_iter = (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls)
-        for control in controls_iter:
-            if hasattr(control, "tokenizer") and getattr(control, "tokenizer") is None:
-                setattr(control, "tokenizer", self.tokenizer)
+        self._inject_tokenizer()
 
     @property
     def supports_batching(self) -> bool:
@@ -259,8 +256,19 @@ class SteeringPipeline:
         return all(
             getattr(control, "supports_batching", False)
             for control in controls
-            if getattr(control, "enabled", True)
+            if control.enabled
         )
+
+    def _inject_tokenizer(self) -> None:
+        """Attach the pipeline tokenizer to every control exposing an unset `tokenizer`."""
+        if self.tokenizer is None:
+            return
+        for control in (
+            *self.structural_controls, *self.input_controls,
+            *self.state_controls, *self.output_controls,
+        ):
+            if hasattr(control, "tokenizer") and getattr(control, "tokenizer", None) is None:
+                control.tokenizer = self.tokenizer
 
     def _warn_on_runtime_kwargs_overlap(self) -> None:
         """Warn (UserWarning, once) when two or more enabled controls declare the same
@@ -273,7 +281,7 @@ class SteeringPipeline:
         declared: dict[str, list[str]] = {}
         controls = (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls)
         for control in controls:
-            if not getattr(control, "enabled", True):
+            if not control.enabled:
                 continue
             for entry in getattr(control, "RUNTIME_KWARGS_SCHEMA", []):
                 name = entry.get("name")
@@ -440,12 +448,7 @@ class SteeringPipeline:
                     )
             if tokenizer is not None:
                 self.tokenizer = ensure_pad_token(tokenizer)
-                for control in (
-                    *self.structural_controls, *self.input_controls,
-                    *self.state_controls, *self.output_controls,
-                ):
-                    if hasattr(control, "tokenizer") and getattr(control, "tokenizer") is None:
-                        setattr(control, "tokenizer", self.tokenizer)
+                self._inject_tokenizer()
 
         # steer each control (bottom-up order: structural -> input -> state -> output)
         with steering_backend.open_session() as session:
@@ -484,9 +487,7 @@ class SteeringPipeline:
             except Exception as exception:
                 raise RuntimeError("Failed to resolve tokenizer post‑steer.") from exception
 
-        for control in (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls):
-            if hasattr(control, "tokenizer") and getattr(control, "tokenizer", None) is None:
-                setattr(control, "tokenizer", self.tokenizer)
+        self._inject_tokenizer()
 
         # a spec-consuming inference backend gets every enabled control's interventions lowered
         # now, so inexpressible configurations fail before the first generate and artifacts are
@@ -504,7 +505,7 @@ class SteeringPipeline:
         """
         artifacts: list[Artifact] = []
         for control in self.structural_controls:
-            if not getattr(control, "enabled", True):
+            if not control.enabled:
                 continue
             exporter = getattr(control, "export_artifact", None)
             artifact = exporter() if callable(exporter) else None
@@ -646,7 +647,7 @@ class SteeringPipeline:
         if self._lowered_state:  # populated at steer() for spec-consuming inference backends
             entries = []
             for state_control in self.state_controls:
-                if not getattr(state_control, "enabled", True):
+                if not state_control.enabled:
                     continue
                 entry = self._lowered_state.get(id(state_control))
                 if entry is None:  # enabled after steer(); lower it now
@@ -665,7 +666,7 @@ class SteeringPipeline:
 
         entries = []
         for state_control in self.state_controls:
-            if not getattr(state_control, "enabled", True):
+            if not state_control.enabled:
                 continue
             hooks = state_control.get_hooks(
                 steered_input_ids, runtime_kwargs, attention_mask=attention_mask, model=self.model, **kwargs
@@ -700,7 +701,7 @@ class SteeringPipeline:
         for index in range(steered_input_ids.size(0)):
             entries: list[HookEntry] = []
             for state_control in self.state_controls:
-                if not getattr(state_control, "enabled", True):
+                if not state_control.enabled:
                     continue
                 clone = state_control.clone_for_call()
                 hooks = clone.get_hooks(
@@ -736,7 +737,7 @@ class SteeringPipeline:
             return
         if Capability.INTERVENTION_SPECS not in capabilities.atoms:
             return
-        enabled = [c for c in self.state_controls if getattr(c, "enabled", True)]
+        enabled = [c for c in self.state_controls if c.enabled]
         if not enabled:
             return
 
@@ -811,6 +812,30 @@ class SteeringPipeline:
                     UserWarning,
                 )
 
+    def _processor_spec_contributions(
+        self, runtime_kwargs: dict | None, inference_capabilities: BackendCapabilities,
+    ) -> dict[int, "ProcessorSpecEntry"]:
+        """Engine-hosted processor contributions from enabled output controls, keyed by `id()`.
+
+        A control that returns a `ProcessorSpec` from `export_processor_spec` whose kind the
+        backend serves is lowered for that call: the spec travels as a `ProcessorSpecEntry`
+        and the control's live processor is not collected. The lowering choice is a ladder,
+        highest supported rung first: normalized parameters, then engine-hosted specs, then
+        live processors.
+        """
+        served = inference_capabilities.processor_kinds
+        if served is None:
+            return {}
+        contributions: dict[int, ProcessorSpecEntry] = {}
+        for control in self.output_controls:
+            if not control.enabled:
+                continue
+            exporter = getattr(control, "export_processor_spec", None)
+            spec = exporter(runtime_kwargs) if callable(exporter) else None
+            if spec is not None and spec.kind in served.processors:
+                contributions[id(control)] = ProcessorSpecEntry(spec=spec)
+        return contributions
+
     def _constraint_contributions(self, runtime_kwargs: dict | None) -> dict[int, ConstraintSource]:
         """Declarative constraint sources from enabled output controls, keyed by `id()`.
 
@@ -820,7 +845,7 @@ class SteeringPipeline:
         """
         contributions: dict[int, ConstraintSource] = {}
         for control in self.output_controls:
-            if not getattr(control, "enabled", True):
+            if not control.enabled:
                 continue
             exporter = getattr(control, "export_constraint", None)
             source = exporter(runtime_kwargs) if callable(exporter) else None
@@ -837,7 +862,7 @@ class SteeringPipeline:
         phantom control.
         """
         for control in self.output_controls:
-            if isinstance(control, DecodingDriver) and getattr(control, "enabled", True):
+            if isinstance(control, DecodingDriver) and control.enabled:
                 return control
         return None
 
@@ -850,7 +875,7 @@ class SteeringPipeline:
         """
         contributions: dict[int, Mapping] = {}
         for control in self.output_controls:
-            if not getattr(control, "enabled", True):
+            if not control.enabled:
                 continue
             exporter = getattr(control, "export_generation_params", None)
             contribution = exporter(runtime_kwargs) if callable(exporter) else None
@@ -858,47 +883,20 @@ class SteeringPipeline:
                 contributions[id(control)] = contribution
         return contributions
 
-    def _collect_processors_and_criteria(
-        self, input_ids, runtime_kwargs, attention_mask=None, for_scoring=False,
-        skip_ids=frozenset(), **kwargs,
-    ) -> tuple[list, list]:
-        """(processors, criteria) from enabled output controls, in controls-list order.
-
-        With `for_scoring=True`, only `include_in_scoring` controls contribute processors and
-        criteria are skipped (there is no loop to stop). Controls whose `id()` is in `skip_ids`
-        (lowered to generation parameters for this call) contribute nothing. Each hook result is
-        guarded with `or []`.
-        """
-        processors, criteria = [], []
-        for control in self.output_controls:
-            if not getattr(control, "enabled", True) or id(control) in skip_ids:
-                continue
-            if for_scoring and not getattr(control, "include_in_scoring", True):
-                logger.info(
-                    "compute_logprobs: skipping %s (include_in_scoring=False); scored logprobs will "
-                    "not reflect this control's logits processors.",
-                    type(control).__name__,
-                )
-                continue
-            processors.extend(control.get_logits_processors(
-                input_ids, runtime_kwargs, attention_mask=attention_mask, **kwargs) or [])
-            if not for_scoring:
-                criteria.extend(control.get_stopping_criteria(
-                    input_ids, runtime_kwargs, attention_mask=attention_mask, **kwargs) or [])
-        return processors, criteria
-
     def _collect_output_entries(
         self, input_ids, runtime_kwargs, attention_mask=None, for_scoring=False,
         skip_ids=frozenset(), **kwargs,
     ) -> tuple[StackEntry, ...]:
         """One `StackEntry` per contributing output control, in controls-list order.
 
-        Same collection rules as `_collect_processors_and_criteria`, per control instead of
-        composed; controls contributing neither processors nor criteria yield no entry.
+        With `for_scoring=True`, only `include_in_scoring` controls contribute processors and
+        criteria are skipped (there is no loop to stop). Controls whose `id()` is in `skip_ids`
+        (lowered to generation parameters for this call) contribute nothing. Controls
+        contributing neither processors nor criteria yield no entry.
         """
         entries: list[StackEntry] = []
         for control in self.output_controls:
-            if not getattr(control, "enabled", True) or id(control) in skip_ids:
+            if not control.enabled or id(control) in skip_ids:
                 continue
             if for_scoring and not getattr(control, "include_in_scoring", True):
                 logger.info(
@@ -931,9 +929,11 @@ class SteeringPipeline:
         serialize their kwargs are safe by construction, and a driver that ignores the stacks
         visibly ignores named parameters.
         """
-        processors, criteria = self._collect_processors_and_criteria(
+        entries = self._collect_output_entries(
             input_ids, runtime_kwargs, attention_mask=attention_mask, skip_ids=skip_ids, **gen_kwargs
         )
+        processors = [p for entry in entries for p in entry.logits_processors]
+        criteria = [c for entry in entries for c in entry.stopping_criteria]
         user_processors = gen_kwargs.pop("logits_processor", None) or []
         user_criteria = gen_kwargs.pop("stopping_criteria", None) or []
         return (
@@ -951,10 +951,11 @@ class SteeringPipeline:
         the prefix is the decoder ids `ref[:t+1]` when scoring `ref[t+1]` (matching the existing
         target alignment in both paths).
         """
-        processors, _ = self._collect_processors_and_criteria(
+        entries = self._collect_output_entries(
             steered_input_ids, runtime_kwargs, attention_mask=attention_mask,
             for_scoring=True, **forward_kwargs,
         )
+        processors = [p for entry in entries for p in entry.logits_processors]
         if not processors:
             return logits
         stack = LogitsProcessorList(processors)
@@ -1406,7 +1407,7 @@ class SteeringPipeline:
         decoding_driver = self._resolve_decoding_driver()
         inference_capabilities = capabilities_for_spec(inference_spec)
         hooks_in_process = Capability.IN_PROCESS_TORCH in inference_capabilities.atoms
-        has_enabled_state = any(getattr(control, "enabled", True) for control in self.state_controls)
+        has_enabled_state = any(control.enabled for control in self.state_controls)
 
         # state-control entry selection per backend: an in-process backend gets hooks built
         # once per logical generation; an intervention-capable backend gets exported specs. On
@@ -1492,16 +1493,21 @@ class SteeringPipeline:
                 # structured outputs natively, declarative constraints lower in place of their
                 # live processors
                 constraint_sources: dict[int, ConstraintSource] = {}
+                processor_specs: dict[int, ProcessorSpecEntry] = {}
                 if not hooks_in_process:
                     constraint_sources = self._constraint_contributions(runtime_kwargs)
+                    processor_specs = self._processor_spec_contributions(
+                        runtime_kwargs, inference_capabilities,
+                    )
                 output_entries = self._collect_output_entries(
                     steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
-                    skip_ids=skip_ids | frozenset(constraint_sources), **gen_kwargs,
+                    skip_ids=skip_ids | frozenset(constraint_sources) | frozenset(processor_specs),
+                    **gen_kwargs,
                 )
-                if constraint_sources:
+                if constraint_sources or processor_specs:
                     output_entries = output_entries + tuple(
                         ConstraintEntry(source=source) for source in constraint_sources.values()
-                    )
+                    ) + tuple(processor_specs.values())
                 user_processors = gen_kwargs.pop("logits_processor", None) or []
                 user_criteria = gen_kwargs.pop("stopping_criteria", None) or []
                 params = GenerationParams.from_gen_kwargs(**gen_kwargs)
@@ -1667,7 +1673,7 @@ class SteeringPipeline:
         score_params = GenerationParams(extra=forward_kwargs)
         inference_capabilities = capabilities_for_spec(inference_spec)
         hooks_in_process = Capability.IN_PROCESS_TORCH in inference_capabilities.atoms
-        has_enabled_state = any(getattr(control, "enabled", True) for control in self.state_controls)
+        has_enabled_state = any(control.enabled for control in self.state_controls)
 
         # batched path (all controls are batch-safe): one left-packed pass over shared entries
         if self.supports_batching:

@@ -18,13 +18,13 @@ from typing import Any, Literal
 
 import torch
 
-from aisteer360.algorithms.core.execution.artifacts import (
+from aisteer360.algorithms.core.execution.payloads import (
     Artifact,
     CheckpointArtifact,
     LoRAArtifact,
 )
 from aisteer360.algorithms.core.execution.backend import Backend
-from aisteer360.algorithms.core.execution.capabilities import (
+from aisteer360.algorithms.core.execution.contracts import (
     BackendCapabilities,
     Capability,
     CaptureKinds,
@@ -32,7 +32,7 @@ from aisteer360.algorithms.core.execution.capabilities import (
     InterventionKinds,
     ProcessorKinds,
 )
-from aisteer360.algorithms.core.execution.constraints import ConstraintSource
+from aisteer360.algorithms.core.execution.payloads import ConstraintSource
 from aisteer360.algorithms.core.execution.fanout import (
     PartialBatchError,
     TransportError,
@@ -40,7 +40,7 @@ from aisteer360.algorithms.core.execution.fanout import (
     run_bounded,
     with_transport_retries,
 )
-from aisteer360.algorithms.core.execution.items import (
+from aisteer360.algorithms.core.execution.payloads import (
     CaptureResult,
     ConstraintEntry,
     GenerationItem,
@@ -51,12 +51,12 @@ from aisteer360.algorithms.core.execution.items import (
     ScoringItem,
     StackEntry,
 )
-from aisteer360.algorithms.core.execution.interventions import InterventionSpec
-from aisteer360.algorithms.core.execution.layout import ModelLayout
+from aisteer360.algorithms.core.execution.payloads import InterventionSpec
+from aisteer360.algorithms.core.execution.payloads import ModelFacts
 from aisteer360.algorithms.core.execution.params import GenerationParams
-from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
+from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
 from aisteer360.algorithms.core.execution.spec import BackendSpec
-from aisteer360.algorithms.core.execution.support import UnsupportedOperationError
+from aisteer360.algorithms.core.execution.contracts import UnsupportedOperationError
 from aisteer360.algorithms.core.output import Output
 from aisteer360.utils.optional import require
 from aisteer360.utils.tokenization import ensure_pad_token
@@ -71,7 +71,6 @@ _PLUGIN_INTERVENTION_KINDS = InterventionKinds(
     constraints={"head_additive": "tensor_parallel_size==1"},
 )
 
-_PLUGIN_PROCESSOR_KINDS = ProcessorKinds(processors=frozenset({"constraint"}))
 
 _PLUGIN_CAPTURE_KINDS = CaptureKinds(
     kinds=frozenset({"residual"}),
@@ -110,7 +109,6 @@ def _vllm_capabilities(spec: BackendSpec, *, offline: bool) -> BackendCapabiliti
         return VLLM_BASELINE_CAPABILITIES
     atoms = VLLM_BASELINE_CAPABILITIES.atoms | {
         Capability.INTERVENTION_SPECS,
-        Capability.PER_STEP_LOGIT_SPECS,
     }
     capture_kinds = None
     if offline:
@@ -119,7 +117,6 @@ def _vllm_capabilities(spec: BackendSpec, *, offline: bool) -> BackendCapabiliti
     capabilities = BackendCapabilities(
         atoms=frozenset(atoms),
         intervention_kinds=_PLUGIN_INTERVENTION_KINDS,
-        processor_kinds=_PLUGIN_PROCESSOR_KINDS,
         capture_kinds=capture_kinds,
         constraint_kinds=_VLLM_CONSTRAINT_KINDS,
     )
@@ -340,9 +337,10 @@ def _split_item_entries(
                     )
                 item_constraint = entry.source
             elif isinstance(entry, ProcessorSpecEntry):
-                raise NotImplementedError(
-                    "ProcessorSpecEntry lowering is not implemented; the plugin serves no "
-                    "processor kinds yet."
+                raise UnsupportedOperationError(
+                    f"ProcessorSpecEntry requires engine-hosted processor kinds, which the "
+                    f"{backend_name} backend does not serve; run this pipeline on the "
+                    "huggingface backend."
                 )
         specs.append(merge_intervention_specs(item_specs) if item_specs else None)
         constraints.append(item_constraint)
@@ -512,8 +510,8 @@ def _reject_encoder_decoder(model_ref: str, trust_remote_code: bool = False) -> 
         )
 
 
-def _config_layout(model_ref: str, trust_remote_code: bool = False) -> ModelLayout | None:
-    """A client-side `ModelLayout` from the model config, or None when unresolvable.
+def _config_layout(model_ref: str, trust_remote_code: bool = False) -> ModelFacts | None:
+    """A client-side `ModelFacts` from the model config, or None when unresolvable.
 
     The fingerprint hashes the config JSON (volatile name/version fields removed), so it
     identifies the architecture and configuration rather than the weights.
@@ -537,7 +535,7 @@ def _config_layout(model_ref: str, trust_remote_code: bool = False) -> ModelLayo
     digest = hashlib.sha256(
         json.dumps(config_dict, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]
-    return ModelLayout(
+    return ModelFacts(
         num_layers=getattr(config, "num_hidden_layers", 0),
         hidden_size=hidden_size or 0,
         num_attention_heads=num_heads,
@@ -731,7 +729,7 @@ class _RequestSessionBase:
         return self._backend.tokenizer
 
     @property
-    def layout(self) -> ModelLayout:
+    def layout(self) -> ModelFacts:
         """Structural facts from the model config (client-side).
 
         Raises:

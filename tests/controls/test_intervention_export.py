@@ -4,7 +4,7 @@ import pytest
 import torch
 from vllm_hook_plugins.core.schema import parse_intervention_spec
 
-from aisteer360.algorithms.core.execution import Capability, ModelLayout
+from aisteer360.algorithms.core.execution import Capability, ModelFacts
 from aisteer360.algorithms.core.internals.probes import Probe
 from aisteer360.algorithms.state_control._common.gates import (
     CacheOnceGate,
@@ -34,13 +34,13 @@ HEADS = 4
 
 
 class _LayoutOnlySession:
-    def __init__(self, layout: ModelLayout):
+    def __init__(self, layout: ModelFacts):
         self.layout = layout
 
 
 @pytest.fixture()
 def session():
-    return _LayoutOnlySession(ModelLayout(
+    return _LayoutOnlySession(ModelFacts(
         num_layers=LAYERS,
         hidden_size=HIDDEN,
         num_attention_heads=HEADS,
@@ -326,7 +326,7 @@ class TestExportMechanics:
                 hook_point="layer_input", **_probe(location="layer_input").as_condition(),
             ),
         ]
-        session = _LayoutOnlySession(ModelLayout(
+        session = _LayoutOnlySession(ModelFacts(
             num_layers=LAYERS, hidden_size=HIDDEN, num_attention_heads=HEADS,
             head_dim=HIDDEN // HEADS, dtype="float32", model_fingerprint="0" * 16,
         ))

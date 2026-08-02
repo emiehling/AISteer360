@@ -10,8 +10,8 @@ import copy
 import torch
 from transformers import PreTrainedModel
 
-from aisteer360.algorithms.core.execution.capabilities import Capability
-from aisteer360.algorithms.core.execution.requirements import Requirements, needs
+from aisteer360.algorithms.core.execution.contracts import Capability
+from aisteer360.algorithms.core.execution.contracts import Requirements, needs
 from aisteer360.algorithms.output_control._common.drivers.frontier import Frontier
 from aisteer360.algorithms.output_control._common.drivers.proposer import SegmentProposer
 from aisteer360.algorithms.output_control.base import (

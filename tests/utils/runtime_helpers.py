@@ -89,7 +89,7 @@ class ScriptedSession:
         self.tokenizer = tokenizer
 
     def generate(self, items, params):
-        from aisteer360.algorithms.core.execution.items import ItemResult
+        from aisteer360.algorithms.core.execution.payloads import ItemResult
         from aisteer360.algorithms.core.output import Output
 
         results = []

@@ -136,7 +136,7 @@ class TestWireAnchorRewrite:
         return lower_interventions([intervention], num_layers=LAYERS)
 
     def test_after_prompt_rewrites_to_absolute_anchor(self):
-        from aisteer360.algorithms.core.execution.interventions import (
+        from aisteer360.algorithms.core.execution.payloads import (
             remap_prompt_relative_scopes,
         )
 
@@ -150,7 +150,7 @@ class TestWireAnchorRewrite:
         assert rewritten.salt() != spec.salt()
 
     def test_last_k_rewrites_to_absolute_anchor(self):
-        from aisteer360.algorithms.core.execution.interventions import (
+        from aisteer360.algorithms.core.execution.payloads import (
             remap_prompt_relative_scopes,
         )
 
@@ -159,7 +159,7 @@ class TestWireAnchorRewrite:
         assert rewritten.ops[0]["scope"] == {"kind": "from_position", "position": 4}
 
     def test_absolute_scopes_pass_through_unchanged(self):
-        from aisteer360.algorithms.core.execution.interventions import (
+        from aisteer360.algorithms.core.execution.payloads import (
             remap_prompt_relative_scopes,
         )
 
@@ -168,12 +168,12 @@ class TestWireAnchorRewrite:
 
     def test_steered_session_injects_rewritten_entries_per_item(self):
         from aisteer360.algorithms.core.execution import InterventionEntry
-        from aisteer360.algorithms.core.execution.interventions import (
+        from aisteer360.algorithms.core.execution.payloads import (
             remap_prompt_relative_scopes,
         )
-        from aisteer360.algorithms.core.execution.items import GenerationItem
-        from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
-        from aisteer360.algorithms.core.execution.session import SteeredSession
+        from aisteer360.algorithms.core.execution.payloads import GenerationItem
+        from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
+        from aisteer360.algorithms.core.execution.backend import SteeredSession
 
         spec = self._lowered_spec({"kind": "after_prompt"})
         entry = InterventionEntry(spec=remap_prompt_relative_scopes(spec, anchor=5))

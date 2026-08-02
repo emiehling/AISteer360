@@ -56,7 +56,7 @@ def capture_hidden(
     if session is None or not callable(getattr(session, "capture", None)):
         raise ValueError("Hidden-state extraction requires a live model or a capture-capable session.")
 
-    from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
+    from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
 
     input_ids = enc["input_ids"]
     attention_mask = enc.get("attention_mask")
