@@ -6,7 +6,6 @@ weight updates or architectural changes.
 Two base classes are provided:
 
 - `StructuralControl`: Base class for all structural control methods.
-- `NoStructuralControl`: Identity (null) control; used when no structural control is defined in steering pipeline.
 
 Structural controls implement steering through model weight or architecture modifications, transforming base parameters
 θ to θ', resulting in generations following y ~ p_θ'(x).
@@ -114,15 +113,3 @@ class StructuralControl(BaseControl):
             steer=needs(Capability.IN_PROCESS_TORCH, Capability.WEIGHT_TRAINING),
             generate=generate,
         )
-
-
-class NoStructuralControl(StructuralControl):
-    """Identity structural control.
-
-    Used as the default when no structural control is needed. Passes the model through unchanged.
-    """
-    enabled: bool = False
-
-    def steer(self, model: PreTrainedModel, **__) -> PreTrainedModel:
-        """Null steer operation; returns model."""
-        return model

@@ -8,6 +8,8 @@ probe run. Empty probe `meta` keeps the fingerprint checks dormant except where 
 import pytest
 import torch
 
+from tests.utils.runtime_helpers import script_session_generate
+
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.core.internals.probes import (
     P,
@@ -90,17 +92,18 @@ class _GenerateSpy:
 
 
 class TestRespond:
-    def test_canned_tokens_exact_and_no_decode_steps(self):
+    def test_canned_tokens_exact_and_no_decode_steps(self, monkeypatch):
         rules = RoutingRules(
             rules=[Rule("canned", when=P("always"), action=respond("the cat sat"))],
             default_action=generate(),
         )
         pipeline, router, model, tokenizer = _make_pipeline(_forced_probes(), rules)
         spy = _GenerateSpy(model)
+        script_session_generate(monkeypatch, spy)
 
         out = pipeline.generate(
             input_ids=torch.tensor([[3, 4, 5]]),
-            runtime_kwargs={"base_generate": spy},
+            runtime_kwargs={},
             max_new_tokens=4,
         )
 
@@ -110,17 +113,18 @@ class TestRespond:
 
 
 class TestPrefix:
-    def test_prefix_tokens_then_generated_tail(self):
+    def test_prefix_tokens_then_generated_tail(self, monkeypatch):
         rules = RoutingRules(
             rules=[Rule("note", when=P("always"), action=prefix("the dog ran"))],
             default_action=generate(),
         )
         pipeline, router, model, tokenizer = _make_pipeline(_forced_probes(), rules)
         spy = _GenerateSpy(model)
+        script_session_generate(monkeypatch, spy)
 
         out = pipeline.generate(
             input_ids=torch.tensor([[3, 4, 5]]),
-            runtime_kwargs={"base_generate": spy},
+            runtime_kwargs={},
             max_new_tokens=4,
         )
 

@@ -58,3 +58,54 @@ class SteeringSession(Protocol):
         """Capture hidden states for `prompts` at `layers`; requires
         `Capability.HIDDEN_CAPTURE`."""
         ...
+
+
+class SteeredSession:
+    """A `SteeringSession` whose `generate` and `score` inject a generation's control entries
+    into every item, so a driver's rollouts carry the pipeline's steering without the driver
+    knowing entries exist.
+
+    The pipeline builds one wrapper per logical generation and hands it to the decoding
+    driver. On an in-process backend the injected tuple is empty, since the session hosts the
+    generation's hooks ambiently for the span of the driver's decode; on spec-consuming
+    backends the injected entries are the generation's lowered interventions with
+    prompt-relative scopes rewritten to absolute positions at the generation's original prompt
+    boundary, so re-prefilled continuation tokens are steered at their original positions.
+
+    Attributes:
+        inner: The wrapped backend session.
+        state_entries: Entries injected ahead of each item's own.
+    """
+
+    def __init__(self, inner, state_entries: tuple = ()):
+        self.inner = inner
+        self.state_entries = tuple(state_entries)
+
+    @property
+    def layout(self):
+        return self.inner.layout
+
+    @property
+    def tokenizer(self):
+        return getattr(self.inner, "tokenizer", None)
+
+    def _inject(self, item):
+        if not self.state_entries:
+            return item
+        import dataclasses
+
+        return dataclasses.replace(
+            item, state_entries=self.state_entries + tuple(item.state_entries)
+        )
+
+    def generate(self, items, params):
+        """Generate with the wrapper's entries injected into every item."""
+        return self.inner.generate([self._inject(item) for item in items], params)
+
+    def score(self, items, params):
+        """Score with the wrapper's entries injected into every item."""
+        return self.inner.score([self._inject(item) for item in items], params)
+
+    def capture(self, prompts, layers, mode, location="layer_output"):
+        """Capture through the wrapped session, unsteered."""
+        return self.inner.capture(prompts, layers, mode, location=location)

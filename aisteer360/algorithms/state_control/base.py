@@ -1,12 +1,14 @@
 """State control base classes.
 
-This module provides the abstract base class for methods that register hooks into the model (e.g., to modify
-intermediate representations during inference); does not change model weights.
+This module provides the abstract base classes for methods that steer through hooks into the
+model's forward pass (modifying intermediate representations during inference); state controls
+do not change model weights.
 
-Two base classes are provided:
+Three classes are provided:
 
-- `StateControl`: Base class for all state control methods.
-- `NoStateControl`: Identity (null) control; used when no state control is defined in steering pipeline.
+- `StateControl`: Abstract root the pipeline type-checks.
+- `InterventionControl`: A state control that is a tuple of declarative interventions.
+- `HookControl`: A state control that writes its own torch hooks.
 
 State controls implement steering through runtime intervention in the model's forward pass, modifying internal states
 (activations, attention patterns) to produce generations following y ~ p_θᵃ(x), where "p_θᵃ" is the model with state
@@ -20,7 +22,8 @@ Examples of state controls:
 - Dynamic routing between components
 - Representation engineering techniques
 
-The base class provides automatic hook management through context managers (ensures cleanup and avoids memory leaks).
+Hooks travel only as `HookEntry` contributions on session items; the session that executes
+forwards owns registration. Controls never register hooks and hold no model reference.
 
 See Also:
 
@@ -46,20 +49,17 @@ HookSpec = dict[str, str | PreHook | ForwardHook | BackwardHook]
 
 
 class StateControl(BaseControl):
-    """Abstract base class for state control steering methods.
+    """Abstract root for state control steering methods; the class the pipeline type-checks.
 
-    Modifies internal model states during forward passes via hooks.
-
-    A control instance holds per-generation state on `self` (e.g. position offsets, cached masks,
-    gate decisions) and therefore supports one in-flight generation at a time; do not share a single
-    control instance across concurrently running pipelines.
+    Concrete state controls are either `InterventionControl` (a declarative intervention
+    tuple, compiled to hooks by `build_hooks` and to `InterventionSpec` payloads by
+    `lower_interventions`) or `HookControl` (raw torch hooks). Hooks are per-generation
+    products the pipeline collects as `HookEntry` contributions; controls never register
+    hooks and hold no model reference.
 
     Methods:
         get_hooks(input_ids, runtime_kwargs, **kwargs) -> dict: Create hook specs (required)
         steer(model, tokenizer, **kwargs) -> None: One-time preparation (optional)
-        reset() -> None: Reset logic (optional)
-        register_hooks(model) -> None: Attach hooks to model (provided)
-        remove_hooks() -> None: Remove all registered hooks (provided)
     """
 
     Args: type[BaseArgs] | None = None
@@ -67,12 +67,6 @@ class StateControl(BaseControl):
 
     enabled: bool = True
     supports_batching: bool = False
-    _model_ref: PreTrainedModel | None = None
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.hooks: dict[str, list[HookSpec]] = {"pre": [], "forward": [], "backward": []}
-        self.registered: list[torch.utils.hooks.RemovableHandle] = []
 
     @abstractmethod
     def get_hooks(
@@ -120,129 +114,6 @@ class StateControl(BaseControl):
             The validated `InterventionSpec` with tensor payloads attached, or None.
         """
         return None
-
-    def register_hooks(self, model: PreTrainedModel) -> None:
-        """Attach hooks to model.
-
-        If registration fails partway (e.g. an unresolved module path), any handles already
-        attached are removed before re-raising, so a partial `__enter__` never leaves hooks on the
-        model for subsequent, unrelated generations (`__exit__` is not called when `__enter__` raises).
-        """
-        try:
-            for phase in ("pre", "forward", "backward"):
-                for spec in self.hooks[phase]:
-                    module = model.get_submodule(spec["module"])
-                    if phase == "pre":
-                        handle = module.register_forward_pre_hook(spec["hook_func"], with_kwargs=True)
-                    elif phase == "forward":
-                        handle = module.register_forward_hook(spec["hook_func"], with_kwargs=True)
-                    else:
-                        handle = module.register_full_backward_hook(spec["hook_func"])
-                    self.registered.append(handle)
-        except Exception:
-            self.remove_hooks()
-            raise
-
-    def remove_hooks(self) -> None:
-        """Remove all registered hooks from the model."""
-        for handle in self.registered:
-            handle.remove()
-        self.registered.clear()
-
-    def set_hooks(self, hooks: dict[str, list[HookSpec]]):
-        """Update the hook specifications to be registered."""
-        self.hooks = hooks
-
-    def __enter__(self):
-        """Context manager entry: register hooks to model.
-
-        Raises:
-            RuntimeError: If model reference not set by pipeline
-        """
-        if self._model_ref is None:
-            raise RuntimeError("Model reference not set before entering context.")
-        self.register_hooks(self._model_ref)
-
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        """Context manager exit: clean up all hooks."""
-        self.remove_hooks()
-
-    def clone_for_call(self, seed: int | None = None):
-        """A per-call clone with independent per-generation mutable state.
-
-        Extends the base shallow clone with fresh hook and handle containers, a deep copy of the
-        `_gate` and `_runtime` attributes when present (so the clone's `get_hooks` closures never
-        share position or gate state with the original or with sibling clones), and a cleared
-        model reference. Steer-time artifacts (steering vectors, transforms, tokenizers) stay
-        shared with the original.
-
-        Args:
-            seed: Optional seed forwarded to the clone's `reseed()`.
-
-        Returns:
-            The clone.
-        """
-        clone = super().clone_for_call(seed)
-        clone.hooks = {"pre": [], "forward": [], "backward": []}
-        clone.registered = []
-        if not isinstance(getattr(type(self), "_runtime", None), property):
-            if getattr(self, "_runtime", None) is not None:
-                clone._runtime = copy.deepcopy(self._runtime)
-        if not isinstance(getattr(type(self), "_gate", None), property):
-            if getattr(self, "_gate", None) is not None:
-                clone._gate = copy.deepcopy(self._gate)
-        clone._model_ref = None
-        return clone
-
-    def reset(self) -> None:
-        """Between-generations reset for runtime-backed controls.
-
-        Covers the `_gate`/`_runtime` convention used across `state_control._common`: clear the
-        gate, then re-clear the runtime's per-generation counters (preserving its stored prompt
-        lengths and mask). No-op for controls that expose neither attribute. Controls with
-        additional per-generation state override this and may call `super().reset()`.
-        """
-        gate = getattr(self, "_gate", None)
-        if gate is not None:
-            gate.reset()
-        runtime = getattr(self, "_runtime", None)
-        if runtime is not None:
-            runtime.reset_between_generations()
-
-
-class NoStateControl(StateControl):
-    """Identity state control.
-
-    Used as the default when no state control is needed. Returns empty hook dictionaries and skips registration.
-    """
-    enabled: bool = False
-    supports_batching: bool = True
-
-    def get_hooks(self, *_, **__) -> dict[str, list[HookSpec]]:
-        """Return empty hooks."""
-        return {"pre": [], "forward": [], "backward": []}
-
-    def steer(self,
-              model: PreTrainedModel,
-              tokenizer=None,
-              **kwargs) -> None:
-        """Null steering operation."""
-        pass
-
-    def register_hooks(self, *_):
-        """Null registration operation."""
-        pass
-
-    def remove_hooks(self, *_):
-        """Null removal operation."""
-        pass
-
-    def set_hooks(self, hooks: dict[str, list[HookSpec]]):
-        """Null set operation."""
-        pass
-
 
 def _is_concrete_gate(gate) -> bool:
     """True when `gate` is a resolved gate rather than a gate/condition source."""
@@ -346,14 +217,13 @@ class InterventionControl(StateControl):
         if layout is None:
             from aisteer360.algorithms.state_control._common.model_layout import resolve_model_layout
 
-            source = model if model is not None else self._model_ref
-            if source is None:
+            if model is None:
                 raise RuntimeError(
                     f"{type(self).__name__} was steered without a live model, so hook module "
                     "names are unresolved; provide the model (the pipeline does) or steer with "
                     "a model."
                 )
-            layout = resolve_model_layout(source)
+            layout = resolve_model_layout(model)
             self._module_layout = layout
         return layout
 

@@ -23,7 +23,6 @@ See Also:
 - `aisteer360.algorithms.output_control._common`: Shared component library
 - `aisteer360.algorithms.core.steering_pipeline`: Integration with steering pipeline
 """
-import warnings
 from abc import abstractmethod
 from collections.abc import Mapping
 from typing import Any, Type
@@ -107,40 +106,28 @@ def session_generate(session, input_ids, attention_mask=None, **gen_kwargs) -> t
 def resolve_generate_callable(model, runtime_kwargs: dict | None, session=None):
     """Resolve the generate callable a driver rolls out with.
 
-    A `runtime_kwargs["base_generate"]` override is honored with a `DeprecationWarning` (pass a
-    session instead); otherwise the session's generate is used when a session is available, and
-    `model.generate` as the in-process fallback.
+    Drivers generate through the pipeline's session (a `SteeredSession` carrying this
+    generation's control entries), so a driver runs on any backend whose session serves its
+    rollout parameters.
 
     Args:
-        model: The pipeline model, or None on backends without a live model.
-        runtime_kwargs: Per-call parameters, possibly carrying the deprecated override.
-        session: The `SteeringSession` for this generation, or None.
+        model: The pipeline model, or None on backends without a live model; unused.
+        runtime_kwargs: Per-call parameters; unused.
+        session: The `SteeringSession` for this generation.
 
     Returns:
         A callable with the `model.generate` calling convention returning full sequences.
 
     Raises:
-        ValueError: If no generate callable can be resolved.
+        ValueError: If no session was provided.
     """
-    runtime_kwargs = runtime_kwargs or {}
-    override = runtime_kwargs.get("base_generate")
-    if override is not None:
-        warnings.warn(
-            "runtime_kwargs['base_generate'] is deprecated; drivers generate through the "
-            "pipeline's session. The override is honored for this call.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        if not callable(override):
-            raise ValueError("'base_generate' must be callable.")
-        return override
-    if session is not None:
-        def _generate(input_ids, attention_mask=None, **gen_kwargs):
-            return session_generate(session, input_ids, attention_mask, **gen_kwargs)
-        return _generate
-    if model is not None:
-        return model.generate
-    raise ValueError("No generate callable available: the driver received neither a session nor a model.")
+    if session is None:
+        raise ValueError("No generate callable available: the driver received no session.")
+
+    def _generate(input_ids, attention_mask=None, **gen_kwargs):
+        return session_generate(session, input_ids, attention_mask, **gen_kwargs)
+
+    return _generate
 
 
 class OutputControl(BaseControl):
@@ -302,16 +289,3 @@ class DecodingDriver(OutputControl):
         **gen_kwargs,
     ) -> torch.Tensor:
         """Run the decoding procedure; return full sequence ids (prompt + continuation)."""
-
-
-class HFGenerateDriver(DecodingDriver):
-    """Default decoding driver: delegate the loop to the model's own `generate`."""
-
-    supports_batching: bool = True
-
-    def decode(self, input_ids, attention_mask, model, logits_processors,
-               stopping_criteria, runtime_kwargs, session=None, **gen_kwargs) -> torch.Tensor:
-        extra = stack_generate_kwargs(logits_processors, stopping_criteria)
-        return model.generate(
-            input_ids=input_ids, attention_mask=attention_mask, **extra, **gen_kwargs
-        )

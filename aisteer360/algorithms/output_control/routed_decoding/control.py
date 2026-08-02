@@ -74,7 +74,6 @@ class RoutedDecoding(PhasedDriver):
     - `"canned_responses"`: dict mapping rule names to replacement text, overriding the
       `Respond`/`Prefix` text of matching rules for this call only. Keys that do not name a
       `Respond`/`Prefix` rule are ignored with a warning.
-    - `"base_generate"`: replacement for `model.generate` inside generated phases.
     """
 
     Args = RoutedDecodingArgs

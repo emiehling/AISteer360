@@ -9,6 +9,8 @@ import math
 
 import pytest
 import torch
+
+from tests.utils.runtime_helpers import ScriptedSession, script_session_generate
 from transformers import LogitsProcessorList, StoppingCriteriaList
 
 from aisteer360.algorithms.output_control._common.candidates import (
@@ -284,7 +286,8 @@ class TestSearchDriver:
             model=model,
             logits_processors=processors,
             stopping_criteria=StoppingCriteriaList(),
-            runtime_kwargs={"base_generate": spy_generate},
+            runtime_kwargs={},
+            session=ScriptedSession(spy_generate),
             max_new_tokens=4,
         )
         assert out.ndim == 2
@@ -335,6 +338,7 @@ class TestPhasedDriver:
             logits_processors=LogitsProcessorList(),
             stopping_criteria=StoppingCriteriaList(),
             runtime_kwargs=None,
+            session=ScriptedSession(model.generate, tokenizer=tokenizer),
             max_new_tokens=3,
         )
         assert out.ndim == 2
@@ -361,7 +365,8 @@ class TestPhasedDriver:
             input_ids=prompt_ids, attention_mask=torch.ones_like(prompt_ids),
             model=None, logits_processors=LogitsProcessorList(),
             stopping_criteria=StoppingCriteriaList(),
-            runtime_kwargs={"base_generate": fake_generate},
+            runtime_kwargs={},
+            session=ScriptedSession(fake_generate),
         )
         decoded = tokenizer.decode(out[0], skip_special_tokens=False)
         assert "</think>" not in decoded

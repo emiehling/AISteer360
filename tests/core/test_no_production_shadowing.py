@@ -18,8 +18,8 @@ from pathlib import Path
 PRODUCTION_CLASSES = {
     "BaseArgs", "BaseControl", "Metric", "UseCase",
     "InputControl", "StructuralControl", "StateControl", "OutputControl",
-    "DecodingDriver", "HFGenerateDriver",
-    "NoInputControl", "NoStructuralControl", "NoStateControl",
+    "DecodingDriver",
+    "InterventionControl", "HookControl", "SteeredSession",
     "SteeringPipeline", "Benchmark", "ControlSpec", "Output",
     "Backend", "BackendSpec", "BackendCapabilities", "Capability",
     "InterventionKinds", "ProcessorKinds", "CaptureKinds",

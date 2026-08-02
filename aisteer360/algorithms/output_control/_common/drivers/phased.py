@@ -108,7 +108,7 @@ class PhasedDriver(DecodingDriver):
             raise RuntimeError("PhasedDriver requires a tokenizer; steer() must run first.")
 
         runtime_kwargs = runtime_kwargs or {}
-        via_session = session is not None and runtime_kwargs.get("base_generate") is None
+        via_session = session is not None
         base_generate = resolve_generate_callable(model, runtime_kwargs, session=session)
 
         if input_ids.dim() == 1:

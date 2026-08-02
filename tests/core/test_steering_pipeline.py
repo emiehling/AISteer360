@@ -26,13 +26,9 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control.base import InputControl, NoInputControl
+from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.output_control.base import OutputControl
-from aisteer360.algorithms.state_control.base import NoStateControl
-from aisteer360.algorithms.structural_control.base import (
-    NoStructuralControl,
-    StructuralControl,
-)
+from aisteer360.algorithms.structural_control.base import StructuralControl
 from tests.conftest import (
     MockInputControl,
     MockOutputControl,
@@ -170,7 +166,7 @@ class TestPipelineInitialization:
 
         assert pipeline.input_controls == [input_ctrl]
         assert pipeline.state_controls == [state_ctrl]
-        assert isinstance(pipeline.structural_controls[0], NoStructuralControl)
+        assert pipeline.structural_controls == []
         assert pipeline.output_controls == []
 
     def test_all_four_categories(self):
@@ -366,13 +362,13 @@ class TestPipelineGenerate:
         assert control._runtime_kwargs_received == runtime_kwargs
 
     def test_hooks_removed_after_generate(self):
+        """No hooks leak onto the model once the session's execution of the work ends."""
         control = MockStateControl(target_layers=[0])
         pipeline = _tiny_pipeline([control])
         pipeline.steer()
 
         pipeline.generate(input_ids=torch.tensor([[3, 4, 5]]), max_new_tokens=1)
 
-        assert control.registered == []
         assert len(pipeline.model.model.layers[0]._forward_pre_hooks) == 0
 
     def test_adapted_prompt_returned_in_output(self):

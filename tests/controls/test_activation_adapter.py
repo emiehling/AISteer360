@@ -74,15 +74,11 @@ def _pipe(control, model):
 
 def _hidden_at(model, layer_id, pipeline, input_ids):
     """Capture the (steered) output of `layer_id` under the pipeline's state controls, single pass."""
-    import contextlib
-
-    pipeline._setup_state_controls(input_ids, {})
+    entries = pipeline._collect_state_entries(input_ids, {})
+    backend = pipeline._backend_for(pipeline._resolve_backend_spec(None))
     captured = {}
 
-    with contextlib.ExitStack() as stack:
-        for c in pipeline.state_controls:
-            stack.enter_context(c)
-
+    with backend.open_session() as session, session.entries_applied(entries):
         def _cap(module, args, kwargs, output):
             captured["h"] = (output[0] if isinstance(output, tuple) else output).detach().clone()
 

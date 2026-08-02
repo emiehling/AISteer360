@@ -135,7 +135,8 @@ class TestDiagnosticsLifecycle:
         assert all(isinstance(v, float) for v in decision.scores.values())
         assert len(decision.open_per_row) == 1
 
-        control.reset()
+        # a new generation's hook build resets the gate; the decision clears
+        control.get_hooks(torch.tensor([[3, 4, 5]]), None)
         assert control.latest_decision is None
         assert not control._gate.is_ready()  # evidence cleared; gate awaits the next prefill
 

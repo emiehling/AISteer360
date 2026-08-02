@@ -3,7 +3,6 @@ Core steering pipeline for composing and applying multiple LLM control methods.
 """
 import contextlib
 import dataclasses
-import inspect
 import logging
 import warnings
 from collections.abc import Mapping
@@ -64,9 +63,9 @@ from aisteer360.algorithms.core.utils.generation import (
     apply_adapt_messages_and_tokenize,
 )
 from aisteer360.algorithms.input_control.base import InputControl
+from aisteer360.algorithms.core.execution.session import SteeredSession
 from aisteer360.algorithms.output_control.base import (
     DecodingDriver,
-    HFGenerateDriver,
     OutputControl,
 )
 from aisteer360.algorithms.state_control.base import StateControl
@@ -184,7 +183,6 @@ class SteeringPipeline:
     input_controls: list[InputControl] = field(init=False)
     state_controls: list[StateControl] = field(init=False)
     output_controls: list[OutputControl] = field(init=False)
-    _default_driver: DecodingDriver = field(init=False, repr=False)
 
     _is_steered: bool = field(default=False, init=False, repr=False)
     _warned_tensor_with_adapt_messages: bool = field(default=False, init=False, repr=False)
@@ -198,7 +196,6 @@ class SteeringPipeline:
         self.input_controls = controls_merged["input_controls"]
         self.state_controls = controls_merged["state_controls"]
         self.output_controls = controls_merged["output_controls"]
-        self._default_driver = HFGenerateDriver()
 
         # load HF artifacts
         if not self.lazy_init:
@@ -612,38 +609,38 @@ class SteeringPipeline:
 
         return steered_input_ids, attention_mask
 
-    def _setup_state_controls(
+    def _collect_state_entries(
             self,
             steered_input_ids: torch.Tensor,
             runtime_kwargs: dict | None,
             attention_mask: torch.Tensor | None = None,
             **kwargs,
     ) -> tuple[HookEntry, ...]:
-        """Configure every state control's hooks for the current forward/generate call.
+        """Collect every enabled state control's hooks for the current logical generation.
 
-        Prepares each state control (in list order) by computing hooks based on the (already
-        transformed) input and setting up the model reference for the context manager.
+        Hooks are per-generation artifacts built here, once per logical generation: they close
+        over the prompt anchor, sized gate state, and a fresh position clock. They travel only
+        as `HookEntry` contributions; the session that executes forwards owns registration, and
+        controls are never mutated.
 
         Args:
             steered_input_ids: Input token IDs after input control transformation
             runtime_kwargs: Per-call parameters for state controls
             attention_mask: The prompt attention mask matching `steered_input_ids`. Forwarded to
-                `get_hooks` so controls (e.g. CAST) score conditions on the real prompt tokens rather
-                than re-deriving a pad mask by token identity.
-            **kwargs: Additional arguments passed to get_hooks()
+                hook construction so condition scorers see the real (non-pad) prompt tokens
+                rather than re-deriving a pad mask by token identity.
+            **kwargs: Additional arguments passed to hook construction
 
         Returns:
-            One `HookEntry` per state control, in controls-list order, carrying the hooks the
-            control computed for this call.
+            One `HookEntry` per enabled state control, in controls-list order.
         """
         entries: list[HookEntry] = []
         for state_control in self.state_controls:
-            state_control.reset()  # reset before get_hooks() to clear state from previous generation
-            state_control._model_ref = self.model
+            if not getattr(state_control, "enabled", True):
+                continue
             hooks = state_control.get_hooks(
                 steered_input_ids, runtime_kwargs, attention_mask=attention_mask, model=self.model, **kwargs
             )
-            state_control.set_hooks(hooks)
             entries.append(HookEntry(hooks=hooks))
         return tuple(entries)
 
@@ -674,8 +671,9 @@ class SteeringPipeline:
         for index in range(steered_input_ids.size(0)):
             entries: list[HookEntry] = []
             for state_control in self.state_controls:
+                if not getattr(state_control, "enabled", True):
+                    continue
                 clone = state_control.clone_for_call()
-                clone.reset()
                 hooks = clone.get_hooks(
                     steered_input_ids[index:index + 1],
                     runtime_kwargs,
@@ -777,16 +775,18 @@ class SteeringPipeline:
                 contributions[id(control)] = source
         return contributions
 
-    def _resolve_decoding_driver(self) -> DecodingDriver:
-        """The sole enabled DecodingDriver, else the default (model.generate).
+    def _resolve_decoding_driver(self) -> DecodingDriver | None:
+        """The sole enabled DecodingDriver, or None for the pipeline's default decode loop.
 
         merge_controls guarantees at most one enabled driver at construction; `enabled` is
-        re-checked here so a driver disabled afterward falls back cleanly.
+        re-checked here so a driver disabled afterward falls back cleanly. The default loop
+        (per-prompt items executed by the inference session) is pipeline infrastructure, not a
+        phantom control.
         """
         for control in self.output_controls:
             if isinstance(control, DecodingDriver) and getattr(control, "enabled", True):
                 return control
-        return self._default_driver
+        return None
 
     def _lowered_contributions(self, runtime_kwargs: dict | None) -> dict[int, Mapping]:
         """Sampling-expressible contributions from enabled output controls, keyed by `id()`.
@@ -1355,20 +1355,20 @@ class SteeringPipeline:
         hooks_in_process = Capability.IN_PROCESS_TORCH in inference_capabilities.atoms
         has_enabled_state = any(getattr(control, "enabled", True) for control in self.state_controls)
 
-        # state-control entry selection per backend: an in-process backend gets hooks via the
-        # existing get_hooks path; an intervention-capable backend gets exported specs. On the
-        # in-process path, distinct per-item derived seeds run serially in the session, so hooks
-        # are computed per row there rather than once on the batch.
+        # state-control entry selection per backend: an in-process backend gets hooks built
+        # once per logical generation; an intervention-capable backend gets exported specs. On
+        # the in-process path, distinct per-item derived seeds run serially in the session, so
+        # hooks are computed per row there rather than once on the batch.
         state_entry_rows: list[tuple[HookEntry, ...]] | None = None
         state_entries: tuple[StateControlEntry, ...] = ()
-        if decoding_driver is not self._default_driver:
+        if decoding_driver is not None:
             if has_enabled_state and not hooks_in_process:
                 raise UnsupportedOperationError(
                     "Custom decoding drivers execute state controls as in-process hooks, which the "
                     f"'{inference_spec.kind}' backend does not run; run this pipeline on the "
                     "huggingface backend."
                 )
-            state_entries = self._setup_state_controls(
+            state_entries = self._collect_state_entries(
                 steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs
             )
         elif not hooks_in_process:
@@ -1383,13 +1383,14 @@ class SteeringPipeline:
                 steered_input_ids, steered_attention_mask, runtime_kwargs, **gen_kwargs
             )
         else:
-            state_entries = self._setup_state_controls(
+            state_entries = self._collect_state_entries(
                 steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs
             )
 
         with backend.open_session() as session:
-            if decoding_driver is not self._default_driver:
-                # client-side driver path: composed stacks, ambient hooks, rollouts on the session
+            if decoding_driver is not None:
+                # client-side driver path: composed stacks, session-hosted hooks for the span
+                # of the decode, rollouts through a SteeredSession
                 logits_processors, stopping_criteria = self._compose_stacks(
                     steered_input_ids, runtime_kwargs, steered_attention_mask, gen_kwargs,
                     skip_ids=skip_ids,
@@ -1397,24 +1398,23 @@ class SteeringPipeline:
                 params = GenerationParams.from_gen_kwargs(**gen_kwargs)
                 for contribution in lowered.values():
                     params = merge_lowered_params(params, contribution)
-                driver = decoding_driver
-                driver_kwargs: dict[str, Any] = {}
-                try:
-                    if "session" in inspect.signature(driver.decode).parameters:
-                        driver_kwargs["session"] = session
-                except (TypeError, ValueError):
-                    driver_kwargs["session"] = session
-                with contextlib.ExitStack() as stack:  # hooks live only for duration of decoding
-                    for state_control in self.state_controls:
-                        stack.enter_context(state_control)
-                    full_output_ids = driver.decode(
+                # the session hosts this generation's hooks for the whole decode, so rollouts
+                # through the session and auxiliary forwards on the live model are steered
+                # alike; the SteeredSession injects nothing in process (ambient hooks already
+                # cover its items)
+                if state_entries and hooks_in_process:
+                    applied = session.entries_applied(state_entries)
+                else:
+                    applied = contextlib.nullcontext()
+                with applied:
+                    full_output_ids = decoding_driver.decode(
                         input_ids=steered_input_ids,
                         attention_mask=steered_attention_mask,
                         model=self.model,
                         logits_processors=logits_processors,
                         stopping_criteria=stopping_criteria,
                         runtime_kwargs=runtime_kwargs,
-                        **driver_kwargs,
+                        session=SteeredSession(session),
                         **params.to_gen_kwargs(),
                     )
                 prompt_len = steered_input_ids.size(1)
@@ -1630,7 +1630,7 @@ class SteeringPipeline:
                 steered_input_ids, steered_attention_mask
             )
             if hooks_in_process:
-                state_entries = self._setup_state_controls(
+                state_entries = self._collect_state_entries(
                     steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
                     **forward_kwargs,
                 )
@@ -1687,7 +1687,7 @@ class SteeringPipeline:
                     runtime_kwargs=runtime_kwargs,
                 )
                 if hooks_in_process:
-                    state_entries = self._setup_state_controls(
+                    state_entries = self._collect_state_entries(
                         steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask,
                         **forward_kwargs,
                     )
@@ -1745,15 +1745,12 @@ class SteeringPipeline:
             if ref_len == 0:
                 return torch.zeros((batch_size, 0), device=device, dtype=torch.float32)
 
-            # state controls
-            self._setup_state_controls(
+            # state controls, hosted by the in-process session for the span of the forward
+            state_entries = self._collect_state_entries(
                 steered_input_ids, runtime_kwargs, attention_mask=attention_mask, **forward_kwargs
             )
-
-            # forward pass under state control context
-            with contextlib.ExitStack() as stack:
-                for state_control in self.state_controls:
-                    stack.enter_context(state_control)
+            backend = self._backend_for(self._resolve_backend_spec(self.backend))
+            with backend.open_session() as session, session.entries_applied(state_entries):
                 with torch.no_grad():
                     outputs = self.model(
                         input_ids=steered_input_ids,
@@ -1815,15 +1812,12 @@ class SteeringPipeline:
                 runtime_kwargs=runtime_kwargs,
             )
 
-            # state controls
-            self._setup_state_controls(
+            # state controls, hosted by the in-process session for the span of the forward
+            state_entries = self._collect_state_entries(
                 steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **forward_kwargs
             )
-
-            # forward pass under state control context
-            with contextlib.ExitStack() as stack:
-                for state_control in self.state_controls:
-                    stack.enter_context(state_control)
+            backend = self._backend_for(self._resolve_backend_spec(self.backend))
+            with backend.open_session() as session, session.entries_applied(state_entries):
                 with torch.no_grad():
                     outputs = self.model(
                         input_ids=steered_input_ids,
