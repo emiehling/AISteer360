@@ -414,10 +414,11 @@ def remap_prompt_relative_scopes(spec: InterventionSpec, anchor: int) -> Interve
     request's own prompt length, and a driver rollout's request prompt is the accumulated
     prefix rather than the user prompt. The wire form of a scope inside a driver generation is
     therefore absolute: `after_prompt` becomes `from_position` at `anchor` (the generation's
-    original prompt boundary) and `last_k` becomes `from_position` at `anchor - k`. The rewrite
-    changes one scalar per op, so artifact ids are untouched; the cache salt varies with the
-    anchor, which is correct, since differently anchored requests compute different hidden
-    states.
+    original prompt boundary). The rewrite changes one scalar per op, so artifact ids are
+    untouched; the cache salt varies with the anchor, which is correct, since differently
+    anchored requests compute different hidden states. The `last_k` kind is refused: its
+    in-process semantics are relative to each forwarded pass, which no absolute position can
+    reproduce across rollouts.
 
     Args:
         spec: The lowered spec.
@@ -425,6 +426,9 @@ def remap_prompt_relative_scopes(spec: InterventionSpec, anchor: int) -> Interve
 
     Returns:
         The rewritten spec (the same object when nothing changed), sharing `artifacts`.
+
+    Raises:
+        ValueError: If an op carries a `last_k` scope.
     """
     ops = []
     changed = False
@@ -435,9 +439,11 @@ def remap_prompt_relative_scopes(spec: InterventionSpec, anchor: int) -> Interve
             op = {**op, "scope": {"kind": "from_position", "position": int(anchor)}}
             changed = True
         elif kind == "last_k":
-            position = max(int(anchor) - int(scope.get("k", 0)), 0)
-            op = {**op, "scope": {"kind": "from_position", "position": position}}
-            changed = True
+            raise ValueError(
+                "last_k has no absolute rollout form: it is relative to each forwarded pass "
+                "in process, which no fixed position reproduces across rollouts; use "
+                "from_position, or run this driver on the huggingface backend."
+            )
         ops.append(op)
     if not changed:
         return spec

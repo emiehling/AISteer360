@@ -265,7 +265,7 @@ class InterventionControl(StateControl):
         else:
             prompt_mask = None
 
-        return build_hooks(self.interventions, layout, prompt_lens, prompt_mask)
+        return build_hooks(self.interventions, layout, prompt_lens, prompt_mask, model=kwargs.get("model"))
 
     def export_intervention_spec(self, runtime_kwargs: dict | None = None):
         """The control's `InterventionSpec`, lowered from the bound interventions, or None.

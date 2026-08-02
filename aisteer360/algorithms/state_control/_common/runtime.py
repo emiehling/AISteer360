@@ -452,6 +452,7 @@ def build_hooks(
     layout,
     prompt_lens: torch.Tensor,
     prompt_mask: torch.Tensor | None = None,
+    model=None,
 ) -> dict[str, list]:
     """Compile bound interventions to torch hooks for one logical generation.
 
@@ -477,6 +478,8 @@ def build_hooks(
             `compute_prompt_lens`); defines the logical batch size for row gating.
         prompt_mask: Optional pad-aware prompt attention mask of shape `[B_logical, T_prompt]`,
             forwarded to condition scorers on the prefill pass.
+        model: Optional live model, consulted only to skip norm sub-modules a layer does not
+            define at the `"norm_input"` site.
 
     Returns:
         Hook specifications keyed by phase (`"pre"`, `"forward"`, `"backward"`), each entry a
@@ -524,6 +527,8 @@ def build_hooks(
             if site == "norm_input":
                 for norm_attr in layout.norm_attrs:
                     module = f"{layout.layer_names[layer_id]}.{norm_attr}"
+                    if model is not None and not _submodule_exists(model, module):
+                        continue
                     units.append((
                         (layer_id, site_rank["norm"], 1, module),
                         {
@@ -556,10 +561,11 @@ def build_hooks(
     if not units:
         return hooks
 
-    opener_key = min(key for key, _ in units)
+    # exactly one opener: the first-registered unit among those sharing the minimal firing key
+    opener_index = min(range(len(units)), key=lambda index: units[index][0])
 
-    for key, unit in units:
-        is_opener = key == opener_key
+    for index, (key, unit) in enumerate(units):
+        is_opener = index == opener_index
         if unit["kind"] == "condition":
             hook_func = runtime.build_condition_hook(
                 layer_id=unit["layer_id"],
@@ -583,3 +589,12 @@ def build_hooks(
         hooks[unit["phase"]].append({"module": unit["module"], "hook_func": hook_func})
 
     return hooks
+
+
+def _submodule_exists(model, module_path: str) -> bool:
+    """True when `module_path` resolves on the model's module tree."""
+    try:
+        model.get_submodule(module_path)
+    except AttributeError:
+        return False
+    return True

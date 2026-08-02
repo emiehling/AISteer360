@@ -520,8 +520,15 @@ class Intervention:
             if modifier_kind is None:
                 return None
             modifiers.add(modifier_kind)
-        if self.boundary == "layer_input" and isinstance(self.layers, tuple) and 0 in self.layers:
-            return None  # layer 0 input edits precede the first wire boundary
+        if (
+            self.boundary == "layer_input"
+            and self.resolved_site() == "decoder_layer"
+            and isinstance(self.layers, tuple)
+            and 0 in self.layers
+        ):
+            # layer 0 input edits precede the first wire boundary; the o_proj site keeps its
+            # layer index on the wire, so layer 0 stays expressible there
+            return None
         gates = _gate_wire_kinds(self.gate, self.condition)
         if gates is None:
             return None
@@ -543,11 +550,12 @@ def _gate_wire_kinds(gate, condition) -> frozenset[str] | None:
     """Wire gate kinds for a gate/condition pair; None marks the gating hook-only.
 
     Probe-backed gating is the only conditional configuration with a wire form: the gate must
-    be a `ProbeSumGate` (bare or `cache_once`-wrapped) and the condition's scorer must be the
-    `ProbeContributionScorer` over the same probe with condition layers matching the probe's
-    layers, since the wire gate computes the scorer's affine evidence from the probe weights
-    itself. A bare probe gate still plans `cache_once`, the wire form of the
-    prompt-scored-once convention.
+    be a `ProbeSumGate` (bare or `cache_once`-wrapped), since the wire gate computes the
+    scorer's affine evidence from the probe weights itself. With a condition, its scorer must
+    be the `ProbeContributionScorer` over the same probe with condition layers matching the
+    probe's layers. Without a condition (the follower half of a shared-gate composition), the
+    probe itself supplies the evidence layers, so the gating still lowers. A bare probe gate
+    plans `cache_once`, the wire form of the prompt-scored-once convention.
     """
     from .condition_scorers import ProbeContributionScorer
     from .gates.base import AlwaysOpenGate, BaseGate
@@ -561,15 +569,14 @@ def _gate_wire_kinds(gate, condition) -> frozenset[str] | None:
     inner = gate.inner if isinstance(gate, CacheOnceGate) else gate
     if not isinstance(inner, ProbeSumGate):
         return None
-    if condition is None:
-        return None
-    scorer = condition.scorer
-    if not isinstance(scorer, ProbeContributionScorer):
-        return None
-    if scorer.probe is not inner.probe:
-        return None
-    if set(condition.layer_ids) != set(inner.probe.layer_ids):
-        return None
+    if condition is not None:
+        scorer = condition.scorer
+        if not isinstance(scorer, ProbeContributionScorer):
+            return None
+        if scorer.probe is not inner.probe:
+            return None
+        if set(condition.layer_ids) != set(inner.probe.layer_ids):
+            return None
     return frozenset({"cache_once", "probe_sum"})
 
 
@@ -665,14 +672,19 @@ def _merge_gate_condition(
     """The wire gate for a gate/condition pair, folding the toolkit's gate/scorer/condition
     split into the wire `GateSpec`.
 
-    The wire gate's params are the gate's exported params plus `condition_layers` from
-    `condition.layer_ids` plus the scorer form's params; the wire gate's artifact is the
-    gate's exported tensors if any, else the scorer form's tensors. Both sides exporting
-    tensors, or exporting conflicting param values, is a compile error. Returns the Ellipsis
-    sentinel for an ungated op (always-open), None when the configuration has no wire form.
+    The wire gate's params are the gate's exported params plus `condition_layers` plus the
+    scorer form's params; the wire gate's artifact is the gate's exported tensors if any, else
+    the scorer form's tensors. Both sides exporting tensors, or exporting conflicting param
+    values, is a compile error. A probe gate's evidence layers follow the probe's own layer
+    order (the exported weight rows align with it) at the probe's fitted boundary; a
+    condition, when present, must cover the same layer set. Without a condition (the follower
+    half of a shared-gate composition), the probe alone supplies the evidence layers. Returns
+    the Ellipsis sentinel for an ungated op (always-open), None when the configuration has no
+    wire form.
     """
     from .gates.base import AlwaysOpenGate, BaseGate
     from .gates.cache_once import CacheOnceGate
+    from .gates.probe_sum import ProbeSumGate
 
     if gate is None or not isinstance(gate, BaseGate):
         return None
@@ -689,23 +701,33 @@ def _merge_gate_condition(
         return None
     if form.kind == "null":
         return ...
-    if condition is None:
-        return None  # a conditional wire gate reads evidence at declared condition layers
-    from .gates.probe_sum import ProbeSumGate
 
-    if isinstance(gate, ProbeSumGate) and tuple(condition.layer_ids) != tuple(gate.probe.layer_ids):
-        raise ValueError(
-            "Condition layers must match the probe's layer order exactly; the wire gate's "
-            f"weight rows align with condition_layers. Got {tuple(condition.layer_ids)} vs "
-            f"probe layers {tuple(gate.probe.layer_ids)}."
-        )
     params = dict(form.params)
     tensors = dict(form.tensors)
+
+    if isinstance(gate, ProbeSumGate):
+        if condition is not None and set(condition.layer_ids) != set(gate.probe.layer_ids):
+            raise ValueError(
+                "Condition layers must cover the probe's layers exactly; the wire gate's "
+                f"weight rows align with the probe. Got {tuple(condition.layer_ids)} vs "
+                f"probe layers {tuple(gate.probe.layer_ids)}."
+            )
+        # the probe owns the evidence layers and their order (weight rows align with them),
+        # read at the probe's fitted boundary
+        condition_layers = [int(layer_id) for layer_id in gate.probe.layer_ids]
+        condition_boundary = gate.probe.location
+    elif condition is not None:
+        condition_layers = list(condition.layer_ids)
+        condition_boundary = boundary
+    else:
+        return None  # a conditional wire gate reads evidence at declared condition layers
+
+    mapped = _map_condition_layers(condition_layers, condition_boundary, num_layers)
+    if mapped is None:
+        return None
+    params["condition_layers"] = mapped
+
     if condition is not None:
-        mapped = _map_condition_layers(condition.layer_ids, boundary, num_layers)
-        if mapped is None:
-            return None
-        params["condition_layers"] = mapped
         scorer_export = getattr(condition.scorer, "export", None)
         scorer_form = scorer_export() if callable(scorer_export) else None
         if scorer_form is None:
@@ -724,6 +746,7 @@ def _merge_gate_condition(
                     "own the wire artifact."
                 )
             tensors = dict(scorer_form.tensors)
+
     wire: dict[str, Any] = {"kind": form.kind, **params}
     if tensors:
         wire["artifact"] = register(tensors)

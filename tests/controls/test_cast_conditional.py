@@ -243,9 +243,9 @@ class TestConditionMaskThreading:
         captured = {}
         original = runtime_module.build_hooks
 
-        def capture(interventions, layout, prompt_lens, prompt_mask=None):
+        def capture(interventions, layout, prompt_lens, prompt_mask=None, model=None):
             captured["prompt_mask"] = prompt_mask
-            return original(interventions, layout, prompt_lens, prompt_mask)
+            return original(interventions, layout, prompt_lens, prompt_mask, model=model)
 
         monkeypatch.setattr(runtime_module, "build_hooks", capture)
         control.get_hooks(ids, runtime_kwargs=None, attention_mask=attention_mask)

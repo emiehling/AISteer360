@@ -149,14 +149,18 @@ class TestWireAnchorRewrite:
         # compute different hidden states
         assert rewritten.salt() != spec.salt()
 
-    def test_last_k_rewrites_to_absolute_anchor(self):
+    def test_last_k_has_no_absolute_rollout_form(self):
+        import pytest
+
         from aisteer360.algorithms.core.execution.payloads import (
             remap_prompt_relative_scopes,
         )
 
         spec = self._lowered_spec({"kind": "last_k", "last_k": 3})
-        rewritten = remap_prompt_relative_scopes(spec, anchor=7)
-        assert rewritten.ops[0]["scope"] == {"kind": "from_position", "position": 4}
+        # in-process last_k is relative to each forwarded pass, which no fixed position
+        # reproduces across rollouts, so the rewrite refuses rather than misanchor
+        with pytest.raises(ValueError, match="last_k"):
+            remap_prompt_relative_scopes(spec, anchor=7)
 
     def test_absolute_scopes_pass_through_unchanged(self):
         from aisteer360.algorithms.core.execution.payloads import (

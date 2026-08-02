@@ -644,15 +644,17 @@ class SteeringPipeline:
         Returns:
             One `HookEntry` per enabled state control, in controls-list order.
         """
-        if self._lowered_state:  # populated at steer() for spec-consuming inference backends
+        inference_spec = self._resolve_backend_spec(self.backend)
+        capabilities = capabilities_for_spec(inference_spec)
+        if Capability.IN_PROCESS_TORCH not in capabilities.atoms:
+            # spec-consuming inference backend: entries come from the steer-time lowering
+            # cache, filled lazily for a control enabled after steer()
             entries = []
             for state_control in self.state_controls:
                 if not state_control.enabled:
                     continue
                 entry = self._lowered_state.get(id(state_control))
-                if entry is None:  # enabled after steer(); lower it now
-                    inference_spec = self._resolve_backend_spec(self.backend)
-                    capabilities = capabilities_for_spec(inference_spec)
+                if entry is None:
                     backend = self._backend_for(inference_spec)
                     served = ((getattr(backend, "_discovery", None) or {}).get("model") or {})
                     payloads: dict = {}
@@ -778,6 +780,47 @@ class SteeringPipeline:
             )
         payloads.update(spec.artifacts)
         return InterventionEntry(spec=spec)
+
+    @staticmethod
+    def _rollout_entries(state_entries, steered_input_ids, steered_attention_mask) -> tuple:
+        """Rollout variants of the lowered entries for a driver on a spec-consuming backend.
+
+        Prompt-relative scopes are rewritten to absolute positions at the generation's
+        original prompt boundary. The rewrite needs one exact anchor per generation, and a
+        rollout item cannot be traced back to a batch row, so uneven batches (rows whose true
+        prompt lengths differ under padding) are refused. Conditional gates are refused too:
+        a worker gate re-anchors its evidence at each rollout request's own prompt end, which
+        would decide from generated text instead of the original prompt.
+
+        Raises:
+            UnsupportedOperationError: If the batch is uneven, a scope has no absolute rollout
+                form, or an entry carries a conditional gate.
+        """
+        if steered_attention_mask is not None and not bool(steered_attention_mask.bool().all()):
+            raise UnsupportedOperationError(
+                "Driver rollouts on a spec-consuming backend need one exact prompt anchor per "
+                "generation, and padded batch rows have per-row anchors; submit prompts of "
+                "equal length, one prompt per call, or run this pipeline on the huggingface "
+                "backend."
+            )
+        anchor = steered_input_ids.size(1)
+        rollout_entries = []
+        for entry in state_entries:
+            if not isinstance(entry, InterventionEntry):
+                rollout_entries.append(entry)
+                continue
+            if any(op.get("gate") is not None for op in entry.spec.to_wire()["ops"]):
+                raise UnsupportedOperationError(
+                    "Conditional gating has no rollout form on a spec-consuming backend: the "
+                    "worker anchors gate evidence at each rollout request's own prompt end; "
+                    "run gated controls under a decoding driver on the huggingface backend."
+                )
+            try:
+                rewritten = remap_prompt_relative_scopes(entry.spec, anchor)
+            except ValueError as error:
+                raise UnsupportedOperationError(str(error)) from error
+            rollout_entries.append(InterventionEntry(spec=rewritten))
+        return tuple(rollout_entries)
 
     @staticmethod
     def _lowering_failure_reason(state_control) -> str:
@@ -1460,11 +1503,8 @@ class SteeringPipeline:
                 else:
                     applied = contextlib.nullcontext()
                     if state_entries:
-                        anchor = steered_input_ids.size(1)
-                        rollout_entries = tuple(
-                            InterventionEntry(spec=remap_prompt_relative_scopes(entry.spec, anchor))
-                            if isinstance(entry, InterventionEntry) else entry
-                            for entry in state_entries
+                        rollout_entries = self._rollout_entries(
+                            state_entries, steered_input_ids, steered_attention_mask,
                         )
                 with applied:
                     full_output_ids = decoding_driver.decode(

@@ -89,7 +89,6 @@ class ContrastiveFit:
     """
 
     produces_positional: ClassVar[bool] = False
-    steer_needs: ClassVar[str] = "hidden_capture"
     steer_hint: ClassVar[str] = (
         "supply a fitted `steering_vector`, or run the steer phase on a backend "
         "with hidden-state capture (huggingface, or offline vLLM with the plugin)"
@@ -107,6 +106,12 @@ class ContrastiveFit:
 
     _model_ref: "weakref.ref | None" = field(default=None, init=False, repr=False, compare=False)
     _master: SteeringVector | None = field(default=None, init=False, repr=False, compare=False)
+
+    @property
+    def steer_needs(self) -> str:
+        """`"hidden_capture"` for the built-in estimators, whose extraction runs through
+        session capture; a custom estimator may need the live model, so it is conservative."""
+        return "in_process_torch" if self.estimator is not None else "hidden_capture"
 
     def __post_init__(self):
         if not isinstance(self.data, ContrastivePairs):

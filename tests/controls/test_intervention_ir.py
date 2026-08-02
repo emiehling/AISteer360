@@ -473,15 +473,32 @@ class TestLowerInterventions:
         with pytest.raises(ValueError, match="exactly one may own"):
             lower_interventions([intervention], num_layers=8)
 
-    def test_condition_layer_order_must_match_probe(self):
-        probe = _probe(layer_ids=(2, 4))
-        condition = Condition(layer_ids=(4, 2), scorer=ProbeContributionScorer(probe))
+    def test_condition_layers_follow_probe_order_on_the_wire(self):
+        """The exported weight rows align with the probe's layer order, so the wire
+        condition_layers follow the probe regardless of the condition's declaration order."""
+        probe = _probe(layer_ids=(4, 2))
+        condition = Condition(layer_ids=(2, 4), scorer=ProbeContributionScorer(probe))
         intervention = Intervention(
             layers=(3,), transform=AdditiveTransform({3: torch.ones(1, H)}),
             gate=ProbeSumGate(probe), condition=condition,
         )
-        with pytest.raises(ValueError, match="probe's layer order"):
-            lower_interventions([intervention], num_layers=8)
+        spec = lower_interventions([intervention], num_layers=8)
+        inner = spec.ops[0]["gate"]["inner"]
+        assert inner["condition_layers"] == [5, 3]  # probe order, mapped to wire indices
+
+    def test_follower_probe_gate_lowers_without_a_condition(self):
+        """The follower half of a shared-gate composition (probe gate, no condition) lowers;
+        the probe supplies the evidence layers itself."""
+        probe = _probe(layer_ids=(2,))
+        intervention = Intervention(
+            layers=(3,), transform=AdditiveTransform({3: torch.ones(1, H)}),
+            gate=ProbeSumGate(probe),
+        )
+        assert intervention.wire_kinds() is not None
+        spec = lower_interventions([intervention], num_layers=8)
+        inner = spec.ops[0]["gate"]["inner"]
+        assert inner["kind"] == "probe_sum"
+        assert inner["condition_layers"] == [3]
 
     def test_round_trip_through_plugin_parser(self):
         from vllm_hook_plugins.core.schema import parse_intervention_spec
@@ -499,3 +516,39 @@ class TestLowerInterventions:
         parsed = parse_intervention_spec(spec.to_wire(), num_layers=8)
         assert len(parsed.ops) == 2
         assert parsed.condition_layers() == frozenset({3})
+
+
+class TestReviewRegressions:
+    """Regression pins from the adversarial review of the seam landing."""
+
+    def test_two_interventions_at_the_same_lowest_layer_elect_one_opener(self):
+        from aisteer360.algorithms.state_control._common.model_layout import ModelLayout as ModulePaths
+        from aisteer360.algorithms.state_control._common.runtime import build_hooks
+
+        layout = ModulePaths(
+            family="llama_style", layer_prefix="model.layers", num_layers=8,
+            attn_suffix=".self_attn", oproj_suffix=".self_attn.o_proj",
+            norm_attrs=("input_layernorm", "post_attention_layernorm"),
+        )
+        first = Intervention(layers=(3,), transform=AdditiveTransform({3: torch.ones(1, H)}))
+        second = Intervention(layers=(3,), transform=AdditiveTransform({3: torch.ones(1, H)}))
+        hooks = build_hooks([first, second], layout, torch.tensor([4]))
+        assert len(hooks["forward"]) == 2  # both interventions hook; exactly one opener elected
+
+    def test_layer_zero_head_additive_keeps_its_wire_form(self):
+        """The o_proj site keeps its layer index on the wire, so layer 0 stays expressible."""
+        head_dim = H // 4
+        steering_vector = SteeringVector(
+            model_type="test", directions={0: torch.ones(4, head_dim)},
+            num_heads=4, head_dim=head_dim,
+        )
+        intervention = Intervention(
+            layers=(0,),
+            transform=HeadAdditiveTransform(steering_vector, active_heads={0: {1}}),
+            boundary="layer_input",
+        )
+        kinds = intervention.wire_kinds()
+        assert kinds is not None and "head_additive" in kinds.transforms
+        spec = lower_interventions([intervention], num_layers=8)
+        assert spec is not None
+        assert spec.ops[0]["layers"] == [0]
