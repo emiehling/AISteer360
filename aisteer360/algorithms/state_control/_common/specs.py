@@ -10,6 +10,7 @@ re-derives another layer's configuration by introspection.
 from __future__ import annotations
 
 import hashlib
+from types import EllipsisType
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
@@ -660,7 +661,7 @@ def _merge_gate_condition(
     boundary: Boundary,
     num_layers: int,
     register,
-) -> dict[str, Any] | None | type(...):
+) -> "dict[str, Any] | None | EllipsisType":
     """The wire gate for a gate/condition pair, folding the toolkit's gate/scorer/condition
     split into the wire `GateSpec`.
 
