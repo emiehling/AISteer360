@@ -7,11 +7,16 @@ the bias once at decision time; see `condition_scorers` for the scorer and the
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, ClassVar
+
 import torch
 
 from aisteer360.algorithms.core.internals.probes.probe import Probe
 
 from .base import BaseGate
+
+if TYPE_CHECKING:
+    from ..specs import WireForm
 
 
 class ProbeSumGate(BaseGate):
@@ -26,6 +31,8 @@ class ProbeSumGate(BaseGate):
     Args:
         probe: The probe whose layers and bias define the decision.
     """
+
+    wire_kind: ClassVar[str | None] = "probe_sum"
 
     def __init__(self, probe: Probe):
         self.probe = probe
@@ -59,6 +66,25 @@ class ProbeSumGate(BaseGate):
     def is_ready(self) -> bool:
         """True once every expected condition layer has reported."""
         return self.expected_keys <= self._contributions.keys()
+
+    def export(self) -> "WireForm | None":
+        """The `probe_sum` wire form built from the probe.
+
+        The `weights` tensor stacks the probe's per-layer weight vectors row-aligned with the
+        probe's layer order, and the calibrated bias travels as the artifact's scalar `bias`
+        tensor. The intervention's `Condition` supplies the wire `condition_layers`, merged in
+        by the lowering.
+        """
+        from ..specs import WireForm
+
+        weights = torch.stack(
+            [self.probe.weights[layer_id].to(torch.float32) for layer_id in self.probe.layer_ids]
+        )
+        return WireForm(
+            kind="probe_sum",
+            params={"pooling": self.probe.pooling},
+            tensors={"weights": weights, "bias": torch.tensor(float(self.probe.bias))},
+        )
 
     def to_intervention_gate(self) -> dict | None:
         """The `probe_sum` wire payload built from the probe.

@@ -11,7 +11,7 @@ from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate
 from aisteer360.algorithms.state_control._common.gates.base import BaseGate
 from aisteer360.algorithms.state_control._common.selectors.base import BaseSelector
-from aisteer360.algorithms.state_control._common.token_scope import TokenScope
+from aisteer360.algorithms.state_control._common.token_scope import ScopeKind
 from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform
 from aisteer360.algorithms.state_control._common.transforms.context import TransformContext
 
@@ -81,7 +81,7 @@ class ActivationAdapterArgs(BaseArgs):
     score_fn: Callable[..., "torch.Tensor | float"] | None = None  # ConditionScorer: (hidden, layer_id, *, prompt_mask) -> Tensor[B] | float
 
     # token scope
-    token_scope: TokenScope = "after_prompt"
+    token_scope: ScopeKind = "after_prompt"
     last_k: int | None = None
     from_position: int | None = None
 

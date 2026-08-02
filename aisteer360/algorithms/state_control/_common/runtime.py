@@ -44,7 +44,7 @@ from aisteer360.algorithms.core.utils.auxiliary_pass import current_auxiliary_pa
 from .condition_scorers import ConditionScorer
 from .gates.base import BaseGate
 from .hook_utils import extract_hidden_states, replace_hidden_states
-from .token_scope import TokenScope, align_mask_to_batch, make_token_mask
+from .token_scope import ScopeKind, align_mask_to_batch, make_token_mask
 from .transforms.base import BaseTransform
 
 HookPoint = Literal["layer_output", "layer_input"]
@@ -301,7 +301,7 @@ class TransformHookRuntime:
         layer_id: int,
         transform: BaseTransform,
         gate: BaseGate,
-        token_scope: TokenScope,
+        token_scope: ScopeKind,
         last_k: int | None = None,
         from_position: int | None = None,
         is_pass_opener: bool = False,
@@ -414,7 +414,7 @@ class TransformHookRuntime:
         layer_id: int,
         transform: BaseTransform,
         gate: BaseGate,
-        token_scope: TokenScope,
+        token_scope: ScopeKind,
         last_k: int | None,
         from_position: int | None,
         is_pass_opener: bool,

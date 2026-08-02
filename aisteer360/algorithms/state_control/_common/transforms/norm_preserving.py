@@ -1,13 +1,14 @@
 """Wrapper that rescales hidden states to preserve original norms."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import torch
 
 from .base import BaseTransform
 
 if TYPE_CHECKING:
+    from ..specs import WireForm
     from .context import TransformContext
 
 
@@ -25,8 +26,16 @@ class NormPreservingTransform(BaseTransform):
         inner: The transform to wrap.
     """
 
+    wire_kind: ClassVar[str | None] = "norm_preserving"
+    is_modifier: ClassVar[bool] = True
+
     def __init__(self, inner: BaseTransform):
         self._inner = inner
+
+    @property
+    def inner(self) -> BaseTransform:
+        """The wrapped transform."""
+        return self._inner
 
     @property
     def is_bound(self) -> bool:
@@ -55,6 +64,23 @@ class NormPreservingTransform(BaseTransform):
         if kind == "head_additive":
             return None
         return kind, modifiers | {"norm_preserving"}
+
+    def modifier_wire_kind(self, core_kind: str) -> str | None:
+        """`"norm_preserving"`, or None over a per-head core.
+
+        The wire modifier rescales over the last tensor dimension, which matches the hook
+        semantics on the residual stream only; a wrapped `head_additive` (per-head stream) is
+        hook-only.
+        """
+        if core_kind == "head_additive":
+            return None
+        return "norm_preserving"
+
+    def export_modifier(self, layer_id: int) -> "WireForm | None":
+        """The `norm_preserving` wire modifier form (no params, no tensors)."""
+        from ..specs import WireForm
+
+        return WireForm(kind="norm_preserving")
 
     def to_intervention_op_payload(self, layer_id: int) -> dict | None:
         """The inner transform's wire payload with a `norm_preserving` modifier appended."""

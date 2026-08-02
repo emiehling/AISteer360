@@ -1,7 +1,7 @@
 """Additive activation steering transform."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, ClassVar, Mapping
 
 import torch
 
@@ -10,6 +10,7 @@ from ..steering_vector import SteeringVector
 from .base import BaseTransform
 
 if TYPE_CHECKING:
+    from ..specs import WireForm
     from .context import TransformContext
 
 
@@ -40,6 +41,8 @@ class AdditiveTransform(BaseTransform):
         alignment: Starting position for positional injection (default: 0).
             Only used when T > 1.
     """
+
+    wire_kind: ClassVar[str | None] = "additive"
 
     def __init__(
         self,
@@ -84,6 +87,42 @@ class AdditiveTransform(BaseTransform):
         ):
             return None
         return "additive", frozenset()
+
+    def wire_plan(self) -> str | None:
+        """`"additive"` for broadcast directions; None once a positional direction is present.
+
+        An unbound transform consults its source's declared shape (`produces_positional`).
+        """
+        if self.directions is not None:
+            if any(d.ndim == 2 and d.size(0) > 1 for d in self.directions.values()):
+                return None
+            return "additive"
+        if getattr(self._source, "produces_positional", False):
+            return None
+        return "additive"
+
+    def export(self, layer_id: int) -> "WireForm | None":
+        """The `additive` wire form for `layer_id`, or None for positional directions.
+
+        Semantics are defined for broadcast directions only (`T == 1`), where every steered
+        token receives the same vector; a positional direction (`T > 1`) has no wire form.
+        """
+        from ..specs import WireForm
+
+        if self.directions is None:
+            return None
+        direction = self.directions.get(layer_id)
+        if direction is None:
+            return None
+        if direction.ndim == 2:
+            if direction.size(0) != 1:
+                return None
+            direction = direction.squeeze(0)
+        return WireForm(
+            kind="additive",
+            params={"strength": float(self.strength)},
+            tensors={"vector": direction},
+        )
 
     def to_intervention_op_payload(self, layer_id: int) -> dict | None:
         """The `additive` wire payload for `layer_id`, or None for positional directions.

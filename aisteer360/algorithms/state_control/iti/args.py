@@ -9,7 +9,7 @@ from aisteer360.algorithms.core.internals.data import (
 )
 from aisteer360.algorithms.state_control._common.specs import VectorTrainSpec
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.token_scope import TokenScope
+from aisteer360.algorithms.state_control._common.token_scope import ScopeKind
 
 
 @dataclass
@@ -57,7 +57,7 @@ class ITIArgs(BaseArgs):
 
     # inference configuration
     alpha: float = 15.0
-    token_scope: TokenScope = "after_prompt"
+    token_scope: ScopeKind = "after_prompt"
     last_k: int | None = None
     from_position: int | None = None
     use_norm_preservation: bool = False

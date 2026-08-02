@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Literal, Mapping
+from typing import TYPE_CHECKING, ClassVar, Literal, Mapping
 
 import torch
 
@@ -11,6 +11,7 @@ from ..steering_vector import SteeringVector
 from .base import BaseTransform
 
 if TYPE_CHECKING:
+    from ..specs import WireForm
     from .context import TransformContext
 
 RotationMode = Literal["target", "offset"]
@@ -53,6 +54,8 @@ class RotationTransform(BaseTransform):
       Hieu M. Vu, Tan M. Nguyen
       [https://arxiv.org/abs/2510.26243](https://arxiv.org/abs/2510.26243)
     """
+
+    wire_kind: ClassVar[str | None] = "rotation"
 
     def __init__(
         self,
@@ -108,6 +111,21 @@ class RotationTransform(BaseTransform):
     def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
         """`rotation`; both modes serialize."""
         return "rotation", frozenset()
+
+    def export(self, layer_id: int) -> "WireForm | None":
+        """The `rotation` wire form for `layer_id` (angle, mode, and the `[2, H]` basis)."""
+        from ..specs import WireForm
+
+        if self.steering_vector is None:
+            return None
+        basis = self.steering_vector.directions.get(layer_id)
+        if basis is None:
+            return None
+        return WireForm(
+            kind="rotation",
+            params={"angle": float(self.angle), "mode": self.mode},
+            tensors={"basis": basis},
+        )
 
     def to_intervention_op_payload(self, layer_id: int) -> dict | None:
         """The `rotation` wire payload for `layer_id` (angle, mode, and the `[2, H]` basis)."""

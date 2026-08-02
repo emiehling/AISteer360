@@ -110,6 +110,7 @@ def resolve_transform_slot(
     tokenizer: PreTrainedTokenizerBase | None,
     layer_ids: Sequence[int],
     layout=None,
+    require_coverage: bool = True,
 ) -> BaseTransform:
     """Turn a transform slot into a bound, coverage-checked `BaseTransform` for the given model.
 
@@ -133,6 +134,8 @@ def resolve_transform_slot(
         tokenizer: Tokenizer used when a source fits from data; may be None for concrete artifacts.
         layer_ids: The resolved behavior layers the transform must cover.
         layout: Structural `core.execution.ModelLayout` consulted when `model` is None.
+        require_coverage: When False, skip the coverage check; uncovered layers are hooked and
+            pass through unchanged at apply time.
 
     Returns:
         A bound `BaseTransform` ready for `apply`.
@@ -160,7 +163,7 @@ def resolve_transform_slot(
         )
 
     coverage = built.covered_layer_ids
-    if coverage is not None:
+    if require_coverage and coverage is not None:
         missing = [lid for lid in layer_ids if lid not in coverage]
         if missing:
             raise ValueError(

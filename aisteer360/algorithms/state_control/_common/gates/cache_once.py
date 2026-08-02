@@ -1,4 +1,8 @@
 """Wrapper gate that freezes the per-row decision once ready."""
+from __future__ import annotations
+
+from typing import ClassVar
+
 import torch
 
 from .base import BaseGate
@@ -17,6 +21,8 @@ class CacheOnceGate(BaseGate):
     Args:
         inner: The gate to wrap.
     """
+
+    wire_kind: ClassVar[str | None] = "cache_once"
 
     def __init__(self, inner: BaseGate):
         self.inner = inner

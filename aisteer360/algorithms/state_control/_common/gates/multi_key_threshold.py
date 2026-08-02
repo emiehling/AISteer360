@@ -1,5 +1,7 @@
 """Threshold gate that aggregates per-row scores from multiple condition layers."""
-from typing import Literal
+from __future__ import annotations
+
+from typing import ClassVar, Literal
 
 import torch
 
@@ -24,6 +26,11 @@ class MultiKeyThresholdGate(BaseGate):
     from the paper or the reference repository must flip the comparator. Prefer the aliases
     "score_above" and "score_below".
 
+    The class names the `multi_key_threshold` wire kind, but no configuration of this gate
+    exports (`export()` stays None): the wire kind decides from per-row affine evidence over
+    uploaded weight vectors, while this gate thresholds scores computed by an arbitrary
+    scorer, so the gating runs in process.
+
     Args:
         threshold: Score threshold for comparison.
         comparator: "larger"/"score_above" opens the gate when score >= threshold;
@@ -33,6 +40,8 @@ class MultiKeyThresholdGate(BaseGate):
             the gate is ready after the first update.
         aggregate: "any" opens a row if any key passes for that row. "all" requires all keys.
     """
+
+    wire_kind: ClassVar[str | None] = "multi_key_threshold"
 
     def __init__(
         self,

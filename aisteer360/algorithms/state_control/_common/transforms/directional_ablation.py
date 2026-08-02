@@ -1,7 +1,7 @@
 """Directional ablation transform: projects learned directions out of the residual stream."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, ClassVar, Mapping
 
 import torch
 
@@ -10,6 +10,7 @@ from ..steering_vector import SteeringVector
 from .base import BaseTransform
 
 if TYPE_CHECKING:
+    from ..specs import WireForm
     from .context import TransformContext
 
 
@@ -46,6 +47,8 @@ class DirectionalAblationTransform(BaseTransform):
       Neel Nanda
       [https://arxiv.org/abs/2406.11717](https://arxiv.org/abs/2406.11717)
     """
+
+    wire_kind: ClassVar[str | None] = "directional_ablation"
 
     def __init__(
         self,
@@ -92,6 +95,37 @@ class DirectionalAblationTransform(BaseTransform):
         ):
             return None
         return "directional_ablation", frozenset()
+
+    def wire_plan(self) -> str | None:
+        """`"directional_ablation"` for single-direction full removal; None otherwise.
+
+        The wire kind removes a single direction's component in full, so only `K == 1`
+        directions at `alpha == 1.0` serialize; subspace ablation (`K > 1`) and graded
+        removal (`alpha < 1.0`) are hook-only.
+        """
+        if self.alpha != 1.0:
+            return None
+        if self.directions is not None and any(
+            direction.ndim == 2 and direction.size(0) > 1 for direction in self.directions.values()
+        ):
+            return None
+        return "directional_ablation"
+
+    def export(self, layer_id: int) -> "WireForm | None":
+        """The `directional_ablation` wire form for `layer_id`, or None when the
+        configuration is hook-only (`K > 1` or `alpha != 1.0`)."""
+        from ..specs import WireForm
+
+        if self.directions is None or self.alpha != 1.0:
+            return None
+        direction = self.directions.get(layer_id)
+        if direction is None:
+            return None
+        if direction.ndim == 2:
+            if direction.size(0) != 1:
+                return None
+            direction = direction.squeeze(0)
+        return WireForm(kind="directional_ablation", tensors={"vector": direction})
 
     def to_intervention_op_payload(self, layer_id: int) -> dict | None:
         """The `directional_ablation` wire payload for `layer_id`.
