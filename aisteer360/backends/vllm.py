@@ -475,12 +475,17 @@ class _ArtifactUploader:
         self._written: set[str] = set()
 
     def upload(self, spec: InterventionSpec) -> None:
-        if not spec.artifacts:
+        if spec.artifacts:
+            self.upload_payloads(spec.artifacts)
+
+    def upload_payloads(self, payloads) -> None:
+        """Write content-addressed payloads into the registry, verifying each id."""
+        if not payloads:
             return
         if self._registry is None:
             artifacts_module = require("vllm_hook_plugins.core.artifacts")
             self._registry = artifacts_module.ArtifactRegistry(self._root)
-        for artifact_id, tensors in spec.artifacts.items():
+        for artifact_id, tensors in payloads.items():
             if artifact_id in self._written:
                 continue
             written_id = self._registry.write(dict(tensors))
@@ -649,6 +654,14 @@ class VLLMBackend(Backend):
         self._discovery: dict | None = None
         if spec.get_option("hook_plugin"):
             self._discovery = self._fetch_discovery()
+
+    def stage_artifacts(self, payloads) -> None:
+        """Write each content-addressed artifact into the plugin registry the engine reads.
+
+        The offline engine shares the process's filesystem, so staging is a registry write
+        (idempotent, verified against the content address).
+        """
+        self._artifact_uploader.upload_payloads(payloads)
 
     def _fetch_discovery(self) -> dict | None:
         cached = _DISCOVERY_CACHE.get(self.spec.spec_hash)
@@ -1179,6 +1192,54 @@ class VLLMServeBackend(Backend):
     def _served_model_ids(self) -> list[str]:
         payload = self._get_json("/v1/models")
         return [entry.get("id") for entry in payload.get("data", []) if isinstance(entry, dict)]
+
+    def stage_artifacts(self, payloads) -> None:
+        """Make each content-addressed artifact available to the serving engine.
+
+        With an `artifact_dir` option the payloads are written into that registry root (a
+        filesystem shared with the server). Otherwise each payload is PUT to the plugin's
+        artifact route (`/v1/hook/artifacts/{id}`, body safetensors bytes, id verified
+        server-side); already-exists is success.
+        """
+        if not payloads:
+            return
+        if self.spec.get_option("artifact_dir"):
+            self._artifact_uploader.upload_payloads(payloads)
+            return
+        import safetensors.torch
+
+        for artifact_id, tensors in payloads.items():
+            if artifact_id in self._artifact_uploader._written:
+                continue
+            data = safetensors.torch.save({name: tensors[name] for name in sorted(tensors)})
+            self._put_bytes(f"/v1/hook/artifacts/{artifact_id}", data)
+            self._artifact_uploader._written.add(artifact_id)
+
+    def _put_bytes(self, path: str, data: bytes) -> None:
+        """PUT raw bytes to the server, mapping a missing route to a configuration error."""
+        import urllib.error
+        import urllib.request
+
+        url = f"{self._base_url}{path}"
+        request = urllib.request.Request(url, data=data, method="PUT")
+        request.add_header("Content-Type", "application/octet-stream")
+        if self._api_key:
+            request.add_header("Authorization", f"Bearer {self._api_key}")
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout):
+                return
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8", errors="replace")
+            if error.code in (404, 405):
+                raise ValueError(
+                    f"{self._base_url} serves no artifact route ({error.code}); update the "
+                    "server's vllm_hook_plugins, or configure artifact_dir on a filesystem "
+                    "shared with the server."
+                ) from error
+            raise_for_spec_rejection(body)
+            raise ValueError(f"HTTP {error.code} from {url}: {body}") from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise TransportError(f"artifact upload to {url} failed: {error}") from error
 
     def _load_lora_adapter(self, lora: LoRAArtifact) -> str:
         served = self._served_model_ids()

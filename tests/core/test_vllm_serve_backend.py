@@ -591,3 +591,38 @@ class TestServeConstraintLowering:
         assert isinstance(text, str)
         body = next(p for path, p in fake_server.requests if path == "/v1/completions")
         assert body["guided_regex"] == "cat|dog"
+
+
+class TestStageArtifacts:
+
+    def test_stage_writes_into_configured_registry(self, fake_server, tmp_path):
+        fake_server.discovery = _discovery_payload()
+        backend = VLLMServeBackend(
+            _serve_spec(hook_plugin=True, artifact_dir=str(tmp_path)),
+        )
+        spec = _mini_spec()
+        backend.stage_artifacts(spec.artifacts)
+        (artifact_id,) = spec.artifact_ids()
+        sha = artifact_id.removeprefix("sha256:")
+        assert (tmp_path / sha[:2] / f"{sha}.safetensors").exists()
+
+    def test_stage_without_registry_puts_to_the_artifact_route(self, fake_server, monkeypatch):
+        fake_server.discovery = _discovery_payload()
+        backend = VLLMServeBackend(_serve_spec(hook_plugin=True))
+        puts: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            VLLMServeBackend, "_put_bytes",
+            lambda self, path, data: puts.append((path, len(data))),
+        )
+        spec = _mini_spec()
+        backend.stage_artifacts(spec.artifacts)
+        (artifact_id,) = spec.artifact_ids()
+        assert puts == [(f"/v1/hook/artifacts/{artifact_id}", puts[0][1])]
+        assert puts[0][1] > 0
+        # idempotent: a second staging of the same content is a no-op
+        backend.stage_artifacts(spec.artifacts)
+        assert len(puts) == 1
+
+    def test_stage_is_a_noop_without_payloads(self, fake_server):
+        backend = VLLMServeBackend(_serve_spec())
+        backend.stage_artifacts({})

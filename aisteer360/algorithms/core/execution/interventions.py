@@ -135,3 +135,40 @@ class ProcessorSpec:
 
     kind: str
     params: Mapping[str, Any] = field(default_factory=dict)
+
+
+def remap_prompt_relative_scopes(spec: InterventionSpec, anchor: int) -> InterventionSpec:
+    """A rollout copy of `spec` with prompt-relative scopes rewritten to absolute positions.
+
+    Prompt-relative scope kinds are client-side sugar: the worker anchors them at the
+    request's own prompt length, and a driver rollout's request prompt is the accumulated
+    prefix rather than the user prompt. The wire form of a scope inside a driver generation is
+    therefore absolute: `after_prompt` becomes `from_position` at `anchor` (the generation's
+    original prompt boundary) and `last_k` becomes `from_position` at `anchor - k`. The rewrite
+    changes one scalar per op, so artifact ids are untouched; the cache salt varies with the
+    anchor, which is correct, since differently anchored requests compute different hidden
+    states.
+
+    Args:
+        spec: The lowered spec.
+        anchor: The generation's original prompt length, in absolute positions.
+
+    Returns:
+        The rewritten spec (the same object when nothing changed), sharing `artifacts`.
+    """
+    ops = []
+    changed = False
+    for op in spec.to_wire()["ops"]:
+        scope = op.get("scope", {})
+        kind = scope.get("kind")
+        if kind == "after_prompt":
+            op = {**op, "scope": {"kind": "from_position", "position": int(anchor)}}
+            changed = True
+        elif kind == "last_k":
+            position = max(int(anchor) - int(scope.get("k", 0)), 0)
+            op = {**op, "scope": {"kind": "from_position", "position": position}}
+            changed = True
+        ops.append(op)
+    if not changed:
+        return spec
+    return InterventionSpec(ops=tuple(ops), artifacts=spec.artifacts)

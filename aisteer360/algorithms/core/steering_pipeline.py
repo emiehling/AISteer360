@@ -35,6 +35,9 @@ from aisteer360.algorithms.core.execution.items import (
     StackEntry,
     StateControlEntry,
 )
+from aisteer360.algorithms.core.execution.interventions import (
+    remap_prompt_relative_scopes,
+)
 from aisteer360.algorithms.core.execution.params import (
     GenerationParams,
     merge_lowered_params,
@@ -1412,12 +1415,6 @@ class SteeringPipeline:
         state_entry_rows: list[tuple[HookEntry, ...]] | None = None
         state_entries: tuple[StateControlEntry, ...] = ()
         if decoding_driver is not None:
-            if has_enabled_state and not hooks_in_process:
-                raise UnsupportedOperationError(
-                    "Custom decoding drivers execute state controls as in-process hooks, which the "
-                    f"'{inference_spec.kind}' backend does not run; run this pipeline on the "
-                    "huggingface backend."
-                )
             state_entries = self._collect_state_entries(
                 steered_input_ids, runtime_kwargs, attention_mask=steered_attention_mask, **gen_kwargs
             )
@@ -1450,14 +1447,24 @@ class SteeringPipeline:
                 params = GenerationParams.from_gen_kwargs(**gen_kwargs)
                 for contribution in lowered.values():
                     params = merge_lowered_params(params, contribution)
-                # the session hosts this generation's hooks for the whole decode, so rollouts
-                # through the session and auxiliary forwards on the live model are steered
-                # alike; the SteeredSession injects nothing in process (ambient hooks already
-                # cover its items)
+                # in process, the session hosts this generation's hooks for the whole decode,
+                # so rollouts through the session and auxiliary forwards on the live model are
+                # steered alike and the SteeredSession injects nothing (ambient hooks already
+                # cover its items); on spec-consuming backends the SteeredSession injects a
+                # rollout variant of each lowered entry whose prompt-relative scopes are
+                # rewritten to absolute positions at the generation's original prompt boundary
+                rollout_entries: tuple = ()
                 if state_entries and hooks_in_process:
                     applied = session.entries_applied(state_entries)
                 else:
                     applied = contextlib.nullcontext()
+                    if state_entries:
+                        anchor = steered_input_ids.size(1)
+                        rollout_entries = tuple(
+                            InterventionEntry(spec=remap_prompt_relative_scopes(entry.spec, anchor))
+                            if isinstance(entry, InterventionEntry) else entry
+                            for entry in state_entries
+                        )
                 with applied:
                     full_output_ids = decoding_driver.decode(
                         input_ids=steered_input_ids,
@@ -1466,7 +1473,7 @@ class SteeringPipeline:
                         logits_processors=logits_processors,
                         stopping_criteria=stopping_criteria,
                         runtime_kwargs=runtime_kwargs,
-                        session=SteeredSession(session),
+                        session=SteeredSession(session, rollout_entries),
                         **params.to_gen_kwargs(),
                     )
                 prompt_len = steered_input_ids.size(1)

@@ -111,3 +111,85 @@ def test_second_rollout_resteers_continuation_at_original_positions():
     mask = reprefill_masks[0][0]
     assert not mask[:prompt_len].any()  # the user prompt stays unsteered
     assert mask[prompt_len:].all()  # re-prefilled continuation tokens re-steered at their positions
+
+
+class TestWireAnchorRewrite:
+    """Wire twin of the anchor golden: prompt-relative scope kinds are client-side sugar, and
+    their wire form inside a driver generation is absolute."""
+
+    def _lowered_spec(self, scope_kwargs):
+        import pytest
+
+        pytest.importorskip("vllm_hook_plugins")
+        from aisteer360.algorithms.state_control._common.specs import (
+            Intervention,
+            TokenScope,
+            lower_interventions,
+        )
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
+
+        intervention = Intervention(
+            layers=(1,),
+            transform=AdditiveTransform({1: torch.ones(1, HIDDEN)}, strength=2.0),
+            scope=TokenScope(**scope_kwargs),
+        )
+        return lower_interventions([intervention], num_layers=LAYERS)
+
+    def test_after_prompt_rewrites_to_absolute_anchor(self):
+        from aisteer360.algorithms.core.execution.interventions import (
+            remap_prompt_relative_scopes,
+        )
+
+        spec = self._lowered_spec({"kind": "after_prompt"})
+        rewritten = remap_prompt_relative_scopes(spec, anchor=7)
+        assert rewritten.ops[0]["scope"] == {"kind": "from_position", "position": 7}
+        # one scalar changed per op; artifact ids are untouched
+        assert rewritten.artifact_ids() == spec.artifact_ids()
+        # the cache salt varies with the anchor: differently anchored requests genuinely
+        # compute different hidden states
+        assert rewritten.salt() != spec.salt()
+
+    def test_last_k_rewrites_to_absolute_anchor(self):
+        from aisteer360.algorithms.core.execution.interventions import (
+            remap_prompt_relative_scopes,
+        )
+
+        spec = self._lowered_spec({"kind": "last_k", "last_k": 3})
+        rewritten = remap_prompt_relative_scopes(spec, anchor=7)
+        assert rewritten.ops[0]["scope"] == {"kind": "from_position", "position": 4}
+
+    def test_absolute_scopes_pass_through_unchanged(self):
+        from aisteer360.algorithms.core.execution.interventions import (
+            remap_prompt_relative_scopes,
+        )
+
+        spec = self._lowered_spec({"kind": "all"})
+        assert remap_prompt_relative_scopes(spec, anchor=7) is spec
+
+    def test_steered_session_injects_rewritten_entries_per_item(self):
+        from aisteer360.algorithms.core.execution import InterventionEntry
+        from aisteer360.algorithms.core.execution.interventions import (
+            remap_prompt_relative_scopes,
+        )
+        from aisteer360.algorithms.core.execution.items import GenerationItem
+        from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
+        from aisteer360.algorithms.core.execution.session import SteeredSession
+
+        spec = self._lowered_spec({"kind": "after_prompt"})
+        entry = InterventionEntry(spec=remap_prompt_relative_scopes(spec, anchor=5))
+
+        captured = {}
+
+        class _ProbeSession:
+            def generate(self, items, params):
+                captured["items"] = items
+                return []
+
+        steered = SteeredSession(_ProbeSession(), (entry,))
+        prompt = PreparedPrompt.from_token_ids(torch.ones(1, 9, dtype=torch.long), None)
+        steered.generate([GenerationItem(prompt=prompt)], params=None)
+
+        (item,) = captured["items"]
+        (injected,) = item.state_entries
+        assert injected is entry
+        assert injected.spec.ops[0]["scope"] == {"kind": "from_position", "position": 5}
