@@ -1,5 +1,7 @@
 """Data processing utilities for benchmark profiles."""
 
+import hashlib
+import json
 from typing import Any, Mapping
 
 import numpy as np
@@ -81,7 +83,7 @@ def flatten_profiles(
             params = run.get("params", {}) or {}
 
             # create a stable config identifier from params
-            config_id = _hash_params(params) if params else "baseline"
+            config_id = hash_params(params) if params else "baseline"
 
             row = {
                 "pipeline": pipeline_name,
@@ -103,14 +105,21 @@ def flatten_profiles(
     return pd.DataFrame(rows)
 
 
-def _hash_params(params: dict[str, Any]) -> str:
-    """Create a short hash string from params dict for grouping configurations.
+def hash_params(params: dict[str, Any]) -> str:
+    """Short stable hash of a params dict, for grouping configurations in analysis.
 
-    Uses a custom serializer that represents callables by their qualified name (ensure stable hashes).
+    Stable across processes for JSON-serializable values and for callables (serialized by
+    `__qualname__`). Any other object falls back to `str(obj)` and is only as stable as that
+    string; a repr containing a memory address defeats cross-process matching. Checkpoint
+    identity does not use this function (see the identity design); this is the analysis-side
+    grouping hash.
+
+    Args:
+        params: The params dict to hash.
+
+    Returns:
+        An 8-character hex digest.
     """
-    import hashlib
-    import json
-
     def _default(obj: Any) -> str:
         if callable(obj):
             return f"callable:{getattr(obj, '__qualname__', type(obj).__name__)}"
@@ -118,6 +127,9 @@ def _hash_params(params: dict[str, Any]) -> str:
 
     serialized = json.dumps(params, sort_keys=True, default=_default)
     return hashlib.md5(serialized.encode()).hexdigest()[:8]
+
+
+_hash_params = hash_params  # compatibility alias
 
 
 def extract_metric(
@@ -325,7 +337,7 @@ def per_example_config_means(
     for pipeline_name, runs in profiles.items():
         run_list = runs if isinstance(runs, list) else [runs]
         for run in run_list:
-            config_id = _hash_params(run.get("params", {}) or {}) if run.get("params") else "baseline"
+            config_id = hash_params(run.get("params", {}) or {}) if run.get("params") else "baseline"
             key = (pipeline_name, config_id)
             if key not in accum:
                 accum[key] = defaultdict(lambda: {col: [] for col in metric_lists})
@@ -416,7 +428,7 @@ def get_generation_field(
     Args:
         profiles: Output from ``Benchmark.run()``.
         pipeline: Pipeline name.
-        config_id: Configuration identifier (from ``_hash_params`` or ``"baseline"``).
+        config_id: Configuration identifier (from ``hash_params`` or ``"baseline"``).
         idx: Example index within the generation list.
         field: Field name to extract from the generation dict. Defaults to ``"response"``.
         trial_id: Which trial to pull from when multiple trials share a config.
@@ -437,7 +449,7 @@ def get_generation_field(
 
     match_count = 0
     for run in run_list:
-        run_config = _hash_params(run.get("params", {}) or {}) if run.get("params") else "baseline"
+        run_config = hash_params(run.get("params", {}) or {}) if run.get("params") else "baseline"
         if run_config == config_id:
             if match_count == trial_id:
                 return run["generations"][idx].get(field)

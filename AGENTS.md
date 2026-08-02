@@ -289,6 +289,12 @@ same steered model and re-samples generate-time randomness; pipelines with a str
 while others reuse a shared preloaded base model. `runtime_overrides` is keyed by control class name, so two
 instances of one class in a pipeline share a single entry.
 
+Every benchmark generation, baseline included, routes through `pipeline.generate(messages=...)` (or `text=` for a
+template-less tokenizer), so the pipeline owns chat templating, tokenization, and padding, `adapt_messages` input
+controls fire during benchmarking, and `runtime_overrides` columns live on the prompt rows (aligned under retry and
+prompt expansion by construction). After each shared-base configuration, a fingerprint tripwire checks the shared model
+for mutation and, on detecting one, warns naming the configuration and reloads a clean base for the next.
+
 ## Developer guide
 
 ### Adding a steering control
@@ -414,9 +420,15 @@ A metric subclasses `Metric` (or `LLMJudgeMetric` from `evaluation/metrics/base_
 task-specific ones in `evaluation/metrics/custom/<use_case>/`.
 
 A use case is a folder `evaluation/use_cases/<name>/` containing `use_case.py` with a `UseCase` subclass implementing
-`generate()` and `evaluate()`. Follow the existing use cases, where `generate()` builds prompts and calls
-`batch_retry_generate` from `evaluation/utils/generation_utils.py` (batched decoding with parsing and retry), and
-`evaluate()` maps metric names to computed results.
+`generate()` and `evaluate()`. A use case declares each extra constructor parameter as a class-level annotation (a bare
+annotation is required; a class-attribute default makes it optional) rather than writing an `__init__`; unknown
+keywords and missing required parameters raise `TypeError` at construction, and each retained instance is checked by
+`validate_evaluation_data` (which raises `ValueError` prefixed with `evaluation_data[<index>]`). Follow the existing use
+cases, where `generate()` builds prompt rows and calls `batch_retry_generate` from
+`evaluation/utils/generation_utils.py` (batched decoding with parsing and retry), and `evaluate()` maps metric names to
+computed results. Build each prompt row by spreading its source instance (`{**instance, "prompt": ...}`) so the row
+carries its own columns and `runtime_overrides` map per row; constructed keys (`"prompt"`, `"reference_answer"`, ...)
+shadow same-named instance columns, so name override columns distinctly from them.
 
 ### Testing
 

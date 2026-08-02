@@ -19,10 +19,12 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
 from aisteer360.algorithms.core.specs import ControlSpec
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.evaluation.benchmark import Benchmark
+from aisteer360.evaluation.use_cases.base import UseCase
 from tests.conftest import (
     MockAccuracyMetric,
     MockInputControl,
@@ -142,6 +144,52 @@ class TestBenchmarkInitialization:
         assert set(benchmark.steering_pipelines.keys()) == {"baseline", "steered"}
 
 
+class TestBenchmarkConstructorValidation:
+    """The constructor rejects malformed arguments before any run."""
+
+    def test_non_use_case_rejected(self, sample_evaluation_data):
+        with pytest.raises(TypeError, match="use_case must be a UseCase"):
+            Benchmark(
+                use_case=object(),
+                base_model_name_or_path="test-model",
+                steering_pipelines={"baseline": []},
+            )
+
+    def test_non_dict_steering_pipelines_rejected(self, sample_evaluation_data):
+        with pytest.raises(TypeError, match="steering_pipelines must be a dict"):
+            Benchmark(
+                use_case=_make_use_case(sample_evaluation_data),
+                base_model_name_or_path="test-model",
+                steering_pipelines=[],
+            )
+
+    def test_non_list_pipeline_value_rejected(self, sample_evaluation_data):
+        with pytest.raises(TypeError, match="must be a list, tuple, or None"):
+            Benchmark(
+                use_case=_make_use_case(sample_evaluation_data),
+                base_model_name_or_path="test-model",
+                steering_pipelines={"bad": MockInputControl()},
+            )
+
+    def test_negative_num_trials_rejected(self, sample_evaluation_data):
+        with pytest.raises(ValueError, match="num_trials must be >= 0"):
+            Benchmark(
+                use_case=_make_use_case(sample_evaluation_data),
+                base_model_name_or_path="test-model",
+                steering_pipelines={"baseline": []},
+                num_trials=-1,
+            )
+
+    def test_zero_batch_size_rejected(self, sample_evaluation_data):
+        with pytest.raises(ValueError, match="batch_size must be >= 1"):
+            Benchmark(
+                use_case=_make_use_case(sample_evaluation_data),
+                base_model_name_or_path="test-model",
+                steering_pipelines={"baseline": []},
+                batch_size=0,
+            )
+
+
 # Benchmark Run Tests
 class TestBenchmarkRunBaseline:
     """Tests for baseline (unsteered) pipelines."""
@@ -159,7 +207,13 @@ class TestBenchmarkRunBaseline:
         assert mock_base_model == [1]
         assert len(use_case._generate_calls) == 1
         call = use_case._generate_calls[0]
-        assert call["model_or_pipeline"] is benchmark._base_model
+        # the baseline now runs through an empty SteeringPipeline sharing the base model
+        pipeline = call["model_or_pipeline"]
+        assert isinstance(pipeline, SteeringPipeline)
+        assert pipeline.model is benchmark._base_model
+        assert pipeline.input_controls == []
+        assert pipeline.state_controls == []
+        assert pipeline.output_controls == []
         assert call["tokenizer"] is benchmark._base_tokenizer
         assert profiles["baseline"][0]["params"] == {}
 
@@ -174,7 +228,9 @@ class TestBenchmarkRunBaseline:
         profiles = benchmark.run()
 
         assert len(profiles["baseline"]) == 1
-        assert use_case._generate_calls[0]["model_or_pipeline"] is benchmark._base_model
+        pipeline = use_case._generate_calls[0]["model_or_pipeline"]
+        assert isinstance(pipeline, SteeringPipeline)
+        assert pipeline.model is benchmark._base_model
 
     def test_multiple_trials(self, sample_evaluation_data, mock_base_model):
         use_case = _make_use_case(sample_evaluation_data)
@@ -614,6 +670,129 @@ class TestBenchmarkExportAndCleanup:
         benchmark.run()
 
         assert control._cleaned
+
+
+# Shared-base fingerprint guard, structural isolation, and default export
+class _MutatingStateControl(MockStateControl):
+    """State control whose `steer` perturbs a shared-model parameter in place."""
+
+    def steer(self, model, tokenizer=None, **kwargs):
+        super().steer(model, tokenizer=tokenizer, **kwargs)
+        with torch.no_grad():
+            first_param = next(model.parameters())
+            first_param.add_(1.0)
+        return model
+
+
+@pytest.fixture
+def fingerprintable_base(monkeypatch):
+    """Patch `_ensure_base_model` to install a real tiny model and record its fingerprint.
+
+    Returns:
+        A dict with `"invocations"` (one entry per `_ensure_base_model` call) and `"loads"` (one entry
+        per actual model load). A reload after a dropped base shows as a second `"loads"` entry.
+    """
+    from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
+    from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
+
+    record = {"invocations": [], "loads": []}
+
+    def fake_ensure(self):
+        record["invocations"].append(1)
+        if self._base_model is None:
+            self._base_model = tiny_llama()
+            tokenizer = wordlevel_tokenizer()
+            tokenizer.chat_template = "{% for message in messages %}{{ message['content'] }} {% endfor %}"
+            self._base_tokenizer = tokenizer
+            self._base_fingerprint = model_fingerprint(self._base_model)
+            record["loads"].append(1)
+
+    monkeypatch.setattr(Benchmark, "_ensure_base_model", fake_ensure)
+    return record
+
+
+class TestSharedBaseFingerprintGuard:
+    """The tripwire detects shared-base mutation, warns naming the control, and reloads a clean base."""
+
+    def test_mutating_sweep_warns_and_reloads(self, sample_evaluation_data, fingerprintable_base, caplog):
+        use_case = _make_use_case(sample_evaluation_data)
+        spec = ControlSpec(control_cls=_MutatingStateControl, vars={"scale_factor": [0.5, 1.0]})
+        benchmark = Benchmark(
+            use_case=use_case,
+            base_model_name_or_path="test-model",
+            steering_pipelines={"sweep": [spec]},
+        )
+
+        with caplog.at_level("WARNING", logger="aisteer360.evaluation.benchmark"):
+            benchmark.run()
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Shared base model changed" in m and "_MutatingStateControl" in m for m in messages)
+        # the mutated base is dropped after the first config, so the second config reloads a clean base
+        assert fingerprintable_base["loads"] == [1, 1]
+
+    def test_clean_sweep_does_not_warn(self, sample_evaluation_data, fingerprintable_base, caplog):
+        use_case = _make_use_case(sample_evaluation_data)
+        spec = ControlSpec(control_cls=MockStateControl, vars={"scale_factor": [0.5, 1.0]})
+        benchmark = Benchmark(
+            use_case=use_case,
+            base_model_name_or_path="test-model",
+            steering_pipelines={"sweep": [spec]},
+        )
+
+        with caplog.at_level("WARNING", logger="aisteer360.evaluation.benchmark"):
+            benchmark.run()
+
+        assert not any("Shared base model changed" in r.getMessage() for r in caplog.records)
+        assert fingerprintable_base["loads"] == [1]  # the clean base is loaded once and reused across configs
+
+
+class TestStructuralIsolation:
+    """Structural-only pipelines load their own model and never touch the shared base."""
+
+    def test_structural_only_never_loads_shared_base(
+            self, sample_evaluation_data, mock_base_model, patched_pipeline_loaders
+    ):
+        use_case = _make_use_case(sample_evaluation_data)
+        benchmark = Benchmark(
+            use_case=use_case,
+            base_model_name_or_path="test-model",
+            steering_pipelines={"structural": [MockStructuralControl()]},
+        )
+
+        benchmark.run()
+
+        assert mock_base_model == []  # _ensure_base_model never called
+        assert benchmark._base_model is None
+
+
+class TestBenchmarkDefaultExport:
+    """A use case that does not override `export` gets the benchmark's default `profiles.json`."""
+
+    def test_default_export_writes_profiles_json(self, sample_evaluation_data, mock_base_model, tmp_path):
+        class _NoExportUseCase(MockUseCase):
+            pass
+
+        _NoExportUseCase.export = UseCase.export  # ensure no override is inherited from MockUseCase
+
+        use_case = _NoExportUseCase(
+            evaluation_data=sample_evaluation_data,
+            evaluation_metrics=[MockAccuracyMetric()],
+        )
+        benchmark = Benchmark(
+            use_case=use_case,
+            base_model_name_or_path="test-model",
+            steering_pipelines={"baseline": []},
+            save_dir=tmp_path,
+        )
+
+        benchmark.run()
+
+        profiles_path = tmp_path / "profiles.json"
+        assert profiles_path.exists()
+        with open(profiles_path) as f:
+            exported = json.load(f)
+        assert "baseline" in exported
 
 
 # Use Case Data Handling Tests
