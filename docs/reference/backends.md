@@ -31,6 +31,14 @@ concatenation), which would silently unanchor prompt-relative interventions; an 
 control with `include_in_scoring=True` likewise makes the pipeline score-unsupported off-torch,
 and encoder-decoder scoring is in-process-only.
 
+## Benchmarking
+
+`Benchmark` forwards its `backend` and `steer_backend` arguments to the pipelines it builds and
+pre-flights support over every sweep point (via `SteeringPipeline.check()`) before any model or
+engine work, so the compatibility matrix above governs benchmarking too. A sweep point that is
+unsupported on the configured backends either fails the whole run (`on_unsupported="raise"`, the
+default) or is skipped with a warning (`on_unsupported="skip"`).
+
 ## API
 
 ::: aisteer360.backends

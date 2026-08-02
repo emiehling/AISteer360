@@ -23,7 +23,16 @@ from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.evaluation.benchmark import Benchmark
+from tests.conftest import MockAccuracyMetric, MockUseCase
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
+
+
+def _mock_use_case() -> MockUseCase:
+    """A minimal real use case (the benchmark constructor rejects non-`UseCase` objects)."""
+    return MockUseCase(
+        evaluation_data=[{"id": "q1", "question": "Q?", "answer": "A", "choices": ["A", "B"]}],
+        evaluation_metrics=[MockAccuracyMetric()],
+    )
 
 # renders message contents joined by spaces so WordLevel vocab words map to stable ids
 CHAT_TEMPLATE = "{% for message in messages %}{{ message['content'] }} {% endfor %}"
@@ -373,7 +382,7 @@ class TestBenchmarkSpecNameCollision:
             ControlSpec(control_cls=_AppendTokenControl, params={"marker_id": CAT}),
         ]
         benchmark = Benchmark(
-            use_case=MagicMock(),
+            use_case=_mock_use_case(),
             base_model_name_or_path="unused",
             steering_pipelines={"sweep": specs},
         )
@@ -386,16 +395,20 @@ class TestBenchmarkSpecNameCollision:
             ControlSpec(control_cls=_AppendTokenControl, params={"marker_id": CAT}, name="second"),
         ]
         benchmark = Benchmark(
-            use_case=MagicMock(),
+            use_case=_mock_use_case(),
             base_model_name_or_path="unused",
             steering_pipelines={"sweep": specs},
         )
 
         captured = []
 
-        def fake_run_pipeline(self, controls, params=None, existing_runs=None):
+        def fake_run_pipeline(self, controls, *, specs=None, params=None, existing_runs=None, record=None):
             captured.append((list(controls), dict(params or {})))
-            return [{"trial_id": 0, "generations": [], "evaluations": {}, "params": params or {}}]
+            run = {"trial_id": 0, "generations": [], "evaluations": {}, "params": params or {},
+                   "config_id": "stub", "seed": None, "provenance": {}}
+            if record is not None:
+                record(run)
+            return [run]
 
         monkeypatch.setattr(Benchmark, "_run_pipeline", fake_run_pipeline)
         profiles = benchmark.run()

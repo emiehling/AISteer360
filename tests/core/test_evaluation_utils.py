@@ -39,6 +39,7 @@ def sample_profiles_fixed():
                     "Reward": {"mean_reward": 1.5, "rewards": [1.2, 1.8]},
                 },
                 "params": {},
+                "config_id": "baseline",
             },
             {
                 "trial_id": 1,
@@ -51,6 +52,7 @@ def sample_profiles_fixed():
                     "Reward": {"mean_reward": 1.3, "rewards": [1.1, 1.5]},
                 },
                 "params": {},
+                "config_id": "baseline",
             },
         ],
         "steered": [
@@ -65,6 +67,7 @@ def sample_profiles_fixed():
                     "Reward": {"mean_reward": 1.7, "rewards": [1.6, 1.8]},
                 },
                 "params": {},
+                "config_id": "baseline",
             },
         ],
     }
@@ -80,6 +83,7 @@ def sample_profiles_spec():
                 "generations": [{"prompt": "Q1?", "response": "A"}],
                 "evaluations": {"Accuracy": {"mean": 0.5}},
                 "params": {},
+                "config_id": "baseline",
             },
         ],
         "alpha_sweep": [
@@ -88,24 +92,28 @@ def sample_profiles_spec():
                 "generations": [{"prompt": "Q1?", "response": "A"}],
                 "evaluations": {"Accuracy": {"mean": 0.6}},
                 "params": {"PASTA": {"alpha": 5.0, "layers": [8, 9]}},
+                "config_id": "cfg_alpha5",
             },
             {
                 "trial_id": 1,
                 "generations": [{"prompt": "Q1?", "response": "B"}],
                 "evaluations": {"Accuracy": {"mean": 0.65}},
                 "params": {"PASTA": {"alpha": 5.0, "layers": [8, 9]}},
+                "config_id": "cfg_alpha5",
             },
             {
                 "trial_id": 0,
                 "generations": [{"prompt": "Q1?", "response": "A"}],
                 "evaluations": {"Accuracy": {"mean": 0.7}},
                 "params": {"PASTA": {"alpha": 10.0, "layers": [8, 9]}},
+                "config_id": "cfg_alpha10",
             },
             {
                 "trial_id": 1,
                 "generations": [{"prompt": "Q1?", "response": "A"}],
                 "evaluations": {"Accuracy": {"mean": 0.75}},
                 "params": {"PASTA": {"alpha": 10.0, "layers": [8, 9]}},
+                "config_id": "cfg_alpha10",
             },
         ],
     }
@@ -132,6 +140,7 @@ def sample_run_with_per_example_metrics():
             },
         },
         "params": {"PASTA": {"alpha": 5.0}},
+        "config_id": "cfg_alpha5",
     }
 
 
@@ -237,10 +246,10 @@ class TestFlattenProfiles:
         # 1 baseline + 4 alpha_sweep
         assert len(df) == 5
 
-        # Check config_id is different for different params
+        # the two recorded config ids flow through, one per alpha value
         alpha_sweep_df = df[df["pipeline"] == "alpha_sweep"]
-        config_ids = alpha_sweep_df["config_id"].unique()
-        assert len(config_ids) == 2  # Two alpha values
+        config_ids = set(alpha_sweep_df["config_id"].unique())
+        assert config_ids == {"cfg_alpha5", "cfg_alpha10"}
 
     def test_flattening_missing_metric(self, sample_profiles_fixed):
         """Test flattening with missing metric returns NaN."""
@@ -530,6 +539,7 @@ class TestBuildPerExampleDf:
             "generations": [],
             "evaluations": {},
             "params": {},
+            "config_id": "baseline",
         }
         df = build_per_example_df(run)
 
@@ -770,6 +780,7 @@ class TestVizUtils:
                     "generations": [],
                     "evaluations": {"Accuracy": {"mean": 0.5}, "Reward": {"mean": 1.0}},
                     "params": {},
+                    "config_id": "baseline",
                 }
             ],
             "sweep": [
@@ -778,12 +789,14 @@ class TestVizUtils:
                     "generations": [],
                     "evaluations": {"Accuracy": {"mean": 0.6}, "Reward": {"mean": 1.2}},
                     "params": {"CTRL": {"alpha": 5.0}},
+                    "config_id": "cfg_ctrl5",
                 },
                 {
                     "trial_id": 0,
                     "generations": [],
                     "evaluations": {"Accuracy": {"mean": 0.7}, "Reward": {"mean": 1.4}},
                     "params": {"CTRL": {"alpha": 10.0}},
+                    "config_id": "cfg_ctrl10",
                 },
             ],
         }

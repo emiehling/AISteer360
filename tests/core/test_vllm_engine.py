@@ -19,7 +19,7 @@ from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline  # noq
 from aisteer360.algorithms.output_control.stopping_rules.control import StoppingRules  # noqa: E402
 from aisteer360.backends.vllm import VLLMBackend  # noqa: E402
 
-TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+TINY_MODEL = "JackFram/llama-68m"
 
 
 @pytest.fixture(scope="module")
