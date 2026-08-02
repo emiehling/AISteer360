@@ -87,7 +87,9 @@ class CommonsenseMCQA(UseCase):
             runtime_overrides: Optional runtime parameter overrides for steering controls, keyed by control class name
                 as ``{control_class_name: {variable: column_name}}``; each column resolves against the prompt rows.
             batch_size: Generation batch size.
-            kwargs: Optional keyword arguments.
+            kwargs: Optional keyword arguments. A `trial_seed` value seeds a private
+                `random.Random` for choice shuffling, so a trial's answer orderings are
+                reproducible; without it, shuffling uses the module-global `random`.
 
         Returns:
             List of generation dictionaries, each containing:
@@ -107,6 +109,9 @@ class CommonsenseMCQA(UseCase):
             return []
         gen_kwargs = dict(gen_kwargs or {})
 
+        trial_seed = kwargs.get("trial_seed")
+        rng = random.Random(trial_seed) if trial_seed is not None else random
+
         # form prompt data; each shuffled copy inherits its instance's columns
         prompt_data = []
         for instance in self.evaluation_data:
@@ -121,7 +126,7 @@ class CommonsenseMCQA(UseCase):
 
                 # shuffle
                 choice_order = list(range(len(choices)))
-                random.shuffle(choice_order)
+                rng.shuffle(choice_order)
                 for i, old_idx in enumerate(choice_order):
                     lines.append(f"{_LETTERS[i]}. {choices[old_idx]}")
 

@@ -4,8 +4,8 @@ Covers `generate_on_pipeline` / `batch_retry_generate` returning aligned `(texts
 batched and per-example branches, the `batch_retry_generate` return-shape matrix and retry alignment of
 `outputs`, override-column resolution against prompt rows (aligned under retry and expansion, conflict
 and missing-column rules), that message-level input controls fire without a bypass warning, that the
-adapted prompt reflects a single chat template, the deprecated `evaluation_data` warning, bare-model
-wrapping, the template-less `TypeError`, left-padding after uneven batches, and `output_record_fields`.
+adapted prompt reflects a single chat template, bare-model wrapping, the template-less `TypeError`,
+left-padding after uneven batches, and `output_record_fields`.
 """
 import json
 import warnings
@@ -229,17 +229,6 @@ class TestBatchRetryGenerate:
         for index in range(3):
             assert isinstance(outputs[index], Output)
             assert parsed[index] == f"parsed:{raw[index]}"
-
-    def test_deprecated_evaluation_data_warns(self, batching_pipeline, tokenizer):
-        with pytest.warns(DeprecationWarning, match="no longer reads evaluation_data"):
-            batch_retry_generate(
-                prompt_data=_prompt_batch(2),
-                model_or_pipeline=batching_pipeline,
-                tokenizer=tokenizer,
-                gen_kwargs=GEN_KWARGS,
-                evaluation_data=[{"prompt": "unused"}],
-                batch_size=8,
-            )
 
     def test_bare_model_is_wrapped_and_records_adapted_ids(self, batching_pipeline, tokenizer):
         parsed, raw, outputs = batch_retry_generate(

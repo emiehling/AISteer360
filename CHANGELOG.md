@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### Changed: benchmark config identity and a versioned checkpoint envelope
+
+- Benchmark config identity is a canonical digest over the materialized pipeline (control classes
+  and their full parameters), stable across processes, so editing fixed controls no longer resumes
+  stale results and the baseline config id is unified on `"baseline"` everywhere. **Old checkpoint
+  files are ignored and overwritten on the next save**: resume accepts only a current-format
+  versioned envelope whose identity metadata matches, refusing a valid envelope from a different
+  configuration with an error naming the differing field, and ignoring anything else (unreadable,
+  wrong-shape, or an earlier bare-dict file) with one warning.
+- Resume is trial-granular: an interrupted configuration completes only its missing trials, and
+  raising `num_trials` on resume runs only the delta.
+- Analysis utilities read the recorded `config_id` directly (`flatten_profiles`,
+  `per_example_config_means`, `get_generation_field`); a run dict without it raises `KeyError`.
+
+### Added: seeded trials, backend-aware benchmarking, and run provenance
+
+- `Benchmark(seed=...)` derives one seed per (config, trial), threads it through `gen_kwargs` into
+  core's existing seed path and into use-case-side RNG (`CommonsenseMCQA` choice shuffling), and
+  records it on the run dict; reproduction holds on the same hardware, dtype, and torch/vLLM
+  versions.
+- `Benchmark(backend=..., steer_backend=...)` forwards backends to the pipelines it builds (a
+  `BackendSpec` or a known kind name); a pre-flight `check()` over every sweep point runs before any
+  model or engine work, raising one aggregate `UnsupportedBenchmarkError` (`on_unsupported="raise"`,
+  the default) or skipping unsupported points with a warning (`on_unsupported="skip"`). The
+  shared-preloaded-model fast path and the fingerprint tripwire are scoped to the in-process
+  Hugging Face backend.
+- `checkpoint_every` selects per-trial (default) or per-config checkpoint writes.
+- Run dicts gain `config_id`, `seed`, and `provenance` (backend kinds, model fingerprint, toolkit
+  version) additively; the original four keys are unchanged.
+
+### Removed
+
+- `batch_retry_generate`'s deprecated `evaluation_data` parameter and the `_hash_params` alias in
+  `data_utils`.
+
+### Changed: evaluation-stack hardening and unified generation path
+
+- Declared use-case generate parameters raise on unknown or missing keyword arguments.
+- Every benchmark generation, baseline included, routes through `pipeline.generate(messages=...)`
+  (or `text=` for a template-less tokenizer), so the pipeline owns chat templating, tokenization,
+  and padding. `adapt_messages` input controls now apply during benchmarking, so `FewShot`
+  benchmark results change; runtime-override columns resolve against the prompt rows themselves; and
+  the baseline runs through an empty `SteeringPipeline`.
+
 ### Added: declarative constrained decoding (P4)
 
 - New output control `ConstrainedDecoding`: one declarative `ConstraintSource` (JSON schema,

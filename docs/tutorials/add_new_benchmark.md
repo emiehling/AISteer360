@@ -162,6 +162,22 @@ A benchmark can also optionally accept
 - `hf_model_kwargs`: load-time options for configuration of the construction of the model.
 - `gen_kwargs`: generation-time options for configuration of the behavior of the model.
 - `device_map`: indicates how model layers are assigned to devices.
+- `seed`: benchmark-level base seed; when set, one seed is derived per (config, trial), threaded into `gen_kwargs` and
+  into use-case-side RNG, and recorded on each run dict, so a resumed trial reproduces the same sampling on the same
+  hardware, dtype, and torch/vLLM versions.
+- `backend` / `steer_backend`: the inference and steering backends forwarded to each pipeline, as a `BackendSpec` or a
+  known kind name (`"huggingface"`, `"vllm"`, `"vllm-serve"`); both default to the in-process Hugging Face backend.
+- `on_unsupported`: `"raise"` (default) fails the run with one aggregate error if any sweep point is unsupported on the
+  configured backends, checked before any model or engine work; `"skip"` runs the supported points and warns once per
+  skipped point.
+- `checkpoint_every`: `"trial"` (default) writes the checkpoint after every trial; `"config"` writes once per
+  configuration.
+
+When `save_dir` is set, the run is checkpointed to a versioned envelope and resume is trial-granular: a subsequent
+call with the same `save_dir` completes only the trials still missing from each configuration (and raising
+`num_trials` runs only the delta). Resume accepts only a current-format checkpoint whose identity metadata matches the
+current configuration; a checkpoint produced under a different configuration is refused with an error naming the
+differing field, and any other file at the checkpoint path is ignored with a warning and overwritten on the next save.
 
 The benchmark for `CommonsenseMCQA` can now be constructed as follows:
 ```python

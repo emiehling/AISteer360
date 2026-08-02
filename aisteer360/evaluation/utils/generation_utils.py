@@ -8,7 +8,6 @@ construction.
 """
 
 import logging
-import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
@@ -285,7 +284,6 @@ def batch_retry_generate(
     tokenizer: PreTrainedTokenizerBase,
     gen_kwargs: dict[str, Any] | None = None,
     runtime_overrides: dict[str, dict[str, Any]] | None = None,
-    evaluation_data: list[dict] | None = None,  # deprecated; unused
     parse_fn: Callable[[str], Any | None] | None = None,
     max_retries: int = 2,
     return_raw: bool = False,
@@ -308,7 +306,6 @@ def batch_retry_generate(
         gen_kwargs: Generation parameters forwarded to the pipeline.
         runtime_overrides: A mapping from control class name to `{variable: column}`; columns resolve
             against `prompt_data` rows.
-        evaluation_data: Deprecated and unused; passing it emits a `DeprecationWarning`.
         parse_fn: Parser applied to each raw text; a None result marks the row for retry.
         max_retries: Maximum retry rounds for rows that fail to parse.
         return_raw: Return `(parsed, raw)` when `return_outputs` is False.
@@ -321,19 +318,10 @@ def batch_retry_generate(
 
     Raises:
         ValueError: If any row is missing the `"prompt"` key.
-
-    Warns:
-        DeprecationWarning: If `evaluation_data` is passed.
     """
     missing_prompt = [i for i, item in enumerate(prompt_data) if "prompt" not in item]
     if missing_prompt:
         raise ValueError(f"'prompt' key missing for {len(missing_prompt)} instances")
-    if evaluation_data is not None:
-        warnings.warn(
-            "batch_retry_generate no longer reads evaluation_data; runtime_overrides columns resolve "
-            "against the prompt rows themselves. The parameter will be removed.",
-            DeprecationWarning, stacklevel=2,
-        )
 
     batch_size = DEFAULT_EVAL_BATCH_SIZE if batch_size is None else batch_size
     pipeline = (

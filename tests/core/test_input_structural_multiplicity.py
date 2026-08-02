@@ -402,9 +402,13 @@ class TestBenchmarkSpecNameCollision:
 
         captured = []
 
-        def fake_run_pipeline(self, controls, params=None, existing_runs=None):
+        def fake_run_pipeline(self, controls, *, specs=None, params=None, existing_runs=None, record=None):
             captured.append((list(controls), dict(params or {})))
-            return [{"trial_id": 0, "generations": [], "evaluations": {}, "params": params or {}}]
+            run = {"trial_id": 0, "generations": [], "evaluations": {}, "params": params or {},
+                   "config_id": "stub", "seed": None, "provenance": {}}
+            if record is not None:
+                record(run)
+            return [run]
 
         monkeypatch.setattr(Benchmark, "_run_pipeline", fake_run_pipeline)
         profiles = benchmark.run()
