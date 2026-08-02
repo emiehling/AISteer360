@@ -3,7 +3,7 @@ from typing import Literal
 
 import torch
 
-TokenScope = Literal["all", "after_prompt", "last_k", "from_position"]
+ScopeKind = Literal["all", "after_prompt", "last_k", "from_position"]
 
 
 def compute_prompt_lens(
@@ -36,7 +36,7 @@ def compute_prompt_lens(
 
 
 def make_token_mask(
-    scope: TokenScope,
+    scope: ScopeKind,
     *,
     seq_len: int,
     prompt_lens: torch.LongTensor,

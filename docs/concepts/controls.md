@@ -123,11 +123,12 @@ controls that forward the pipeline's own model (SASA-style candidate scoring). H
 receive the kwarg assume the plain single-`generate` decode pattern. The variant branch of a CFG-style contrast is a
 detached sequence and runs unsteered by design.
 
-State controls execute as torch hooks on the in-process backend. Controls built on the shared transform runtime can
-also serialize their steering tuple (transform, layers, token scope, gate) as an intervention spec for engines that
-host activation edits, so the same steered configuration generates on vLLM. A configuration either serializes exactly
-or stays in-process only; the pipeline's `check()` reports which, with a verdict naming the gap and the fix. The
-per-control support boundary is recorded in the [backend compatibility matrix](../reference/backends.md).
+A residual-stream state control is a declarative tuple of interventions (layers, a transform, a token scope, an
+optional gate and condition), stated once and compiled per backend: to torch hooks on the in-process backend, and to
+an intervention spec for engines that host activation edits, so the same steered configuration generates on vLLM. A
+configuration either serializes exactly or stays in-process only; the pipeline's `check()` reports which, with a
+verdict naming the gap and the fix. The per-control support boundary is recorded in the
+[backend compatibility matrix](../reference/backends.md).
 
 `ActivationAdapter` is the **composition surface** for these building blocks: each adapter is a single-behavior atom
 (one transform chain — which carries its own artifact — one gate, one token scope), and steering with several behaviors

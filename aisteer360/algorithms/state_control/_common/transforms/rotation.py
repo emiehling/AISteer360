@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Literal, Mapping
+from typing import TYPE_CHECKING, ClassVar, Literal, Mapping
 
 import torch
 
@@ -11,6 +11,7 @@ from ..steering_vector import SteeringVector
 from .base import BaseTransform
 
 if TYPE_CHECKING:
+    from ..specs import WireForm
     from .context import TransformContext
 
 RotationMode = Literal["target", "offset"]
@@ -54,6 +55,8 @@ class RotationTransform(BaseTransform):
       [https://arxiv.org/abs/2510.26243](https://arxiv.org/abs/2510.26243)
     """
 
+    wire_kind: ClassVar[str | None] = "rotation"
+
     def __init__(
         self,
         artifact: SteeringVector | Mapping[int, torch.Tensor] | ArtifactSource,
@@ -96,6 +99,12 @@ class RotationTransform(BaseTransform):
     def is_bound(self) -> bool:
         return self.steering_vector is not None
 
+    @property
+    def artifact_meta(self) -> dict | None:
+        if self.steering_vector is not None and self.steering_vector.meta:
+            return dict(self.steering_vector.meta)
+        return None
+
     def bind(self, ctx: "TransformContext") -> "RotationTransform":
         if self.is_bound:
             return self
@@ -105,23 +114,22 @@ class RotationTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.steering_vector.directions.keys()) if self.steering_vector is not None else None
 
-    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
-        """`rotation`; both modes serialize."""
-        return "rotation", frozenset()
 
-    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
-        """The `rotation` wire payload for `layer_id` (angle, mode, and the `[2, H]` basis)."""
+    def export(self, layer_id: int) -> "WireForm | None":
+        """The `rotation` wire form for `layer_id` (angle, mode, and the `[2, H]` basis)."""
+        from ..specs import WireForm
+
         if self.steering_vector is None:
             return None
         basis = self.steering_vector.directions.get(layer_id)
         if basis is None:
             return None
-        return {
-            "kind": "rotation",
-            "params": {"angle": float(self.angle), "mode": self.mode},
-            "tensors": {"basis": basis},
-            "modifiers": [],
-        }
+        return WireForm(
+            kind="rotation",
+            params={"angle": float(self.angle), "mode": self.mode},
+            tensors={"basis": basis},
+        )
+
 
     def _basis(self, layer_id: int, device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
         """Return the cached orthonormal `(b1, b2)` for a layer, computing it on first use."""

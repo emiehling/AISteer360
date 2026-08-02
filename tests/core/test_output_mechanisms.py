@@ -106,11 +106,12 @@ class _CapturingDriver(DecodingDriver):
         self.captured = None
 
     def decode(self, input_ids, attention_mask, model, logits_processors,
-               stopping_criteria, runtime_kwargs, **gen_kwargs):
+               stopping_criteria, runtime_kwargs, session=None, **gen_kwargs):
         self.captured = {
             "logits_processors": logits_processors,
             "stopping_criteria": stopping_criteria,
             "runtime_kwargs": runtime_kwargs,
+            "session": session,
             "gen_kwargs": dict(gen_kwargs),
         }
         extra = {}

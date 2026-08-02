@@ -4,9 +4,15 @@ A gate holds one open/closed decision per logical batch row, one per prompt in t
 runtime collapses beam-expanded scores down to logical rows before `update()` and re-expands
 `open_rows()` when masking hidden states. The scalar case is `num_rows == 1`.
 """
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, ClassVar
 
 import torch
+
+if TYPE_CHECKING:
+    from ..specs import WireForm
 
 
 class BaseGate(ABC):
@@ -22,7 +28,19 @@ class BaseGate(ABC):
     `is_ready()` reports whether the gate has received all the evidence it expects. The runtime
     uses it to stop condition scoring once the decision is complete, so the prompt is scored once
     and the decision then holds.
+
+    `reset(num_rows)` must be idempotent: re-resetting an already-reset gate to the same size
+    leaves it in the same cleared state. Shared-gate composition (one gate instance read by
+    several interventions) relies on this, since each intervention's hook build resets the
+    shared instance.
+
+    Class attributes:
+        wire_kind: The permanent wire kind name this class serializes to, or None when the
+            class has no wire form. Wire names mirror toolkit class names, so the mapping is
+            definitional rather than maintained.
     """
+
+    wire_kind: ClassVar[str | None] = None
 
     num_rows: int = 1
 
@@ -62,17 +80,16 @@ class BaseGate(ABC):
         """
         return True
 
-    def to_intervention_gate(self) -> dict | None:
-        """The wire gate payload for intervention-capable backends, or None.
+    def export(self) -> "WireForm | None":
+        """This configuration's wire form, or None when the configuration is not expressible
+        in the wire vocabulary.
 
-        A payload is a dict with keys `"kind"`, `"params"`, `"tensors"` (per the wire kind's
-        artifact contract), and optionally `"inner"` (a nested gate payload for wrapper kinds).
-        Returning None marks the gate hook-only; a semantically trivial gate returns the
-        `{"kind": "null"}` sentinel instead, which lowers to an ungated op.
-
-        The default returns None.
+        The wire gate's `condition_layers` come from the intervention's `Condition` and are
+        merged in by the lowering, so a gate exports only the params and tensors it owns. The
+        default returns None (hook-only).
         """
         return None
+
 
     def _coerce_scores(self, scores: torch.Tensor | float) -> torch.Tensor:
         """Normalize `scores` to a float32 `[num_rows]` CPU tensor, enforcing the row contract."""
@@ -97,12 +114,17 @@ class AlwaysOpenGate(BaseGate):
     Methods without conditions still go through the gate; `open_rows()` reports every row open.
     """
 
+    wire_kind: ClassVar[str | None] = "null"
+
     def update(self, scores: torch.Tensor | float, *, key: int | None = None) -> None:
         pass
 
     def open_rows(self) -> torch.BoolTensor:
         return torch.ones(self.num_rows, dtype=torch.bool)
 
-    def to_intervention_gate(self) -> dict | None:
-        """The `{"kind": "null"}` sentinel; an always-open gate lowers to an ungated op."""
-        return {"kind": "null"}
+    def export(self) -> "WireForm | None":
+        """The `null` wire form; an always-open gate lowers to an ungated op."""
+        from ..specs import WireForm
+
+        return WireForm(kind="null")
+

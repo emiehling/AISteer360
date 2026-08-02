@@ -207,18 +207,23 @@ class TestSpecParityOnEngine:
     def test_steered_after_baseline_shared_prefix(self, plugin_backend):
         """The salting rule's regression alarm: a steered request after a baseline request over
         the same prompt must not reuse KV computed without the intervention."""
-        from aisteer360.algorithms.state_control._common.intervention_export import (
-            intervention_spec_from_runtime_config,
+        from aisteer360.algorithms.state_control._common.specs import (
+            Intervention,
+            TokenScope,
+            lower_interventions,
         )
         from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
         from aisteer360.algorithms.core.execution import InterventionEntry
 
         hidden = plugin_backend._layout.hidden_size
         vector = _steered_vector(TINY_MODEL, hidden, [1])
-        spec = intervention_spec_from_runtime_config(
-            transform=AdditiveTransform(vector.directions, strength=8.0),
-            layer_ids=[1], token_scope="all", gate=None,
-            num_layers=plugin_backend._layout.num_layers, placement="layer_output",
+        spec = lower_interventions(
+            [Intervention(
+                layers=(1,),
+                transform=AdditiveTransform(vector.directions, strength=8.0),
+                scope=TokenScope("all"),
+            )],
+            num_layers=plugin_backend._layout.num_layers,
         )
         prompt = PreparedPrompt.from_text("The committee reviewed the proposal carefully")
         params = GenerationParams(max_new_tokens=8, greedy=True)

@@ -44,7 +44,7 @@ from aisteer360.algorithms.core.utils.auxiliary_pass import current_auxiliary_pa
 from .condition_scorers import ConditionScorer
 from .gates.base import BaseGate
 from .hook_utils import extract_hidden_states, replace_hidden_states
-from .token_scope import TokenScope, align_mask_to_batch, make_token_mask
+from .token_scope import ScopeKind, align_mask_to_batch, make_token_mask
 from .transforms.base import BaseTransform
 
 HookPoint = Literal["layer_output", "layer_input"]
@@ -112,14 +112,6 @@ class TransformHookRuntime:
         self._opener_built = False
         self._clock_seen = False
         self._warned = set()
-
-    def reset_between_generations(self) -> None:
-        """Re-clear the per-generation counters, preserving the stored prompt lengths and mask.
-
-        No-op before the first `reset(prompt_lens, ...)` call (nothing to preserve yet).
-        """
-        if self._prompt_lens is not None:
-            self.reset(self._prompt_lens, self._prompt_mask)
 
     @property
     def num_logical_rows(self) -> int:
@@ -301,10 +293,11 @@ class TransformHookRuntime:
         layer_id: int,
         transform: BaseTransform,
         gate: BaseGate,
-        token_scope: TokenScope,
+        token_scope: ScopeKind,
         last_k: int | None = None,
         from_position: int | None = None,
         is_pass_opener: bool = False,
+        hook_point: HookPoint | None = None,
     ) -> Callable:
         """Build a hook that applies `transform` to the residual stream at `layer_id`, gated by `gate`.
 
@@ -320,13 +313,15 @@ class TransformHookRuntime:
             last_k: Required when `token_scope == "last_k"`.
             from_position: Required when `token_scope == "from_position"`.
             is_pass_opener: Whether this hook advances the shared position offset.
+            hook_point: Per-hook boundary override; defaults to the runtime's constructor
+                value, so one runtime can host hooks at both boundaries.
 
         Returns:
-            A hook callable suitable for the runtime's `hook_point` (a forward hook for
+            A hook callable suitable for the effective hook point (a forward hook for
             ``"layer_output"``, a forward pre-hook for ``"layer_input"``).
         """
         self._claim_opener(is_pass_opener)
-        if self.hook_point == "layer_output":
+        if (hook_point or self.hook_point) == "layer_output":
 
             def _forward_hook(module, args, kwargs, output):
                 hidden = output[0] if isinstance(output, tuple) else output
@@ -355,6 +350,7 @@ class TransformHookRuntime:
         scorer: ConditionScorer,
         gate: BaseGate,
         is_pass_opener: bool = False,
+        hook_point: HookPoint | None = None,
     ) -> Callable:
         """Build a read-only hook that scores the residual stream at `layer_id` and updates `gate`.
 
@@ -371,9 +367,11 @@ class TransformHookRuntime:
             scorer: Per-row condition scorer (see `ConditionScorer`).
             gate: Gate to feed the per-row scores to.
             is_pass_opener: Whether this hook advances the shared position offset.
+            hook_point: Per-hook boundary override; defaults to the runtime's constructor
+                value.
 
         Returns:
-            A hook callable suitable for the runtime's `hook_point`.
+            A hook callable suitable for the effective hook point.
         """
         self._claim_opener(is_pass_opener)
 
@@ -388,7 +386,7 @@ class TransformHookRuntime:
             scores = scorer(hidden, layer_id, prompt_mask=prompt_mask)
             gate.update(self._collapse_to_rows(scores, hidden.size(0)), key=layer_id)
 
-        if self.hook_point == "layer_output":
+        if (hook_point or self.hook_point) == "layer_output":
 
             def _forward_hook(module, args, kwargs, output):
                 hidden = output[0] if isinstance(output, tuple) else output
@@ -414,7 +412,7 @@ class TransformHookRuntime:
         layer_id: int,
         transform: BaseTransform,
         gate: BaseGate,
-        token_scope: TokenScope,
+        token_scope: ScopeKind,
         last_k: int | None,
         from_position: int | None,
         is_pass_opener: bool,
@@ -447,3 +445,156 @@ class TransformHookRuntime:
         if not bool(mask.any()):
             return hidden
         return transform.apply(hidden, layer_id=layer_id, token_mask=mask)
+
+
+def build_hooks(
+    interventions,
+    layout,
+    prompt_lens: torch.Tensor,
+    prompt_mask: torch.Tensor | None = None,
+    model=None,
+) -> dict[str, list]:
+    """Compile bound interventions to torch hooks for one logical generation.
+
+    Creates a fresh `TransformHookRuntime` (per-generation position state is born here), resets
+    every intervention's gate to the logical batch size (gate reset is idempotent, so a gate
+    instance shared across interventions is reset harmlessly more than once), and emits one
+    behavior hook per (intervention, layer) plus one condition hook per (intervention.condition,
+    layer). Condition hooks precede behavior hooks so a gate update runs before the transform at
+    a shared layer. Exactly one hook opens each pass: the first-firing hook of the lowest hooked
+    layer across the tuple.
+
+    Module paths derive from each intervention's resolved site: decoder layers for residual
+    transforms, the attention output projection for `head_additive`, and each layer's
+    normalization sub-modules for the `"norm_input"` site. The intervention's `boundary` picks
+    the hook phase (`"layer_output"` builds forward hooks, `"layer_input"` forward pre-hooks);
+    the `o_proj` and `"norm_input"` sites hook module inputs.
+
+    Args:
+        interventions: Bound interventions, in application order.
+        layout: The module-path `ModelLayout` naming decoder layers, output projections, and
+            norm sub-modules.
+        prompt_lens: Per-row prompt lengths of shape `[B_logical]` (from
+            `compute_prompt_lens`); defines the logical batch size for row gating.
+        prompt_mask: Optional pad-aware prompt attention mask of shape `[B_logical, T_prompt]`,
+            forwarded to condition scorers on the prefill pass.
+        model: Optional live model, consulted only to skip norm sub-modules a layer does not
+            define at the `"norm_input"` site.
+
+    Returns:
+        Hook specifications keyed by phase (`"pre"`, `"forward"`, `"backward"`), each entry a
+        mapping with `"module"` and `"hook_func"`.
+
+    Raises:
+        ValueError: If an intervention is unbound, or a layer has no module path in `layout`.
+    """
+    from .gates.base import BaseGate
+    from .specs import Condition, Intervention
+
+    runtime = TransformHookRuntime()
+    runtime.reset(prompt_lens, prompt_mask)
+    num_rows = int(prompt_lens.size(0))
+
+    # hook units in module firing order: (layer, site_rank, condition_before_behavior)
+    site_rank = {"pre": 0, "norm": 1, "o_proj": 2, "forward": 3}
+    units: list[tuple[tuple, dict]] = []
+
+    for intervention in interventions:
+        if not isinstance(intervention, Intervention) or not isinstance(intervention.layers, tuple):
+            raise ValueError("build_hooks requires bound interventions; call bind() first.")
+        gate = intervention.gate
+        if not isinstance(gate, BaseGate):
+            raise ValueError("build_hooks requires a resolved gate; call bind() first.")
+        gate.reset(num_rows)
+
+        site = intervention.resolved_site()
+        boundary = intervention.boundary
+        condition = intervention.condition
+
+        if condition is not None:
+            for layer_id in condition.layer_ids:
+                phase = "forward" if boundary == "layer_output" else "pre"
+                units.append((
+                    (layer_id, site_rank[phase if phase == "pre" else "forward"], 0),
+                    {
+                        "kind": "condition", "phase": phase, "layer_id": layer_id,
+                        "module": layout.layer_names[layer_id], "scorer": condition.scorer,
+                        "gate": gate, "hook_point": boundary,
+                    },
+                ))
+
+        for layer_id in intervention.layers:
+            if site == "norm_input":
+                for norm_attr in layout.norm_attrs:
+                    module = f"{layout.layer_names[layer_id]}.{norm_attr}"
+                    if model is not None and not _submodule_exists(model, module):
+                        continue
+                    units.append((
+                        (layer_id, site_rank["norm"], 1, module),
+                        {
+                            "kind": "behavior", "phase": "pre", "layer_id": layer_id,
+                            "module": module, "intervention": intervention, "gate": gate,
+                            "hook_point": "layer_input",
+                        },
+                    ))
+            elif site == "o_proj":
+                units.append((
+                    (layer_id, site_rank["o_proj"], 1),
+                    {
+                        "kind": "behavior", "phase": "pre", "layer_id": layer_id,
+                        "module": layout.oproj_names[layer_id], "intervention": intervention,
+                        "gate": gate, "hook_point": "layer_input",
+                    },
+                ))
+            else:
+                phase = "forward" if boundary == "layer_output" else "pre"
+                units.append((
+                    (layer_id, site_rank[phase], 1),
+                    {
+                        "kind": "behavior", "phase": phase, "layer_id": layer_id,
+                        "module": layout.layer_names[layer_id], "intervention": intervention,
+                        "gate": gate, "hook_point": boundary,
+                    },
+                ))
+
+    hooks: dict[str, list] = {"pre": [], "forward": [], "backward": []}
+    if not units:
+        return hooks
+
+    # exactly one opener: the first-registered unit among those sharing the minimal firing key
+    opener_index = min(range(len(units)), key=lambda index: units[index][0])
+
+    for index, (key, unit) in enumerate(units):
+        is_opener = index == opener_index
+        if unit["kind"] == "condition":
+            hook_func = runtime.build_condition_hook(
+                layer_id=unit["layer_id"],
+                scorer=unit["scorer"],
+                gate=unit["gate"],
+                is_pass_opener=is_opener,
+                hook_point=unit["hook_point"],
+            )
+        else:
+            intervention = unit["intervention"]
+            hook_func = runtime.build_behavior_hook(
+                layer_id=unit["layer_id"],
+                transform=intervention.transform,
+                gate=unit["gate"],
+                token_scope=intervention.scope.kind,
+                last_k=intervention.scope.last_k,
+                from_position=intervention.scope.from_position,
+                is_pass_opener=is_opener,
+                hook_point=unit["hook_point"],
+            )
+        hooks[unit["phase"]].append({"module": unit["module"], "hook_func": hook_func})
+
+    return hooks
+
+
+def _submodule_exists(model, module_path: str) -> bool:
+    """True when `module_path` resolves on the model's module tree."""
+    try:
+        model.get_submodule(module_path)
+    except AttributeError:
+        return False
+    return True

@@ -10,8 +10,8 @@ import copy
 import torch
 from transformers import PreTrainedModel
 
-from aisteer360.algorithms.core.execution.capabilities import Capability
-from aisteer360.algorithms.core.execution.requirements import Requirements, needs
+from aisteer360.algorithms.core.execution.contracts import Capability
+from aisteer360.algorithms.core.execution.contracts import Requirements, needs
 from aisteer360.algorithms.output_control._common.drivers.frontier import Frontier
 from aisteer360.algorithms.output_control._common.drivers.proposer import SegmentProposer
 from aisteer360.algorithms.output_control.base import (
@@ -26,7 +26,7 @@ class SearchDriver(DecodingDriver):
 
     Supports batch size 1 only (raises otherwise). `decode()` pops `max_new_tokens` as the global
     budget, builds a `SegmentProposer` with the received stacks, and runs the loop. `runtime_kwargs`
-    pass-throughs (`base_generate` override, `reward_params`) are preserved.
+    pass-throughs (`reward_params`) are preserved.
 
     Can be constructed directly (its positional constructor below) or as a preset: a subclass with an
     `Args` dataclass maps its mirrored args onto these fields in `_configure()` (see DeAL), so it never

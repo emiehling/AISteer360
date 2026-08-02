@@ -135,7 +135,8 @@ class TestDiagnosticsLifecycle:
         assert all(isinstance(v, float) for v in decision.scores.values())
         assert len(decision.open_per_row) == 1
 
-        control.reset()
+        # a new generation's hook build resets the gate; the decision clears
+        control.get_hooks(torch.tensor([[3, 4, 5]]), None)
         assert control.latest_decision is None
         assert not control._gate.is_ready()  # evidence cleared; gate awaits the next prefill
 
@@ -228,47 +229,61 @@ class TestPaddingAwareMean:
 
 
 class TestConditionMaskThreading:
-    """WS2: `get_hooks` uses the pipeline-supplied attention mask; falls back to leading/trailing-only
-    inference (interior pad==eos preserved) when omitted."""
+    """WS2: `get_hooks` hands the pipeline-supplied attention mask to `build_hooks`; falls back to
+    leading/trailing-only inference (interior pad==eos preserved) when omitted."""
 
     def _steered_control(self):
         control = _build_cast(condition_threshold=0.0)
         _steer_pipeline(control)  # attaches tokenizer + resolves the condition config
         return control
 
-    def test_supplied_attention_mask_used_verbatim(self):
+    def _built_prompt_mask(self, control, ids, attention_mask, monkeypatch):
+        import aisteer360.algorithms.state_control._common.runtime as runtime_module
+
+        captured = {}
+        original = runtime_module.build_hooks
+
+        def capture(interventions, layout, prompt_lens, prompt_mask=None, model=None):
+            captured["prompt_mask"] = prompt_mask
+            return original(interventions, layout, prompt_lens, prompt_mask, model=model)
+
+        monkeypatch.setattr(runtime_module, "build_hooks", capture)
+        control.get_hooks(ids, runtime_kwargs=None, attention_mask=attention_mask)
+        return captured["prompt_mask"]
+
+    def test_supplied_attention_mask_used_verbatim(self, monkeypatch):
         control = self._steered_control()
         ids = torch.tensor([[3, 4, 5, 6, 7]])
         attention_mask = torch.tensor([[1, 1, 0, 1, 0]])  # arbitrary, includes an interior zero
-        control.get_hooks(ids, runtime_kwargs=None, attention_mask=attention_mask)
-        assert control._runtime._prompt_mask is not None
-        assert control._runtime._prompt_mask.dtype == torch.bool
-        assert control._runtime._prompt_mask.tolist() == [[True, True, False, True, False]]
+        prompt_mask = self._built_prompt_mask(control, ids, attention_mask, monkeypatch)
+        assert prompt_mask is not None
+        assert prompt_mask.dtype == torch.bool
+        assert prompt_mask.tolist() == [[True, True, False, True, False]]
 
-    def test_supplied_1d_mask_unsqueezed(self):
+    def test_supplied_1d_mask_unsqueezed(self, monkeypatch):
         control = self._steered_control()
         ids = torch.tensor([[3, 4, 5]])
-        control.get_hooks(ids, runtime_kwargs=None, attention_mask=torch.tensor([1, 0, 1]))
-        assert control._runtime._prompt_mask.tolist() == [[True, False, True]]
+        prompt_mask = self._built_prompt_mask(control, ids, torch.tensor([1, 0, 1]), monkeypatch)
+        assert prompt_mask.tolist() == [[True, False, True]]
 
-    def test_omitted_mask_preserves_interior_pad(self):
+    def test_omitted_mask_preserves_interior_pad(self, monkeypatch):
         # pad == eos: an interior pad-id token must remain unmasked when no mask is supplied
         control = self._steered_control()
         control.tokenizer.pad_token = control.tokenizer.eos_token
         control.tokenizer.pad_token_id = control.tokenizer.eos_token_id
         pad = control.tokenizer.pad_token_id
         ids = torch.tensor([[3, pad, 4, pad, 5]])  # interior pad at pos 1 and 3
-        control.get_hooks(ids, runtime_kwargs=None, attention_mask=None)
-        assert control._runtime._prompt_mask.tolist() == [[True, True, True, True, True]]
+        prompt_mask = self._built_prompt_mask(control, ids, None, monkeypatch)
+        assert prompt_mask.tolist() == [[True, True, True, True, True]]
 
-    def test_omitted_mask_masks_trailing_pad(self):
+    def test_omitted_mask_masks_trailing_pad(self, monkeypatch):
         control = self._steered_control()
         control.tokenizer.pad_token = control.tokenizer.eos_token
         control.tokenizer.pad_token_id = control.tokenizer.eos_token_id
         pad = control.tokenizer.pad_token_id
         ids = torch.tensor([[3, 4, 5, pad, pad]])
-        control.get_hooks(ids, runtime_kwargs=None, attention_mask=None)
-        assert control._runtime._prompt_mask.tolist() == [[True, True, True, False, False]]
+        prompt_mask = self._built_prompt_mask(control, ids, None, monkeypatch)
+        assert prompt_mask.tolist() == [[True, True, True, False, False]]
 
 
 class TestComparatorAliases:

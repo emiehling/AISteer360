@@ -16,7 +16,7 @@ from aisteer360.algorithms.state_control._common.specs import (
     normalize_comparator,
 )
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.token_scope import TokenScope
+from aisteer360.algorithms.state_control._common.token_scope import ScopeKind
 from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform
 
 if TYPE_CHECKING:
@@ -139,7 +139,7 @@ class CASTArgs(BaseArgs):
     # hook behavior
     use_ooi_preventive_normalization: bool = False
     use_explained_variance: bool = False
-    token_scope: TokenScope = "all"
+    token_scope: ScopeKind = "all"
     last_k: int | None = None
     from_position: int | None = None
 

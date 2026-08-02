@@ -1,7 +1,7 @@
 """Structural model facts for steer-time preparation.
 
 State controls consume structural facts (layer count, dtype, hidden size) from the steering
-session's `ModelLayout` so preparation works the same whether the steering backend holds a live
+session's `ModelFacts` so preparation works the same whether the steering backend holds a live
 model or only a layout. Module-path resolution stays out of this module; hook module names are
 resolved from the module tree at `get_hooks()` time.
 """
@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import torch
 
-from aisteer360.algorithms.core.execution.layout import ModelLayout
+from aisteer360.algorithms.core.execution.payloads import ModelFacts
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 
 from .hook_utils import get_model_layer_list
 
 
-def resolve_layout(model=None, session=None) -> ModelLayout:
+def resolve_layout(model=None, session=None) -> ModelFacts:
     """Structural facts from the session's layout, else derived from the live model.
 
     Args:
@@ -23,7 +23,7 @@ def resolve_layout(model=None, session=None) -> ModelLayout:
         session: A `SteeringSession` whose `layout` property carries the facts.
 
     Returns:
-        The structural `ModelLayout`.
+        The structural `ModelFacts`.
 
     Raises:
         ValueError: If neither a session nor a model is available.
@@ -41,7 +41,7 @@ def resolve_layout(model=None, session=None) -> ModelLayout:
     head_dim = getattr(config, "head_dim", None)
     if head_dim is None and num_heads:
         head_dim = getattr(config, "hidden_size", 0) // num_heads
-    return ModelLayout(
+    return ModelFacts(
         num_layers=len(layer_names),
         hidden_size=getattr(config, "hidden_size", 0),
         num_attention_heads=num_heads,
@@ -51,7 +51,7 @@ def resolve_layout(model=None, session=None) -> ModelLayout:
     )
 
 
-def cast_steering_vector(steering_vector, layout: ModelLayout):
+def cast_steering_vector(steering_vector, layout: ModelFacts):
     """A clone of `steering_vector` with per-layer directions cast to the layout dtype.
 
     Device placement is untouched; transforms move tensors to the stream device at apply time.
@@ -70,7 +70,7 @@ def cast_steering_vector(steering_vector, layout: ModelLayout):
     return clone
 
 
-def layout_torch_dtype(layout: ModelLayout) -> torch.dtype:
+def layout_torch_dtype(layout: ModelFacts) -> torch.dtype:
     """The torch dtype named by `layout.dtype`.
 
     Raises:

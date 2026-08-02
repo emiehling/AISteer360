@@ -1,7 +1,7 @@
 """Head-level additive transform for activation steering."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, ClassVar, Mapping
 
 import torch
 
@@ -10,6 +10,7 @@ from ..steering_vector import SteeringVector
 from .base import BaseTransform
 
 if TYPE_CHECKING:
+    from ..specs import WireForm
     from .context import TransformContext
 
 
@@ -36,6 +37,8 @@ class HeadAdditiveTransform(BaseTransform):
         active_heads: Mapping from layer_id to set of head indices to intervene on.
         strength: Global scaling factor (alpha in ITI).
     """
+
+    wire_kind: ClassVar[str | None] = "head_additive"
 
     def __init__(
         self,
@@ -77,6 +80,12 @@ class HeadAdditiveTransform(BaseTransform):
     def is_bound(self) -> bool:
         return self.steering_vector is not None
 
+    @property
+    def artifact_meta(self) -> dict | None:
+        if self.steering_vector is not None and self.steering_vector.meta:
+            return dict(self.steering_vector.meta)
+        return None
+
     def bind(self, ctx: "TransformContext") -> "HeadAdditiveTransform":
         if self.is_bound:
             return self
@@ -84,18 +93,24 @@ class HeadAdditiveTransform(BaseTransform):
 
     @property
     def covered_layer_ids(self) -> set[int] | None:
-        return set(self.steering_vector.directions.keys()) if self.steering_vector is not None else None
+        """Layers the transform can act on: layers with directions and active heads."""
+        if self.steering_vector is None:
+            return None
+        return {
+            layer_id
+            for layer_id in self.steering_vector.directions
+            if self.active_heads.get(layer_id)
+        }
 
-    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
-        """`head_additive`, valid under the wire's `tensor_parallel_size==1` constraint."""
-        return "head_additive", frozenset()
 
-    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
-        """The `head_additive` wire payload for `layer_id`.
+    def export(self, layer_id: int) -> "WireForm | None":
+        """The `head_additive` wire form for `layer_id`.
 
         The wire vector is `[num_heads, head_dim]` with zeros at heads outside `active_heads`,
         so the broadcast wire addition reproduces the selective per-head addition exactly.
         """
+        from ..specs import WireForm
+
         if self.steering_vector is None:
             return None
         heads = self.active_heads.get(layer_id)
@@ -105,12 +120,12 @@ class HeadAdditiveTransform(BaseTransform):
         vector = torch.zeros(self.num_heads, self.head_dim, dtype=dirs.dtype)
         for head_id in heads:
             vector[head_id] = dirs[head_id]
-        return {
-            "kind": "head_additive",
-            "params": {"strength": float(self.strength)},
-            "tensors": {"vector": vector},
-            "modifiers": [],
-        }
+        return WireForm(
+            kind="head_additive",
+            params={"strength": float(self.strength)},
+            tensors={"vector": vector},
+        )
+
 
     def apply(
         self,

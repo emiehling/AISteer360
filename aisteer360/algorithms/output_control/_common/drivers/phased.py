@@ -14,7 +14,7 @@ from typing import Callable
 import torch
 from transformers import PreTrainedModel, StoppingCriteriaList
 
-from aisteer360.algorithms.core.execution.requirements import Requirements
+from aisteer360.algorithms.core.execution.contracts import Requirements
 from aisteer360.algorithms.output_control._common.criteria import BudgetTokens, StopOnSubstring
 from aisteer360.algorithms.output_control.base import (
     DecodingDriver,
@@ -108,7 +108,7 @@ class PhasedDriver(DecodingDriver):
             raise RuntimeError("PhasedDriver requires a tokenizer; steer() must run first.")
 
         runtime_kwargs = runtime_kwargs or {}
-        via_session = session is not None and runtime_kwargs.get("base_generate") is None
+        via_session = session is not None
         base_generate = resolve_generate_callable(model, runtime_kwargs, session=session)
 
         if input_ids.dim() == 1:

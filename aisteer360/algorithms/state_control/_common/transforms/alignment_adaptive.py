@@ -1,7 +1,7 @@
 """Alignment-adaptive filtering: a transform decorator that gates by feature alignment."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, ClassVar, Mapping
 
 import torch
 
@@ -10,6 +10,7 @@ from ..steering_vector import SteeringVector
 from .base import BaseTransform
 
 if TYPE_CHECKING:
+    from ..specs import WireForm
     from .context import TransformContext
 
 
@@ -45,6 +46,9 @@ class AlignmentAdaptiveTransform(BaseTransform):
       [https://arxiv.org/abs/2510.26243](https://arxiv.org/abs/2510.26243)
     """
 
+    wire_kind: ClassVar[str | None] = "alignment_adaptive"
+    is_modifier: ClassVar[bool] = True
+
     def __init__(
         self,
         inner: BaseTransform,
@@ -76,6 +80,10 @@ class AlignmentAdaptiveTransform(BaseTransform):
     def is_bound(self) -> bool:
         return self.steering_vector is not None and self.inner.is_bound
 
+    @property
+    def artifact_meta(self) -> dict | None:
+        return self.inner.artifact_meta
+
     def bind(self, ctx: "TransformContext") -> "AlignmentAdaptiveTransform":
         if self.is_bound:
             return self
@@ -92,38 +100,38 @@ class AlignmentAdaptiveTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return self.inner.covered_layer_ids
 
-    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
-        """The inner plan with the `alignment_adaptive` modifier added.
+
+    def modifier_wire_kind(self, core_kind: str) -> str | None:
+        """`"alignment_adaptive"`, or None over a per-head core.
 
         Like `norm_preserving`, the wire modifier operates on the residual stream; a wrapped
         `head_additive` is hook-only.
         """
-        plan = self.inner.wire_kind_plan()
-        if plan is None:
+        if core_kind == "head_additive":
             return None
-        kind, modifiers = plan
-        if kind == "head_additive":
-            return None
-        return kind, modifiers | {"alignment_adaptive"}
+        return "alignment_adaptive"
 
-    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
-        """The inner transform's wire payload with an `alignment_adaptive` modifier appended.
+    def export_modifier(self, layer_id: int) -> "WireForm | None":
+        """The `alignment_adaptive` wire modifier form at `layer_id`.
 
         The modifier's wire vector is the resolved per-layer alignment axis
-        (`directions[layer_id][direction_index]`). A layer without an alignment axis appends no
-        modifier, matching the in-process behavior where the mask is left unnarrowed there.
+        (`directions[layer_id][direction_index]`). A layer without an alignment axis
+        contributes no modifier, matching the in-process behavior where the mask is left
+        unnarrowed there.
         """
-        payload = self.inner.to_intervention_op_payload(layer_id)
-        if payload is None or self.steering_vector is None:
+        from ..specs import WireForm
+
+        if self.steering_vector is None:
             return None
         dirs = self.steering_vector.directions.get(layer_id)
-        if dirs is not None:
-            payload["modifiers"].append({
-                "kind": "alignment_adaptive",
-                "params": {"threshold": float(self.threshold), "use_cosine": bool(self.use_cosine)},
-                "tensors": {"vector": dirs[self.direction_index]},
-            })
-        return payload
+        if dirs is None:
+            return None
+        return WireForm(
+            kind="alignment_adaptive",
+            params={"threshold": float(self.threshold), "use_cosine": bool(self.use_cosine)},
+            tensors={"vector": dirs[self.direction_index]},
+        )
+
 
     def apply(
         self,

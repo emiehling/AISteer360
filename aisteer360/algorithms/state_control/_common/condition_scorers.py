@@ -42,7 +42,9 @@ class ConditionScorer(Protocol):
     already aligned to the hidden batch; on decode passes it is None and `hidden` holds the newly
     generated token(s). A python float return is permitted only for single-prompt generation.
     Scorers may expose `location` and `model_fingerprint`; the adapter validates them when
-    present.
+    present. Scorers may also expose `export() -> WireForm | None`, whose params and tensors
+    merge into the gate's wire form; a scorer without `export` (an arbitrary callable) keeps
+    the whole intervention in process.
     """
 
     def __call__(
@@ -277,6 +279,16 @@ class ProbeContributionScorer:
         self.probe = probe
         self.location: str = probe.location
         self.model_fingerprint: str | None = probe.meta.get("model_fingerprint")
+
+    def export(self):
+        """The scorer's wire contribution: the probe's `pooling` param.
+
+        The probe's weights and bias travel with the `ProbeSumGate` that owns the probe, so
+        the scorer exports no tensors.
+        """
+        from .specs import WireForm
+
+        return WireForm(kind="probe_sum", params={"pooling": self.probe.pooling})
 
     @torch.no_grad()
     def __call__(

@@ -1,4 +1,8 @@
 """Wrapper gate that freezes the per-row decision once ready."""
+from __future__ import annotations
+
+from typing import ClassVar
+
 import torch
 
 from .base import BaseGate
@@ -17,6 +21,8 @@ class CacheOnceGate(BaseGate):
     Args:
         inner: The gate to wrap.
     """
+
+    wire_kind: ClassVar[str | None] = "cache_once"
 
     def __init__(self, inner: BaseGate):
         self.inner = inner
@@ -46,13 +52,3 @@ class CacheOnceGate(BaseGate):
         """True once the decision is frozen or the inner gate is ready."""
         return self._cached is not None or self.inner.is_ready()
 
-    def to_intervention_gate(self) -> dict | None:
-        """The `cache_once` wire payload wrapping the inner gate's payload.
-
-        Returns None when the inner gate has no wire form or is the always-open sentinel,
-        since the wire kind requires a conditional inner gate.
-        """
-        inner = self.inner.to_intervention_gate()
-        if inner is None or inner.get("kind") == "null":
-            return None
-        return {"kind": "cache_once", "params": {}, "tensors": {}, "inner": inner}

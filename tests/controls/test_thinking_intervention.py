@@ -1,6 +1,8 @@
 import pytest
 import torch
 
+from tests.utils.runtime_helpers import script_session_generate
+
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.output_control.thinking_intervention.control import (
     ThinkingIntervention,
@@ -26,7 +28,7 @@ def simple_intervention(prompt: str, params: dict) -> str:
 
 
 @pytest.mark.parametrize("conf", build_param_grid(THINKING_GRID))
-def test_thinking_intervention(model_and_tokenizer, device: torch.device, conf: dict):
+def test_thinking_intervention(model_and_tokenizer, device: torch.device, conf: dict, monkeypatch):
     """
     Verify that ThinkingIntervention modifies the prompt, generates, and (when applicable) strips the thinking content up to the closing </think> tag.
     """
@@ -43,7 +45,7 @@ def test_thinking_intervention(model_and_tokenizer, device: torch.device, conf: 
     # prompt
     prompt_ids = tokenizer(PROMPT_TEXT, return_tensors="pt").input_ids.to(device)
 
-    # deterministic base_generate
+    # deterministic scripted rollouts through the session
     def fake_generate(**kwargs):
         """
         Mimics HF generate.
@@ -56,10 +58,10 @@ def test_thinking_intervention(model_and_tokenizer, device: torch.device, conf: 
         contuation_ids = tokenizer(continuation_text, return_tensors="pt", add_special_tokens=False)["input_ids"].to(inputs.device)
         return torch.cat([inputs, contuation_ids], dim=1)
 
+    script_session_generate(monkeypatch, fake_generate)
+
     # runtime kwargs
-    runtime_kwargs = {
-        "base_generate": fake_generate,
-    }
+    runtime_kwargs = {}
     if conf["use_params"]:
         runtime_kwargs["params"] = {"plan": "Outline key steps concisely."}
 

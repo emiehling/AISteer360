@@ -9,7 +9,7 @@ from aisteer360.algorithms.core.execution import (
     GenerationItem,
     GenerationParams,
     HookEntry,
-    ModelLayout,
+    ModelFacts,
     PreparedPrompt,
 )
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
@@ -33,11 +33,11 @@ HEADS = 4
 class _LayoutOnlySession:
     """Session double carrying only a structural layout."""
 
-    def __init__(self, layout: ModelLayout):
+    def __init__(self, layout: ModelFacts):
         self._layout = layout
 
     @property
-    def layout(self) -> ModelLayout:
+    def layout(self) -> ModelFacts:
         return self._layout
 
 
@@ -54,7 +54,7 @@ def tokenizer():
 
 @pytest.fixture()
 def layout_session():
-    return _LayoutOnlySession(ModelLayout(
+    return _LayoutOnlySession(ModelFacts(
         num_layers=LAYERS,
         hidden_size=HIDDEN,
         num_attention_heads=HEADS,
@@ -164,7 +164,7 @@ class TestModelFreeSteerBoundaries:
             control.get_hooks(ids, None)
 
     def test_layout_dtype_governs_vector_preparation(self, tokenizer):
-        session = _LayoutOnlySession(ModelLayout(
+        session = _LayoutOnlySession(ModelFacts(
             num_layers=LAYERS, hidden_size=HIDDEN, num_attention_heads=HEADS,
             head_dim=HIDDEN // HEADS, dtype="float16", model_fingerprint="0" * 16,
         ))

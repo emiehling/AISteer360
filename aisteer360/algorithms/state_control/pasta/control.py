@@ -7,8 +7,8 @@ from typing import Sequence
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.core.execution.capabilities import Capability
-from aisteer360.algorithms.core.execution.requirements import (
+from aisteer360.algorithms.core.execution.contracts import Capability
+from aisteer360.algorithms.core.execution.contracts import (
     Requirements,
     SpecConstraint,
     needs,
@@ -17,7 +17,7 @@ from aisteer360.algorithms.core.execution.spec import BackendSpec
 from aisteer360.algorithms.state_control._common.model_layout import (
     resolve_model_layout,
 )
-from aisteer360.algorithms.state_control.base import StateControl
+from aisteer360.algorithms.state_control.base import HookControl
 from aisteer360.algorithms.state_control.pasta.args import PASTAArgs
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ def _attn_implementation_supported(spec: BackendSpec) -> bool:
     return impl is None or impl in SUPPORTED_ATTN_IMPLEMENTATIONS
 
 
-class PASTA(StateControl):
+class PASTA(HookControl):
     """
     Implementation of PASTA (Post-hoc Attention STeering Approach) from Zhang et al., 2023.
 

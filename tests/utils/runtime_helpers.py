@@ -43,3 +43,83 @@ def strip_clock(hook):
         return result
 
     return stripped
+
+
+class RuntimeCapture:
+    """Captures each `TransformHookRuntime` that `build_hooks` constructs.
+
+    `build_hooks` creates one fresh runtime per logical generation and discards its reference
+    once the hook closures own it; tests asserting position or opener state install this via
+    `capture_built_runtimes` and read `.last`.
+    """
+
+    def __init__(self):
+        self.runtimes = []
+
+    @property
+    def last(self):
+        return self.runtimes[-1] if self.runtimes else None
+
+
+def capture_built_runtimes(monkeypatch) -> RuntimeCapture:
+    """Patch the runtime module so every runtime built by `build_hooks` is recorded."""
+    import aisteer360.algorithms.state_control._common.runtime as runtime_module
+
+    capture = RuntimeCapture()
+    original = runtime_module.TransformHookRuntime
+
+    class _Recording(original):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            capture.runtimes.append(self)
+
+    monkeypatch.setattr(runtime_module, "TransformHookRuntime", _Recording)
+    return capture
+
+
+class ScriptedSession:
+    """A minimal session double whose `generate` runs items through a scripted callable.
+
+    `fake_generate` follows the `model.generate` convention: it receives `input_ids` (and any
+    generation kwargs it cares to read) and returns full sequences (prompt plus continuation).
+    """
+
+    def __init__(self, fake_generate, tokenizer=None):
+        self._fake_generate = fake_generate
+        self.tokenizer = tokenizer
+
+    def generate(self, items, params):
+        from aisteer360.algorithms.core.execution.payloads import ItemResult
+        from aisteer360.algorithms.core.output import Output
+
+        results = []
+        gen_kwargs = params.to_gen_kwargs()
+        for index, item in enumerate(items):
+            prompt = item.prompt
+            if prompt.token_ids is None:
+                prompt = prompt.resolve_token_ids(self.tokenizer)
+            ids = prompt.token_ids
+            full = self._fake_generate(
+                input_ids=ids, attention_mask=prompt.attention_mask, **gen_kwargs
+            )
+            results.append(ItemResult(index=index, output=Output(
+                output_ids=full[:, ids.size(1):],
+                adapted_input_ids=ids,
+                finish_reason=None,
+                finish_reasons=None,
+            )))
+        return results
+
+
+def script_session_generate(monkeypatch, fake_generate):
+    """Patch the in-process session so driver rollouts run through `fake_generate`.
+
+    Drivers roll out through the pipeline's `SteeredSession`; scripting a rollout therefore
+    scripts the session's `generate`.
+    """
+    from aisteer360.backends.huggingface import ExclusiveSession
+
+    def generate(self, items, params):
+        return ScriptedSession(fake_generate, tokenizer=self.tokenizer).generate(items, params)
+
+    monkeypatch.setattr(ExclusiveSession, "generate", generate)

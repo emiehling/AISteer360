@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from aisteer360.algorithms.core.execution.items import ItemResult
+from aisteer360.algorithms.core.execution.payloads import ItemResult
 
 logger = logging.getLogger(__name__)
 

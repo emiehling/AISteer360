@@ -18,8 +18,8 @@ from typing import Any
 import numpy as np
 import torch
 
-from aisteer360.algorithms.core.execution.capabilities import Capability
-from aisteer360.algorithms.core.execution.requirements import Requirements, needs
+from aisteer360.algorithms.core.execution.contracts import Capability
+from aisteer360.algorithms.core.execution.contracts import Requirements, needs
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.input_control._common.formatters.system_prompt import (
     SystemPromptFormatter,

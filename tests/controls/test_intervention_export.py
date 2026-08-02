@@ -4,17 +4,14 @@ import pytest
 import torch
 from vllm_hook_plugins.core.schema import parse_intervention_spec
 
-from aisteer360.algorithms.core.execution import Capability, ModelLayout
+from aisteer360.algorithms.core.execution import Capability, ModelFacts
 from aisteer360.algorithms.core.internals.probes import Probe
 from aisteer360.algorithms.state_control._common.gates import (
     CacheOnceGate,
     MultiKeyThresholdGate,
     ProbeSumGate,
 )
-from aisteer360.algorithms.state_control._common.intervention_export import (
-    artifact_id_for,
-    intervention_spec_from_runtime_config,
-)
+from aisteer360.algorithms.state_control._common.specs import artifact_id_for
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (
     AdditiveTransform,
@@ -37,13 +34,13 @@ HEADS = 4
 
 
 class _LayoutOnlySession:
-    def __init__(self, layout: ModelLayout):
+    def __init__(self, layout: ModelFacts):
         self.layout = layout
 
 
 @pytest.fixture()
 def session():
-    return _LayoutOnlySession(ModelLayout(
+    return _LayoutOnlySession(ModelFacts(
         num_layers=LAYERS,
         hidden_size=HIDDEN,
         num_attention_heads=HEADS,
@@ -124,15 +121,16 @@ class TestFamilyExports:
         control = ActAdd(positive_prompt="love", negative_prompt="hate", layer_id=2)
         assert not _supports_specs(control)
 
-    def test_directional_ablation_groups_shared_tensors(self, session):
+    def test_directional_ablation_shares_one_artifact_across_layers(self, session):
         shared = torch.randn(1, HIDDEN)
         vector = SteeringVector(model_type="llama", directions={2: shared, 3: shared.clone()})
         control = DirectionalAblation(steering_vector=vector, layer_ids=[2, 3])
         control.steer(model=None, session=session)
         spec = control.export_intervention_spec()
-        (op,) = spec.ops
-        assert op["layers"] == [2, 3]
+        # one op per (intervention, layer); identical content shares one content-addressed artifact
+        assert [op["layers"] for op in spec.ops] == [[2], [3]]
         assert len(spec.artifacts) == 1
+        assert spec.ops[0]["transform"]["artifact"] == spec.ops[1]["transform"]["artifact"]
 
     def test_directional_ablation_distinct_tensors_yield_one_op_per_layer(self, session):
         control = DirectionalAblation(steering_vector=_vector(), layer_ids=[2, 3])
@@ -273,12 +271,17 @@ class TestAdapterExports:
 class TestExportMechanics:
 
     def test_modifier_order_is_innermost_first(self):
+        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope, lower_interventions
+
         vector = _vector(k=2)
         transform = NormPreservingTransform(
             AlignmentAdaptiveTransform(RotationTransform(vector, angle=0.2, mode="offset"), vector)
         )
-        payload = transform.to_intervention_op_payload(1)
-        assert [modifier["kind"] for modifier in payload["modifiers"]] == [
+        spec = lower_interventions(
+            [Intervention(layers=(1,), transform=transform, scope=TokenScope("all"))],
+            num_layers=LAYERS,
+        )
+        assert [modifier["kind"] for modifier in spec.ops[0]["transform"]["modifiers"]] == [
             "alignment_adaptive",
             "norm_preserving",
         ]
@@ -323,7 +326,7 @@ class TestExportMechanics:
                 hook_point="layer_input", **_probe(location="layer_input").as_condition(),
             ),
         ]
-        session = _LayoutOnlySession(ModelLayout(
+        session = _LayoutOnlySession(ModelFacts(
             num_layers=LAYERS, hidden_size=HIDDEN, num_attention_heads=HEADS,
             head_dim=HIDDEN // HEADS, dtype="float32", model_fingerprint="0" * 16,
         ))

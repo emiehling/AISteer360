@@ -26,6 +26,14 @@ PROMPT_TEXT = "Give me a short set of instructions to follow when you respond."
 
 # helpers
 
+def _no_hooks_on(model) -> bool:
+    """True when no forward or pre hooks remain on any module (nothing leaked)."""
+    for module in model.modules():
+        if module._forward_hooks or module._forward_pre_hooks:
+            return False
+    return True
+
+
 def _basis_vector(hidden_size, num_layers, seed=0):
     gen = torch.Generator().manual_seed(seed)
     directions = {lid: torch.randn(2, hidden_size, generator=gen) for lid in range(num_layers)}
@@ -224,9 +232,9 @@ def test_angular_precomputed_vector(model_and_tokenizer, device: torch.device, c
 
     # generate twice; assert hooks are removed after each call so they do not accumulate
     out_ids = pipeline.generate(input_ids=prompt_ids, max_new_tokens=8)
-    assert angular.registered == [], "Hooks leaked after first generation"
+    assert _no_hooks_on(model), "Hooks leaked after first generation"
     out_ids_again = pipeline.generate(input_ids=prompt_ids, max_new_tokens=8)
-    assert angular.registered == [], "Hooks leaked after second generation"
+    assert _no_hooks_on(model), "Hooks leaked after second generation"
 
     for out in (out_ids, out_ids_again):
         assert isinstance(out, torch.Tensor), "Output is not torch.Tensor"

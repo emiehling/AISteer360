@@ -5,7 +5,6 @@ This module provides the abstract base class for methods that modify prompts bef
 Two base classes are provided:
 
 - `InputControl`: Base class for all input control methods.
-- `NoInputControl`: Identity (null) control; used when no input control is defined in steering pipeline.
 
 Input controls implement steering through prompt transformation σ(x), enabling behavior modification without altering
 model parameters or architecture. These methods transform inputs before they reach the model, resulting in generations
@@ -34,7 +33,7 @@ from transformers import PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
-from aisteer360.algorithms.core.execution.requirements import Requirements
+from aisteer360.algorithms.core.execution.contracts import Requirements
 
 if TYPE_CHECKING:
     from aisteer360.algorithms.input_control._common.memory.base import Memory
@@ -134,30 +133,3 @@ class InputControl(BaseControl):
             The control's phase-keyed requirements.
         """
         return Requirements()
-
-
-class NoInputControl(InputControl):
-    """Identity input control.
-
-    Used as the default when no input control is needed. Returns input_ids unchanged.
-    """
-    enabled: bool = False
-    supports_batching: bool = True
-    tokenizer: PreTrainedTokenizerBase | None = None
-
-    def adapt(
-        self,
-        input_ids: list[int] | torch.Tensor,
-        runtime_kwargs: dict | None = None,
-    ) -> list[int] | torch.Tensor:
-        """Identity adapter; returns input_ids unchanged."""
-        return input_ids
-
-    def steer(
-        self,
-        model=None,
-        tokenizer: PreTrainedTokenizerBase | None = None,
-        **kwargs,
-    ) -> None:
-        """Null steer operation; attaches tokenizer."""
-        self.tokenizer = tokenizer

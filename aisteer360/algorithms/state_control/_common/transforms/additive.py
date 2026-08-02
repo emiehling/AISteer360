@@ -1,7 +1,7 @@
 """Additive activation steering transform."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, ClassVar, Mapping
 
 import torch
 
@@ -10,6 +10,7 @@ from ..steering_vector import SteeringVector
 from .base import BaseTransform
 
 if TYPE_CHECKING:
+    from ..specs import WireForm
     from .context import TransformContext
 
 
@@ -41,6 +42,8 @@ class AdditiveTransform(BaseTransform):
             Only used when T > 1.
     """
 
+    wire_kind: ClassVar[str | None] = "additive"
+
     def __init__(
         self,
         artifact: SteeringVector | Mapping[int, torch.Tensor] | ArtifactSource,
@@ -52,10 +55,12 @@ class AdditiveTransform(BaseTransform):
         self._source: ArtifactSource | None = None
         self.directions: dict[int, torch.Tensor] | None = None
 
+        self._artifact_meta: dict | None = None
         if isinstance(artifact, ArtifactSource):
             self._source = artifact
         elif isinstance(artifact, SteeringVector):
             self.directions = artifact.directions
+            self._artifact_meta = dict(artifact.meta) if artifact.meta else None
         elif isinstance(artifact, Mapping):
             self.directions = dict(artifact)
         else:
@@ -68,6 +73,10 @@ class AdditiveTransform(BaseTransform):
     def is_bound(self) -> bool:
         return self.directions is not None
 
+    @property
+    def artifact_meta(self) -> dict | None:
+        return self._artifact_meta
+
     def bind(self, ctx: "TransformContext") -> "AdditiveTransform":
         if self.is_bound:
             return self
@@ -77,20 +86,28 @@ class AdditiveTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.directions.keys()) if self.directions is not None else None
 
-    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
-        """`additive` for broadcast directions; None once a positional direction is present."""
-        if self.directions is not None and any(
-            direction.ndim == 2 and direction.size(0) > 1 for direction in self.directions.values()
-        ):
-            return None
-        return "additive", frozenset()
 
-    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
-        """The `additive` wire payload for `layer_id`, or None for positional directions.
+    def wire_plan(self) -> str | None:
+        """`"additive"` for broadcast directions; None once a positional direction is present.
+
+        An unbound transform consults its source's declared shape (`produces_positional`).
+        """
+        if self.directions is not None:
+            if any(d.ndim == 2 and d.size(0) > 1 for d in self.directions.values()):
+                return None
+            return "additive"
+        if getattr(self._source, "produces_positional", False):
+            return None
+        return "additive"
+
+    def export(self, layer_id: int) -> "WireForm | None":
+        """The `additive` wire form for `layer_id`, or None for positional directions.
 
         Semantics are defined for broadcast directions only (`T == 1`), where every steered
         token receives the same vector; a positional direction (`T > 1`) has no wire form.
         """
+        from ..specs import WireForm
+
         if self.directions is None:
             return None
         direction = self.directions.get(layer_id)
@@ -100,12 +117,12 @@ class AdditiveTransform(BaseTransform):
             if direction.size(0) != 1:
                 return None
             direction = direction.squeeze(0)
-        return {
-            "kind": "additive",
-            "params": {"strength": float(self.strength)},
-            "tensors": {"vector": direction},
-            "modifiers": [],
-        }
+        return WireForm(
+            kind="additive",
+            params={"strength": float(self.strength)},
+            tensors={"vector": direction},
+        )
+
 
     def apply(
         self,

@@ -13,13 +13,13 @@ from transformers import (
 )
 
 from aisteer360.algorithms.core.execution.backend import Backend
-from aisteer360.algorithms.core.execution.capabilities import (
+from aisteer360.algorithms.core.execution.contracts import (
     BackendCapabilities,
     Capability,
     CaptureKinds,
 )
 from aisteer360.algorithms.core.execution.fanout import derive_item_seed
-from aisteer360.algorithms.core.execution.items import (
+from aisteer360.algorithms.core.execution.payloads import (
     CaptureResult,
     GenerationItem,
     HookEntry,
@@ -27,11 +27,11 @@ from aisteer360.algorithms.core.execution.items import (
     ScoringItem,
     StackEntry,
 )
-from aisteer360.algorithms.core.execution.layout import ModelLayout
+from aisteer360.algorithms.core.execution.payloads import ModelFacts
 from aisteer360.algorithms.core.execution.params import GenerationParams
-from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
+from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
 from aisteer360.algorithms.core.execution.spec import BackendSpec
-from aisteer360.algorithms.core.execution.support import UnsupportedOperationError
+from aisteer360.algorithms.core.execution.contracts import UnsupportedOperationError
 from aisteer360.algorithms.core.output import Output, infer_finish_reasons
 from aisteer360.algorithms.output_control._common.criteria import (
     StopOnSubstring,
@@ -121,39 +121,6 @@ def compose_stop_criteria(params: GenerationParams, prompt_len: int, tokenizer) 
     if params.stop_token_ids:
         criteria.append(StopOnTokens(params.stop_token_ids))
     return criteria
-
-
-def register_hook_specs(model: PreTrainedModel, hooks) -> list:
-    """Attach hook specifications to `model`, returning the removable handles.
-
-    Pre and forward hooks register with `with_kwargs=True`; backward hooks register as full
-    backward hooks. If registration fails partway, handles already attached are removed before
-    re-raising.
-
-    Args:
-        model: The model to hook.
-        hooks: Hook specifications keyed by phase (`"pre"`, `"forward"`, `"backward"`).
-
-    Returns:
-        The registered `RemovableHandle`s.
-    """
-    handles: list = []
-    try:
-        for phase in ("pre", "forward", "backward"):
-            for spec in hooks.get(phase, []):
-                module = model.get_submodule(spec["module"])
-                if phase == "pre":
-                    handle = module.register_forward_pre_hook(spec["hook_func"], with_kwargs=True)
-                elif phase == "forward":
-                    handle = module.register_forward_hook(spec["hook_func"], with_kwargs=True)
-                else:
-                    handle = module.register_full_backward_hook(spec["hook_func"])
-                handles.append(handle)
-    except Exception:
-        for handle in handles:
-            handle.remove()
-        raise
-    return handles
 
 
 class HFBackend(Backend):
@@ -317,7 +284,7 @@ class ExclusiveSession:
         return self._backend._tokenizer_provider()
 
     @property
-    def layout(self) -> ModelLayout:
+    def layout(self) -> ModelFacts:
         """Structural facts derived from the loaded model, computed on every access so weight
         edits and model replacements are always reflected.
 
@@ -337,7 +304,7 @@ class ExclusiveSession:
         head_dim = getattr(config, "head_dim", None)
         if head_dim is None and num_heads:
             head_dim = hidden_size // num_heads
-        return ModelLayout(
+        return ModelFacts(
             num_layers=len(layer_names),
             hidden_size=hidden_size,
             num_attention_heads=num_heads,
@@ -380,6 +347,13 @@ class ExclusiveSession:
         return LogitsProcessorList(processors), StoppingCriteriaList(criteria)
 
     def _register_state_entries(self, model: PreTrainedModel, state_entries) -> list:
+        """Attach each entry's hook specifications to `model`, returning removable handles.
+
+        The session is the single registrar of state hooks: entries are the only carriage, and
+        registration lives strictly inside the session's execution of work. Pre and forward
+        hooks register with `with_kwargs=True`; backward hooks register as full backward hooks.
+        If registration fails partway, handles already attached are removed before re-raising.
+        """
         handles: list = []
         try:
             for entry in state_entries:
@@ -388,12 +362,37 @@ class ExclusiveSession:
                         f"{type(entry).__name__} requires an intervention-capable backend; the "
                         "in-process session consumes HookEntry contributions."
                     )
-                handles.extend(register_hook_specs(model, entry.hooks))
+                for phase in ("pre", "forward", "backward"):
+                    for spec in entry.hooks.get(phase, []):
+                        module = model.get_submodule(spec["module"])
+                        if phase == "pre":
+                            handle = module.register_forward_pre_hook(spec["hook_func"], with_kwargs=True)
+                        elif phase == "forward":
+                            handle = module.register_forward_hook(spec["hook_func"], with_kwargs=True)
+                        else:
+                            handle = module.register_full_backward_hook(spec["hook_func"])
+                        handles.append(handle)
         except Exception:
             for handle in handles:
                 handle.remove()
             raise
         return handles
+
+    @contextlib.contextmanager
+    def entries_applied(self, state_entries):
+        """Apply state entries to the live model for the duration of the context.
+
+        Used by the pipeline around a client-side decoding driver's `decode`, so every forward
+        the driver issues on the live model, including rollouts through this session and
+        auxiliary scoring passes, runs under the generation's hooks. The session owns
+        registration; hooks are removed when the context exits, even on error.
+        """
+        handles = self._register_state_entries(self.model, state_entries)
+        try:
+            yield self
+        finally:
+            for handle in handles:
+                handle.remove()
 
     def _seeded(self, seed: int | None):
         """A context that snapshots and restores RNG state around a seeded decode.

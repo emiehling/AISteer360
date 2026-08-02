@@ -6,7 +6,7 @@ interacts with backends through these two interfaces. Backend implementations li
 `aisteer360.backends`; this package holds every seam type and imports nothing from
 `aisteer360.backends` at module level.
 """
-from aisteer360.algorithms.core.execution.artifacts import (
+from aisteer360.algorithms.core.execution.payloads import (
     Artifact,
     ArtifactProvenance,
     CheckpointArtifact,
@@ -14,8 +14,8 @@ from aisteer360.algorithms.core.execution.artifacts import (
     ModelArtifact,
 )
 from aisteer360.algorithms.core.execution.backend import Backend
-from aisteer360.algorithms.core.execution.constraints import ConstraintSource, as_constraint_source
-from aisteer360.algorithms.core.execution.capabilities import (
+from aisteer360.algorithms.core.execution.payloads import ConstraintSource, as_constraint_source
+from aisteer360.algorithms.core.execution.contracts import (
     BackendCapabilities,
     Capability,
     CaptureKinds,
@@ -30,11 +30,11 @@ from aisteer360.algorithms.core.execution.fanout import (
     run_bounded,
     with_transport_retries,
 )
-from aisteer360.algorithms.core.execution.interventions import (
+from aisteer360.algorithms.core.execution.payloads import (
     InterventionSpec,
     ProcessorSpec,
 )
-from aisteer360.algorithms.core.execution.items import (
+from aisteer360.algorithms.core.execution.payloads import (
     ConstraintEntry,
     CaptureResult,
     GenerationItem,
@@ -47,26 +47,26 @@ from aisteer360.algorithms.core.execution.items import (
     StackEntry,
     StateControlEntry,
 )
-from aisteer360.algorithms.core.execution.layout import ModelLayout
+from aisteer360.algorithms.core.execution.payloads import ModelFacts
 from aisteer360.algorithms.core.execution.params import (
     GenerationParams,
     merge_lowered_params,
 )
-from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
-from aisteer360.algorithms.core.execution.registry import (
+from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
+from aisteer360.algorithms.core.execution.backend import (
     capabilities_for_spec,
     resolve_backend_class,
 )
-from aisteer360.algorithms.core.execution.requirements import (
+from aisteer360.algorithms.core.execution.contracts import (
     Alternative,
     Requirements,
     SpecConstraint,
     any_of,
     needs,
 )
-from aisteer360.algorithms.core.execution.session import SteeringSession
+from aisteer360.algorithms.core.execution.backend import SteeringSession
 from aisteer360.algorithms.core.execution.spec import BackendSpec
-from aisteer360.algorithms.core.execution.support import (
+from aisteer360.algorithms.core.execution.contracts import (
     SupportFailure,
     SupportReport,
     UnsupportedOperationError,
@@ -97,7 +97,7 @@ __all__ = [
     "ItemResult",
     "LoRAArtifact",
     "ModelArtifact",
-    "ModelLayout",
+    "ModelFacts",
     "OutputControlEntry",
     "PreparedPrompt",
     "ProcessorKinds",

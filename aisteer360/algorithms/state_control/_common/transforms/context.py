@@ -53,6 +53,7 @@ def _build_context(
     tokenizer: PreTrainedTokenizerBase | None,
     layer_ids: Sequence[int],
     layout=None,
+    session=None,
 ) -> TransformContext:
     """Build the `TransformContext` for the given behavior layers.
 
@@ -61,7 +62,7 @@ def _build_context(
     `hidden_size // num_heads` when absent), then wraps a resolve closure that coerces any
     artifact to a source, resolves it against the model, and moves the result onto the model's
     device and dtype. With `model=None`, sizes come from `layout` (a structural
-    `core.execution.ModelLayout`), the device is CPU, and the resolve closure serves concrete
+    `core.execution.ModelFacts`), the device is CPU, and the resolve closure serves concrete
     artifacts only, since fitting a source requires a live model.
     """
     if model is not None:
@@ -90,7 +91,11 @@ def _build_context(
 
     def resolve(artifact) -> SteeringVector:
         source = _as_artifact_source(artifact)
-        return source.resolve(model, tokenizer).to(device, dtype)
+        try:
+            resolved = source.resolve(model, tokenizer, session=session)
+        except TypeError:
+            resolved = source.resolve(model, tokenizer)  # sources without capture support
+        return resolved.to(device, dtype)
 
     return TransformContext(
         layer_ids=list(layer_ids),
@@ -110,6 +115,8 @@ def resolve_transform_slot(
     tokenizer: PreTrainedTokenizerBase | None,
     layer_ids: Sequence[int],
     layout=None,
+    require_coverage: bool = True,
+    session=None,
 ) -> BaseTransform:
     """Turn a transform slot into a bound, coverage-checked `BaseTransform` for the given model.
 
@@ -132,7 +139,11 @@ def resolve_transform_slot(
             context from `layout` (concrete artifacts only; fitting a source requires a model).
         tokenizer: Tokenizer used when a source fits from data; may be None for concrete artifacts.
         layer_ids: The resolved behavior layers the transform must cover.
-        layout: Structural `core.execution.ModelLayout` consulted when `model` is None.
+        layout: Structural `core.execution.ModelFacts` consulted when `model` is None.
+        require_coverage: When False, skip the coverage check; uncovered layers are hooked and
+            pass through unchanged at apply time.
+        session: Optional `SteeringSession` forwarded to sources whose fit runs through
+            session capture.
 
     Returns:
         A bound `BaseTransform` ready for `apply`.
@@ -142,7 +153,7 @@ def resolve_transform_slot(
             transform.
         ValueError: If the transform covers only some of `layer_ids`.
     """
-    ctx = _build_context(model, tokenizer, layer_ids, layout=layout)
+    ctx = _build_context(model, tokenizer, layer_ids, layout=layout, session=session)
 
     if isinstance(slot, BaseTransform):
         built = slot if slot.is_bound else slot.bind(ctx)
@@ -160,7 +171,7 @@ def resolve_transform_slot(
         )
 
     coverage = built.covered_layer_ids
-    if coverage is not None:
+    if require_coverage and coverage is not None:
         missing = [lid for lid in layer_ids if lid not in coverage]
         if missing:
             raise ValueError(

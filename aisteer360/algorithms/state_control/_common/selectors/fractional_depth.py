@@ -36,3 +36,23 @@ class FractionalDepthSelector(BaseSelector[int]):
         layer_id = int(num_layers * self.fraction)
         layer_id = max(self.minimum, min(layer_id, num_layers - 1))
         return layer_id
+
+
+class LateThirdSelector(BaseSelector[list[int]]):
+    """Selects the late third of the model's layers.
+
+    The default behavior-layer heuristic for conditional activation steering.
+    """
+
+    def select(self, *, num_layers: int) -> list[int]:
+        """Return the last third of the layer indices.
+
+        Args:
+            num_layers: Total number of layers in the model.
+
+        Returns:
+            The selected layer ids, ascending.
+        """
+        from .utils.layer_heuristics import late_third
+
+        return late_third(num_layers)

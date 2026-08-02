@@ -25,9 +25,11 @@ fix. The generate-phase matrix by control:
 | `constrained_decoding` (declarative source) | yes | yes | in-process automaton (`aisteer360[guided]`) / native structured outputs under `GUIDED_DECODING`; automaton-object configurations stay HF-only |
 | `rad`, `sasa`, `dexperts`, `contrastive_decoding`, `contrastive_guidance`, `value_guidance` | yes | no | model-backed per-step logit math is in-process-only |
 
-Scoring phase: decoder-only scoring with intervention specs is supported on vLLM backends under
-the `after_prompt` scope remap; an enabled output control with `include_in_scoring=True` makes
-the pipeline score-unsupported off-torch; encoder-decoder scoring is in-process-only.
+Scoring phase: intervention controls score in-process only, since remote prompt-logprob scoring
+anchors token scopes at the request's prompt end (the end of the prompt-plus-reference
+concatenation), which would silently unanchor prompt-relative interventions; an enabled output
+control with `include_in_scoring=True` likewise makes the pipeline score-unsupported off-torch,
+and encoder-decoder scoring is in-process-only.
 
 ## API
 

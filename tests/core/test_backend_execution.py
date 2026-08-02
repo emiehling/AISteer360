@@ -472,23 +472,6 @@ class TestDriversOverSessions:
         )
         assert torch.equal(via_session, direct)
 
-    def test_base_generate_override_warns_deprecation(self, model, tokenizer):
-        calls = []
-
-        def fake_generate(input_ids, attention_mask=None, **kwargs):
-            calls.append(kwargs)
-            return torch.cat([input_ids, torch.tensor([[5]])], dim=1)
-
-        intervention = ThinkingIntervention(intervention=lambda prompt, params: prompt)
-        pipeline = _pipeline(model, tokenizer, [intervention])
-        with pytest.warns(DeprecationWarning, match="base_generate"):
-            pipeline.generate(
-                input_ids=torch.tensor([[0, 3, 4]]), max_new_tokens=2,
-                runtime_kwargs={"base_generate": fake_generate},
-            )
-        assert calls
-
-
 class TestPortableRequirements:
 
     def _generate_ok_on_vllm(self, control) -> bool:
@@ -690,11 +673,10 @@ class TestSerialSeedStateHooks:
         assert transform.masks
         assert all(mask.size(0) == 1 for mask in transform.masks)
 
-    def test_clone_for_call_isolates_runtime_and_gate_state(self):
+    def test_clone_for_call_isolates_gate_state(self, model, tokenizer):
         control = ActivationAdapter(transform=RecordingTransform(), layer_ids=[1])
-        control._runtime = TransformHookRuntime(hook_point="layer_output")
+        control.steer(model, tokenizer)
         clone = control.clone_for_call()
-        assert clone._runtime is not control._runtime
-        assert clone._gate is not control._gate
-        assert clone.hooks is not control.hooks
-        assert clone._model_ref is None
+        assert clone._gate is not control._gate  # per-row gate state never shared across clones
+        assert type(clone._gate) is type(control._gate)
+        assert clone.interventions[0].transform is control.interventions[0].transform  # artifacts shared

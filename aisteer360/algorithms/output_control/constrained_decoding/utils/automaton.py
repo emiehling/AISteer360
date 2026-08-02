@@ -6,7 +6,7 @@ import re
 
 import torch
 
-from aisteer360.algorithms.core.execution.constraints import ConstraintSource
+from aisteer360.algorithms.core.execution.payloads import ConstraintSource
 from aisteer360.utils.optional import require
 
 

@@ -359,7 +359,7 @@ class ProbeSet:
 
     def _read_via_session(self, session, ids: torch.Tensor, mask: torch.Tensor) -> Readout:
         """Score through a capture-capable session's `capture` at the layer-input boundary."""
-        from aisteer360.algorithms.core.execution.prompts import PreparedPrompt
+        from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
 
         prompts = [
             PreparedPrompt.from_token_ids(ids[index:index + 1], mask[index:index + 1])

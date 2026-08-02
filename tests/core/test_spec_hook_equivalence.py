@@ -12,14 +12,14 @@ from vllm_hook_plugins.core.interpreter import apply_op, build_gate
 from vllm_hook_plugins.core.interpreter.gates import CacheOnceGate as WireCacheOnceGate
 from vllm_hook_plugins.core.schema import parse_intervention_spec
 
-from aisteer360.algorithms.core.execution import ModelLayout
+from aisteer360.algorithms.core.execution import ModelFacts
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.internals.probes import Probe
 from aisteer360.algorithms.state_control._common.condition_scorers import (
     ProbeContributionScorer,
 )
 from aisteer360.algorithms.state_control._common.gates import CacheOnceGate, ProbeSumGate
-from aisteer360.algorithms.state_control._common.intervention_export import artifact_id_for
+from aisteer360.algorithms.state_control._common.specs import artifact_id_for
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (
     AdditiveTransform,
@@ -46,12 +46,12 @@ SEQ = 6
 
 
 class _LayoutOnlySession:
-    def __init__(self, layout: ModelLayout):
+    def __init__(self, layout: ModelFacts):
         self.layout = layout
 
 
 def _session(dtype: str = "float32") -> _LayoutOnlySession:
-    return _LayoutOnlySession(ModelLayout(
+    return _LayoutOnlySession(ModelFacts(
         num_layers=LAYERS,
         hidden_size=HIDDEN,
         num_attention_heads=HEADS,
@@ -197,31 +197,32 @@ class TestPerTransformEquality:
 
 class TestModifierChain:
 
-    def _payload(self):
+    def _forms(self):
+        from aisteer360.algorithms.state_control._common.transforms.base import unwrap_modifiers
+
         vector = _vector(k=2)
         transform = NormPreservingTransform(
             AlignmentAdaptiveTransform(RotationTransform(vector, angle=0.3, mode="offset"), vector)
         )
-        return transform, transform.to_intervention_op_payload(1)
+        core, wrappers = unwrap_modifiers(transform)
+        return transform, core.export(1), [wrapper.export_modifier(1) for wrapper in wrappers]
 
     def test_emitted_order_is_innermost_first(self):
-        _, payload = self._payload()
-        assert [modifier["kind"] for modifier in payload["modifiers"]] == [
-            "alignment_adaptive", "norm_preserving",
-        ]
+        _, _, modifier_forms = self._forms()
+        assert [form.kind for form in modifier_forms] == ["alignment_adaptive", "norm_preserving"]
 
     def test_composed_result_matches_wrapped_hook(self):
-        transform, payload = self._payload()
+        transform, form, modifier_forms = self._forms()
         artifacts = {}
-        transform_wire = {"kind": payload["kind"], **payload["params"], "modifiers": []}
-        for modifier in payload["modifiers"]:
-            wire_modifier = {"kind": modifier["kind"], **modifier["params"]}
-            if modifier["tensors"]:
-                artifact_id, prepared = artifact_id_for(modifier["tensors"])
+        transform_wire = {"kind": form.kind, **form.params, "modifiers": []}
+        for modifier_form in modifier_forms:
+            wire_modifier = {"kind": modifier_form.kind, **modifier_form.params}
+            if modifier_form.tensors:
+                artifact_id, prepared = artifact_id_for(modifier_form.tensors)
                 wire_modifier["artifact"] = artifact_id
                 artifacts[artifact_id] = prepared
             transform_wire["modifiers"].append(wire_modifier)
-        artifact_id, prepared = artifact_id_for(payload["tensors"])
+        artifact_id, prepared = artifact_id_for(form.tensors)
         transform_wire["artifact"] = artifact_id
         artifacts[artifact_id] = prepared
         wire = {"ops": [{
@@ -240,15 +241,15 @@ class TestModifierChain:
         """The two shipped modifiers are row-local and commute in output, so the reorder
         discipline is structural: an emission that does not match the live wrapper chain
         innermost-first is a serialization drift regardless of output agreement."""
-        transform, payload = self._payload()
-        emitted = [modifier["kind"] for modifier in payload["modifiers"]]
+        transform, _, modifier_forms = self._forms()
+        emitted = [form.kind for form in modifier_forms]
 
         chain = []
         current = transform
         while True:
             if isinstance(current, NormPreservingTransform):
                 chain.append("norm_preserving")
-                current = current._inner
+                current = current.inner
             elif isinstance(current, AlignmentAdaptiveTransform):
                 chain.append("alignment_adaptive")
                 current = current.inner
@@ -273,16 +274,20 @@ def _probe(pooling: str = "mean", bias: float = 0.0) -> Probe:
 
 
 def _wire_probe_gate(probe: Probe) -> WireCacheOnceGate:
-    """The worker's gate state machine built from the exported probe payload."""
-    gate_payload = ProbeSumGate(probe).to_intervention_gate()
-    artifact_id, prepared = artifact_id_for(gate_payload["tensors"])
+    """The worker's gate state machine built from the exported probe form."""
+    gate_form = ProbeSumGate(probe).export()
+    artifact_id, prepared = artifact_id_for(gate_form.tensors)
     wire = {"ops": [{
         "layers": [3],
         "transform": {"kind": "directional_ablation", "modifiers": [], "artifact": artifact_id},
         "scope": {"kind": "all"},
         "gate": {
             "kind": "cache_once",
-            "inner": {"kind": gate_payload["kind"], **gate_payload["params"], "artifact": artifact_id},
+            "inner": {
+                "kind": gate_form.kind, **gate_form.params,
+                "condition_layers": [int(lid) for lid in probe.layer_ids],
+                "artifact": artifact_id,
+            },
         },
     }]}
     # the vector artifact reuses the probe weights id slot only for schema validation; gates

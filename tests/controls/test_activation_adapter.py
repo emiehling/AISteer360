@@ -74,15 +74,11 @@ def _pipe(control, model):
 
 def _hidden_at(model, layer_id, pipeline, input_ids):
     """Capture the (steered) output of `layer_id` under the pipeline's state controls, single pass."""
-    import contextlib
-
-    pipeline._setup_state_controls(input_ids, {})
+    entries = pipeline._collect_state_entries(input_ids, {})
+    backend = pipeline._backend_for(pipeline._resolve_backend_spec(None))
     captured = {}
 
-    with contextlib.ExitStack() as stack:
-        for c in pipeline.state_controls:
-            stack.enter_context(c)
-
+    with backend.open_session() as session, session.entries_applied(entries):
         def _cap(module, args, kwargs, output):
             captured["h"] = (output[0] if isinstance(output, tuple) else output).detach().clone()
 
@@ -273,10 +269,8 @@ class TestValidationSurface:
 
     def test_condition_selector_rejected_for_placement(self):
         from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
-        model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
-        adapter = ActivationAdapter(transform=AdditiveTransform(_sv()), layer_selector=ConditionPointSelector())
         with pytest.raises(ValueError, match="ConditionPointSelector returns"):
-            adapter.steer(model, wordlevel_tokenizer())
+            ActivationAdapter(transform=AdditiveTransform(_sv()), layer_selector=ConditionPointSelector())
 
 
 # transform binding, coverage, factory

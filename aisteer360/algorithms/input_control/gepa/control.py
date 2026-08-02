@@ -20,8 +20,8 @@ from aisteer360.algorithms.input_control._common.budget import RolloutBudget
 from aisteer360.algorithms.input_control._common.generation import (
     generate_with_system_prompt,
 )
-from aisteer360.algorithms.core.execution.capabilities import Capability
-from aisteer360.algorithms.core.execution.requirements import Requirements, needs
+from aisteer360.algorithms.core.execution.contracts import Capability
+from aisteer360.algorithms.core.execution.contracts import Requirements, needs
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.input_control.gepa.args import GEPAArgs
 from aisteer360.algorithms.input_control.gepa.utils import (

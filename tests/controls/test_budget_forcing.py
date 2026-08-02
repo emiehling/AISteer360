@@ -1,10 +1,12 @@
 """Behavior tests for BudgetForcing (output multiplicity design, P4).
 
-Hub-free: phase generation is scripted through a fake `base_generate` so phase splicing, the forced
+Hub-free: phase generation is scripted through the session so phase splicing, the forced
 closing tag, and extension rounds are asserted deterministically.
 """
 import pytest
 import torch
+
+from tests.utils.runtime_helpers import script_session_generate
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.output_control._common.drivers.phased import Fixed, Generated
@@ -74,7 +76,7 @@ class TestConfig:
 
 
 class TestEndToEnd:
-    def test_forces_closing_tag_and_answer(self):
+    def test_forces_closing_tag_and_answer(self, monkeypatch):
         # the wordlevel test tokenizer maps out-of-vocab words to <pad>, so use an in-vocab marker
         # ("span") to make the forced closing tag observable in the decoded stream.
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
@@ -89,17 +91,18 @@ class TestEndToEnd:
             cont = tokenizer("cat mat", return_tensors="pt", add_special_tokens=False).input_ids
             return torch.cat([inp, cont.expand(inp.size(0), -1).to(inp.device)], dim=1)
 
+        script_session_generate(monkeypatch, fake_generate)
         prompt = tokenizer("the dog", return_tensors="pt").input_ids
         out = pipeline.generate(
             input_ids=prompt,
-            runtime_kwargs={"base_generate": fake_generate},
+            runtime_kwargs={},
             return_full_sequence=True,
         )
         decoded = tokenizer.decode(out[0], skip_special_tokens=False)
         # the forced closing marker is present (spliced by the Fixed phase)
         assert "span" in decoded
 
-    def test_extension_text_spliced_between_thinking_segments(self):
+    def test_extension_text_spliced_between_thinking_segments(self, monkeypatch):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         tokenizer = wordlevel_tokenizer()
         bf = BudgetForcing(max_thinking_tokens=3, extension_text="on", num_extensions=1, end_think="span")
@@ -110,10 +113,11 @@ class TestEndToEnd:
             cont = tokenizer("cat", return_tensors="pt", add_special_tokens=False).input_ids
             return torch.cat([inp, cont.expand(inp.size(0), -1).to(inp.device)], dim=1)
 
+        script_session_generate(monkeypatch, fake_generate)
         prompt = tokenizer("the dog", return_tensors="pt").input_ids
         out = pipeline.generate(
             input_ids=prompt,
-            runtime_kwargs={"base_generate": fake_generate},
+            runtime_kwargs={},
             return_full_sequence=True,
         )
         decoded = tokenizer.decode(out[0], skip_special_tokens=False)
@@ -121,7 +125,7 @@ class TestEndToEnd:
         assert "on" in decoded
         assert "span" in decoded
 
-    def test_folded_stacks_reach_every_generated_phase(self):
+    def test_folded_stacks_reach_every_generated_phase(self, monkeypatch):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         tokenizer = wordlevel_tokenizer()
 
@@ -147,8 +151,9 @@ class TestEndToEnd:
 
         bf = BudgetForcing(max_thinking_tokens=3, num_extensions=1, end_think="</think>")
         pipeline, model, tokenizer = _pipeline([_ForceToken(), bf], model=model, tokenizer=tokenizer)
+        script_session_generate(monkeypatch, fake_generate)
         prompt = tokenizer("the dog", return_tensors="pt").input_ids
-        pipeline.generate(input_ids=prompt, runtime_kwargs={"base_generate": fake_generate})
+        pipeline.generate(input_ids=prompt, runtime_kwargs={})
         # 3 Generated phases (thinking, 1 extension, answer); each received the composed stack
         assert len(saw_processor) == 3
         assert all(saw_processor)

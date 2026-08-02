@@ -6,6 +6,8 @@ assertions of the existing hub tests are covered separately in test_deal.py / te
 """
 import pytest
 import torch
+
+from tests.utils.runtime_helpers import script_session_generate
 from transformers import LlamaConfig, LlamaForSequenceClassification
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
@@ -87,7 +89,7 @@ class TestRADParity:
         assert processors[0].policy == "top_k"
         assert processors[0].k == 20
 
-    def test_unsteered_raises(self):
+    def test_unsteered_raises(self, monkeypatch):
         rad = RAD(beta=1.0)
         with pytest.raises(RuntimeError, match="steer"):
             rad.get_logits_processors(torch.tensor([[0, 3, 4]]), {})
@@ -173,7 +175,7 @@ class TestSASAParity:
 
 # DeAL
 class TestDeALPort:
-    def test_base_generate_override_and_scorer_trajectory(self):
+    def test_rollouts_run_through_the_session(self, monkeypatch):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         tokenizer = wordlevel_tokenizer()
 
@@ -184,21 +186,21 @@ class TestDeALPort:
         deal = DeAL(reward_func=scorer, lookahead=2, init_beams=4, topk=2, max_iterations=2)
         pipeline, model, tokenizer = _pipeline([deal], model=model, tokenizer=tokenizer)
 
-        override_calls = []
+        rollout_calls = []
         real_generate = model.generate
 
-        def override_generate(**kwargs):
-            override_calls.append("logits_processor" in kwargs)
+        def spy_generate(**kwargs):
+            rollout_calls.append(True)
             return real_generate(**kwargs)
 
+        script_session_generate(monkeypatch, spy_generate)
         prompt = tokenizer("the cat", return_tensors="pt").input_ids
         out = pipeline.generate(
             input_ids=prompt,
-            runtime_kwargs={"base_generate": override_generate},
             max_new_tokens=4,
         )
         assert out.ndim == 2
-        assert override_calls  # override was used for the rollouts
+        assert rollout_calls  # the driver's rollouts went through the session
 
     def test_step_level_control_steers_every_rollout(self):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
@@ -233,7 +235,7 @@ class TestDeALPort:
 
 # ThinkingIntervention
 class TestThinkingInterventionPort:
-    def test_extract_after_and_prefix_splice(self):
+    def test_extract_after_and_prefix_splice(self, monkeypatch):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         tokenizer = wordlevel_tokenizer()
 
@@ -251,15 +253,16 @@ class TestThinkingInterventionPort:
             cont = tokenizer(" </think> mat", return_tensors="pt", add_special_tokens=False).input_ids
             return torch.cat([inp, cont.to(inp.device)], dim=1)
 
+        script_session_generate(monkeypatch, fake_generate)
         out = pipeline.generate(
             input_ids=prompt,
-            runtime_kwargs={"base_generate": fake_generate, "params": {"plan": "list steps"}},
+            runtime_kwargs={"params": {"plan": "list steps"}},
         )
         decoded = tokenizer.decode(out[0], skip_special_tokens=False)
         assert "</think>" not in decoded
         assert "mat" in decoded
 
-    def test_batched_dict_of_lists_params(self):
+    def test_batched_dict_of_lists_params(self, monkeypatch):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         tokenizer = wordlevel_tokenizer()
 
@@ -280,9 +283,10 @@ class TestThinkingInterventionPort:
             cont = cont.expand(inp.size(0), -1)
             return torch.cat([inp, cont.to(inp.device)], dim=1)
 
+        script_session_generate(monkeypatch, fake_generate)
         pipeline.generate(
             input_ids=prompts,
-            runtime_kwargs={"base_generate": fake_generate, "params": {"tag": ["the", "on"]}},
+            runtime_kwargs={"params": {"tag": ["the", "on"]}},
         )
         # per-example params sliced correctly
         assert seen_params == ["the", "on"]

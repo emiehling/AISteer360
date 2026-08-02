@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
 
 if TYPE_CHECKING:
+    from ..specs import WireForm
     from .context import TransformContext
 
 
@@ -34,7 +35,27 @@ class BaseTransform(ABC):
         - call `self._require_bound()` as the first line of `apply`.
 
     Transforms with no steering artifact keep the defaults (always bound, no coverage).
+
+    Class attributes:
+        wire_kind: The permanent wire kind name this class serializes to, or None when the
+            class has no wire form. Wire names mirror toolkit class names, so the mapping is
+            definitional rather than maintained.
+        is_modifier: True for wrapper transforms that hold an `inner` transform and serialize
+            as a wire modifier rather than a transform kind.
     """
+
+    wire_kind: ClassVar[str | None] = None
+    is_modifier: ClassVar[bool] = False
+
+    @property
+    def artifact_meta(self) -> dict | None:
+        """Provenance metadata of the transform's steering artifact, or None.
+
+        Populated when the artifact was supplied or resolved as a `SteeringVector` carrying
+        `meta` (fit fingerprints); consumers cross-check it against a serving engine's model
+        identity. Wrappers delegate to their inner transform. The default returns None.
+        """
+        return None
 
     @abstractmethod
     def apply(
@@ -65,6 +86,11 @@ class BaseTransform(ABC):
         Default True: transforms that take no steering artifact are always bound.
         """
         return True
+
+    @property
+    def source(self):
+        """The unresolved `ArtifactSource` this transform carries, or None when concrete."""
+        return getattr(self, "_source", None)
 
     def bind(self, ctx: "TransformContext") -> "BaseTransform":
         """Return a fully-bound transform for this context.
@@ -103,25 +129,56 @@ class BaseTransform(ABC):
         """
         return None
 
-    def to_intervention_op_payload(self, layer_id: int) -> dict | None:
-        """The wire payload this transform contributes to an intervention op at `layer_id`.
+    def export(self, layer_id: int) -> "WireForm | None":
+        """This configuration's wire form at `layer_id`, or None when the configuration is
+        not expressible in the wire vocabulary.
 
-        A payload is a dict with keys `"kind"` (the wire transform kind), `"params"` (scalar
-        parameters), `"tensors"` (tensor name to tensor, per the wire kind's artifact contract),
-        and `"modifiers"` (ordered modifier payloads, innermost-first, matching wire
-        composition). Wrapper transforms return their inner transform's payload with their own
-        modifier entry appended. Returns None when this transform's configuration at `layer_id`
-        has no wire form, which marks the configuration hook-only.
-
-        The default returns None.
+        Exportability is a property of a configuration, not a class; an artifact whose shape
+        has no wire semantics (e.g. a positional direction) returns None even though the
+        class names a `wire_kind`. The default returns None.
         """
         return None
 
-    def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
-        """The wire kind names this configuration serializes to, or None when hook-only.
+    def wire_plan(self) -> str | None:
+        """The wire transform kind this configuration serializes to, or None when hook-only.
 
-        Returns the transform kind name and the set of modifier kind names contributed by
-        wrapper transforms. Requirements are computed from this plan and exports emit payloads
-        with exactly these kinds, so the two cannot drift. The default returns None.
+        Readable on the unbound form: a source-carrying transform consults its source's
+        declared shape rather than resolving it. The default returns the class `wire_kind`.
+        """
+        return type(self).wire_kind
+
+    def modifier_wire_kind(self, core_kind: str) -> str | None:
+        """The wire modifier kind this wrapper contributes over a core transform kind, or
+        None when the combination has no wire form.
+
+        Meaningful only on wrapper transforms (`is_modifier` True). The default returns the
+        class `wire_kind`.
+        """
+        return type(self).wire_kind
+
+    def export_modifier(self, layer_id: int) -> "WireForm | None":
+        """The wrapper's wire modifier form at `layer_id`, or None to contribute no modifier
+        at that layer.
+
+        Meaningful only on wrapper transforms (`is_modifier` True); kind-level
+        inexpressibility is reported by `modifier_wire_kind`. The default returns None.
         """
         return None
+
+
+def unwrap_modifiers(transform: BaseTransform) -> tuple[BaseTransform, tuple[BaseTransform, ...]]:
+    """Split a possibly wrapper-chained transform into its core and its modifiers.
+
+    Args:
+        transform: The transform, possibly wrapped in modifier transforms.
+
+    Returns:
+        The core transform and the modifiers in application order, innermost wrapper first,
+        matching the wire interpreter's composition order.
+    """
+    wrappers: list[BaseTransform] = []
+    current = transform
+    while type(current).is_modifier:
+        wrappers.append(current)
+        current = current.inner
+    return current, tuple(reversed(wrappers))
