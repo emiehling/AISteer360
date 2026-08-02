@@ -60,10 +60,12 @@ class DirectionalAblationTransform(BaseTransform):
         self.directions: dict[int, torch.Tensor] | None = None
         self._basis_cache: dict[tuple, torch.Tensor] = {}  # (layer_id, device, dtype) -> [K, H] orthonormal
 
+        self._artifact_meta: dict | None = None
         if isinstance(artifact, ArtifactSource):
             self._source = artifact
         elif isinstance(artifact, SteeringVector):
             self.directions = artifact.directions
+            self._artifact_meta = dict(artifact.meta) if artifact.meta else None
         elif isinstance(artifact, Mapping):
             self.directions = dict(artifact)
         else:
@@ -76,6 +78,10 @@ class DirectionalAblationTransform(BaseTransform):
     @property
     def is_bound(self) -> bool:
         return self.directions is not None
+
+    @property
+    def artifact_meta(self) -> dict | None:
+        return self._artifact_meta
 
     def bind(self, ctx: "TransformContext") -> "DirectionalAblationTransform":
         if self.is_bound:

@@ -41,6 +41,10 @@ class NormPreservingTransform(BaseTransform):
     def is_bound(self) -> bool:
         return self._inner.is_bound
 
+    @property
+    def artifact_meta(self) -> dict | None:
+        return self._inner.artifact_meta
+
     def bind(self, ctx: "TransformContext") -> "NormPreservingTransform":
         if self.is_bound:
             return self

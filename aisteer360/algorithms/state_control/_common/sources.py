@@ -50,8 +50,14 @@ class ArtifactSource(Protocol):
     True`, which consuming transforms read for kind planning before the fit runs.
     """
 
-    def resolve(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> SteeringVector:
-        """Return the steering artifact for this model (a fresh clone each call)."""
+    def resolve(
+        self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, *, session=None
+    ) -> SteeringVector:
+        """Return the steering artifact for this model (a fresh clone each call).
+
+        `session` is a `SteeringSession` a capture-backed fit may extract hidden states
+        through; sources whose fit requires a live model ignore it.
+        """
         ...
 
 
@@ -83,6 +89,11 @@ class ContrastiveFit:
     """
 
     produces_positional: ClassVar[bool] = False
+    steer_needs: ClassVar[str] = "hidden_capture"
+    steer_hint: ClassVar[str] = (
+        "supply a fitted `steering_vector`, or run the steer phase on a backend "
+        "with hidden-state capture (huggingface, or offline vLLM with the plugin)"
+    )
 
     data: ContrastivePairs | dict
     method: str = "pca_pairwise"
@@ -117,10 +128,15 @@ class ContrastiveFit:
         if self.estimator is None and self.estimator_kwargs is not None:
             warnings.warn("estimator_kwargs is inert without a custom estimator.", UserWarning)
 
-    def _fit(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> SteeringVector:
+    def _fit(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, session=None) -> SteeringVector:
         """Fit the master steering vector (no caching, no cloning)."""
         if self.estimator is not None:
-            master = self.estimator.fit(model, tokenizer, data=self.data, **(self.estimator_kwargs or {}))
+            try:
+                master = self.estimator.fit(
+                    model, tokenizer, data=self.data, session=session, **(self.estimator_kwargs or {})
+                )
+            except TypeError:
+                master = self.estimator.fit(model, tokenizer, data=self.data, **(self.estimator_kwargs or {}))
         else:
             spec = VectorTrainSpec(
                 method=self.method,
@@ -130,41 +146,58 @@ class ContrastiveFit:
                 location=self.location,
             )
             estimator = MeanDifferenceEstimator() if self.method == "mean_diff" else ContrastiveDirectionEstimator()
-            master = estimator.fit(model, tokenizer, data=self.data, spec=spec)
+            master = estimator.fit(model, tokenizer, data=self.data, spec=spec, session=session)
 
         if self.normalize:
             master = master.normalized()
         return master
 
-    def resolve(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> SteeringVector:
+    def resolve(
+        self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, *, session=None
+    ) -> SteeringVector:
         """Return a fresh clone of the fitted artifact for `model`, fitting once and memoizing.
 
         Args:
-            model: The model to fit against (or a memo hit for the same model).
+            model: The model to fit against (or a memo hit for the same model), or None to
+                fit through `session` capture.
             tokenizer: Tokenizer used to encode the contrastive pairs when fitting.
+            session: Optional `SteeringSession` the estimator extracts hidden states through
+                when `model` is None (capture-backed fitting).
 
         Returns:
             An independent `SteeringVector` clone the caller owns.
         """
-        if self._model_ref is not None and self._model_ref() is model and self._master is not None:
+        if model is not None and self._model_ref is not None and self._model_ref() is model \
+                and self._master is not None:
             return self._master.clone()
-        master = self._fit(model, tokenizer)
-        self._model_ref = weakref.ref(model)
-        self._master = master
+        master = self._fit(model, tokenizer, session=session)
+        if model is not None:
+            self._model_ref = weakref.ref(model)
+            self._master = master
         return master.clone()
 
 
 class _Precomputed:
     """A trivially-resolved source wrapping a concrete `SteeringVector` (internal).
 
-    Lets the adapter's resolver treat concrete artifacts and sources uniformly. Not part of the
-    public API; users pass vectors, mappings, or sources directly.
+    Lets resolvers treat concrete artifacts and sources uniformly, so precomputed vectors take
+    the same bind path as fitted ones (defensive clone, device/dtype cast). Resolution is
+    model-free, so the source declares no steer-phase requirement. Not part of the public API;
+    users pass vectors, mappings, or sources directly.
     """
+
+    steer_needs: ClassVar[str] = "none"
 
     def __init__(self, steering_vector: SteeringVector):
         self._steering_vector = steering_vector
 
-    def resolve(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> SteeringVector:
+    @property
+    def produces_positional(self) -> bool:
+        return self._steering_vector.is_positional
+
+    def resolve(
+        self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, *, session=None
+    ) -> SteeringVector:
         return self._steering_vector.clone()
 
 
@@ -206,6 +239,8 @@ class SinglePairFit:
     """
 
     produces_positional: ClassVar[bool] = True
+    steer_needs: ClassVar[str] = "in_process_torch"
+    steer_hint: ClassVar[str] = "supply a fitted `steering_vector`, or steer on the huggingface backend"
 
     positive_prompt: str
     negative_prompt: str
@@ -214,12 +249,15 @@ class SinglePairFit:
     _model_ref: "weakref.ref | None" = field(default=None, init=False, repr=False, compare=False)
     _master: SteeringVector | None = field(default=None, init=False, repr=False, compare=False)
 
-    def resolve(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> SteeringVector:
+    def resolve(
+        self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, *, session=None
+    ) -> SteeringVector:
         """Return a fresh clone of the fitted artifact for `model`, fitting once and memoizing.
 
         Args:
             model: The model to fit against (or a memo hit for the same model).
             tokenizer: Tokenizer used to encode the prompt pair.
+            session: Ignored; the positional fit requires a live model.
 
         Returns:
             An independent `SteeringVector` clone the caller owns.
@@ -279,6 +317,7 @@ class ConditionPointSearch:
     """
 
     wire_gate_kinds: ClassVar[frozenset[str] | None] = None
+    steer_needs: ClassVar[str] = "in_process_torch"
 
     condition_vector: SteeringVector | None = None
     condition_data: ContrastivePairs | dict | None = None
@@ -297,7 +336,9 @@ class ConditionPointSearch:
         if self.condition_data is not None and not isinstance(self.condition_data, ContrastivePairs):
             self.condition_data = as_contrastive_pairs(self.condition_data)
 
-    def resolve_gate_condition(self, model, tokenizer, *, layout=None) -> tuple["BaseGate", Condition | None]:
+    def resolve_gate_condition(
+        self, model, tokenizer, *, layout=None, session=None
+    ) -> tuple["BaseGate", Condition | None]:
         """Resolve the gate and condition for `model`.
 
         Args:
@@ -305,6 +346,7 @@ class ConditionPointSearch:
                 vector is fitted from data.
             tokenizer: Tokenizer used to encode the condition data.
             layout: Structural facts, used to bounds-check condition layers.
+            session: Optional `SteeringSession` for capture-backed fitting and calibration.
 
         Returns:
             The gate and condition, or `(AlwaysOpenGate(), None)` for unconditional
@@ -325,13 +367,18 @@ class ConditionPointSearch:
         condition_vec = self.condition_vector.clone() if self.condition_vector is not None else None
         has_condition = condition_vec is not None or self.condition_data is not None
         if has_condition and condition_vec is None:
+            if self.condition_fit.method == "mean_diff" and self.condition_fit.accumulate == "suffix-only":
+                raise ValueError(
+                    "method='mean_diff' does not support accumulate='suffix-only'; "
+                    "use accumulate='all' or 'last_token', or method='pca_pairwise'/'pca_center'."
+                )
             estimator = (
                 MeanDifferenceEstimator()
                 if self.condition_fit.method == "mean_diff"
                 else ContrastiveDirectionEstimator()
             )
             condition_vec = estimator.fit(
-                model, tokenizer, data=self.condition_data, spec=self.condition_fit,
+                model, tokenizer, data=self.condition_data, spec=self.condition_fit, session=session,
             )
             if model is not None:
                 device = next(model.parameters()).device
@@ -351,6 +398,7 @@ class ConditionPointSearch:
                     fit_spec=self.condition_fit,
                     search_spec=self.search,
                     comparison_mode=self.comparison_mode,
+                    session=session,
                 )
                 layer_ids = [result.layer_id]
                 threshold = result.threshold
@@ -386,3 +434,55 @@ class ConditionPointSearch:
             "comparison_mode": self.comparison_mode,
         }
         return gate, Condition(layer_ids=tuple(layer_set), scorer=scorer)
+
+
+@dataclass
+class LayerFilteredFit:
+    """Wraps a source and restricts the resolved directions to a layer range.
+
+    Steer-phase declarations and positional-ness delegate to the wrapped source. The filtered
+    result keeps the inner artifact's metadata and per-layer statistics for the surviving
+    layers.
+
+    Attributes:
+        inner: The wrapped source.
+        layer_range: 0-based half-open `(start, end)` range; None passes every layer through.
+    """
+
+    inner: "ArtifactSource"
+    layer_range: tuple[int, int] | None = None
+
+    @property
+    def steer_needs(self) -> str | None:
+        return getattr(self.inner, "steer_needs", None)
+
+    @property
+    def steer_hint(self) -> str | None:
+        return getattr(self.inner, "steer_hint", None)
+
+    @property
+    def produces_positional(self) -> bool:
+        return bool(getattr(self.inner, "produces_positional", False))
+
+    def resolve(
+        self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, *, session=None
+    ) -> SteeringVector:
+        """Resolve the inner source and filter its directions to `layer_range`."""
+        resolved = self.inner.resolve(model, tokenizer, session=session)
+        if self.layer_range is None:
+            return resolved
+        start, end = self.layer_range
+        directions = {
+            layer_id: direction
+            for layer_id, direction in resolved.directions.items()
+            if start <= layer_id < end
+        }
+        return SteeringVector(
+            model_type=resolved.model_type,
+            directions=directions,
+            num_heads=resolved.num_heads,
+            head_dim=resolved.head_dim,
+            explained_variances=resolved.explained_variances,
+            probe_accuracies=resolved.probe_accuracies,
+            meta=dict(resolved.meta),
+        )

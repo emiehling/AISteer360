@@ -124,15 +124,16 @@ class TestFamilyExports:
         control = ActAdd(positive_prompt="love", negative_prompt="hate", layer_id=2)
         assert not _supports_specs(control)
 
-    def test_directional_ablation_groups_shared_tensors(self, session):
+    def test_directional_ablation_shares_one_artifact_across_layers(self, session):
         shared = torch.randn(1, HIDDEN)
         vector = SteeringVector(model_type="llama", directions={2: shared, 3: shared.clone()})
         control = DirectionalAblation(steering_vector=vector, layer_ids=[2, 3])
         control.steer(model=None, session=session)
         spec = control.export_intervention_spec()
-        (op,) = spec.ops
-        assert op["layers"] == [2, 3]
+        # one op per (intervention, layer); identical content shares one content-addressed artifact
+        assert [op["layers"] for op in spec.ops] == [[2], [3]]
         assert len(spec.artifacts) == 1
+        assert spec.ops[0]["transform"]["artifact"] == spec.ops[1]["transform"]["artifact"]
 
     def test_directional_ablation_distinct_tensors_yield_one_op_per_layer(self, session):
         control = DirectionalAblation(steering_vector=_vector(), layer_ids=[2, 3])

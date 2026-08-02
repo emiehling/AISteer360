@@ -273,10 +273,8 @@ class TestValidationSurface:
 
     def test_condition_selector_rejected_for_placement(self):
         from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
-        model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
-        adapter = ActivationAdapter(transform=AdditiveTransform(_sv()), layer_selector=ConditionPointSelector())
         with pytest.raises(ValueError, match="ConditionPointSelector returns"):
-            adapter.steer(model, wordlevel_tokenizer())
+            ActivationAdapter(transform=AdditiveTransform(_sv()), layer_selector=ConditionPointSelector())
 
 
 # transform binding, coverage, factory

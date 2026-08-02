@@ -43,3 +43,35 @@ def strip_clock(hook):
         return result
 
     return stripped
+
+
+class RuntimeCapture:
+    """Captures each `TransformHookRuntime` that `build_hooks` constructs.
+
+    `build_hooks` creates one fresh runtime per logical generation and discards its reference
+    once the hook closures own it; tests asserting position or opener state install this via
+    `capture_built_runtimes` and read `.last`.
+    """
+
+    def __init__(self):
+        self.runtimes = []
+
+    @property
+    def last(self):
+        return self.runtimes[-1] if self.runtimes else None
+
+
+def capture_built_runtimes(monkeypatch) -> RuntimeCapture:
+    """Patch the runtime module so every runtime built by `build_hooks` is recorded."""
+    import aisteer360.algorithms.state_control._common.runtime as runtime_module
+
+    capture = RuntimeCapture()
+    original = runtime_module.TransformHookRuntime
+
+    class _Recording(original):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            capture.runtimes.append(self)
+
+    monkeypatch.setattr(runtime_module, "TransformHookRuntime", _Recording)
+    return capture

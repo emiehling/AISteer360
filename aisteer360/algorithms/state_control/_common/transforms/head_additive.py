@@ -80,6 +80,12 @@ class HeadAdditiveTransform(BaseTransform):
     def is_bound(self) -> bool:
         return self.steering_vector is not None
 
+    @property
+    def artifact_meta(self) -> dict | None:
+        if self.steering_vector is not None and self.steering_vector.meta:
+            return dict(self.steering_vector.meta)
+        return None
+
     def bind(self, ctx: "TransformContext") -> "HeadAdditiveTransform":
         if self.is_bound:
             return self
@@ -87,7 +93,14 @@ class HeadAdditiveTransform(BaseTransform):
 
     @property
     def covered_layer_ids(self) -> set[int] | None:
-        return set(self.steering_vector.directions.keys()) if self.steering_vector is not None else None
+        """Layers the transform can act on: layers with directions and active heads."""
+        if self.steering_vector is None:
+            return None
+        return {
+            layer_id
+            for layer_id in self.steering_vector.directions
+            if self.active_heads.get(layer_id)
+        }
 
     def wire_kind_plan(self) -> tuple[str, frozenset[str]] | None:
         """`head_additive`, valid under the wire's `tensor_parallel_size==1` constraint."""

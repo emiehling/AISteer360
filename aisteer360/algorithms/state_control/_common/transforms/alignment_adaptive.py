@@ -80,6 +80,10 @@ class AlignmentAdaptiveTransform(BaseTransform):
     def is_bound(self) -> bool:
         return self.steering_vector is not None and self.inner.is_bound
 
+    @property
+    def artifact_meta(self) -> dict | None:
+        return self.inner.artifact_meta
+
     def bind(self, ctx: "TransformContext") -> "AlignmentAdaptiveTransform":
         if self.is_bound:
             return self

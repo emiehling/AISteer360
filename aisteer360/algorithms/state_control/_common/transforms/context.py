@@ -53,6 +53,7 @@ def _build_context(
     tokenizer: PreTrainedTokenizerBase | None,
     layer_ids: Sequence[int],
     layout=None,
+    session=None,
 ) -> TransformContext:
     """Build the `TransformContext` for the given behavior layers.
 
@@ -90,7 +91,11 @@ def _build_context(
 
     def resolve(artifact) -> SteeringVector:
         source = _as_artifact_source(artifact)
-        return source.resolve(model, tokenizer).to(device, dtype)
+        try:
+            resolved = source.resolve(model, tokenizer, session=session)
+        except TypeError:
+            resolved = source.resolve(model, tokenizer)  # sources without capture support
+        return resolved.to(device, dtype)
 
     return TransformContext(
         layer_ids=list(layer_ids),
@@ -111,6 +116,7 @@ def resolve_transform_slot(
     layer_ids: Sequence[int],
     layout=None,
     require_coverage: bool = True,
+    session=None,
 ) -> BaseTransform:
     """Turn a transform slot into a bound, coverage-checked `BaseTransform` for the given model.
 
@@ -136,6 +142,8 @@ def resolve_transform_slot(
         layout: Structural `core.execution.ModelLayout` consulted when `model` is None.
         require_coverage: When False, skip the coverage check; uncovered layers are hooked and
             pass through unchanged at apply time.
+        session: Optional `SteeringSession` forwarded to sources whose fit runs through
+            session capture.
 
     Returns:
         A bound `BaseTransform` ready for `apply`.
@@ -145,7 +153,7 @@ def resolve_transform_slot(
             transform.
         ValueError: If the transform covers only some of `layer_ids`.
     """
-    ctx = _build_context(model, tokenizer, layer_ids, layout=layout)
+    ctx = _build_context(model, tokenizer, layer_ids, layout=layout, session=session)
 
     if isinstance(slot, BaseTransform):
         built = slot if slot.is_bound else slot.bind(ctx)

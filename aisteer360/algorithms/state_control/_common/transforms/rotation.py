@@ -99,6 +99,12 @@ class RotationTransform(BaseTransform):
     def is_bound(self) -> bool:
         return self.steering_vector is not None
 
+    @property
+    def artifact_meta(self) -> dict | None:
+        if self.steering_vector is not None and self.steering_vector.meta:
+            return dict(self.steering_vector.meta)
+        return None
+
     def bind(self, ctx: "TransformContext") -> "RotationTransform":
         if self.is_bound:
             return self

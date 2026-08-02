@@ -240,9 +240,55 @@ class GateConditionSource(Protocol):
 
     wire_gate_kinds: ClassVar[frozenset[str] | None]
 
-    def resolve_gate_condition(self, model, tokenizer, *, layout=None) -> tuple["BaseGate", Condition | None]:
+    def resolve_gate_condition(
+        self, model, tokenizer, *, layout=None, session=None
+    ) -> tuple["BaseGate", Condition | None]:
         """Return the resolved gate and condition (None when unconditional)."""
         ...
+
+
+class CoveredLayers:
+    """Layer selector resolving to the bound transform's covered layers.
+
+    Used when the behavior layers are a fact of the artifact rather than of the model, e.g. a
+    steering plane supplied for a subset of layers. `Intervention.bind` binds the transform
+    first and takes its `covered_layer_ids` (intersected with the model's layer range, and
+    with `within` when given) as the behavior layers, raising when none remain.
+
+    Args:
+        within: Optional base selection the covered layers are intersected with, as explicit
+            layer ids or a selector resolved against the model's layer count.
+    """
+
+    def __init__(self, within: "Sequence[int] | BaseSelector | None" = None):
+        self.within = tuple(int(lid) for lid in within) if isinstance(within, (list, tuple)) else within
+
+    def resolve(self, covered, num_layers: int) -> tuple[int, ...]:
+        """The covered layers intersected with the model range and the base selection.
+
+        Raises:
+            ValueError: If no layer survives the intersection.
+        """
+        layer_ids = {int(lid) for lid in covered if 0 <= int(lid) < num_layers}
+        if self.within is not None:
+            if isinstance(self.within, tuple):
+                requested = set(self.within)
+            else:
+                selected = self.within.select(num_layers=num_layers)
+                requested = (
+                    {int(lid) for lid in selected}
+                    if isinstance(selected, (list, tuple, set, frozenset))
+                    else {int(selected)}
+                )
+            layer_ids &= requested
+            if not layer_ids:
+                raise ValueError(
+                    f"No target layer has a direction in the steering artifact "
+                    f"(requested {sorted(requested)}, available {sorted(int(lid) for lid in covered)})."
+                )
+        if not layer_ids:
+            raise ValueError("No active layers for this intervention after filtering.")
+        return tuple(sorted(layer_ids))
 
 
 def _default_gate() -> "BaseGate":
@@ -275,8 +321,8 @@ class Intervention:
     object-valued defaults use `default_factory` only.
 
     Attributes:
-        layers: Behavior layers (0-based decoder-layer indices), or a selector resolved at
-            bind time.
+        layers: Behavior layers (0-based decoder-layer indices), a selector resolved at bind
+            time, or `CoveredLayers` to take the bound transform's covered layers.
         transform: The transform applied at masked positions of open rows.
         scope: Token positions to steer.
         gate: Per-row gate consulted at apply time, or a source resolving to one.
@@ -294,7 +340,7 @@ class Intervention:
             pass through unchanged.
     """
 
-    layers: tuple[int, ...] | "BaseSelector"
+    layers: tuple[int, ...] | "BaseSelector" | CoveredLayers
     transform: "BaseTransform"
     scope: TokenScope = field(default_factory=_default_scope)
     gate: "BaseGate | GateConditionSource" = field(default_factory=_default_gate)
@@ -337,7 +383,7 @@ class Intervention:
                 return "o_proj"
         return "decoder_layer"
 
-    def bind(self, model, tokenizer, *, layout=None) -> "Intervention":
+    def bind(self, model, tokenizer, *, layout=None, session=None) -> "Intervention":
         """Resolve every declared element against `model` (or a session `layout`).
 
         Resolves the layer selector, binds the transform (fitting artifact sources and
@@ -349,6 +395,8 @@ class Intervention:
                 against a session layout.
             tokenizer: Tokenizer used when fitting sources.
             layout: Structural facts (`ModelLayout`) used when `model` is None.
+            session: Optional `SteeringSession` forwarded to sources for capture-backed
+                fitting and searching.
 
         Returns:
             The bound intervention.
@@ -361,10 +409,20 @@ class Intervention:
         from .layout_facts import resolve_layout
         from .transforms.context import resolve_transform_slot
 
-        layout = layout if layout is not None else resolve_layout(model, None)
+        layout = layout if layout is not None else resolve_layout(model, session)
         num_layers = layout.num_layers
 
-        if isinstance(self.layers, tuple):
+        transform = self.transform
+        if isinstance(self.layers, CoveredLayers):
+            transform = resolve_transform_slot(
+                transform, model, tokenizer, [], layout=layout,
+                require_coverage=False, session=session,
+            )
+            covered = transform.covered_layer_ids
+            if not covered:
+                raise ValueError("No active layers for this intervention after filtering.")
+            layer_ids = self.layers.resolve(covered, num_layers)
+        elif isinstance(self.layers, tuple):
             layer_ids = self.layers
         else:
             selected = self.layers.select(num_layers=num_layers)
@@ -384,7 +442,9 @@ class Intervention:
                     "When the gate slot holds a GateConditionSource, the condition slot must "
                     "be None or the same source object."
                 )
-            gate, condition = gate.resolve_gate_condition(model, tokenizer, layout=layout)
+            gate, condition = gate.resolve_gate_condition(
+                model, tokenizer, layout=layout, session=session,
+            )
         if condition is not None and not isinstance(condition, Condition):
             raise ValueError(
                 f"condition must resolve to a Condition or None; got {type(condition).__name__}."
@@ -395,10 +455,11 @@ class Intervention:
                     raise ValueError(f"condition_layer_id {lid} out of range [0, {num_layers}).")
             self._validate_scorer(condition.scorer, layout)
 
-        transform = resolve_transform_slot(
-            self.transform, model, tokenizer, list(layer_ids), layout=layout,
-            require_coverage=self.require_coverage,
-        )
+        if not isinstance(self.layers, CoveredLayers):
+            transform = resolve_transform_slot(
+                transform, model, tokenizer, list(layer_ids), layout=layout,
+                require_coverage=self.require_coverage, session=session,
+            )
 
         bound = replace(
             self, layers=layer_ids, transform=transform, gate=gate, condition=condition,

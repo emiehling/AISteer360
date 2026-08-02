@@ -47,6 +47,16 @@ class BaseTransform(ABC):
     wire_kind: ClassVar[str | None] = None
     is_modifier: ClassVar[bool] = False
 
+    @property
+    def artifact_meta(self) -> dict | None:
+        """Provenance metadata of the transform's steering artifact, or None.
+
+        Populated when the artifact was supplied or resolved as a `SteeringVector` carrying
+        `meta` (fit fingerprints); consumers cross-check it against a serving engine's model
+        identity. Wrappers delegate to their inner transform. The default returns None.
+        """
+        return None
+
     @abstractmethod
     def apply(
         self,
@@ -76,6 +86,11 @@ class BaseTransform(ABC):
         Default True: transforms that take no steering artifact are always bound.
         """
         return True
+
+    @property
+    def source(self):
+        """The unresolved `ArtifactSource` this transform carries, or None when concrete."""
+        return getattr(self, "_source", None)
 
     def bind(self, ctx: "TransformContext") -> "BaseTransform":
         """Return a fully-bound transform for this context.

@@ -241,7 +241,7 @@ class TestCoexistence:
         assert transform.masks  # the "all"-scoped transform applied during the read
         assert not torch.allclose(steered, baseline)  # scores measure the stream as deployed
 
-    def test_read_leaves_live_cast_counters_and_gates_untouched(self, model, tokenizer):
+    def test_read_leaves_live_cast_counters_and_gates_untouched(self, model, tokenizer, monkeypatch):
         from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
         from aisteer360.algorithms.state_control.cast.control import CAST
 
@@ -262,8 +262,12 @@ class TestCoexistence:
         )
         cast.steer(model, tokenizer)
 
+        from tests.utils.runtime_helpers import capture_built_runtimes
+
+        capture = capture_built_runtimes(monkeypatch)
         ids = torch.tensor([[3, 4, 5, 6]])
         hooks = cast.get_hooks(ids, None)
+        runtime = capture.last
         handles = []
         for phase, register in (("pre", "register_forward_pre_hook"), ("forward", "register_forward_hook")):
             for spec in hooks[phase]:
@@ -272,15 +276,15 @@ class TestCoexistence:
         try:
             assert not cast._gate.is_ready()
             assert cast._threshold_gate.evidence() == {}
-            offset_before = cast._runtime._offset
-            prefill_before = cast._runtime._prefill_seen
+            offset_before = runtime._offset
+            prefill_before = runtime._prefill_seen
 
             ProbeSet({"p": _probe([2])}).read(model, ids)
 
             assert not cast._gate.is_ready()  # no condition evidence from the auxiliary pass
             assert cast._threshold_gate.evidence() == {}
-            assert cast._runtime._offset == offset_before
-            assert cast._runtime._prefill_seen == prefill_before
+            assert runtime._offset == offset_before
+            assert runtime._prefill_seen == prefill_before
         finally:
             for handle in handles:
                 handle.remove()
