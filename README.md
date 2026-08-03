@@ -14,7 +14,7 @@ The AI Steerability 360 toolkit is an open source Python project for steering la
 
 The toolkit enables the development and evaluation of a wide range of steering methods through an expressive library of 
 reusable components across four model control surfaces (input, structural, state, and output). This allows for the modular 
-construction of novel steering methods, composition of steering methods into steering pipelines, and benchmarking of 
+construction of novel steering methods, composition of steering methods into [steering pipelines](docs/concepts/steering_pipelines.md), and benchmarking of 
 pipelines on custom use cases and metrics (including measurement of steering side effects). 
 
 To get started, please see the documentation at <https://ibm.github.io/AISteer360/> and the [example notebooks](examples/index.md).
