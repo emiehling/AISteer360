@@ -11,7 +11,7 @@ single steering operation on a model. This allows for individual controls to be 
 interventions.
 
 Steering pipelines are created using the `SteeringPipeline` class. The most common pattern is to specify a Hugging Face
-model name via `base_model_or_path` along with instantiated controls, e.g.,
+model name via `model_name_or_path` along with instantiated controls, e.g.,
 [`few_shot`](../examples/notebooks/algorithms/few_shot.ipynb) and [`dpo`](../examples/notebooks/algorithms/trl.ipynb), as follows:
 
 ```python
@@ -85,7 +85,36 @@ pipeline.steer()
 Calling the `steer()` method on a pipeline instance invokes the steering logic for every control in the pipeline. Methods are 
 steered independently; the effect of composing steered/trained controls is one of the main functionalities provided by the 
 toolkit. Note that the `steer()` step can be resource-heavy, e.g., especially if any of the controls in the pipeline require any training.
-Steering must be called exactly once before using the pipeline for inference.
+Steering must be called before using the pipeline for inference; a repeated `steer()` call is a no-op.
+
+
+## Execution backends
+
+Pipelines execute on a configurable backend. By default, the pipeline loads and runs the model *in process* (via
+Hugging Face `transformers`); passing `backend=` selects the offline vLLM engine (`kind="vllm"`) or a running vLLM
+server (`kind="vllm-serve"`), and `steer_backend=` selects the backend for the controls' steer phase (defaulting to
+the inference backend). Support is binary per control configuration and backend: `pipeline.check()` returns a report
+with one verdict per unsupported (control, phase) pair, naming the gap and the fix, and `steer()` runs the same check
+and raises before any work happens. The per-control support boundary is recorded in the
+[backend compatibility matrix](../reference/backends.md).
+
+```python
+from aisteer360.algorithms.core.execution import BackendSpec
+
+pipeline = SteeringPipeline(
+    model_name_or_path="meta-llama/Llama-3.1-8B-Instruct",
+    controls=[caa],
+    backend=BackendSpec(
+        kind="vllm",
+        model="meta-llama/Llama-3.1-8B-Instruct",
+        options={"hook_plugin": True},
+    ),
+    steer_backend="huggingface",
+)
+report = pipeline.check()  # optional standalone check; steer() runs it and raises on failures
+```
+
+The above steers `caa` on the in-process Hugging Face backend and generates through the vLLM-Hook plugin.
 
 
 ## Running inference on the pipeline
@@ -94,7 +123,9 @@ Once the pipeline has been steered, inference can be run using the `generate()` 
 by keyword, with exactly one source per call: `text=` for a `str` or `list[str]`, `messages=` for one conversation
 (a sequence of chat-message mappings) or a batch of conversations, and `input_ids=` for a pre-tokenized 1-D/2-D
 integer tensor (`attention_mask` is valid only alongside `input_ids=`, and is derived automatically for `text=` and
-`messages=`). A positional `str`/`list[str]` is also accepted as a convenience for text prompts. The `text=` and
+`messages=`). A positional `str`/`list[str]` is also accepted as a convenience for text prompts. Unlike bare
+`model.generate`, the returned token ids exclude the prompt by default; pass `return_full_sequence=True` for
+prompt-plus-continuation output. The `text=` and
 `messages=` paths tokenize for you, so passing chat directly is the most direct route:
 
 ```python
@@ -133,5 +164,9 @@ steered_output_ids = pipeline.generate(
 )
 ```
 
-Note that steering pipelines accept any of the generation parameters available in [Hugging Face's `GenerationConfig` class](https://huggingface.co/docs/transformers/en/main_classes/text_generation).
-This includes any of the generation strategies for [custom decoding](https://huggingface.co/docs/transformers/en/generation_strategies).
+On the default in-process backend, steering pipelines accept any of the generation parameters available in
+[Hugging Face's `GenerationConfig` class](https://huggingface.co/docs/transformers/en/main_classes/text_generation),
+including the generation strategies for [custom decoding](https://huggingface.co/docs/transformers/en/generation_strategies).
+Generation parameters are normalized across backends: the sampling-facing subset (e.g., `max_new_tokens`,
+`temperature`, `top_p`, `stop_strings`) is portable, while parameters outside it pass through to `model.generate` in
+process and raise on the vLLM backends.

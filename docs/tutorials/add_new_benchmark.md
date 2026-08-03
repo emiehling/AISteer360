@@ -76,7 +76,7 @@ pools, respectively, for `FewShot` as follows:
 ```python
 positive_pool = []
 negative_pool = []
-for _, row in steering_data.iterrows():
+for row in steering_data:
     positive_pool.append({
         "question": row["question"],
         "answer": row["answer_chosen"]
@@ -277,8 +277,8 @@ benchmark = Benchmark(
     gen_kwargs={
         "max_new_tokens": 100,
         "do_sample": False,
-        "output_attentions": True,  # mandatory for PASTA
     },
+    hf_model_kwargs={"attn_implementation": "eager"},  # PASTA requires the "eager" or "sdpa" attention implementation
 )
 ```
 The benchmark can then be run as usual to generate the profiles. We direct the reader to the

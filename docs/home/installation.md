@@ -39,9 +39,13 @@ square brackets to the `install` command as follows:
 uv venv --python 3.11 && uv pip install '.[docs]'
 ```
 
-The feature extras are: `merging` (MergeKit structural control), `cpo` (causal DML reward estimation for CPO; CPO
-itself runs without it via a gradient-boosting fallback), and `plots` (benchmark visualization utilities). The umbrella
-`all` extra installs all three; install everything via `uv pip install '.[all]'`.
+By default, pipelines load and run the model in process (via Hugging Face `transformers`); installing the `vllm` extra
+additionally enables inference through vLLM (either the offline engine or a server). The feature extras are: `merging`
+(MergeKit structural control), `cpo` (causal DML reward estimation for CPO; CPO itself runs without it via a
+gradient-boosting fallback), `plots` (benchmark visualization utilities), `guided` (xgrammar, for in-process
+constrained decoding), and `vllm` (the vLLM execution backends plus the `vllm_hook_plugins` core, git-pinned until its
+PyPI release). The umbrella `all` extra installs `merging`, `cpo`, and `plots`; install `guided` and `vllm` by name,
+e.g., `uv pip install '.[vllm]'`.
 
 ## Accessing Hugging Face models
 

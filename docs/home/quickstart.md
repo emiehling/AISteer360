@@ -3,9 +3,10 @@
 This guide will walk you through how to run a simple control in AISteer360.
 
 !!! note
-    AISteer360 runs the model inside your process. For efficient inference on more complex steering operations, please
-    run the toolkit from a machine that has enough GPU memory for both the base checkpoint and the extra overhead your
-    steering method/pipeline adds.
+    By default, AISteer360 runs the model inside your process. For efficient inference on more complex steering
+    operations, please run the toolkit from a machine that has enough GPU memory for both the base checkpoint and the
+    extra overhead your steering method/pipeline adds. Inference through vLLM (offline engine or server) is available
+    via the execution backends; see the [backends reference](../reference/backends.md).
 
 The first step in steering any model is to define how you want to steer, i.e., the control. For this guide, we will use
 an `ActivationAdapter`, a state control that edits the model's internal activations at inference time. The desired

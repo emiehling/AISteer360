@@ -74,7 +74,9 @@ STEERING_METHOD = {
 likely. It is a pure step-level edit of the distribution, so it is a step-level control.
 
 The args dataclass declares the hyper-parameters; the keyword strings are supplied at inference time (they are tied to
-the prompt), so they arrive via `runtime_kwargs`, not the constructor.
+the prompt), so they arrive via `runtime_kwargs`, not the constructor. The control declares the name it consumes in
+`RUNTIME_KWARGS_SCHEMA`; all controls read from the one `runtime_kwargs` dict, and the pipeline warns at `steer()`
+time when two controls declare the same name.
 
 ```python
 from dataclasses import dataclass, field
@@ -108,6 +110,7 @@ class KeywordBooster(OutputControl):
     """Adds a fixed logit bias to a set of keyword tokens at every decoding step."""
 
     Args = KeywordBoosterArgs
+    RUNTIME_KWARGS_SCHEMA = [{"name": "keywords"}]
 
     tokenizer: PreTrainedTokenizer | None = None
 
