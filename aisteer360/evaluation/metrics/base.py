@@ -10,6 +10,8 @@ class Metric(ABC):
     stored on `self.extras`.
 
     Args:
+        name: The metric's name. Defaults to the class name when None, so directly instantiated
+            metrics can carry distinct names.
         **extras: Configuration for the metric, stored on `self.extras`.
 
     Attributes:
@@ -19,8 +21,8 @@ class Metric(ABC):
         extras: The constructor keyword arguments.
     """
 
-    def __init__(self, **extras: Any) -> None:
-        self.name: str = self.__class__.__name__
+    def __init__(self, name: str | None = None, **extras: Any) -> None:
+        self.name: str = name or self.__class__.__name__
         self.extras: dict[str, Any] = extras
 
     @abstractmethod

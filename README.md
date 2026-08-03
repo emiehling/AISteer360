@@ -12,10 +12,10 @@
 
 Welcome to AI Steerability 360 (AISteer360), a toolkit for steering large language models.
 
-AISteer360 provides an expressive library of reusable components (termed generics) across four model control surfaces 
-(input, structural, state, and output). This allows for the modular construction of novel steering methods, composition 
-of steering methods into steering pipelines, and benchmarking of pipelines on custom use cases and metrics (including 
-measurement of steering side effects). 
+AISteer360 provides an expressive library of reusable components (termed generics) across four model control surfaces
+(input, structural, state, and output). This allows for the modular construction of novel steering methods, composition
+of steering methods into steering pipelines, and benchmarking of pipelines on custom use cases and metrics (including
+measurement of steering side effects).
 
 To get started, please see the documentation at <https://ibm.github.io/AISteer360/> and the [example notebooks](examples/index.md).
 
@@ -32,8 +32,8 @@ separate commands (instead of chained via `&&`).
 
 Optional features are available via extra. Install everything with `uv pip install ".[all]"`.
 
-Inference is facilitated by Hugging Face. Before steering, create a `.env` file in the root directory for your Hugging
-Face API key in the following format:
+Inference is facilitated by Hugging Face by default. Before steering, create a `.env` file in the root directory for
+your Hugging Face API key in the following format:
 ```
 HUGGINGFACE_TOKEN=hf_***
 ```
@@ -41,9 +41,50 @@ HUGGINGFACE_TOKEN=hf_***
 Some Hugging Face models (e.g. `meta-llama/Meta-Llama-3.1-8B-Instruct`) are behind an access gate. Check that you have
 access via the model's Hub page with the same account whose token you pass to the toolkit.
 
-> [!NOTE]
-> AISteer360 runs the model inside your process. For efficient inference, please run the toolkit from a machine that
-> has enough GPU memory for both the base checkpoint and the extra overhead your steering method/pipeline adds.
+## Execution backends
+
+### Hugging Face (default)
+
+By default, pipelines load and run the model in process via Hugging Face `transformers`. Run
+the toolkit from a machine with enough GPU memory for the base checkpoint plus the overhead
+your steering method or pipeline adds.
+
+### vLLM (offline engine or server)
+
+Install the extra with `uv pip install ".[vllm]"`. Two modes are available. The offline
+engine boots vLLM inside your process, with no server to manage:
+
+```python
+from aisteer360.algorithms.core.execution import BackendSpec
+
+pipeline = SteeringPipeline(
+    controls=[...],
+    backend=BackendSpec(kind="vllm", model="meta-llama/Llama-3.1-8B-Instruct"),
+    steer_backend="huggingface",  # training/fitting stays on Hugging Face
+    lazy_init=True,
+)
+```
+
+Alternatively, target a running vLLM server (local or remote). Launch one with
+`vllm serve meta-llama/Llama-3.1-8B-Instruct --port 8000`, then:
+
+```python
+pipeline = SteeringPipeline(
+    controls=[...],
+    backend=BackendSpec(
+        kind="vllm-serve",
+        model="meta-llama/Llama-3.1-8B-Instruct",
+        options={"base_url": "http://localhost:8000"},
+    ),
+    steer_backend="huggingface",
+    lazy_init=True,
+)
+```
+
+Steering (training, fitting) runs on the Hugging Face backend via `steer_backend`; inference
+executes on the engine or server. Support is per control and backend, and `pipeline.check()`
+reports unsupported combinations before any work happens; see the compatibility matrix in
+[docs/reference/backends.md](docs/reference/backends.md).
 
 ## Contributing
 
