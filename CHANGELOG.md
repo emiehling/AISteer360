@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### Changed: backend-routed judge metrics and Perplexity (**breaking**)
+
+- `LLMJudgeMetric` and `Perplexity` execute through the backend seam and are configured by a model
+  reference and a backend, never by a live model object. Judge generation renders prompts into
+  `GenerationItem`s run by a `SteeringSession`, so vLLM offline and vLLM serve judges work with no
+  judge-specific code; seeds, `n` fan-out, and stop handling come from the session contract.
+  `Perplexity` computes through `session.score` with length-bucketed batching.
+- Judge configuration is declarative: `prompt_template`, `scale`, `system_prompt`, and
+  `structured_output` are class attributes a subclass overrides by assignment, and a constructor
+  keyword overrides per instance. `Factuality` and `Relevance` are now declarative; `Truthfulness`
+  and `Informativeness` subclass `LLMJudgeMetric` (their private in-process judge loops are gone).
+- Template placeholders beyond the built-ins (`response`, `prompt`, `lower_bound`, `upper_bound`)
+  resolve per item from `compute` keyword arguments (a sequence aligned with `responses`, or a
+  scalar). `Metric.__init__` gains an optional `name` keyword.
+- Backends are cached by spec through `resolve_metric_backend`
+  (`aisteer360/evaluation/metrics/backend_utils.py`), so a judge and a `Perplexity` configured with
+  equal specs share one loaded model or engine. On the Hugging Face backend each `compute()` opens
+  and closes its own session; concurrent `compute()` calls on one shared backend are unsupported.
+- Removed surface: `model_or_id` (both the string and pre-loaded-model forms), `tokenizer=`,
+  `device=`, `score_rendered`, `num_return_sequences` in `gen_kwargs` (use `n`), `pad_token_id`
+  defaulting (sessions own padding), the `@torch.inference_mode()` / `@torch.no_grad()` decorators,
+  and acceptance of a bare `"vllm-serve"` backend string. `gen_kwargs` accepts only the normalized
+  generation vocabulary; unknown keys raise. Model placement and dtype travel as spec options (plain
+  data, so dtypes are strings); an already-loaded model travels as a live `Backend` via
+  `HFBackend.adopt`.
+
+  Migration:
+
+  | old | new |
+  | --- | --- |
+  | `MyJudge(model_or_id="id", device="cuda")` | `MyJudge(model="id")` or `backend=BackendSpec(kind="huggingface", model="id", options={"device_map": "cuda"})` |
+  | `MyJudge(model_or_id=loaded_model, tokenizer=tok)` | `backend=HFBackend.adopt(BackendSpec(kind="huggingface", model=ref), lambda: loaded_model, lambda: tok)` |
+  | subclass `__init__` forwarding `prompt_template` / `scale` | class attributes |
+  | `gen_kwargs={"num_return_sequences": 4, ...}` | `gen_kwargs={"n": 4, ...}` |
+  | `gen_kwargs={"pad_token_id": ...}` | remove; sessions own padding |
+  | `judge.score_rendered(prompts)` | `judge.compute(responses=..., ...)` |
+
+  The first two rows apply verbatim with `Perplexity` in place of `MyJudge`.
+- `RewardScore` is unchanged; it loads an `AutoModelForSequenceClassification` head the seam has no
+  operation for (generate, score, and capture are causal-LM operations). A reward-model seam,
+  co-designed with the output-control reward-model scorers that have the identical need (plausibly
+  mapping onto vLLM's pooling runner), is the follow-up.
+
 ### Changed: benchmark config identity and a versioned checkpoint envelope
 
 - Benchmark config identity is a canonical digest over the materialized pipeline (control classes

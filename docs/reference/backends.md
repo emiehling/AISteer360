@@ -39,6 +39,30 @@ engine work, so the compatibility matrix above governs benchmarking too. A sweep
 unsupported on the configured backends either fails the whole run (`on_unsupported="raise"`, the
 default) or is skipped with a warning (`on_unsupported="skip"`).
 
+## Running a server
+
+The offline vLLM engine (`BackendSpec(kind="vllm")`) boots vLLM inside the current process, so it needs no server and
+is the automatic path for single-process runs. The serve backend targets a vLLM server you launch yourself, which is the
+answer for a remote GPU box, one server shared across processes or benchmark runs, a client with no local vLLM install,
+or process isolation from the steering client.
+
+Start a server with `vllm serve <model> --port 8000` (any extra engine flags as usual), then target it with a spec
+carrying `base_url`:
+
+```python
+from aisteer360.algorithms.core.execution import BackendSpec
+
+spec = BackendSpec(
+    kind="vllm-serve",
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    options={"base_url": "http://localhost:8000"},
+)
+```
+
+When serving activation interventions through the vLLM-Hook plugin, the serving environment carries the plugin, the
+server starts with `VLLM_HOOK_WORKER=unified` and eager execution, the spec adds `hook_plugin: True`, and `artifact_dir`
+names a filesystem shared with the server.
+
 ## API
 
 ::: aisteer360.backends
