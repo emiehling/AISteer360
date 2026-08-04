@@ -10,7 +10,7 @@
 
 ---
 
-The AI Steerability 360 toolkit is an open source Python project for steering large language models.
+The AI Steerability 360 toolkit is an open source Python package for steering large language models.
 
 The toolkit enables the development and evaluation of a wide range of steering methods through an expressive library of 
 reusable components across four model control surfaces (input, structural, state, and output). This allows for the modular 
@@ -29,8 +29,8 @@ uv venv --python 3.11 && uv pip install .
 ```
 
 By default, pipelines load and run the model *in process* (via Hugging Face `transformers`). The toolkit additionally provides 
-support for inference through vLLM (either offline engine or server). To facilitate this, install the extra with 
-`uv pip install ".[vllm]"`. 
+support for inference through vLLM (either offline engine or server) via [vLLM-Hook](https://github.com/IBM/vLLM-Hook). To enable this, 
+install the extra with `uv pip install ".[vllm]"`. 
 
 ## Contributing
 
