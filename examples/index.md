@@ -4,7 +4,7 @@ We have prepared a collection of example notebooks for expressing the toolkit's
 functionality.  
 
 - `algorithms/` contain demonstrations of the toolkit's built-in algorithms, including wrappers around existing libraries (e.g., `trl`, `mergekit`).
-- `generics/` illustrate config-based generic controls and demonstate how modular controls can be constructed.
+- `generics/` illustrate config-based generic controls and demonstrate how modular controls can be constructed.
 - `recipes/` are worked examples that compose existing toolkit components into something new.
 - `benchmarks/` demonstrate more extensive studies that compare methods on a given use case.
 
@@ -93,7 +93,19 @@ The notebooks below show how to configure each generic and recover named methods
 
 <div class="grid cards" markdown>
 
+-   __State control__
+
+    ---
+
+    The composable activation-steering atom; each adapter wires a transform, layer selection, and optionally a gate and token scope into one single-behavior control. Current notebooks cover:
+
     :octicons-arrow-right-24: [ActivationAdapter](./notebooks/generics/activation_adapter.ipynb)
+
+-   __Output control__
+
+    ---
+
+    The output analogues, one generic per shape: per-candidate value shifts, mixed log-prob sources, segment search, phased splicing, and stop rules. Current notebooks cover:
 
     :octicons-arrow-right-24: [ValueGuidance](./notebooks/generics/value_guidance.ipynb)
 

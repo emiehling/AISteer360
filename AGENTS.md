@@ -70,7 +70,7 @@ source .venv/bin/activate
 
 On Windows, run the two chained commands separately. Optional extras: `merging` (MergeKit), `cpo` (econml), `plots`
 (matplotlib/seaborn), `vllm` (the vLLM backends plus the `vllm_hook_plugins` core, git-pinned until its PyPI
-release), `guided` (xgrammar, for in-process constrained decoding), `all` (all features except `vllm`), `dev`
+release), `guided` (xgrammar, for in-process constrained decoding), `all` (all features except `vllm` and `guided`), `dev`
 (`all` plus the plugin core, pytest, pre-commit, notebook), `docs` (site tooling).
 
 Hugging Face access uses a `.env` file at the repo root containing `HUGGINGFACE_TOKEN=hf_***` (see

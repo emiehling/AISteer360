@@ -78,6 +78,7 @@ from aisteer360.algorithms.input_control.prompt_censor.args import PromptCensorA
 class PromptCensor(InputControl):
     """Filters potentially harmful content from prompts."""
     Args = PromptCensorArgs
+    RUNTIME_KWARGS_SCHEMA = [{"name": "blocked_words"}, {"name": "replacement"}]
 
     tokenizer: PreTrainedTokenizer | None = None
 
@@ -125,7 +126,9 @@ class PromptCensor(InputControl):
         return filtered_ids
 ```
 
-Note that the method's `steer` attaches the tokenizer to the control.
+Note that the method's `steer` attaches the tokenizer to the control. The `RUNTIME_KWARGS_SCHEMA` attribute declares
+the per-call variables the control reads from `runtime_kwargs`; the pipeline warns at `steer()` time when two controls
+declare the same name.
 
 Once the above files are in place, the prompt censor control can be initialized and exercised:
 

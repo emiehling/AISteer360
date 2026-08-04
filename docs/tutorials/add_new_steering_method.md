@@ -140,7 +140,7 @@ under each of the four categories, via a simple example implementation, is detai
 
     Output control methods influence the model's generations via the decoding process.
 
-    *Required override*: `generate`
+    *Required override*: `get_logits_processors` and/or `get_stopping_criteria` (step-level), or `decode` (decoding driver)
 
     [:octicons-arrow-right-24: Add your own output control method](./add_method_by_category/add_new_output_control.md)
 
@@ -169,7 +169,7 @@ brief description of the method, a reference to the method's paper/documentation
 
 ```python
 """
-Implementation of DeAL (Decoding-time Alignment) from Deng et al., 2024.
+Implementation of DeAL (Decoding-time Alignment) from Huang et al., 2024.
 
 DeAL performs controlled text generation through iterative lookahead search and reward-guided beam selection. Unlike
 training-time alignment methods, DeAL operates purely at inference time to steer language model outputs toward
@@ -185,15 +185,18 @@ alignment with the desired objective (e.g., helpfulness, safety).
 3. **Iterative Refinement**: Select the top-k highest-scoring beams and repeat the process until termination
 conditions are met (EOS token, max length, or max iterations reached).
 
-This approach allows for flexible alignment with various objectives without requiring model retraining or
-fine-tuning.
+DeAL is a decoding driver, a thin preset of the generic `SearchDriver` that maps DeAL's args onto
+`(scorer, segment_len, num_candidates, keep_k, max_iterations, propose_mode="beam")`. The driver forwards the
+composed logits/stopping stacks into every lookahead rollout, so a step-level control such as RAD steers every DeAL
+rollout. The `reward_params` runtime override is honored. The per-iteration deepcopy of `gen_kwargs`
+is safe because the composed stacks travel as explicit `decode()` parameters and never inside `gen_kwargs`.
 
 Args:
     reward_func (Callable): Function that scores generated continuations. Should accept
         (prompt: str, continuations: list[str], reward_params: dict) and return list[float].
-    lookahead (int): Number of tokens to generate in each lookahead step. Defaults to 4.
-    init_beams (int): Number of initial beams to generate at each iteration. Defaults to 8.
-    topk (int): Number of top-scoring beams to retain for the next iteration. Defaults to 4.
+    lookahead (int): Number of tokens to generate in each lookahead step. Defaults to 10.
+    init_beams (int): Number of initial beams to generate at each iteration. Defaults to 5.
+    topk (int): Number of top-scoring beams to retain for the next iteration. Defaults to 3.
     max_iterations (int): Maximum number of search iterations before termination. Defaults to 10.
 
 Reference:
@@ -214,4 +217,9 @@ should contain the following:
 - A simple example of it working; it's helpful to illustrate how the steered behavior compares with the baseline
 (non-steered) behavior
 
-See the [DeAL notebook](`../examples/notebooks/algorithms/deal.ipynb`) for an example.
+See the [DeAL notebook](../examples/notebooks/algorithms/deal.ipynb) for an example.
+
+A new method also needs its documentation surfaces updated: a reference page
+`docs/reference/algorithms/<category>_control/<method>.md` (copy the mkdocstrings block from an existing page), a nav
+entry in `docs/.nav.yml`, a mention in the category's list in `docs/concepts/controls.md`, and an entry for the
+notebook in `examples/index.md`.
