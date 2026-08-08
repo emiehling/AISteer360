@@ -20,8 +20,23 @@ from aisteer360.algorithms.output_control.stopping_rules.control import (  # noq
     StoppingRules,
 )
 from aisteer360.backends.vllm import VLLMBackend  # noqa: E402
+from aisteer360.utils.tokenization import ensure_pad_token  # noqa: E402
 
 TINY_MODEL = "JackFram/llama-68m"
+
+# float32 matches the checkpoint's own dtype, so greedy decoding agrees token-for-token with the
+# HF reference arms; the small utilization lets several engines in this module be alive at once
+ENGINE_KWARGS = {
+    "enforce_eager": True,
+    "max_model_len": 512,
+    "dtype": "float32",
+    "gpu_memory_utilization": 0.25,
+}
+
+
+def _tokenizer():
+    """The tiny model's tokenizer with a pad token, as the pipeline's own loader would set it."""
+    return ensure_pad_token(AutoTokenizer.from_pretrained(TINY_MODEL))
 
 
 @pytest.fixture(scope="module")
@@ -29,7 +44,7 @@ def engine_backend():
     spec = BackendSpec(
         kind="vllm",
         model=TINY_MODEL,
-        options={"engine_kwargs": {"enforce_eager": True, "max_model_len": 512}},
+        options={"engine_kwargs": dict(ENGINE_KWARGS)},
     )
     try:
         backend = VLLMBackend(spec)
@@ -53,7 +68,7 @@ class TestOfflineEngine:
         assert output.finish_reason in ("stop", "eos", "length")
 
     def test_greedy_parity_with_hf(self, engine_backend):
-        tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        tokenizer = _tokenizer()
         model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
         encoded = tokenizer("The sky is", return_tensors="pt")
         hf_full = model.generate(
@@ -99,17 +114,23 @@ class TestOfflineEngine:
             backend=BackendSpec(
                 kind="vllm",
                 model=TINY_MODEL,
-                options={"engine_kwargs": {"enforce_eager": True, "max_model_len": 512}},
+                options={"engine_kwargs": dict(ENGINE_KWARGS)},
             ),
             steer_backend="huggingface",
         )
         try:
             pipeline.steer()
+            # steering runs on the in-process backend, so the engine boots inside the guard
+            # rather than on the first generate() call
+            pipeline._backend_for(pipeline._resolve_backend_pair()[1])
         except Exception as exception:
             pytest.skip(f"Could not boot the vLLM engine: {exception}")
-        out = pipeline.generate(text="Once upon a time", max_new_tokens=16, do_sample=False,
-                                return_output=True)
-        assert out.output_ids.shape[1] <= 6
+        try:
+            out = pipeline.generate(text="Once upon a time", max_new_tokens=16, do_sample=False,
+                                    return_output=True)
+            assert out.output_ids.shape[1] <= 6
+        finally:
+            pipeline.release_backends()
 
 
 @pytest.fixture(scope="module")
@@ -120,7 +141,7 @@ def plugin_backend():
         model=TINY_MODEL,
         options={
             "hook_plugin": True,
-            "engine_kwargs": {"max_model_len": 512, "enable_prefix_caching": True},
+            "engine_kwargs": {**ENGINE_KWARGS, "enable_prefix_caching": True},
         },
     )
     try:
@@ -140,7 +161,7 @@ def _hf_reference(control_factory, prompt: str, max_new_tokens: int = 8):
     """Greedy continuation ids under the control's hooks on the in-process backend."""
     from aisteer360.backends.huggingface import HFBackend
 
-    tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+    tokenizer = _tokenizer()
     model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
     control = control_factory()
     pipeline = SteeringPipeline(controls=[control], lazy_init=True)
@@ -176,7 +197,7 @@ class TestSpecParityOnEngine:
             steer_backend="huggingface",
         )
         pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
-        pipeline.tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        pipeline.tokenizer = _tokenizer()
         pipeline._backends[plugin_backend.spec] = plugin_backend
         pipeline.steer()
         out = pipeline.generate(text=prompt, max_new_tokens=8, do_sample=False, return_output=True)
@@ -263,7 +284,7 @@ class TestSpecParityOnEngine:
             steering_vector=_steered_vector(TINY_MODEL, hidden, [1]), layer_id=1,
             multiplier=6.0, token_scope="after_prompt",
         )
-        tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        tokenizer = _tokenizer()
         model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
         prompt_ids = tokenizer("hello world example", return_tensors="pt")["input_ids"]
         ref_ids = tokenizer(" one two", return_tensors="pt", add_special_tokens=False)["input_ids"]
@@ -304,7 +325,7 @@ class TestSpecParityOnEngine:
             steer_backend="huggingface",
         )
         pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
-        pipeline.tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        pipeline.tokenizer = _tokenizer()
         pipeline._backends[plugin_backend.spec] = plugin_backend
         pipeline.steer()
         out = pipeline.generate(text=long_prompt, max_new_tokens=8, do_sample=False,
@@ -323,7 +344,7 @@ class TestCaptureOnEngine:
         from aisteer360.algorithms.core.execution import BackendSpec
         from aisteer360.backends.huggingface import HFBackend
 
-        tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        tokenizer = _tokenizer()
         model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
         prompts = [
             PreparedPrompt.from_text("The committee reviewed the proposal"),
@@ -358,7 +379,7 @@ class TestCaptureOnEngine:
             negatives=["the committee rejected it", "they refused at once"],
         )
         spec = VectorTrainSpec(method="mean_diff", accumulate="last_token", prompt_format="raw")
-        tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        tokenizer = _tokenizer()
         model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
 
         with plugin_backend.open_session() as session:
@@ -385,7 +406,7 @@ class TestCaptureOnEngine:
 
         layout = plugin_backend._layout
         hidden = layout.hidden_size
-        tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        tokenizer = _tokenizer()
         model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
 
         open_prompt = "the committee approved the proposal"
@@ -474,7 +495,7 @@ class TestCaptureOnEngine:
             steer_backend="huggingface",
         )
         pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
-        pipeline.tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+        pipeline.tokenizer = _tokenizer()
         pipeline._backends[plugin_backend.spec] = plugin_backend
         pipeline.steer()
         text = pipeline.generate(text="the committee approved it", max_new_tokens=8, do_sample=False)
@@ -502,7 +523,7 @@ class TestConstraintParityOnEngine:
                 steer_backend="huggingface",
             )
             pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
-            pipeline.tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+            pipeline.tokenizer = _tokenizer()
             if backend is not None:
                 pipeline._backends[backend.spec] = backend
             pipeline.steer()

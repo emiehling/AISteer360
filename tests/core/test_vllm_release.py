@@ -27,7 +27,13 @@ def _spec():
     return BackendSpec(
         kind="vllm",
         model=TINY_MODEL,
-        options={"engine_kwargs": {"enforce_eager": True, "max_model_len": 512}},
+        options={
+            "engine_kwargs": {
+                "enforce_eager": True,
+                "max_model_len": 512,
+                "gpu_memory_utilization": 0.25,
+            }
+        },
     )
 
 
@@ -92,6 +98,9 @@ def test_pipeline_release_on_vllm():
     )
     try:
         pipeline.steer()
+        # steering runs on the in-process backend, so the engine boots inside the guard rather
+        # than on the first generate() call
+        pipeline._backend_for(pipeline._resolve_backend_pair()[1])
     except Exception as exception:
         pytest.skip(f"Could not boot the vLLM engine: {exception}")
     try:
