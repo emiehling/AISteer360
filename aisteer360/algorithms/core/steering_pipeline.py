@@ -20,40 +20,38 @@ from transformers import (
     StoppingCriteriaList,
 )
 
-from aisteer360.algorithms.core.execution.payloads import Artifact, ArtifactProvenance
+from aisteer360.algorithms.core.execution.backend import (
+    SteeredSession,
+    capabilities_for_spec,
+    resolve_backend_class,
+)
 from aisteer360.algorithms.core.execution.contracts import (
     BackendCapabilities,
     Capability,
-)
-from aisteer360.algorithms.core.execution.payloads import ConstraintSource
-from aisteer360.algorithms.core.execution.payloads import (
-    ConstraintEntry,
-    GenerationItem,
-    HookEntry,
-    InterventionEntry,
-    ProcessorSpecEntry,
-    ScoringItem,
-    StackEntry,
-    StateControlEntry,
-)
-from aisteer360.algorithms.core.execution.payloads import (
-    remap_prompt_relative_scopes,
+    SupportReport,
+    UnsupportedOperationError,
+    evaluate_support,
 )
 from aisteer360.algorithms.core.execution.params import (
     GenerationParams,
     merge_lowered_params,
 )
-from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
-from aisteer360.algorithms.core.execution.backend import (
-    capabilities_for_spec,
-    resolve_backend_class,
+from aisteer360.algorithms.core.execution.payloads import (
+    Artifact,
+    ArtifactProvenance,
+    ConstraintEntry,
+    ConstraintSource,
+    GenerationItem,
+    HookEntry,
+    InterventionEntry,
+    PreparedPrompt,
+    ProcessorSpecEntry,
+    ScoringItem,
+    StackEntry,
+    StateControlEntry,
+    remap_prompt_relative_scopes,
 )
 from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
-from aisteer360.algorithms.core.execution.contracts import (
-    SupportReport,
-    UnsupportedOperationError,
-    evaluate_support,
-)
 from aisteer360.algorithms.core.output import (
     Output,
     infer_finish_reasons,
@@ -67,11 +65,7 @@ from aisteer360.algorithms.core.utils.generation import (
     apply_adapt_messages_and_tokenize,
 )
 from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.core.execution.backend import SteeredSession
-from aisteer360.algorithms.output_control.base import (
-    DecodingDriver,
-    OutputControl,
-)
+from aisteer360.algorithms.output_control.base import DecodingDriver, OutputControl
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.utils.tokenization import (
@@ -354,6 +348,29 @@ class SteeringPipeline:
             self._backends[spec] = backend
         return backend
 
+    def release_backends(self) -> None:
+        """Release every backend this pipeline constructed and empty the cache.
+
+        Subsequent operations construct fresh backends against the same specs. Lowered
+        intervention entries and staged artifacts persist, so a released pipeline remains usable
+        at the cost of re-booting engines on next use. Release is idempotent. Engine-owning
+        backends shut down deterministically.
+        """
+        backends, self._backends = self._backends, {}
+        for backend in backends.values():
+            try:
+                backend.release()
+            except Exception:
+                logger.warning("Backend release failed", exc_info=True)
+
+    def __enter__(self) -> "SteeringPipeline":
+        """Return the pipeline for use as a context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        """Release the pipeline's backends on exit; does not suppress exceptions."""
+        self.release_backends()
+
     def check(
         self,
         steer_backend: BackendSpec | str | None = None,
@@ -408,6 +425,9 @@ class SteeringPipeline:
         `session=`, a `SteeringSession` on the steering backend, unless the caller supplied its
         own `session` keyword. The session is closed when `steer()` returns.
 
+        A failed steer releases any backends it constructed before re-raising, so it does not
+        leave an engine behind and a retried steer re-boots.
+
         Args:
             **steer_kwargs: Keyword arguments passed to all control steer() methods
 
@@ -425,74 +445,78 @@ class SteeringPipeline:
         if self._is_steered:
             return
 
-        self._warn_on_runtime_kwargs_overlap()
+        try:
+            self._warn_on_runtime_kwargs_overlap()
 
-        steer_spec, inference_spec = self._resolve_backend_pair()
-        report = self.check(steer_backend=steer_spec, inference_backend=inference_spec)
-        report.raise_for("steer", "generate")
-        self._support_report = report
+            steer_spec, inference_spec = self._resolve_backend_pair()
+            report = self.check(steer_backend=steer_spec, inference_backend=inference_spec)
+            report.raise_for("steer", "generate")
+            self._support_report = report
 
-        steering_backend = self._backend_for(steer_spec)
+            steering_backend = self._backend_for(steer_spec)
 
-        # a remote inference backend still needs a client-side tokenizer for the controls
-        if self.tokenizer is None and inference_spec.kind != "huggingface":
-            tokenizer = getattr(steering_backend, "tokenizer", None)
-            if tokenizer is None or callable(tokenizer):
-                source = (
-                    inference_spec.get_option("tokenizer_name_or_path")
-                    or inference_spec.model
-                )
-                if source is not None:
-                    tokenizer = AutoTokenizer.from_pretrained(
-                        source, trust_remote_code=self.trust_remote_code,
+            # a remote inference backend still needs a client-side tokenizer for the controls
+            if self.tokenizer is None and inference_spec.kind != "huggingface":
+                tokenizer = getattr(steering_backend, "tokenizer", None)
+                if tokenizer is None or callable(tokenizer):
+                    source = (
+                        inference_spec.get_option("tokenizer_name_or_path")
+                        or inference_spec.model
                     )
-            if tokenizer is not None:
-                self.tokenizer = ensure_pad_token(tokenizer)
-                self._inject_tokenizer()
+                    if source is not None:
+                        tokenizer = AutoTokenizer.from_pretrained(
+                            source, trust_remote_code=self.trust_remote_code,
+                        )
+                if tokenizer is not None:
+                    self.tokenizer = ensure_pad_token(tokenizer)
+                    self._inject_tokenizer()
 
-        # steer each control (bottom-up order: structural -> input -> state -> output)
-        with steering_backend.open_session() as session:
-            if "session" not in steer_kwargs:
-                steer_kwargs = {**steer_kwargs, "session": session}
-            for control in (
-                *self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls,
-            ):
-                steer_fn = getattr(control, "steer", None)
-                if callable(steer_fn):
-                    maybe_new_model = steer_fn(self.model, tokenizer=self.tokenizer, **steer_kwargs)
-                    if isinstance(maybe_new_model, nn.Module):
-                        self.model = maybe_new_model
+            # steer each control (bottom-up order: structural -> input -> state -> output)
+            with steering_backend.open_session() as session:
+                if "session" not in steer_kwargs:
+                    steer_kwargs = {**steer_kwargs, "session": session}
+                for control in (
+                    *self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls,
+                ):
+                    steer_fn = getattr(control, "steer", None)
+                    if callable(steer_fn):
+                        maybe_new_model = steer_fn(self.model, tokenizer=self.tokenizer, **steer_kwargs)
+                        if isinstance(maybe_new_model, nn.Module):
+                            self.model = maybe_new_model
 
-        self._structural_artifacts = self._collect_structural_artifacts(steer_spec)
+            self._structural_artifacts = self._collect_structural_artifacts(steer_spec)
 
-        # safety checks
-        if self.model is None and inference_spec.kind == "huggingface":
-            raise RuntimeError(
-                "No model is available after steering. Either provide a base model (lazy_init=False) or ensure a "
-                "`StructuralControl` returns one."
-            )
-
-        if self.tokenizer is None:
-            repo = getattr(self.model, "name_or_path", None)
-            source = repo or self._structural_out_path()
-            if source is None:
-                raise RuntimeError("Failed to resolve tokenizer post‑steer.")
-            try:
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    source,
-                    trust_remote_code=self.trust_remote_code,
+            # safety checks
+            if self.model is None and inference_spec.kind == "huggingface":
+                raise RuntimeError(
+                    "No model is available after steering. Either provide a base model (lazy_init=False) or ensure a "
+                    "`StructuralControl` returns one."
                 )
-                self.tokenizer = ensure_pad_token(self.tokenizer)
 
-            except Exception as exception:
-                raise RuntimeError("Failed to resolve tokenizer post‑steer.") from exception
+            if self.tokenizer is None:
+                repo = getattr(self.model, "name_or_path", None)
+                source = repo or self._structural_out_path()
+                if source is None:
+                    raise RuntimeError("Failed to resolve tokenizer post‑steer.")
+                try:
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        source,
+                        trust_remote_code=self.trust_remote_code,
+                    )
+                    self.tokenizer = ensure_pad_token(self.tokenizer)
 
-        self._inject_tokenizer()
+                except Exception as exception:
+                    raise RuntimeError("Failed to resolve tokenizer post‑steer.") from exception
 
-        # a spec-consuming inference backend gets every enabled control's interventions lowered
-        # now, so inexpressible configurations fail before the first generate and artifacts are
-        # staged once
-        self._lower_state_controls(inference_spec)
+            self._inject_tokenizer()
+
+            # a spec-consuming inference backend gets every enabled control's interventions lowered
+            # now, so inexpressible configurations fail before the first generate and artifacts are
+            # staged once
+            self._lower_state_controls(inference_spec)
+        except Exception:
+            self.release_backends()
+            raise
 
         # return steered pipeline
         self._is_steered = True
@@ -825,7 +849,9 @@ class SteeringPipeline:
     @staticmethod
     def _lowering_failure_reason(state_control) -> str:
         """Name the intervention (and hint) behind a lowering failure, for the raised error."""
-        from aisteer360.algorithms.state_control._common.specs import lower_interventions
+        from aisteer360.algorithms.state_control._common.specs import (
+            lower_interventions,
+        )
 
         interventions = getattr(state_control, "interventions", ())
         num_layers = getattr(state_control, "_num_layers", None)

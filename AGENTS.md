@@ -228,6 +228,9 @@ pipeline = SteeringPipeline(
   fitting and reads, routed decoding) is served in process and on the offline plugin engine, not on serve.
 - `compute_logprobs` scores through the inference backend; an enabled output control with
   `include_in_scoring=True` keeps scoring in-process.
+- Discarding a pipeline that booted a vLLM engine should go through `release_backends()` (or a
+  `with` block over the pipeline) rather than relying on garbage collection, which is not prompt at
+  freeing the engine. `Benchmark` does this per configuration.
 
 ### Composition rules
 

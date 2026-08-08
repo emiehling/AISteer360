@@ -14,11 +14,10 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import aisteer360
-from aisteer360.algorithms.core.execution.spec import BackendSpec, KNOWN_BACKEND_KINDS
+from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.core.specs import ControlSpec
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.utils.tokenization import ensure_pad_token
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.evaluation.use_cases.base import UseCase
 from aisteer360.evaluation.utils.data_utils import to_jsonable
@@ -30,6 +29,7 @@ from aisteer360.evaluation.utils.identity import (
     derive_trial_seed,
     qualname,
 )
+from aisteer360.utils.tokenization import ensure_pad_token
 
 logger = logging.getLogger(__name__)
 
@@ -505,6 +505,7 @@ class Benchmark:
                             cleanup_fn()
                         except Exception:
                             logger.warning("Control cleanup failed", exc_info=True)
+                pipeline.release_backends()  # deterministic engine shutdown
                 del pipeline
             if uses_shared_base:
                 self._verify_shared_base_model(controls)

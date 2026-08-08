@@ -21,7 +21,11 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, needs
+from aisteer360.algorithms.core.execution.contracts import (
+    Capability,
+    Requirements,
+    needs,
+)
 from aisteer360.algorithms.core.specs import ControlSpec
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.evaluation.benchmark import (
@@ -1210,8 +1214,12 @@ class TestSeededTrials:
             )
 
     def test_commonsense_shuffle_determinism(self, monkeypatch):
-        from aisteer360.evaluation.metrics.custom.commonsense_mcqa.mcqa_accuracy import MCQAAccuracy
-        from aisteer360.evaluation.use_cases.commonsense_mcqa.use_case import CommonsenseMCQA
+        from aisteer360.evaluation.metrics.custom.commonsense_mcqa.mcqa_accuracy import (
+            MCQAAccuracy,
+        )
+        from aisteer360.evaluation.use_cases.commonsense_mcqa.use_case import (
+            CommonsenseMCQA,
+        )
 
         recorded_prompts = []
 
@@ -1265,6 +1273,7 @@ class _RecordingPipeline:
         self.input_controls = []
         self.state_controls = []
         self.output_controls = []
+        self.release_calls = 0
         _RecordingPipeline.instances.append(self)
 
     def check(self):
@@ -1275,6 +1284,9 @@ class _RecordingPipeline:
 
     def steer(self):
         self._is_steered = True
+
+    def release_backends(self):
+        self.release_calls += 1
 
 
 @pytest.fixture
@@ -1336,6 +1348,58 @@ class TestBackendPassthrough:
         assert mock_base_model == [1]  # shared-base path active by default
         pipeline = use_case._generate_calls[0]["model_or_pipeline"]
         assert pipeline.model is benchmark._base_model
+
+
+class TestBenchmarkReleasesBackends:
+    """The benchmark releases each configuration's backends, including when a trial raises."""
+
+    @pytest.fixture
+    def recording_release(self, monkeypatch):
+        """Wrap `SteeringPipeline.release_backends` with a counter that still calls through."""
+        calls = []
+        original = SteeringPipeline.release_backends
+
+        def wrapper(self):
+            calls.append(1)
+            return original(self)
+
+        monkeypatch.setattr(SteeringPipeline, "release_backends", wrapper)
+        return calls
+
+    def test_release_called_once_per_configuration(
+        self, sample_evaluation_data, mock_base_model, recording_release
+    ):
+        spec = ControlSpec(control_cls=MockInputControl, vars={"num_examples": [1, 2]})
+        benchmark = Benchmark(
+            use_case=_make_use_case(sample_evaluation_data),
+            base_model_name_or_path="test-model",
+            steering_pipelines={"sweep": [spec]},
+        )
+
+        benchmark.run()
+
+        assert len(recording_release) == 2  # one per swept configuration
+
+    def test_release_called_when_a_trial_raises(
+        self, sample_evaluation_data, mock_base_model, recording_release
+    ):
+        class _FailingUseCase(MockUseCase):
+            def generate(self, *args, **kwargs):
+                raise RuntimeError("trial boom")
+
+        benchmark = Benchmark(
+            use_case=_FailingUseCase(
+                evaluation_data=sample_evaluation_data,
+                evaluation_metrics=[MockAccuracyMetric()],
+            ),
+            base_model_name_or_path="test-model",
+            steering_pipelines={"steered": [MockInputControl()]},
+        )
+
+        with pytest.raises(RuntimeError, match="trial boom"):
+            benchmark.run()
+
+        assert len(recording_release) == 1  # released in the finally despite the failure
 
 
 # Pre-flight support tests

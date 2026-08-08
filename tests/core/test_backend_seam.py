@@ -8,6 +8,8 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.execution import (
+    Backend,
+    BackendCapabilities,
     BackendSpec,
     Capability,
     GenerationParams,
@@ -423,3 +425,31 @@ class TestSteerSessionPlumbing:
     def test_intervention_spec_canonical_is_deterministic(self):
         spec = InterventionSpec(ops=({"layers": [1], "transform": {"kind": "additive"}},))
         assert spec.canonical() == spec.canonical()
+
+
+class _MinimalBackend(Backend):
+    """Concrete backend implementing only the two abstract members trivially."""
+
+    def __init__(self, spec: BackendSpec) -> None:
+        self.spec = spec
+
+    @classmethod
+    def capabilities_for_spec(cls, spec: BackendSpec) -> BackendCapabilities:
+        return BackendCapabilities(atoms=frozenset())
+
+    def open_session(self):
+        raise NotImplementedError
+
+
+class TestBackendRelease:
+    """The `Backend.release()` lifecycle default and the serve backend's inheritance of it."""
+
+    def test_default_release_is_a_noop_and_idempotent(self):
+        backend = _MinimalBackend(BackendSpec(kind="huggingface", model="m"))
+        backend.release()
+        backend.release()
+
+    def test_vllm_serve_inherits_the_noop_default(self):
+        from aisteer360.backends.vllm import VLLMServeBackend
+
+        assert VLLMServeBackend.release is Backend.release

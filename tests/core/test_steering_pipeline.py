@@ -642,8 +642,12 @@ class TestSameModelForwardsMetadata:
     """`same_model_forwards` is declarative component metadata on the declaring classes."""
 
     def test_declared_flags(self):
-        from aisteer360.algorithms.output_control._common.logit_sources import PromptVariantSource
-        from aisteer360.algorithms.output_control._common.values.subspace_margin import SubspaceMarginValue
+        from aisteer360.algorithms.output_control._common.logit_sources import (
+            PromptVariantSource,
+        )
+        from aisteer360.algorithms.output_control._common.values.subspace_margin import (
+            SubspaceMarginValue,
+        )
         from aisteer360.algorithms.output_control.sasa.control import SASA
 
         assert SASA.same_model_forwards is True
@@ -652,8 +656,104 @@ class TestSameModelForwardsMetadata:
         assert OutputControl.same_model_forwards is False
 
     def test_prompt_variant_source_construction_emits_no_warning(self):
-        from aisteer360.algorithms.output_control._common.logit_sources import PromptVariantSource
+        from aisteer360.algorithms.output_control._common.logit_sources import (
+            PromptVariantSource,
+        )
 
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             PromptVariantSource(lambda text: text)
+
+
+class _RecorderBackend:
+    """Fake backend recording `release()` calls; release is idempotent."""
+
+    def __init__(self):
+        self.release_calls = 0
+        self.spec = None
+
+    def release(self):
+        self.release_calls += 1
+
+
+class TestReleaseBackends:
+    """`release_backends()`, reconstruct-on-next-use, steer-failure release, and the context manager."""
+
+    def test_release_backends_releases_and_empties_cache(self):
+        pipeline = _tiny_pipeline()
+        pipeline.steer()
+        recorder = _RecorderBackend()
+        pipeline._backends["dummy"] = recorder
+
+        pipeline.release_backends()
+
+        assert recorder.release_calls == 1
+        assert pipeline._backends == {}
+
+        pipeline.release_backends()  # second call is a no-op
+        assert recorder.release_calls == 1
+
+    def test_release_backends_survives_a_failing_release(self):
+        class _FailingBackend(_RecorderBackend):
+            def release(self):
+                super().release()
+                raise RuntimeError("boom")
+
+        pipeline = _tiny_pipeline()
+        pipeline.steer()
+        failing = _FailingBackend()
+        pipeline._backends["dummy"] = failing
+
+        pipeline.release_backends()  # swallows the failure and empties the cache
+
+        assert failing.release_calls == 1
+        assert pipeline._backends == {}
+
+    def test_reconstruct_on_next_use(self):
+        """After releasing, the in-process backend re-adopts the live model and generate() works."""
+        pipeline = _tiny_pipeline()
+        pipeline.steer()
+        pipeline.generate(input_ids=torch.tensor([[3, 4, 5]]), max_new_tokens=1)
+
+        pipeline.release_backends()
+        assert pipeline._backends == {}
+
+        out = pipeline.generate(input_ids=torch.tensor([[3, 4, 5]]), max_new_tokens=1)
+        assert out.shape[0] == 1
+
+    def test_steer_failure_releases_constructed_backends(self):
+        """A control whose steer() raises leaves the backend cache empty and re-raises unchanged."""
+
+        class _RaisingInputControl(MockInputControl):
+            def steer(self, model=None, tokenizer=None, **kwargs):
+                raise ValueError("steer failed")
+
+        pipeline = _tiny_pipeline([_RaisingInputControl()])
+
+        with pytest.raises(ValueError, match="steer failed"):
+            pipeline.steer()
+
+        assert pipeline._backends == {}
+        assert not pipeline._is_steered
+
+    def test_context_manager_releases_on_exit(self):
+        pipeline = _tiny_pipeline()
+        pipeline.steer()
+        recorder = _RecorderBackend()
+        pipeline._backends["dummy"] = recorder
+
+        with pipeline as entered:
+            assert entered is pipeline
+        assert recorder.release_calls == 1
+        assert pipeline._backends == {}
+
+    def test_context_manager_releases_when_body_raises(self):
+        pipeline = _tiny_pipeline()
+        pipeline.steer()
+        recorder = _RecorderBackend()
+        pipeline._backends["dummy"] = recorder
+
+        with pytest.raises(RuntimeError, match="body error"):
+            with pipeline:
+                raise RuntimeError("body error")
+        assert recorder.release_calls == 1

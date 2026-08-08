@@ -16,7 +16,9 @@ from aisteer360.algorithms.core.execution import (  # noqa: E402
     ScoringItem,
 )
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline  # noqa: E402
-from aisteer360.algorithms.output_control.stopping_rules.control import StoppingRules  # noqa: E402
+from aisteer360.algorithms.output_control.stopping_rules.control import (  # noqa: E402
+    StoppingRules,
+)
 from aisteer360.backends.vllm import VLLMBackend  # noqa: E402
 
 TINY_MODEL = "JackFram/llama-68m"
@@ -30,9 +32,13 @@ def engine_backend():
         options={"engine_kwargs": {"enforce_eager": True, "max_model_len": 512}},
     )
     try:
-        return VLLMBackend(spec)
+        backend = VLLMBackend(spec)
     except Exception as exception:
         pytest.skip(f"Could not boot the vLLM engine: {exception}")
+    try:
+        yield backend
+    finally:
+        backend.release()
 
 
 class TestOfflineEngine:
@@ -122,8 +128,12 @@ def plugin_backend():
     except Exception as exception:
         pytest.skip(f"Could not boot the plugin engine: {exception}")
     if backend._discovery is None:
+        backend.release()
         pytest.skip("The engine served no vLLM-Hook discovery payload.")
-    return backend
+    try:
+        yield backend
+    finally:
+        backend.release()
 
 
 def _hf_reference(control_factory, prompt: str, max_new_tokens: int = 8):
@@ -143,7 +153,9 @@ def _hf_reference(control_factory, prompt: str, max_new_tokens: int = 8):
 
 
 def _steered_vector(model_ref: str, hidden: int, layers, k: int = 1, seed: int = 5):
-    from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
+    from aisteer360.algorithms.state_control._common.steering_vector import (
+        SteeringVector,
+    )
 
     generator = torch.Generator().manual_seed(seed)
     return SteeringVector(
@@ -195,7 +207,9 @@ class TestSpecParityOnEngine:
 
     def test_angular_steering_parity(self, plugin_backend):
         hidden = plugin_backend._layout.hidden_size
-        from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
+        from aisteer360.algorithms.state_control.angular_steering.control import (
+            AngularSteering,
+        )
         self._parity(
             plugin_backend,
             lambda: AngularSteering(
@@ -207,13 +221,15 @@ class TestSpecParityOnEngine:
     def test_steered_after_baseline_shared_prefix(self, plugin_backend):
         """The salting rule's regression alarm: a steered request after a baseline request over
         the same prompt must not reuse KV computed without the intervention."""
+        from aisteer360.algorithms.core.execution import InterventionEntry
         from aisteer360.algorithms.state_control._common.specs import (
             Intervention,
             TokenScope,
             lower_interventions,
         )
-        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
-        from aisteer360.algorithms.core.execution import InterventionEntry
+        from aisteer360.algorithms.state_control._common.transforms import (
+            AdditiveTransform,
+        )
 
         hidden = plugin_backend._layout.hidden_size
         vector = _steered_vector(TINY_MODEL, hidden, [1])
@@ -360,7 +376,9 @@ class TestCaptureOnEngine:
         """A probe-gated adapter fires on the gate-open prompt and stays inert on the
         gate-closed prompt, matching in-process decisions (P3.5)."""
         from aisteer360.algorithms.core.internals.probes import Probe
-        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
+        from aisteer360.algorithms.state_control._common.transforms import (
+            AdditiveTransform,
+        )
         from aisteer360.algorithms.state_control.activation_adapter.control import (
             ActivationAdapter,
         )
@@ -376,7 +394,9 @@ class TestCaptureOnEngine:
         enc_closed = tokenizer(closed_prompt, return_tensors="pt")
 
         # a probe whose weights separate the two prompts at layer 1's input
-        from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
+        from aisteer360.algorithms.core.internals.capture import (
+            layerwise_tokenwise_hidden,
+        )
         hs_open = layerwise_tokenwise_hidden(model, dict(enc_open), location="layer_input")
         hs_closed = layerwise_tokenwise_hidden(model, dict(enc_closed), location="layer_input")
         weight = (hs_open[1].mean(dim=(0, 1)) - hs_closed[1].mean(dim=(0, 1))).float()

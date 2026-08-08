@@ -32,6 +32,7 @@ from aisteer360.algorithms.core.execution.payloads import (
 )
 from aisteer360.algorithms.core.execution.spec import BackendSpec
 
+
 @runtime_checkable
 class SteeringSession(Protocol):
     """One logical operation's scope on a backend; the unit of concurrency.
@@ -183,6 +184,14 @@ class Backend(ABC):
 
         Args:
             payloads: Mapping from artifact id to a name-to-tensor mapping.
+        """
+        return None
+
+    def release(self) -> None:
+        """Free the resources this backend owns beyond what the caller owns.
+
+        The default is a no-op. Engine-owning backends override this to shut their engines down
+        deterministically. Release is idempotent.
         """
         return None
 

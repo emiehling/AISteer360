@@ -31,6 +31,24 @@ concatenation), which would silently unanchor prompt-relative interventions; an 
 control with `include_in_scoring=True` likewise makes the pipeline score-unsupported off-torch,
 and encoder-decoder scoring is in-process-only.
 
+## Lifecycle
+
+Backends are constructed lazily per pipeline and cached by spec. `SteeringPipeline.release_backends()`,
+or using the pipeline as a context manager, releases and evicts every backend the pipeline
+constructed, shutting engine-owning backends down deterministically rather than waiting for garbage
+collection. A released pipeline stays usable: the next operation reconstructs backends against the
+same specs, so a re-booted engine serves subsequent generations. `Benchmark` releases each
+configuration's backends automatically after its trials. The offline engine's release is
+process-global with respect to vLLM distributed state, so it assumes no other live vLLM engine in
+the process.
+
+```python
+with SteeringPipeline(controls=[caa], backend="vllm", steer_backend="huggingface", lazy_init=True) as pipeline:
+    pipeline.steer()
+    response = pipeline.generate(text="...", max_new_tokens=64)
+# the engine is shut down on exit
+```
+
 ## Benchmarking
 
 `Benchmark` forwards its `backend` and `steer_backend` arguments to the pipelines it builds and

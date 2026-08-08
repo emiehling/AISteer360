@@ -6,6 +6,7 @@ by `check()`; the strict parameter-rendering table and the request/response mapp
 plain functions. Constructing `VLLMBackend` requires the `vllm` optional dependency (it boots an
 engine); `VLLMServeBackend` needs only a reachable vLLM server.
 """
+import gc
 import hashlib
 import json
 import logging
@@ -18,11 +19,6 @@ from typing import Any, Literal
 
 import torch
 
-from aisteer360.algorithms.core.execution.payloads import (
-    Artifact,
-    CheckpointArtifact,
-    LoRAArtifact,
-)
 from aisteer360.algorithms.core.execution.backend import Backend
 from aisteer360.algorithms.core.execution.contracts import (
     BackendCapabilities,
@@ -31,8 +27,8 @@ from aisteer360.algorithms.core.execution.contracts import (
     ConstraintKinds,
     InterventionKinds,
     ProcessorKinds,
+    UnsupportedOperationError,
 )
-from aisteer360.algorithms.core.execution.payloads import ConstraintSource
 from aisteer360.algorithms.core.execution.fanout import (
     PartialBatchError,
     TransportError,
@@ -40,23 +36,26 @@ from aisteer360.algorithms.core.execution.fanout import (
     run_bounded,
     with_transport_retries,
 )
+from aisteer360.algorithms.core.execution.params import GenerationParams
 from aisteer360.algorithms.core.execution.payloads import (
+    Artifact,
     CaptureResult,
+    CheckpointArtifact,
     ConstraintEntry,
+    ConstraintSource,
     GenerationItem,
     HookEntry,
     InterventionEntry,
+    InterventionSpec,
     ItemResult,
+    LoRAArtifact,
+    ModelFacts,
+    PreparedPrompt,
     ProcessorSpecEntry,
     ScoringItem,
     StackEntry,
 )
-from aisteer360.algorithms.core.execution.payloads import InterventionSpec
-from aisteer360.algorithms.core.execution.payloads import ModelFacts
-from aisteer360.algorithms.core.execution.params import GenerationParams
-from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
 from aisteer360.algorithms.core.execution.spec import BackendSpec
-from aisteer360.algorithms.core.execution.contracts import UnsupportedOperationError
 from aisteer360.algorithms.core.output import Output
 from aisteer360.utils.optional import require
 from aisteer360.utils.tokenization import ensure_pad_token
@@ -600,6 +599,7 @@ class VLLMBackend(Backend):
         if spec.kind != "vllm":
             raise ValueError(f"VLLMBackend requires a 'vllm' spec; got kind {spec.kind!r}.")
         self.spec = spec
+        self._released = False
         require("vllm")
         import os
 
@@ -691,8 +691,69 @@ class VLLMBackend(Backend):
         return _vllm_capabilities(spec, offline=True)
 
     def open_session(self) -> "VLLMOfflineSession":
-        """Open a request session over the shared engine."""
+        """Open a request session over the shared engine.
+
+        Raises:
+            RuntimeError: If the backend has been released.
+        """
+        self._require_llm()
         return VLLMOfflineSession(self)
+
+    def _require_llm(self):
+        """The live engine, or a `RuntimeError` when the backend has been released."""
+        if self._llm is None:
+            raise RuntimeError(
+                "This VLLMBackend was released; construct a new backend (or a new "
+                "SteeringPipeline operation, which reconstructs backends automatically)."
+            )
+        return self._llm
+
+    def release(self) -> None:
+        """Shut the engine down explicitly and mark the backend unusable.
+
+        Release is idempotent; after it, a new backend must be constructed. The distributed-state
+        teardown is process-global, so release assumes no other live vLLM engine in the process.
+        Ray-based executors are out of scope. Engine-touching calls on any still-open session raise
+        after release.
+        """
+        if self._released:
+            return
+        self._released = True
+        llm = self._llm
+        self._llm = None
+        self._lora_request = None
+
+        for resolve in (
+            lambda: getattr(llm, "shutdown", None),
+            lambda: getattr(getattr(llm, "llm_engine", None), "shutdown", None),
+            lambda: getattr(
+                getattr(getattr(llm, "llm_engine", None), "engine_core", None), "shutdown", None
+            ),
+        ):
+            shutdown = resolve()
+            if callable(shutdown):
+                try:
+                    shutdown()
+                except Exception:
+                    logger.warning("vLLM engine shutdown hop failed; continuing.", exc_info=True)
+                break
+
+        del llm
+        gc.collect()
+
+        try:
+            from vllm.distributed.parallel_state import (
+                destroy_distributed_environment,
+                destroy_model_parallel,
+            )
+
+            destroy_model_parallel()
+            destroy_distributed_environment()
+        except Exception:
+            logger.warning("vLLM distributed-state teardown failed; continuing.", exc_info=True)
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 class _RequestSessionBase:
@@ -915,7 +976,7 @@ class VLLMOfflineSession(_RequestSessionBase):
             engine_prompts.append(engine_prompt)
         sampling = SamplingParams(max_tokens=1, temperature=0.0, extra_args={"capture": capture_spec})
 
-        request_outputs = self._backend._llm.generate(engine_prompts, sampling, use_tqdm=False)
+        request_outputs = self._backend._require_llm().generate(engine_prompts, sampling, use_tqdm=False)
 
         rows_per_layer: dict[int, list[torch.Tensor]] = {layer: [] for layer in layer_ids}
         for index, request_output in enumerate(request_outputs):
@@ -1007,7 +1068,7 @@ class VLLMOfflineSession(_RequestSessionBase):
         generate_kwargs: dict[str, Any] = {"use_tqdm": False}
         if self._backend._lora_request is not None:
             generate_kwargs["lora_request"] = self._backend._lora_request
-        request_outputs = self._backend._llm.generate(prompts, sampling, **generate_kwargs)
+        request_outputs = self._backend._require_llm().generate(prompts, sampling, **generate_kwargs)
 
         results: list[ItemResult] = []
         for index, request_output in enumerate(request_outputs):
@@ -1087,7 +1148,7 @@ class VLLMOfflineSession(_RequestSessionBase):
         generate_kwargs: dict[str, Any] = {"use_tqdm": False}
         if self._backend._lora_request is not None:
             generate_kwargs["lora_request"] = self._backend._lora_request
-        request_outputs = self._backend._llm.generate(prompts, sampling, **generate_kwargs)
+        request_outputs = self._backend._require_llm().generate(prompts, sampling, **generate_kwargs)
         rows = [
             extract_ref_logprobs(request_output.prompt_logprobs, ref_ids)
             for request_output, ref_ids in zip(request_outputs, ref_ids_per_item)
