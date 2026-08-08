@@ -5,6 +5,10 @@ GPU-capable environment with the `vllm` extra.
 
 This is a separate module because the boot->release->boot test must not share a process-lifetime
 engine with module-scoped fixtures from another file mid-test.
+
+The engine runs in its own process, so the GPU must be in the default compute mode. Under
+`Exclusive_Process` the engine process is refused a CUDA context once the test process holds
+one, and every test here skips.
 """
 import pytest
 

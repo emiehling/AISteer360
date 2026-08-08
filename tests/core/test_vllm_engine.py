@@ -1,6 +1,11 @@
 """Engine-gated tests for `VLLMBackend`: prompt-only and driver pipelines on the offline
 engine, greedy HF/vLLM parity, and structural checkpoint serving. The whole module skips when
-vLLM is not installed; running it requires a GPU-capable environment with the `vllm` extra."""
+vLLM is not installed; running it requires a GPU-capable environment with the `vllm` extra.
+
+The engine runs in its own process, so the GPU must be in the default compute mode. Under
+`Exclusive_Process` the engine process is refused a CUDA context once the test process holds
+one, and every engine-gated test here skips.
+"""
 import pytest
 
 vllm = pytest.importorskip("vllm")
