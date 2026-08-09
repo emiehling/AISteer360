@@ -6,7 +6,10 @@ from typing import Callable
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.fingerprint import artifact_provenance_meta
+from aisteer360.algorithms.core.internals.fingerprint import (
+    artifact_provenance_meta,
+    session_artifact_identity,
+)
 from aisteer360.algorithms.core.internals.capture import capture_hidden
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.encoding import tokenize_pairs
@@ -67,9 +70,11 @@ class MeanDifferenceEstimator(BaseEstimator[SteeringVector]):
             SteeringVector with one direction per layer.
         """
         device = next(model.parameters()).device if model is not None else torch.device("cpu")
-        model_type = (
-            getattr(model.config, "model_type", "unknown") if model is not None else "unknown"
-        )
+        if model is not None:
+            model_type = getattr(model.config, "model_type", "unknown")
+            session_meta: dict = {}
+        else:
+            model_type, session_meta = session_artifact_identity(session)
 
         # render full texts according to prompt_format (shared with inference)
         rendered = render_contrastive(tokenizer, data, spec.prompt_format)
@@ -137,7 +142,7 @@ class MeanDifferenceEstimator(BaseEstimator[SteeringVector]):
             directions[layer_id] = direction.unsqueeze(0).to(dtype=torch.float32)  # [1, H]
 
         logger.debug("Finished fitting mean difference directions")
-        meta = artifact_provenance_meta(model, tokenizer) if model is not None else {}
+        meta = artifact_provenance_meta(model, tokenizer) if model is not None else session_meta
         return SteeringVector(
             model_type=model_type,
             directions=directions,

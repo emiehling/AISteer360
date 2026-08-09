@@ -52,7 +52,7 @@ class TestRequirements:
     def test_declarative_source_is_portable(self):
         control = ConstrainedDecoding(json_schema='{"type": "object"}', include_in_scoring=False)
         pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        report = pipeline.check(inference_backend=BackendSpec(kind="vllm", model="m"))
+        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert report.supported("generate")
 
     def test_automaton_object_is_in_process_only(self):
@@ -65,7 +65,7 @@ class TestRequirements:
 
         control = ConstrainedDecoding(automaton=_NullAutomaton(), include_in_scoring=False)
         pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        report = pipeline.check(inference_backend=BackendSpec(kind="vllm", model="m"))
+        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         (failure,) = report.failures_for("generate")
         assert failure.message == (
             "ConstrainedDecoding is unsupported at generate on backend kind 'vllm': missing "
@@ -77,12 +77,12 @@ class TestRequirements:
     def test_scoring_participation_requires_in_process(self):
         control = ConstrainedDecoding(regex="cat", include_in_scoring=True)
         pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        report = pipeline.check(inference_backend=BackendSpec(kind="vllm", model="m"))
+        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert report.supported("generate")
         assert not report.supported("score")
         opted_out = SteeringPipeline(
             controls=[ConstrainedDecoding(regex="cat", include_in_scoring=False)], lazy_init=True,
-        ).check(inference_backend=BackendSpec(kind="vllm", model="m"))
+        ).check(backend=BackendSpec(kind="vllm", model="m"))
         assert opted_out.supported("score")
 
     def test_stale_engine_range_names_the_kind(self):
@@ -98,7 +98,7 @@ class TestRequirements:
             constraint_kinds=ConstraintKinds(constraints=frozenset({"json_schema"})),
         )
         spec = BackendSpec(kind="vllm", model="m")
-        report = evaluate_support([control], spec, spec, stale, stale)
+        report = evaluate_support([control], spec, stale)
         (failure,) = report.failures_for("generate")
         assert "ConstraintKinds(grammar)" in failure.message
 

@@ -29,6 +29,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.payloads import Artifact
 from aisteer360.algorithms.core.execution.contracts import Capability
 from aisteer360.algorithms.core.execution.contracts import Requirements, any_of, needs
@@ -92,12 +93,10 @@ class StructuralControl(BaseControl):
     def requirements(self) -> Requirements:
         """Backend requirements computed from this instance's configuration, per phase.
 
-        Structural controls train against the live model, so the steer phase requires
-        `Capability.IN_PROCESS_TORCH` and `Capability.WEIGHT_TRAINING`. The generate phase
-        requires `Capability.IN_PROCESS_TORCH` for in-process adoption of the returned model;
-        when the configuration produces an on-disk artifact (`artifact_capability()`), serving
-        that artifact is an alternative, so a backend advertising the matching serve capability
-        also supports the generate phase.
+        The generate phase requires `Capability.IN_PROCESS_TORCH` for in-process adoption of
+        the returned model; when the configuration produces an on-disk artifact
+        (`artifact_capability()`), serving that artifact is an alternative, so a backend
+        advertising the matching serve capability also supports the generate phase.
 
         Returns:
             The control's phase-keyed requirements.
@@ -109,7 +108,8 @@ class StructuralControl(BaseControl):
                 generate,
                 needs(capability, hint="serve the steer-time artifact on a vLLM backend"),
             )
-        return Requirements(
-            steer=needs(Capability.IN_PROCESS_TORCH, Capability.WEIGHT_TRAINING),
-            generate=generate,
-        )
+        return Requirements(generate=generate)
+
+    def steer_access(self) -> ModelAccess:
+        """`ModelAccess.MODULE`; training happens on live weights."""
+        return ModelAccess.MODULE

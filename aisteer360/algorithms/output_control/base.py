@@ -33,10 +33,8 @@ from transformers import LogitsProcessorList, PreTrainedModel, StoppingCriteriaL
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
 from aisteer360.algorithms.core.execution.contracts import Capability
-from aisteer360.algorithms.core.execution.payloads import GenerationItem
-from aisteer360.algorithms.core.execution.params import GenerationParams
-from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
 from aisteer360.algorithms.core.execution.contracts import Requirements, needs
+from aisteer360.algorithms.core.execution.session_utils import session_generate
 
 
 def stack_generate_kwargs(logits_processors, stopping_criteria) -> dict:
@@ -52,55 +50,6 @@ def stack_generate_kwargs(logits_processors, stopping_criteria) -> dict:
     if stopping_criteria is not None and len(stopping_criteria):
         extra["stopping_criteria"] = stopping_criteria
     return extra
-
-
-def session_generate(session, input_ids, attention_mask=None, **gen_kwargs) -> torch.Tensor:
-    """Run one generate call through a `SteeringSession`, returning full sequences.
-
-    Drop-in replacement for `model.generate(input_ids=..., attention_mask=..., **gen_kwargs)`
-    inside driver rollouts. Each row of `input_ids` becomes one `GenerationItem`; the keyword
-    arguments normalize through `GenerationParams.from_gen_kwargs`, so live `logits_processor`
-    and `stopping_criteria` stacks travel in `extra` (consumable in process only). The returned
-    tensor holds the prompt plus continuation per candidate row, right-padded to a common
-    length with the session tokenizer's pad token.
-
-    Args:
-        session: The `SteeringSession` to generate on.
-        input_ids: Prompt token ids of shape `[batch, seq_len]`.
-        attention_mask: Attention mask matching `input_ids`, or None.
-        **gen_kwargs: Generation keyword arguments in `model.generate` vocabulary.
-
-    Returns:
-        Full sequences of shape `[batch * n, seq_len + gen_len]`.
-    """
-    params = GenerationParams.from_gen_kwargs(**gen_kwargs)
-    if input_ids.dim() == 1:
-        input_ids = input_ids.unsqueeze(0)
-    items = []
-    for row in range(input_ids.size(0)):
-        mask_row = attention_mask[row:row + 1] if attention_mask is not None else None
-        items.append(GenerationItem(
-            prompt=PreparedPrompt.from_token_ids(input_ids[row:row + 1], mask_row),
-        ))
-    results = session.generate(items, params)
-
-    tokenizer = getattr(session, "tokenizer", None)
-    pad_token_id = getattr(tokenizer, "pad_token_id", None)
-    if pad_token_id is None:
-        pad_token_id = getattr(tokenizer, "eos_token_id", None) or 0
-
-    full_rows: list[torch.Tensor] = []
-    for result in results:
-        prompt_ids = result.output.adapted_input_ids
-        out_ids = result.output.output_ids.to(prompt_ids.device)
-        repeated = prompt_ids.expand(out_ids.size(0), -1)
-        full_rows.append(torch.cat([repeated, out_ids], dim=1))
-    max_len = max(row.size(1) for row in full_rows)
-    padded = [
-        torch.nn.functional.pad(row, (0, max_len - row.size(1)), value=pad_token_id)
-        for row in full_rows
-    ]
-    return torch.cat(padded, dim=0)
 
 
 def resolve_generate_callable(model, runtime_kwargs: dict | None, session=None):

@@ -89,6 +89,9 @@ class ModelFacts:
             `num_attention_heads`), or None when neither is derivable.
         dtype: Canonical dtype string, e.g. `"bfloat16"`.
         model_fingerprint: A 16-character hex digest identifying the model weights and config.
+        model_type: The config's `model_type`, or None when unknown.
+        model_ref: The served model reference on engine backends, the loaded model's
+            `name_or_path` in process, or None when unknown.
     """
 
     num_layers: int
@@ -97,6 +100,8 @@ class ModelFacts:
     head_dim: int | None
     dtype: str
     model_fingerprint: str
+    model_type: str | None = None
+    model_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,8 +121,8 @@ class ArtifactProvenance:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class ModelArtifact:
-    """An in-memory model handed across the role boundary; consuming it requires
-    `Capability.MODEL_ADOPTION`.
+    """An in-memory model handed across the role boundary; only the in-process backend can
+    consume it.
 
     Attributes:
         model: The loaded model.

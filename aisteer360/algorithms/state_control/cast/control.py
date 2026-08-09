@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.state_control._common.estimators import (
     ContrastiveDirectionEstimator,
     MeanDifferenceEstimator,
@@ -106,7 +107,8 @@ def _squeeze_direction(d: torch.Tensor) -> torch.Tensor:
 class _BehaviorFit:
     """A fit recipe for CAST's behavior vector, dispatched through `_make_estimator`."""
 
-    steer_needs = "in_process_torch"
+    access = ModelAccess.MODULE
+    artifact_class = "direction"
 
     def __init__(self, data, fit_spec: VectorTrainSpec):
         self._data = data
@@ -133,12 +135,12 @@ class _BehaviorBuild:
         self._norm_preserving = norm_preserving
 
     @property
-    def steer_needs(self) -> str:
-        return getattr(self._source, "steer_needs", None) or "in_process_torch"
+    def access(self) -> ModelAccess:
+        return getattr(self._source, "access", ModelAccess.MODULE)
 
     @property
-    def steer_hint(self) -> str | None:
-        return getattr(self._source, "steer_hint", None)
+    def artifact_class(self) -> str | None:
+        return getattr(self._source, "artifact_class", None)
 
     def __call__(self, ctx) -> BaseTransform:
         behavior_vec = ctx.resolve(self._source)

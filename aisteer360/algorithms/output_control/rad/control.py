@@ -11,6 +11,7 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.output_control._common.candidates import rad_candidate_sizing
 from aisteer360.algorithms.output_control._common.loading import load_sequence_classifier
 from aisteer360.algorithms.output_control._common.processors.value_guided import ValueGuidedProcessor
@@ -66,6 +67,11 @@ class RAD(OutputControl):
     tokenizer: PreTrainedTokenizer | None = None
 
     beta: float
+
+    def steer_access(self) -> ModelAccess:
+        """`ModelAccess.MODULE`; the reward model's placement follows the live model, which is
+        retained past steer (the generate phase is in-process)."""
+        return ModelAccess.MODULE
 
     def steer(
             self,

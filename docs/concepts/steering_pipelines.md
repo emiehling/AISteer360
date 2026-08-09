@@ -82,8 +82,8 @@ to as the *steer* step and is executed via:
 pipeline.steer()
 ```
 
-Calling the `steer()` method on a pipeline instance invokes the steering logic for every control in the pipeline. Methods are 
-steered independently; the effect of composing steered/trained controls is one of the main functionalities provided by the 
+Calling the `steer()` method on a pipeline instance invokes the steering logic for every control in the pipeline. Methods are
+steered independently; the effect of composing steered/trained controls is one of the main functionalities provided by the
 toolkit. Note that the `steer()` step can be resource-heavy, e.g., especially if any of the controls in the pipeline require any training.
 Steering must be called before using the pipeline for inference; a repeated `steer()` call is a no-op.
 
@@ -91,30 +91,37 @@ Steering must be called before using the pipeline for inference; a repeated `ste
 ## Execution backends
 
 Pipelines execute on a configurable backend. By default, the pipeline loads and runs the model *in process* (via
-Hugging Face `transformers`); passing `backend=` selects the offline vLLM engine (`kind="vllm"`) or a running vLLM
-server (`kind="vllm-serve"`), and `steer_backend=` selects the backend for the controls' steer phase (defaulting to
-the inference backend). Support is binary per control configuration and backend: `pipeline.check()` returns a report
-with one verdict per unsupported (control, phase) pair, naming the gap and the fix, and `steer()` runs the same check
-and raises before any work happens. The per-control support boundary is recorded in the
-[backend compatibility matrix](../reference/backends.md).
+Hugging Face `transformers`); passing `backend=` selects the offline vLLM engine (`kind="vllm"`) or a
+running vLLM server (`kind="vllm-serve"`). Support is binary per control configuration and backend:
+`pipeline.check()` returns a report with one verdict per unsupported (control, phase) pair, naming the gap and the
+fix, and `steer()` runs the same check and raises before any work happens. The per-control support boundary is
+recorded in the [backend compatibility matrix](../reference/backends.md).
+
+Each control also declares what its steer step requires of the pipeline model, on the four-rung `ModelAccess`
+ladder: `facts` (layout and tokenizer), `rollouts` (generation and scoring through the session), `capture`
+(hidden states), or `module` (the model as a live `torch.nn.Module`). The steer phase produces no support
+verdicts; instead, `check()` returns a deterministic steer plan stating where each step and fit will run. On
+engine backends, module-level steps run on a temporary in-process model that is freed before the engine boots,
+so fit-and-serve on one machine is the default behavior. Passing `fit="in_process"` forces every fit onto that
+staged model, for numerics independent of the engine's capture surface.
 
 ```python
 from aisteer360.algorithms.core.execution import BackendSpec
 
 pipeline = SteeringPipeline(
-    model_name_or_path="meta-llama/Llama-3.1-8B-Instruct",
     controls=[caa],
     backend=BackendSpec(
         kind="vllm",
         model="meta-llama/Llama-3.1-8B-Instruct",
         options={"hook_plugin": True},
     ),
-    steer_backend="huggingface",
+    lazy_init=True,
 )
 report = pipeline.check()  # optional standalone check; steer() runs it and raises on failures
+report.plan               # where each control's steer step and each fit will run
 ```
 
-The above steers `caa` on the in-process Hugging Face backend and generates through the vLLM-Hook plugin.
+The above fits `caa` through the engine's capture surface and generates through the vLLM-Hook plugin.
 
 
 ## Running inference on the pipeline

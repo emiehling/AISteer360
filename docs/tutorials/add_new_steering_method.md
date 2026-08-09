@@ -99,6 +99,15 @@ the necessary logic for modifying the model's weights/architecture. Note that wh
 in every control type other than structural, it is often useful to include one for attaching necessary objects to the
 control for later use (e.g., the tokenizer). This is illustrated in the tutorials below.
 
+A control's steer step declares one of four access levels via `steer_access()`: `facts` (layout and tokenizer),
+`rollouts` (generate and score through the session), `capture` (hidden states), or `module` (the model as a live
+`torch.nn.Module`). Declare the highest rung your steer touches; intervention templates derive it from their sources,
+and structural controls are `module` by definition. The pipeline hands your `steer()` a session scoped to that rung —
+and the model itself only at `module` — and it arranges residency: on an engine backend, module-level steps run on a
+temporary in-process model that is freed before the engine starts, with exported artifacts as the handoff. Do not hold
+the model past `steer()` unless your generate phase requires `IN_PROCESS_TORCH`. Generate- and score-phase
+requirements are unchanged.
+
 The implementation of a control method depends on its steering category. Specific instructions for how to add a method
 under each of the four categories, via a simple example implementation, is detailed below:
 

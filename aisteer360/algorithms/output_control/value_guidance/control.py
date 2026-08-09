@@ -6,6 +6,7 @@ import warnings
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.output_control._common.processors.value_guided import ValueGuidedProcessor
 from aisteer360.algorithms.output_control._common.resolve import resolve_value
 from aisteer360.algorithms.output_control.base import OutputControl
@@ -65,6 +66,11 @@ class ValueGuidance(OutputControl):
     model: PreTrainedModel | None = None
     tokenizer: PreTrainedTokenizer | None = None
     _value = None
+
+    def steer_access(self) -> ModelAccess:
+        """`ModelAccess.MODULE`; the value spec resolves against the live model (probe fits,
+        placement), which is retained past steer (the generate phase is in-process)."""
+        return ModelAccess.MODULE
 
     def steer(
         self,

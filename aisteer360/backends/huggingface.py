@@ -50,8 +50,6 @@ HF_CAPABILITIES = BackendCapabilities(
         Capability.IN_PROCESS_TORCH,
         Capability.HIDDEN_CAPTURE,
         Capability.BEAM_PROPOSALS,
-        Capability.WEIGHT_TRAINING,
-        Capability.MODEL_ADOPTION,
     }),
     capture_kinds=CaptureKinds(
         kinds=frozenset({"residual"}),
@@ -311,6 +309,8 @@ class ExclusiveSession:
             head_dim=head_dim,
             dtype=str(model.dtype).removeprefix("torch."),
             model_fingerprint=model_fingerprint(model),
+            model_type=getattr(config, "model_type", None),
+            model_ref=getattr(model, "name_or_path", None),
         )
 
     def _resolve_prompt_tensors(self, prompt: PreparedPrompt) -> tuple[torch.Tensor, torch.Tensor]:

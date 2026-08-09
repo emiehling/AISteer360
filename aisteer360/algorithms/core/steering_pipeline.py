@@ -3,8 +3,10 @@ Core steering pipeline for composing and applying multiple LLM control methods.
 """
 import contextlib
 import dataclasses
+import gc
 import logging
 import warnings
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,40 +22,45 @@ from transformers import (
     StoppingCriteriaList,
 )
 
-from aisteer360.algorithms.core.execution.payloads import Artifact, ArtifactProvenance
-from aisteer360.algorithms.core.execution.contracts import (
-    BackendCapabilities,
-    Capability,
+from aisteer360.algorithms.core.execution.access import (
+    ModelAccess,
+    PlannedFit,
+    PlannedStep,
+    SteerPlan,
 )
-from aisteer360.algorithms.core.execution.payloads import ConstraintSource
-from aisteer360.algorithms.core.execution.payloads import (
-    ConstraintEntry,
-    GenerationItem,
-    HookEntry,
-    InterventionEntry,
-    ProcessorSpecEntry,
-    ScoringItem,
-    StackEntry,
-    StateControlEntry,
-)
-from aisteer360.algorithms.core.execution.payloads import (
-    remap_prompt_relative_scopes,
-)
-from aisteer360.algorithms.core.execution.params import (
-    GenerationParams,
-    merge_lowered_params,
-)
-from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
 from aisteer360.algorithms.core.execution.backend import (
+    SteeredSession,
     capabilities_for_spec,
     resolve_backend_class,
 )
-from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
 from aisteer360.algorithms.core.execution.contracts import (
+    BackendCapabilities,
+    Capability,
     SupportReport,
     UnsupportedOperationError,
     evaluate_support,
 )
+from aisteer360.algorithms.core.execution.session_utils import ScopedSession
+from aisteer360.algorithms.core.execution.params import (
+    GenerationParams,
+    merge_lowered_params,
+)
+from aisteer360.algorithms.core.execution.payloads import (
+    Artifact,
+    ArtifactProvenance,
+    ConstraintEntry,
+    ConstraintSource,
+    GenerationItem,
+    HookEntry,
+    InterventionEntry,
+    PreparedPrompt,
+    ProcessorSpecEntry,
+    ScoringItem,
+    StackEntry,
+    StateControlEntry,
+    remap_prompt_relative_scopes,
+)
+from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
 from aisteer360.algorithms.core.output import (
     Output,
     infer_finish_reasons,
@@ -67,11 +74,7 @@ from aisteer360.algorithms.core.utils.generation import (
     apply_adapt_messages_and_tokenize,
 )
 from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.core.execution.backend import SteeredSession
-from aisteer360.algorithms.output_control.base import (
-    DecodingDriver,
-    OutputControl,
-)
+from aisteer360.algorithms.output_control.base import DecodingDriver, OutputControl
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.utils.tokenization import (
@@ -120,14 +123,17 @@ class SteeringPipeline:
         lazy_init (bool, optional): If `True`, defers loading the base model until `steer()` time.
             Useful when a `StructuralControl` will itself load or create the final weights
             (e.g., MergeKit). When `False`, the model is loaded during `SteeringPipeline`
-            construction. Defaults to `False`.
-        backend (BackendSpec | str, optional): The inference backend. Defaults to the in-process
-            Hugging Face backend described by this pipeline's own construction arguments. A
-            `"vllm"` spec boots an offline engine (requires the `vllm` extra) and a
-            `"vllm-serve"` spec targets a running vLLM server; `check()` reports which enabled
-            controls each backend pair supports before anything executes.
-        steer_backend (BackendSpec | str, optional): The steering backend, used for the controls'
-            steer phase. Defaults to `backend`.
+            construction. Defaults to `False`. On engine backends the base weights are never
+            needed up front, so the flag is accepted and inert.
+        backend (BackendSpec | str, optional): The pipeline's backend. Defaults to the
+            in-process Hugging Face backend described by this pipeline's own construction
+            arguments. A `"vllm"` spec boots an offline engine (requires the `vllm` extra) and
+            a `"vllm-serve"` spec targets a running vLLM server; `check()` reports which
+            enabled controls the backend supports, plus the steer plan, before anything
+            executes.
+        fit (str, optional): Fit venue policy. `"auto"` (default) fits through the backend's
+            session where its capture surface serves the fit; `"in_process"` forces every fit
+            onto a staged in-process model, for engine-independent numerics.
 
     Raises:
         RuntimeError: If `generate()` is called before `steer()`
@@ -139,6 +145,8 @@ class SteeringPipeline:
         categories use no-op defaults; an omitted output category uses the pipeline's default
         decoding driver.
     - Controls with a `tokenizer` attribute will have it auto-injected if not already set
+    - On engine backends, `model` is non-None only while the staged in-process model exists
+        during the steer phase; the stage is freed before the engine boots.
 
     For the state category, list order in `controls` defines the composition surface. List order sets
     `steer()` order, hook registration order, and execution order for hooks on the same module. PyTorch
@@ -174,7 +182,7 @@ class SteeringPipeline:
     trust_remote_code: bool = False
     lazy_init: bool = False
     backend: BackendSpec | str | None = None
-    steer_backend: BackendSpec | str | None = None
+    fit: Literal["auto", "in_process"] = "auto"
 
     # lazy‑filled fields
     model: PreTrainedModel | None = field(init=False, default=None)
@@ -202,43 +210,91 @@ class SteeringPipeline:
         self.state_controls = controls_merged["state_controls"]
         self.output_controls = controls_merged["output_controls"]
 
-        # load HF artifacts
-        if not self.lazy_init:
-            if self.model_name_or_path is None:
-                raise ValueError("`model_name_or_path` must be provided when lazy_init=False")
+        if self.fit not in ("auto", "in_process"):
+            raise ValueError(f"fit must be 'auto' or 'in_process'; got {self.fit!r}.")
 
-            if self.device is not None and self.device_map != "auto":
-                raise ValueError("Cannot specify both `device` and `device_map`.")
-
-            if self.device is not None:
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name_or_path,
-                    **self.hf_model_kwargs,
+        spec = self._resolve_backend_spec(self.backend)
+        if spec.kind == "huggingface":
+            # in-process backend: eager load unless lazy_init
+            if not self.lazy_init:
+                if self.model_name_or_path is None:
+                    raise ValueError("`model_name_or_path` must be provided when lazy_init=False")
+                self._load_in_process_model(self.model_name_or_path)
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.tokenizer_name_or_path or self.model_name_or_path,
+                    trust_remote_code=self.trust_remote_code,
                 )
-                self.model = self.model.to(self.device)
-                self.device = self.model.device
+                self.tokenizer = ensure_pad_token(self.tokenizer)
             else:
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name_or_path,
-                    device_map=self.device_map,
-                    **self.hf_model_kwargs,
-                )
-                self.device = self.model.device
-
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.tokenizer_name_or_path or self.model_name_or_path,
-                trust_remote_code=self.trust_remote_code,
-            )
-            self.tokenizer = ensure_pad_token(self.tokenizer)
+                if isinstance(self.tokenizer_name_or_path, (str, Path)):
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        self.tokenizer_name_or_path,
+                        trust_remote_code=self.trust_remote_code
+                    )
+                    self.tokenizer = ensure_pad_token(self.tokenizer)
         else:
+            # engine backend: the constructor never loads the model, and a client-side
+            # tokenizer resolves at steer() so probe pipelines stay free of I/O
             if isinstance(self.tokenizer_name_or_path, (str, Path)):
                 self.tokenizer = AutoTokenizer.from_pretrained(
                     self.tokenizer_name_or_path,
-                    trust_remote_code=self.trust_remote_code
+                    trust_remote_code=self.trust_remote_code,
                 )
                 self.tokenizer = ensure_pad_token(self.tokenizer)
 
         self._inject_tokenizer()
+
+    def _resolve_client_tokenizer(self, spec: BackendSpec) -> None:
+        """Resolve the client-side tokenizer for an engine backend, if not already set.
+
+        The source is `tokenizer_name_or_path`, the spec's `tokenizer_name_or_path` option,
+        the spec's model reference, or `model_name_or_path`, in that order. Leaves the
+        tokenizer unset when no source is available or the source does not resolve, so the
+        backend's own error (a missing optional dependency, a bad model reference) surfaces
+        as the authoritative failure.
+        """
+        if self.tokenizer is not None:
+            return
+        source = (
+            self.tokenizer_name_or_path
+            or spec.get_option("tokenizer_name_or_path")
+            or spec.model
+            or (str(self.model_name_or_path) if self.model_name_or_path is not None else None)
+        )
+        if source is None:
+            return
+        try:
+            self.tokenizer = ensure_pad_token(AutoTokenizer.from_pretrained(
+                source, trust_remote_code=self.trust_remote_code,
+            ))
+        except Exception:
+            logger.debug("Client tokenizer resolution from %r failed.", source, exc_info=True)
+            return
+        self._inject_tokenizer()
+
+    def _load_in_process_model(self, model_ref: str | Path) -> None:
+        """Load `model_ref` with the constructor's placement knobs and bind it as `model`.
+
+        Raises:
+            ValueError: If both `device` and a non-default `device_map` are set.
+        """
+        if self.device is not None and self.device_map != "auto":
+            raise ValueError("Cannot specify both `device` and `device_map`.")
+
+        if self.device is not None:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_ref,
+                **self.hf_model_kwargs,
+            )
+            self.model = self.model.to(self.device)
+            self.device = self.model.device
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_ref,
+                device_map=self.device_map,
+                **self.hf_model_kwargs,
+            )
+            self.device = self.model.device
 
     @property
     def supports_batching(self) -> bool:
@@ -299,12 +355,19 @@ class SteeringPipeline:
                 UserWarning,
             )
 
-    def _resolve_backend_spec(self, value: BackendSpec | str | None) -> BackendSpec:
+    def _resolve_backend_spec(
+        self, value: BackendSpec | str | None, param_name: str = "backend",
+    ) -> BackendSpec:
         """Resolve a backend argument to a `BackendSpec`.
 
         None and `"huggingface"` resolve to the implicit in-process spec derived from this
         pipeline's construction arguments; another known kind name resolves to a bare spec of
         that kind carrying the pipeline's model reference; a `BackendSpec` passes through.
+
+        Args:
+            value: The backend argument to resolve.
+            param_name: The caller's parameter name, used in the `TypeError` message so it names
+                the argument the caller passed.
 
         Raises:
             TypeError: If `value` is neither None, a known kind name, nor a `BackendSpec`.
@@ -326,16 +389,8 @@ class SteeringPipeline:
         if isinstance(value, str) and value in KNOWN_BACKEND_KINDS:
             return BackendSpec(kind=value, model=model)
         raise TypeError(
-            f"backend must be a BackendSpec or one of {', '.join(KNOWN_BACKEND_KINDS)}; got {value!r}."
+            f"{param_name} must be a BackendSpec or one of {', '.join(KNOWN_BACKEND_KINDS)}; got {value!r}."
         )
-
-    def _resolve_backend_pair(self) -> tuple[BackendSpec, BackendSpec]:
-        """The (steering, inference) backend specs; the steering spec defaults to the inference
-        spec."""
-        inference_spec = self._resolve_backend_spec(self.backend)
-        if self.steer_backend is None:
-            return inference_spec, inference_spec
-        return self._resolve_backend_spec(self.steer_backend), inference_spec
 
     def _backend_for(self, spec: BackendSpec):
         """The backend instance for `spec`, constructed on first use and cached by spec.
@@ -354,154 +409,409 @@ class SteeringPipeline:
             self._backends[spec] = backend
         return backend
 
-    def check(
-        self,
-        steer_backend: BackendSpec | str | None = None,
-        inference_backend: BackendSpec | str | None = None,
-    ) -> SupportReport:
-        """Evaluate every enabled control's backend requirements; support is binary per phase.
+    def release_backends(self) -> None:
+        """Release every backend this pipeline constructed and empty the cache.
 
-        Runs automatically at `steer()` (which raises on steer- or generate-phase failures) and
-        is callable standalone against any backend pair. Disabled controls, including the
-        pipeline's default identity controls, never gate a backend and do not appear in the
-        report.
+        Subsequent operations construct fresh backends against the same specs. Lowered
+        intervention entries and staged artifacts persist, so a released pipeline remains usable
+        at the cost of re-booting engines on next use. Release is idempotent. Engine-owning
+        backends shut down deterministically.
+        """
+        backends, self._backends = self._backends, {}
+        for backend in backends.values():
+            try:
+                backend.release()
+            except Exception:
+                logger.warning("Backend release failed", exc_info=True)
+
+    def __enter__(self) -> "SteeringPipeline":
+        """Return the pipeline for use as a context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        """Release the pipeline's backends on exit; does not suppress exceptions."""
+        self.release_backends()
+
+    def check(self, backend: BackendSpec | str | None = None) -> SupportReport:
+        """Evaluate every enabled control's backend requirements and compute the steer plan.
+
+        Runs automatically at `steer()` (which raises on generate-phase failures) and is
+        callable standalone against any backend. Disabled controls, including the pipeline's
+        default identity controls, never gate a backend and do not appear in the report. The
+        returned report's `plan` states, per enabled control and per fit artifact, where the
+        steer phase will run each step; the plan is a pure function of the declarations and
+        the spec, so the same configuration always yields the same verdicts and plan.
 
         Args:
-            steer_backend: Steering backend to evaluate against. Defaults to the pipeline's
-                `steer_backend`, then to the inference backend.
-            inference_backend: Inference backend to evaluate against. Defaults to the pipeline's
-                `backend`, then to the implicit in-process backend.
+            backend: Backend to evaluate against. Defaults to the pipeline's `backend`, then
+                to the implicit in-process backend.
 
         Returns:
-            The `SupportReport` with one failure per unsupported (control, phase) pair.
+            The `SupportReport` with the steer plan and one failure per unsupported
+            (control, phase) pair.
         """
-        inference_spec = self._resolve_backend_spec(
-            inference_backend if inference_backend is not None else self.backend
-        )
-        if steer_backend is not None:
-            steer_spec = self._resolve_backend_spec(steer_backend)
-        elif self.steer_backend is not None:
-            steer_spec = self._resolve_backend_spec(self.steer_backend)
-        else:
-            steer_spec = inference_spec
+        spec = self._resolve_backend_spec(backend if backend is not None else self.backend)
+        capabilities = capabilities_for_spec(spec)
         controls = (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls)
-        return evaluate_support(
-            controls,
-            steer_spec,
-            inference_spec,
-            capabilities_for_spec(steer_spec),
-            capabilities_for_spec(inference_spec),
+        report = evaluate_support(controls, spec, capabilities)
+        plan = self._compute_plan(controls, spec, capabilities)
+        return dataclasses.replace(report, plan=plan)
+
+    def _compute_plan(
+        self,
+        controls: Sequence[Any],
+        spec: BackendSpec,
+        capabilities: BackendCapabilities,
+    ) -> SteerPlan:
+        """The steer plan for `controls` on `spec`; pure, with no I/O and no weights.
+
+        Venues on the Hugging Face backend are all `"live"`. On engine backends, `MODULE`
+        steps stage, `FACTS` and `ROLLOUTS` steps run on the engine session, and `CAPTURE`
+        steps run on the session when the spec statically advertises `HIDDEN_CAPTURE` and
+        `fit == "auto"`, else on the stage. A fit's venue is its owning step's. A calibrated
+        fit whose venue departs from its engine read venue (the `fit="in_process"` flag, or a
+        spec whose capture surface is statically absent) contributes a notice.
+        """
+        in_process = spec.kind == "huggingface"
+        capture_advertised = Capability.HIDDEN_CAPTURE in capabilities.atoms
+        steps: list[PlannedStep] = []
+        fits: list[PlannedFit] = []
+        notices: list[str] = []
+        for control in controls:
+            if not getattr(control, "enabled", True):
+                continue
+            access = control.steer_access()
+            if in_process:
+                venue = "live"
+            elif access >= ModelAccess.MODULE:
+                venue = "stage"
+            elif access == ModelAccess.CAPTURE:
+                venue = "session" if (capture_advertised and self.fit == "auto") else "stage"
+            else:
+                venue = "session"
+            name = type(control).__name__
+            steps.append(PlannedStep(control=name, access=access, venue=venue))
+            for artifact, artifact_class in control.steer_fits():
+                fits.append(PlannedFit(
+                    control=name, artifact=artifact, artifact_class=artifact_class, venue=venue,
+                ))
+                crossing = venue == "stage" and (self.fit == "in_process" or not capture_advertised)
+                if artifact_class == "calibrated" and not in_process and crossing:
+                    reason = (
+                        "fit='in_process'" if self.fit == "in_process"
+                        else "capture is unavailable on this backend"
+                    )
+                    notices.append(
+                        f"{artifact} for {name} is scale-calibrated and will be read on "
+                        f"backend kind '{spec.kind}', but is fitted in process ({reason}); "
+                        "calibrated thresholds may shift across execution boundaries."
+                    )
+        return SteerPlan(
+            steps=tuple(steps),
+            fits=tuple(fits),
+            stages=any(step.venue == "stage" for step in steps),
+            notices=tuple(notices),
         )
 
     def steer(self, **steer_kwargs) -> None:
-        """Apply all steering controls to the model in place.
+        """Apply all steering controls per the steer plan.
 
         Executes each control's steer() method in a fixed bottom-up order: structural -> input -> state -> output,
-        and in list order within each category. This ensures that higher-level controls always see the final
-        configured model from lower levels.
+        and in list order within each category. If any control's steer() method returns a
+        PreTrainedModel instance, it replaces the current model for subsequent controls, so
+        structural controls thread the model through in list order.
 
-        If any control's steer() method returns a PreTrainedModel instance, it replaces the current model for
-        subsequent controls, so structural controls thread the model through in list order.
+        Before any control runs, `check()` evaluates the configured backend and raises on any
+        generate-phase failure. Each control's `steer()` receives `session=`, a session scoped
+        to its declared `steer_access()`, unless the caller supplied its own `session` keyword,
+        and receives the live model only at `ModelAccess.MODULE`. On the Hugging Face backend
+        every step runs against the live model in one phase. On engine backends the plan's
+        stage-venued steps run first on a temporary in-process model that is freed before the
+        engine boots (exported artifacts are the handoff), then the session-venued steps run
+        through the engine session. The only channel between one control's steer and another's
+        is the pipeline model, and every control that can touch it runs in the stage phase, so
+        per-phase global order preserves the composition semantics of the single-phase order.
 
-        Before any control runs, `check()` evaluates the configured backend pair and raises on
-        any steer- or generate-phase failure. Each control's `steer()` additionally receives
-        `session=`, a `SteeringSession` on the steering backend, unless the caller supplied its
-        own `session` keyword. The session is closed when `steer()` returns.
+        A failed steer releases any backends it constructed before re-raising, so it does not
+        leave an engine behind and a retried steer re-boots.
 
         Args:
             **steer_kwargs: Keyword arguments passed to all control steer() methods
 
         Warns:
             UserWarning: If two or more enabled controls declare the same `RUNTIME_KWARGS_SCHEMA`
-                variable name.
+                variable name, if a calibrated fit is fitted in process while its artifact is
+                read on an engine, or if engine capture fails the steer-time smoke test and
+                fitting degrades to a staged in-process model.
 
         Raises:
-            RuntimeError: If called more than once or no model available after steering
-            UnsupportedPipelineError: If any enabled control is unsupported at the steer or
-                generate phase on the configured backends.
+            RuntimeError: If called more than once, no model is available after steering, or
+                the staged in-process model was retained past the steer stage.
+            UnsupportedPipelineError: If any enabled control is unsupported at the generate
+                phase on the configured backend.
             ModuleNotFoundError: If a configured backend kind requires an optional dependency
                 that is not installed (e.g. the `vllm` extra).
         """
         if self._is_steered:
             return
 
-        self._warn_on_runtime_kwargs_overlap()
+        try:
+            self._warn_on_runtime_kwargs_overlap()
 
-        steer_spec, inference_spec = self._resolve_backend_pair()
-        report = self.check(steer_backend=steer_spec, inference_backend=inference_spec)
-        report.raise_for("steer", "generate")
-        self._support_report = report
+            spec = self._resolve_backend_spec(self.backend)
+            report = self.check()
+            report.raise_for("generate")
+            self._support_report = report
 
-        steering_backend = self._backend_for(steer_spec)
+            if spec.kind == "huggingface":
+                self._steer_in_process(spec, report.plan, steer_kwargs)
+            else:
+                self._resolve_client_tokenizer(spec)
+                self._steer_on_engine(spec, report.plan, steer_kwargs)
 
-        # a remote inference backend still needs a client-side tokenizer for the controls
-        if self.tokenizer is None and inference_spec.kind != "huggingface":
-            tokenizer = getattr(steering_backend, "tokenizer", None)
-            if tokenizer is None or callable(tokenizer):
-                source = (
-                    inference_spec.get_option("tokenizer_name_or_path")
-                    or inference_spec.model
-                )
-                if source is not None:
-                    tokenizer = AutoTokenizer.from_pretrained(
-                        source, trust_remote_code=self.trust_remote_code,
+            if self.tokenizer is None:
+                repo = getattr(self.model, "name_or_path", None)
+                source = repo or self._structural_out_path()
+                if source is None:
+                    raise RuntimeError("Failed to resolve tokenizer post‑steer.")
+                try:
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        source,
+                        trust_remote_code=self.trust_remote_code,
                     )
-            if tokenizer is not None:
-                self.tokenizer = ensure_pad_token(tokenizer)
-                self._inject_tokenizer()
+                    self.tokenizer = ensure_pad_token(self.tokenizer)
 
-        # steer each control (bottom-up order: structural -> input -> state -> output)
-        with steering_backend.open_session() as session:
-            if "session" not in steer_kwargs:
-                steer_kwargs = {**steer_kwargs, "session": session}
+                except Exception as exception:
+                    raise RuntimeError("Failed to resolve tokenizer post‑steer.") from exception
+
+            self._inject_tokenizer()
+
+            # a spec-consuming backend gets every enabled control's interventions lowered now,
+            # so inexpressible configurations fail before the first generate and artifacts are
+            # staged once
+            self._lower_state_controls(spec)
+        except Exception:
+            self.release_backends()
+            raise
+
+        # return steered pipeline
+        self._is_steered = True
+
+    def _enabled_controls(self) -> list:
+        """Enabled controls in global steer order (structural, input, state, output)."""
+        return [
+            control
             for control in (
-                *self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls,
-            ):
-                steer_fn = getattr(control, "steer", None)
-                if callable(steer_fn):
-                    maybe_new_model = steer_fn(self.model, tokenizer=self.tokenizer, **steer_kwargs)
-                    if isinstance(maybe_new_model, nn.Module):
-                        self.model = maybe_new_model
+                *self.structural_controls, *self.input_controls,
+                *self.state_controls, *self.output_controls,
+            )
+            if getattr(control, "enabled", True)
+        ]
 
-        self._structural_artifacts = self._collect_structural_artifacts(steer_spec)
+    def _run_control_steer(self, control, access: ModelAccess, venue_session, steer_kwargs) -> None:
+        """Run one control's steer with a session scoped to `access` and the model gated by it.
 
-        # safety checks
-        if self.model is None and inference_spec.kind == "huggingface":
+        The live model travels only through the `model=` argument, and only at
+        `ModelAccess.MODULE`. A caller-supplied `session` keyword overrides the scoped
+        session. A returned `nn.Module` replaces the pipeline model for subsequent controls.
+        """
+        steer_fn = getattr(control, "steer", None)
+        if not callable(steer_fn):
+            return
+        kwargs = steer_kwargs
+        if "session" not in kwargs:
+            scoped = ScopedSession(venue_session, type(control).__name__, access)
+            kwargs = {**kwargs, "session": scoped}
+        model = self.model if access >= ModelAccess.MODULE else None
+        maybe_new_model = steer_fn(model, tokenizer=self.tokenizer, **kwargs)
+        if isinstance(maybe_new_model, nn.Module):
+            self.model = maybe_new_model
+
+    def _steer_in_process(self, spec: BackendSpec, plan: SteerPlan, steer_kwargs: dict) -> None:
+        """Run every enabled control's steer against the live model, in one phase."""
+        backend = self._backend_for(spec)
+        controls = self._enabled_controls()
+        with backend.open_session() as session:
+            for control, step in zip(controls, plan.steps):
+                self._run_control_steer(control, step.access, session, steer_kwargs)
+
+        self._structural_artifacts = self._collect_structural_artifacts(spec)
+
+        if self.model is None:
             raise RuntimeError(
                 "No model is available after steering. Either provide a base model (lazy_init=False) or ensure a "
                 "`StructuralControl` returns one."
             )
 
-        if self.tokenizer is None:
-            repo = getattr(self.model, "name_or_path", None)
-            source = repo or self._structural_out_path()
-            if source is None:
-                raise RuntimeError("Failed to resolve tokenizer post‑steer.")
+    def _steer_on_engine(self, spec: BackendSpec, plan: SteerPlan, steer_kwargs: dict) -> None:
+        """Run the staged steer: stage-venued steps on a temporary in-process model, freed
+        before the engine boots, then session-venued steps through the engine session.
+
+        When the plan assigned any fit to engine capture, one single-prompt capture smoke test
+        runs before any session-venued steer; on failure the affected controls' venues revise
+        to the stage (the engine is released first, so weights and engine never coexist) and
+        the remaining session-venued steers run against a re-booted engine. No control's
+        steer() ever runs twice.
+        """
+        controls = self._enabled_controls()
+        steps = {id(control): step for control, step in zip(controls, plan.steps)}
+        stage_controls = [c for c in controls if steps[id(c)].venue == "stage"]
+        session_controls = [c for c in controls if steps[id(c)].venue == "session"]
+
+        if plan.stages:
+            for notice in plan.notices:
+                warnings.warn(notice, UserWarning)
+            self._run_stage(spec, stage_controls, steps, steer_kwargs)
+
+        backend = self._backend_for(spec)
+        session_fitters = {planned.control for planned in plan.fits if planned.venue == "session"}
+        fit_controls = [c for c in session_controls if type(c).__name__ in session_fitters]
+
+        session = backend.open_session()
+        try:
+            if fit_controls:
+                error = self._capture_smoke_failure(session)
+                if error is not None:
+                    warnings.warn(
+                        f"Hidden-state capture on backend kind '{spec.kind}' failed at steer "
+                        f"({error}); fitting degrades to a staged in-process model. Set "
+                        "fit='in_process' to plan this from the start.",
+                        UserWarning,
+                    )
+                    session.close()
+                    self.release_backends()
+                    self._run_stage(spec, fit_controls, steps, steer_kwargs)
+                    session_controls = [c for c in session_controls if c not in fit_controls]
+                    backend = self._backend_for(spec)
+                    session = backend.open_session()
+            for control in session_controls:
+                self._run_control_steer(control, steps[id(control)].access, session, steer_kwargs)
+        finally:
+            session.close()
+
+    def _capture_smoke_failure(self, session) -> str | None:
+        """Issue one single-prompt capture through `session`; the error text on failure."""
+        tokenizer = getattr(session, "tokenizer", None) or self.tokenizer
+        token_id = 0
+        for attribute in ("bos_token_id", "eos_token_id", "pad_token_id"):
+            value = getattr(tokenizer, attribute, None)
+            if value is not None:
+                token_id = int(value)
+                break
+        prompt = PreparedPrompt.from_token_ids(torch.tensor([[token_id]], dtype=torch.long))
+        try:
+            session.capture([prompt], layers=[0], mode="last_token", location="layer_output")
+        except Exception as error:
+            return str(error)
+        return None
+
+    def _run_stage(self, spec: BackendSpec, stage_controls, steps, steer_kwargs: dict) -> None:
+        """Load the staged in-process model, run `stage_controls`' steers on it, collect
+        structural artifacts, and free the stage.
+
+        The stage is configured by the constructor's placement knobs and loads
+        `spec.model` (or `model_name_or_path`). Structural returns thread through the stage,
+        and the exported artifacts are the handoff to the engine.
+
+        Raises:
+            RuntimeError: If no model reference is available to load the stage from, or the
+                staged model was retained past the stage by a control.
+        """
+        model_ref = spec.model or (
+            str(self.model_name_or_path) if self.model_name_or_path is not None else None
+        )
+        if model_ref is None:
+            raise RuntimeError(
+                "The steer plan stages an in-process model, but neither the backend spec nor "
+                "`model_name_or_path` names a model to load."
+            )
+        stage_spec = BackendSpec(
+            kind="huggingface",
+            model=model_ref,
+            options={
+                "hf_model_kwargs": self.hf_model_kwargs,
+                "device_map": self.device_map,
+                "trust_remote_code": self.trust_remote_code,
+                "tokenizer_name_or_path": self.tokenizer_name_or_path,
+            },
+        )
+        self._load_in_process_model(model_ref)
+        stage_backend = resolve_backend_class(stage_spec).adopt(
+            stage_spec, lambda: self.model, lambda: self.tokenizer,
+        )
+        try:
+            with stage_backend.open_session() as stage_session:
+                for control in stage_controls:
+                    self._run_control_steer(
+                        control, steps[id(control)].access, stage_session, steer_kwargs,
+                    )
+            if not self._structural_artifacts:
+                self._structural_artifacts = self._collect_structural_artifacts(stage_spec)
+        finally:
+            stage_backend.release()
+        self._free_stage()
+
+    def _free_stage(self) -> None:
+        """Free the staged in-process model and verify the weights are actually gone.
+
+        Raises:
+            RuntimeError: If a control retained the staged model past the stage; the message
+                names the retaining controls where identifiable.
+        """
+        model = self.model
+        if model is None:
+            return
+        ref = weakref.ref(model)
+        self.model = None
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        referent = ref()
+        if referent is None:
+            return
+        holders = self._find_model_holders(referent)
+        names = ", ".join(holders) if holders else "an unidentified holder"
+        raise RuntimeError(
+            f"The staged in-process model was retained past the steer stage by: {names}. "
+            "Controls supported at generate on this backend must not hold the pipeline model "
+            "beyond steer(); release the reference in steer() or cleanup(), or require "
+            "Capability.IN_PROCESS_TORCH at generate."
+        )
+
+    def _find_model_holders(self, referent) -> list[str]:
+        """Controls holding `referent` in their instance attributes (one level) or in a bound
+        intervention's transform or gate attributes."""
+
+        def instance_values(obj):
             try:
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    source,
-                    trust_remote_code=self.trust_remote_code,
-                )
-                self.tokenizer = ensure_pad_token(self.tokenizer)
+                return list(vars(obj).values())
+            except TypeError:
+                slots = getattr(type(obj), "__slots__", ())
+                return [getattr(obj, name, None) for name in slots]
 
-            except Exception as exception:
-                raise RuntimeError("Failed to resolve tokenizer post‑steer.") from exception
+        holders: list[str] = []
+        for control in self._enabled_controls():
+            found = any(value is referent for value in instance_values(control))
+            if not found:
+                for intervention in getattr(control, "interventions", ()) or ():
+                    for slot in (
+                        getattr(intervention, "transform", None),
+                        getattr(intervention, "gate", None),
+                    ):
+                        if slot is not None and any(
+                            value is referent for value in instance_values(slot)
+                        ):
+                            found = True
+            if found:
+                holders.append(type(control).__name__)
+        return holders
 
-        self._inject_tokenizer()
-
-        # a spec-consuming inference backend gets every enabled control's interventions lowered
-        # now, so inexpressible configurations fail before the first generate and artifacts are
-        # staged once
-        self._lower_state_controls(inference_spec)
-
-        # return steered pipeline
-        self._is_steered = True
-
-    def _collect_structural_artifacts(self, steer_spec: BackendSpec) -> tuple[Artifact, ...]:
+    def _collect_structural_artifacts(self, spec: BackendSpec) -> tuple[Artifact, ...]:
         """Enabled structural controls' steer-time artifacts, provenance-stamped.
 
-        Provenance carries the steering backend's spec hash and, when a live model is present,
-        its fingerprint.
+        Provenance carries the producing venue's spec hash (the stage spec on engine
+        backends) and, when a live model is present, its fingerprint.
         """
         artifacts: list[Artifact] = []
         for control in self.structural_controls:
@@ -524,7 +834,7 @@ class SteeringPipeline:
             except Exception:
                 logger.debug("Model fingerprint unavailable for artifact provenance.")
         provenance = ArtifactProvenance(
-            backend_spec_hash=steer_spec.spec_hash,
+            backend_spec_hash=spec.spec_hash,
             model_fingerprint=model_fingerprint,
         )
         return tuple(dataclasses.replace(artifact, provenance=provenance) for artifact in artifacts)
@@ -644,18 +954,18 @@ class SteeringPipeline:
         Returns:
             One `HookEntry` per enabled state control, in controls-list order.
         """
-        inference_spec = self._resolve_backend_spec(self.backend)
-        capabilities = capabilities_for_spec(inference_spec)
+        spec = self._resolve_backend_spec(self.backend)
+        capabilities = capabilities_for_spec(spec)
         if Capability.IN_PROCESS_TORCH not in capabilities.atoms:
-            # spec-consuming inference backend: entries come from the steer-time lowering
-            # cache, filled lazily for a control enabled after steer()
+            # spec-consuming backend: entries come from the steer-time lowering cache, filled
+            # lazily for a control enabled after steer()
             entries = []
             for state_control in self.state_controls:
                 if not state_control.enabled:
                     continue
                 entry = self._lowered_state.get(id(state_control))
                 if entry is None:
-                    backend = self._backend_for(inference_spec)
+                    backend = self._backend_for(spec)
                     served = ((getattr(backend, "_discovery", None) or {}).get("model") or {})
                     payloads: dict = {}
                     entry = self._lower_control(
@@ -717,11 +1027,11 @@ class SteeringPipeline:
             rows.append(tuple(entries))
         return rows
 
-    def _lower_state_controls(self, inference_spec: BackendSpec) -> None:
-        """Lower every enabled state control's interventions for a spec-consuming inference
-        backend, cache the entries, and stage their artifacts.
+    def _lower_state_controls(self, spec: BackendSpec) -> None:
+        """Lower every enabled state control's interventions for a spec-consuming backend,
+        cache the entries, and stage their artifacts.
 
-        Runs at the end of `steer()` when the inference backend executes interventions as
+        Runs at the end of `steer()` when the backend executes interventions as
         specs rather than in-process hooks. Specs are per-steer artifacts: the worker anchors
         positions per request server-side and the spec is prompt-independent by construction,
         so one lowering serves every subsequent generation. Each spec is verified against the
@@ -734,7 +1044,7 @@ class SteeringPipeline:
                 (the failure names the control, the intervention, and the reason), or its spec
                 requires a kind the backend does not advertise.
         """
-        capabilities = capabilities_for_spec(inference_spec)
+        capabilities = capabilities_for_spec(spec)
         if Capability.IN_PROCESS_TORCH in capabilities.atoms:
             return
         if Capability.INTERVENTION_SPECS not in capabilities.atoms:
@@ -743,7 +1053,7 @@ class SteeringPipeline:
         if not enabled:
             return
 
-        backend = self._backend_for(inference_spec)
+        backend = self._backend_for(spec)
         advertised = capabilities.intervention_kinds
         served_model = ((getattr(backend, "_discovery", None) or {}).get("model") or {})
         payloads: dict = {}
@@ -825,7 +1135,9 @@ class SteeringPipeline:
     @staticmethod
     def _lowering_failure_reason(state_control) -> str:
         """Name the intervention (and hint) behind a lowering failure, for the raised error."""
-        from aisteer360.algorithms.state_control._common.specs import lower_interventions
+        from aisteer360.algorithms.state_control._common.specs import (
+            lower_interventions,
+        )
 
         interventions = getattr(state_control, "interventions", ())
         num_layers = getattr(state_control, "_num_layers", None)
@@ -1445,10 +1757,10 @@ class SteeringPipeline:
         lowered = self._lowered_contributions(runtime_kwargs)
         skip_ids = frozenset(lowered)
 
-        inference_spec = self._resolve_backend_spec(self.backend)
-        backend = self._backend_for(inference_spec)
+        spec = self._resolve_backend_spec(self.backend)
+        backend = self._backend_for(spec)
         decoding_driver = self._resolve_decoding_driver()
-        inference_capabilities = capabilities_for_spec(inference_spec)
+        inference_capabilities = capabilities_for_spec(spec)
         hooks_in_process = Capability.IN_PROCESS_TORCH in inference_capabilities.atoms
         has_enabled_state = any(control.enabled for control in self.state_controls)
 
@@ -1708,10 +2020,10 @@ class SteeringPipeline:
         ref_output_ids = ref_output_ids.to(device)
         ref_len = ref_output_ids.size(1)
 
-        inference_spec = self._resolve_backend_spec(self.backend)
-        backend = self._backend_for(inference_spec)
+        spec = self._resolve_backend_spec(self.backend)
+        backend = self._backend_for(spec)
         score_params = GenerationParams(extra=forward_kwargs)
-        inference_capabilities = capabilities_for_spec(inference_spec)
+        inference_capabilities = capabilities_for_spec(spec)
         hooks_in_process = Capability.IN_PROCESS_TORCH in inference_capabilities.atoms
         has_enabled_state = any(control.enabled for control in self.state_controls)
 

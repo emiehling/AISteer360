@@ -513,7 +513,10 @@ class TestMergeInterventionSpecs:
 class TestServeConstraintLowering:
 
     def test_constraint_entry_renders_guided_field(self, fake_server):
-        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
+        from aisteer360.algorithms.core.execution import (
+            ConstraintEntry,
+            ConstraintSource,
+        )
 
         backend = VLLMServeBackend(_serve_spec())
         item = GenerationItem(
@@ -528,7 +531,10 @@ class TestServeConstraintLowering:
         assert body["guided_json"] == {"type": "object"}
 
     def test_choice_constraint_renders_guided_choice(self, fake_server):
-        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
+        from aisteer360.algorithms.core.execution import (
+            ConstraintEntry,
+            ConstraintSource,
+        )
 
         backend = VLLMServeBackend(_serve_spec())
         item = GenerationItem(
@@ -543,7 +549,10 @@ class TestServeConstraintLowering:
         assert body["guided_choice"] == ["cat", "dog"]
 
     def test_scoring_with_constraint_entry_refused(self, fake_server):
-        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
+        from aisteer360.algorithms.core.execution import (
+            ConstraintEntry,
+            ConstraintSource,
+        )
 
         backend = VLLMServeBackend(_serve_spec())
         item = ScoringItem(
@@ -558,7 +567,10 @@ class TestServeConstraintLowering:
                 session.score([item], GenerationParams())
 
     def test_two_constraints_per_item_refused(self, fake_server):
-        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
+        from aisteer360.algorithms.core.execution import (
+            ConstraintEntry,
+            ConstraintSource,
+        )
 
         backend = VLLMServeBackend(_serve_spec())
         item = GenerationItem(
@@ -581,8 +593,7 @@ class TestServeConstraintLowering:
 
         control = ConstrainedDecoding(regex="cat|dog", include_in_scoring=False)
         pipeline = SteeringPipeline(
-            controls=[control], lazy_init=True,
-            backend=_serve_spec(), steer_backend="huggingface",
+            controls=[control], lazy_init=True, backend=_serve_spec(),
         )
         pipeline.model = tiny_llama(num_layers=2, hidden=16, heads=2)
         pipeline.tokenizer = wordlevel_tokenizer()

@@ -1,6 +1,7 @@
 """Inference-Time Intervention (ITI) state control."""
 from __future__ import annotations
 
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.state_control._common.selectors import TopKHeadSelector
 from aisteer360.algorithms.state_control._common.sources import _Precomputed
 from aisteer360.algorithms.state_control._common.specs import CoveredLayers, Intervention, TokenScope
@@ -21,7 +22,7 @@ class _HeadSelectionBuild:
 
     Head selection is a fact of the artifact (top-K heads by probe accuracy), so the transform
     is constructed at bind time from the resolved `SteeringVector`. The factory declares its
-    own steer-phase need: a precomputed vector builds model-free, while fitting captures
+    own steer access: a precomputed vector builds model-free, while fitting captures
     pre-`o_proj` per-head activations, which no backend serves remotely.
     """
 
@@ -33,12 +34,12 @@ class _HeadSelectionBuild:
         self._norm_preserving = norm_preserving
 
     @property
-    def steer_needs(self) -> str:
-        return getattr(self._source, "steer_needs", None) or "in_process_torch"
+    def access(self) -> ModelAccess:
+        return getattr(self._source, "access", ModelAccess.MODULE)
 
     @property
-    def steer_hint(self) -> str | None:
-        return getattr(self._source, "steer_hint", None)
+    def artifact_class(self) -> str | None:
+        return getattr(self._source, "artifact_class", None)
 
     def __call__(self, ctx) -> BaseTransform:
         steering_vector = ctx.resolve(self._source)
@@ -72,11 +73,8 @@ class _ProbeMassShiftFit:
     so the fit requires a live model.
     """
 
-    steer_needs = "in_process_torch"
-    steer_hint = (
-        "fitting ITI requires head-level capture, which no backend advertises; "
-        "supply `steering_vector` or steer on huggingface"
-    )
+    access = ModelAccess.MODULE
+    artifact_class = "direction"
 
     def __init__(self, data, train_spec):
         self._data = data

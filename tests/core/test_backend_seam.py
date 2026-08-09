@@ -8,11 +8,14 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.execution import (
+    Backend,
+    BackendCapabilities,
     BackendSpec,
     Capability,
     GenerationParams,
     InterventionKinds,
     InterventionSpec,
+    ModelAccess,
     Requirements,
     SupportFailure,
     UnsupportedPipelineError,
@@ -20,6 +23,7 @@ from aisteer360.algorithms.core.execution import (
     capabilities_for_spec,
     needs,
 )
+from aisteer360.algorithms.core.execution.session_utils import ScopedSession
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.output_control.base import OutputControl
@@ -149,8 +153,6 @@ class TestCapabilityTables:
             Capability.IN_PROCESS_TORCH,
             Capability.HIDDEN_CAPTURE,
             Capability.BEAM_PROPOSALS,
-            Capability.WEIGHT_TRAINING,
-            Capability.MODEL_ADOPTION,
         })
         assert capabilities.capture_kinds is not None
         assert "layer_input" in capabilities.capture_kinds.locations
@@ -230,10 +232,10 @@ class TestRequirementLanguage:
     def test_base_control_default_requirements(self):
         control = _TokenPassthroughControl()
         requirements = control.requirements()
-        assert requirements.steer == ()
         assert requirements.score == ()
         assert len(requirements.generate) == 1
         assert requirements.generate[0].atoms == frozenset({Capability.IN_PROCESS_TORCH})
+        assert control.steer_access() is ModelAccess.FACTS
 
     def test_output_control_score_requirement_follows_include_in_scoring(self):
         class _StepControl(OutputControl):
@@ -245,12 +247,10 @@ class TestRequirementLanguage:
         non_scoring.include_in_scoring = False
         assert non_scoring.requirements().score == ()
 
-    def test_structural_control_steer_requirement(self):
+    def test_structural_control_declares_module_access(self):
         control = _ModelSwappingControl()
-        requirements = control.requirements()
-        assert requirements.steer[0].atoms == frozenset({
-            Capability.IN_PROCESS_TORCH, Capability.WEIGHT_TRAINING,
-        })
+        assert control.steer_access() is ModelAccess.MODULE
+        assert control.requirements().generate[0].atoms == frozenset({Capability.IN_PROCESS_TORCH})
 
     def test_unknown_phase_rejected(self):
         with pytest.raises(ValueError, match="Unknown phase"):
@@ -273,13 +273,15 @@ class TestCheck:
 
     def test_defaults_only_pipeline_supported_on_vllm(self):
         pipeline = SteeringPipeline(lazy_init=True)
-        report = pipeline.check(inference_backend=BackendSpec(kind="vllm", model="m"))
+        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert report.ok
-        assert report.supported("steer", "generate", "score")
+        assert report.supported("generate", "score")
+        assert report.plan.steps == ()
+        assert report.plan.stages is False
 
     def test_enabled_control_unsupported_on_vllm_with_stable_message(self):
         pipeline = SteeringPipeline(controls=[_TokenPassthroughControl()], lazy_init=True)
-        report = pipeline.check(inference_backend=BackendSpec(kind="vllm", model="m"))
+        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert not report.ok
         assert len(report.failures) == 1
         failure = report.failures[0]
@@ -290,19 +292,9 @@ class TestCheck:
             "missing IN_PROCESS_TORCH; run this pipeline on the huggingface backend."
         )
 
-    def test_default_hf_pair_supported(self):
+    def test_default_hf_backend_supported(self):
         pipeline = SteeringPipeline(controls=[_TokenPassthroughControl()], lazy_init=True)
         assert pipeline.check().ok
-
-    def test_structural_control_gates_steer_backend(self):
-        pipeline = SteeringPipeline(controls=[_ModelSwappingControl()], lazy_init=True)
-        report = pipeline.check(
-            steer_backend=BackendSpec(kind="vllm", model="m"),
-            inference_backend="huggingface",
-        )
-        steer_failures = report.failures_for("steer")
-        assert len(steer_failures) == 1
-        assert "WEIGHT_TRAINING" in steer_failures[0].message
 
     def test_steer_raises_before_any_control_runs(self):
         control = _TokenPassthroughControl()
@@ -339,7 +331,12 @@ class TestCheck:
     def test_invalid_backend_value_rejected(self):
         pipeline = SteeringPipeline(lazy_init=True)
         with pytest.raises(TypeError, match="backend must be"):
-            pipeline.check(inference_backend=3.14)
+            pipeline.check(backend=3.14)
+
+    def test_removed_constructor_parameters_rejected(self):
+        for removed in ("steer" + "_backend", "inference" + "_backend"):
+            with pytest.raises(TypeError):
+                SteeringPipeline(lazy_init=True, **{removed: "huggingface"})
 
 
 class TestPastaSpecConstraint:
@@ -375,7 +372,7 @@ class TestPastaSpecConstraint:
 
     def test_vllm_verdict_is_capability_not_constraint(self):
         pipeline = self._pasta_pipeline(None)
-        report = pipeline.check(inference_backend=BackendSpec(kind="vllm", model="m"))
+        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert len(report.failures) == 1
         assert "IN_PROCESS_TORCH" in report.failures[0].message
 
@@ -389,11 +386,12 @@ class TestSteerSessionPlumbing:
         pipeline.steer(**steer_kwargs)
         return pipeline
 
-    def test_controls_receive_session_with_layout(self):
+    def test_controls_receive_scoped_session_over_exclusive(self):
         control = _TokenPassthroughControl()
         self._steered_pipeline([control])
         session = control._steer_kwargs["session"]
-        assert isinstance(session, ExclusiveSession)
+        assert isinstance(session, ScopedSession)
+        assert isinstance(session.inner, ExclusiveSession)
 
     def test_layout_reflects_model(self):
         control = _LayoutReadingControl()
@@ -409,7 +407,7 @@ class TestSteerSessionPlumbing:
         control = _TokenPassthroughControl()
         self._steered_pipeline([control])
         session = control._steer_kwargs["session"]
-        assert session.closed
+        assert session.inner.closed
         with pytest.raises(RuntimeError, match="closed"):
             _ = session.layout
 
@@ -423,3 +421,31 @@ class TestSteerSessionPlumbing:
     def test_intervention_spec_canonical_is_deterministic(self):
         spec = InterventionSpec(ops=({"layers": [1], "transform": {"kind": "additive"}},))
         assert spec.canonical() == spec.canonical()
+
+
+class _MinimalBackend(Backend):
+    """Concrete backend implementing only the two abstract members trivially."""
+
+    def __init__(self, spec: BackendSpec) -> None:
+        self.spec = spec
+
+    @classmethod
+    def capabilities_for_spec(cls, spec: BackendSpec) -> BackendCapabilities:
+        return BackendCapabilities(atoms=frozenset())
+
+    def open_session(self):
+        raise NotImplementedError
+
+
+class TestBackendRelease:
+    """The `Backend.release()` lifecycle default and the serve backend's inheritance of it."""
+
+    def test_default_release_is_a_noop_and_idempotent(self):
+        backend = _MinimalBackend(BackendSpec(kind="huggingface", model="m"))
+        backend.release()
+        backend.release()
+
+    def test_vllm_serve_inherits_the_noop_default(self):
+        from aisteer360.backends.vllm import VLLMServeBackend
+
+        assert VLLMServeBackend.release is Backend.release

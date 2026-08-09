@@ -4,18 +4,21 @@
 
 Support is binary: a control's configuration is either supported on a backend or it is not, and
 unsupported configurations raise before any work happens with a verdict naming the gap and the
-fix. The generate-phase matrix by control:
+fix. Support is evaluated for the generate and score phases only; the steer phase produces no
+verdicts, since the pipeline satisfies every steer-time model-access declaration through its
+steer plan (see the ladder below). The generate-phase matrix by control:
 
 | Control | HF | vLLM (offline / serve) | Via / verdict |
 | --- | --- | --- | --- |
-| `few_shot`, `prewrite`, `cpo`, `gepa` | yes | yes | prompt-only at generate; steer-time rollouts on the steering session |
-| `sft`, `dpo`, `ppo`, `grpo`, `apo`, `mergekit` | yes | serve artifact | steer on HF; `CheckpointArtifact` / `LoRAArtifact` |
+| `few_shot`, `prewrite`, `cpo` (with `prompt_lm`), `gepa` | yes | yes | prompt-only at generate; steer-time rollouts through the session |
+| `cpo` (no `prompt_lm`) | yes | no | the live model is bound as the proposer; the verdict says to set `prompt_lm` |
+| `sft`, `dpo`, `ppo`, `grpo`, `apo`, `mergekit` | yes | serve artifact | staged steer; `CheckpointArtifact` / `LoRAArtifact` |
 | `caa` | yes | yes | `additive` spec; norm-preserving configurations add the `norm_preserving` modifier |
 | `act_add` | yes | broadcast (`T = 1`) only | `additive` carries one `[H]` vector per op; positional (`T > 1`) configurations are hook-only and the verdict says so |
 | `directional_ablation` | yes | `K = 1`, `alpha = 1` | `directional_ablation` spec; graded and subspace ablation are hook-only |
 | `angular_steering` | yes | `intervention_point="layer_output"` | `rotation`; `adaptive=True` adds the `alignment_adaptive` modifier; the default norm-input placement is hook-only |
 | `activation_adapter` | yes | kind-conditional | verdict follows the configured transform, modifier chain, and gate against the negotiated kinds |
-| `iti` | yes | `tensor_parallel_size == 1`, vector-supplied | `head_additive` under its constraint; fitting from data is in-process-only (no head-level capture kind) |
+| `iti` | yes | `tensor_parallel_size == 1` | `head_additive` under its constraint; fitting from data runs on the staged model (no head-level capture kind) |
 | `cast` | yes | no | the projected-cosine condition has no intervention-spec gate kind |
 | `pasta` | yes (eager/sdpa) | no | attention-map writes |
 | `stopping_rules`, `budget_forcing` | yes | yes | sampling params / `min_tokens` + phased splicing |
@@ -31,12 +34,49 @@ concatenation), which would silently unanchor prompt-relative interventions; an 
 control with `include_in_scoring=True` likewise makes the pipeline score-unsupported off-torch,
 and encoder-decoder scoring is in-process-only.
 
+## The model-access ladder
+
+Each control declares its steer step's model access via `steer_access()`, on the cumulative
+`ModelAccess` ladder. The pipeline satisfies every declaration deterministically; `check()`
+returns the resulting steer plan alongside the generate and score verdicts.
+
+| Rung | Grants | HF venue | vLLM offline (plugin) | vLLM serve |
+| --- | --- | --- | --- | --- |
+| `facts` | `session.layout` and a tokenizer | live model | engine session | engine session |
+| `rollouts` | facts plus generation and scoring through the session | live model | engine session | engine session |
+| `capture` | rollouts plus hidden-state capture through the session | live model | engine session (staged when capture is absent or `fit="in_process"`) | staged model |
+| `module` | the model as a live `torch.nn.Module` | live model | staged model | staged model |
+
+On engine backends the staged in-process model is loaded, used, and freed before the engine
+boots; exported artifacts are the handoff, so the pipeline's in-process weights and its
+engine-served weights never coexist. `fit="in_process"` forces every fit onto the stage for
+engine-independent numerics; a calibrated artifact fitted in process while its read venue is an
+engine warns that its thresholds may shift across execution boundaries.
+
+## Lifecycle
+
+Backends are constructed lazily per pipeline and cached by spec. `SteeringPipeline.release_backends()`,
+or using the pipeline as a context manager, releases and evicts every backend the pipeline
+constructed, shutting engine-owning backends down deterministically rather than waiting for garbage
+collection. A released pipeline stays usable: the next operation reconstructs backends against the
+same specs, so a re-booted engine serves subsequent generations. `Benchmark` releases each
+configuration's backends automatically after its trials. The offline engine's release is
+process-global with respect to vLLM distributed state, so it assumes no other live vLLM engine in
+the process.
+
+```python
+with SteeringPipeline(controls=[caa], backend="vllm", lazy_init=True) as pipeline:
+    pipeline.steer()  # fits stage or ride the engine session per the steer plan
+    response = pipeline.generate(text="...", max_new_tokens=64)
+# the engine is shut down on exit
+```
+
 ## Benchmarking
 
-`Benchmark` forwards its `backend` and `steer_backend` arguments to the pipelines it builds and
+`Benchmark` forwards its `backend` and `fit` arguments to the pipelines it builds and
 pre-flights support over every sweep point (via `SteeringPipeline.check()`) before any model or
 engine work, so the compatibility matrix above governs benchmarking too. A sweep point that is
-unsupported on the configured backends either fails the whole run (`on_unsupported="raise"`, the
+unsupported on the configured backend either fails the whole run (`on_unsupported="raise"`, the
 default) or is skipped with a warning (`on_unsupported="skip"`).
 
 ## Running a server

@@ -6,6 +6,12 @@ interacts with backends through these two interfaces. Backend implementations li
 `aisteer360.backends`; this package holds every seam type and imports nothing from
 `aisteer360.backends` at module level.
 """
+from aisteer360.algorithms.core.execution.access import (
+    ModelAccess,
+    PlannedFit,
+    PlannedStep,
+    SteerPlan,
+)
 from aisteer360.algorithms.core.execution.payloads import (
     Artifact,
     ArtifactProvenance,
@@ -96,9 +102,12 @@ __all__ = [
     "InterventionSpec",
     "ItemResult",
     "LoRAArtifact",
+    "ModelAccess",
     "ModelArtifact",
     "ModelFacts",
     "OutputControlEntry",
+    "PlannedFit",
+    "PlannedStep",
     "PreparedPrompt",
     "ProcessorKinds",
     "ProcessorSpec",
@@ -109,6 +118,7 @@ __all__ = [
     "SpecConstraint",
     "StackEntry",
     "StateControlEntry",
+    "SteerPlan",
     "SteeringSession",
     "SupportFailure",
     "SupportReport",

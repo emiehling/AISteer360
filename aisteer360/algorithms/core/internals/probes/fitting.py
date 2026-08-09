@@ -14,6 +14,7 @@ from aisteer360.algorithms.core.internals.encoding import tokenize_texts
 from aisteer360.algorithms.core.internals.fingerprint import (
     artifact_provenance_meta,
     model_fingerprint,
+    session_artifact_identity,
 )
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.internals.probes.probe import POLARITY_MARKER, Probe
@@ -291,7 +292,13 @@ def fit_probe(
             "ActivationStats once per model; see core.internals.stats."
         )
 
-    fingerprint = model_fingerprint(model) if model is not None else None
+    if model is not None:
+        fingerprint = model_fingerprint(model)
+        fitted_model_type = getattr(model.config, "model_type", "unknown")
+        session_meta: dict = {}
+    else:
+        fitted_model_type, session_meta = session_artifact_identity(session)
+        fingerprint = session_meta.get("model_fingerprint")
     if (
         stats is not None
         and fingerprint is not None
@@ -429,11 +436,13 @@ def fit_probe(
         for key in ("config_fingerprint", "chat_template_fingerprint"):
             if key in provenance:
                 meta[key] = provenance[key]
+    elif "model_ref" in session_meta:
+        meta["model_ref"] = session_meta["model_ref"]
     if meta["stats_used"]:
         meta["stats_fingerprint"] = stats.fingerprint()
 
     return Probe(
-        model_type=getattr(model.config, "model_type", "unknown") if model is not None else "unknown",
+        model_type=fitted_model_type,
         location=spec.location,
         pooling=spec.pooling,
         layer_ids=[best["layer_id"]],

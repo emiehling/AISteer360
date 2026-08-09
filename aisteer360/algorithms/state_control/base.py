@@ -40,6 +40,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import Requirements
 
 PreHook = Callable[[nn.Module, tuple], tuple | torch.Tensor]
@@ -289,38 +290,17 @@ class InterventionControl(StateControl):
         source = self.interventions or self._template
         return combine_kinds(intervention.wire_kinds() for intervention in source)
 
-    def _steer_requirement(self) -> tuple:
-        """The steer-phase alternatives, derived from the template's unbound elements.
+    def _unbound_sources(self):
+        """Yield each unbound template element's source (or undeclared factory slot).
 
-        A fully bound template requires nothing at steer, since pure layer selectors resolve
-        from structural facts available on any session. Otherwise the strongest declared
-        source need wins: any source declaring `steer_needs = "in_process_torch"` (or an
-        undeclared source, or a factory-built transform) requires the in-process backend;
-        templates whose unbound sources all declare `steer_needs = "hidden_capture"` require
-        `HIDDEN_CAPTURE`.
+        Yields the transform sources of unbound transform elements, factory transform slots
+        themselves (which declare their own `access` or default to the live model), and
+        unresolved gate/condition sources, in template order.
         """
-        from aisteer360.algorithms.core.execution.contracts import Capability
-        from aisteer360.algorithms.core.execution.contracts import needs
         from aisteer360.algorithms.state_control._common.transforms.base import (
             BaseTransform,
             unwrap_modifiers,
         )
-
-        needs_torch = False
-        needs_capture = False
-        hint = None
-
-        def note(source) -> None:
-            nonlocal needs_torch, needs_capture, hint
-            declared = getattr(source, "steer_needs", None)
-            if declared == "none":  # resolution is model-free (e.g. a precomputed vector)
-                return
-            if declared == "hidden_capture":
-                needs_capture = True
-            else:
-                needs_torch = True
-            if hint is None:
-                hint = getattr(source, "steer_hint", None)
 
         for intervention in self._template:
             transform = intervention.transform
@@ -328,29 +308,41 @@ class InterventionControl(StateControl):
                 core, wrappers = unwrap_modifiers(transform)
                 for element in (core, *wrappers):
                     if not element.is_bound and element.source is not None:
-                        note(element.source)
-            elif getattr(transform, "steer_needs", None) is not None:
-                note(transform)  # a factory declaring its own steer-phase need
-            else:  # an undeclared factory slot builds its transform on the live model
-                needs_torch = True
-                if hint is None:
-                    hint = "supply a transform with a concrete artifact, or steer on the huggingface backend"
+                        yield element.source
+            else:
+                yield transform
             gate = intervention.gate
             if not _is_concrete_gate(gate):
-                note(gate)
+                yield gate
 
-        if needs_torch:
-            return needs(Capability.IN_PROCESS_TORCH, hint=hint)
-        if needs_capture:
-            return needs(Capability.HIDDEN_CAPTURE, hint=hint)
-        return ()
+    def steer_access(self) -> ModelAccess:
+        """The model access the template's steer step requires, folded over its sources.
+
+        A fully bound template requires `ModelAccess.FACTS`, since pure layer selectors
+        resolve from structural facts available on any session. Otherwise the strongest
+        declared source access wins; a source or factory slot without an `access` declaration
+        builds against the live model, so it counts as `ModelAccess.MODULE`.
+        """
+        access = ModelAccess.FACTS
+        for source in self._unbound_sources():
+            access = max(access, getattr(source, "access", ModelAccess.MODULE))
+        return access
+
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """The template's fit artifacts, i.e. every unbound source carrying an
+        `artifact_class`, as `(artifact, artifact_class)` pairs in template order."""
+        fits: list[tuple[str, str]] = []
+        for source in self._unbound_sources():
+            artifact_class = getattr(source, "artifact_class", None)
+            if artifact_class is not None:
+                fits.append((type(source).__name__, artifact_class))
+        return tuple(fits)
 
     def requirements(self) -> Requirements:
         """Backend requirements derived from the declared interventions, per phase.
 
         Generate offers the intervention-spec alternative whenever every component of every
         intervention has a wire form; hook-only configurations require the in-process backend.
-        Steer requires model-side work exactly when the template carries unbound sources.
         Score is in-process: remote prompt-logprob scoring anchors token scopes at the
         request's prompt end (the end of the prompt-plus-reference concatenation), which would
         silently unanchor prompt-relative interventions.
@@ -368,15 +360,12 @@ class InterventionControl(StateControl):
                 "huggingface backend"
             ),
         )
-        steer = self._steer_requirement()
         if kinds is None:
             return Requirements(
-                steer=steer,
                 generate=needs(Capability.IN_PROCESS_TORCH, hint=self.hook_only_hint),
                 score=score,
             )
         return Requirements(
-            steer=steer,
             generate=any_of(
                 in_process,
                 needs(

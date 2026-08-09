@@ -1,7 +1,7 @@
-"""Phase-derived requirements for intervention controls.
+"""Phase-derived requirements and plans for intervention controls.
 
-Pins the three phase decisions of the derived `requirements()`: steer requires model-side work
-exactly when the template carries unbound sources, generate offers the intervention-spec
+Pins the derived declarations: the steer plan stages a fit-carrying template on a capture-less
+backend and keeps a precomputed template on the session, generate offers the intervention-spec
 alternative exactly when every component has a wire form, and score is in-process (remote
 prompt-logprob scoring anchors token scopes at the request's prompt end). Also pins the eager
 steer-time lowering failure naming the intervention and reason.
@@ -9,11 +9,10 @@ steer-time lowering failure naming the intervention and reason.
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution import BackendSpec, Capability
+from aisteer360.algorithms.core.execution import BackendSpec, Capability, ModelAccess, ModelFacts
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.caa.control import CAA
-from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 16
 LAYERS = 4
@@ -39,30 +38,37 @@ def _fit_caa() -> CAA:
 
 class TestPhaseVerdicts:
 
-    def test_steer_phase_rejects_fitting_on_a_remote_pair(self):
-        """A template carrying a fit source cannot steer against a capture-less remote pair."""
+    def test_fit_template_stages_on_a_capture_less_backend(self):
+        """A template carrying a fit source plans a staged fit where capture is absent."""
         pipeline = SteeringPipeline(controls=[_fit_caa()], lazy_init=True)
-        report = pipeline.check(steer_backend=SERVE_SPEC, inference_backend=SERVE_SPEC)
-        failures = report.failures_for("steer")
-        assert len(failures) == 1
-        assert failures[0].control == "CAA"
-        assert "steering_vector" in failures[0].message
+        report = pipeline.check(backend=SERVE_SPEC)
+        (step,) = report.plan.steps
+        assert step.control == "CAA"
+        assert step.access is ModelAccess.CAPTURE
+        assert step.venue == "stage"
+        assert report.plan.stages is True
+        (fit,) = report.plan.fits
+        assert fit.artifact == "ContrastiveFit"
+        assert fit.venue == "stage"
 
-    def test_precomputed_template_steers_against_a_remote_pair(self):
-        """A fully concrete configuration requires nothing at steer."""
+    def test_precomputed_template_steers_through_the_session(self):
+        """A fully concrete configuration needs only structural facts at steer."""
         pipeline = SteeringPipeline(
             controls=[CAA(steering_vector=_vector(), layer_id=1)], lazy_init=True,
         )
-        report = pipeline.check(steer_backend=SERVE_SPEC, inference_backend=SERVE_SPEC)
-        assert report.supported("steer")
+        report = pipeline.check(backend=SERVE_SPEC)
         assert report.supported("generate")
+        (step,) = report.plan.steps
+        assert step.access is ModelAccess.FACTS
+        assert step.venue == "session"
+        assert report.plan.stages is False
 
     def test_score_phase_rejects_spec_backend_by_name(self):
         """Scoring an intervention control on a spec backend fails at check, naming the control."""
         pipeline = SteeringPipeline(
             controls=[CAA(steering_vector=_vector(), layer_id=1)], lazy_init=True,
         )
-        report = pipeline.check(steer_backend=SERVE_SPEC, inference_backend=SERVE_SPEC)
+        report = pipeline.check(backend=SERVE_SPEC)
         failures = report.failures_for("score")
         assert len(failures) == 1
         assert failures[0].control == "CAA"
@@ -82,6 +88,23 @@ class TestPhaseVerdicts:
         assert not offers_specs(positional)
 
 
+class _FakeServeSession:
+    """Session double serving only structural facts, for engine-session steers."""
+
+    def __init__(self):
+        self.closed = False
+
+    @property
+    def layout(self) -> ModelFacts:
+        return ModelFacts(
+            num_layers=LAYERS, hidden_size=HIDDEN, num_attention_heads=2, head_dim=HIDDEN // 2,
+            dtype="float32", model_fingerprint="0" * 16, model_type="llama", model_ref="tiny",
+        )
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class TestEagerLoweringFailure:
 
     def test_lowering_failure_names_the_intervention_and_reason(self):
@@ -92,15 +115,21 @@ class TestEagerLoweringFailure:
         class _LyingSource:
             """Declares a broadcast fit but resolves a positional vector."""
 
-            steer_needs = "none"
+            access = ModelAccess.FACTS
             produces_positional = False
 
             def resolve(self, model, tokenizer, *, session=None):
                 return _vector(k=3)
 
-        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
-        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
+        from aisteer360.algorithms.state_control._common.specs import (
+            Intervention,
+            TokenScope,
+        )
+        from aisteer360.algorithms.state_control._common.transforms import (
+            AdditiveTransform,
+        )
         from aisteer360.algorithms.state_control.base import InterventionControl
+        from tests.utils.tiny_models import wordlevel_tokenizer
 
         class _DeclaredBroadcast(InterventionControl):
             Args = None
@@ -115,19 +144,22 @@ class TestEagerLoweringFailure:
 
         control = _DeclaredBroadcast()
         pipeline = SteeringPipeline(controls=[control], backend=SERVE_SPEC, lazy_init=True)
-        pipeline.steer_backend = BackendSpec(kind="huggingface")
-        pipeline.model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=2)
         pipeline.tokenizer = wordlevel_tokenizer()
 
         # check() consults construction-time facts, so the declared kinds pass
-        assert pipeline.check(
-            steer_backend=BackendSpec(kind="huggingface"), inference_backend=SERVE_SPEC,
-        ).supported("generate")
+        assert pipeline.check(backend=SERVE_SPEC).supported("generate")
+        assert pipeline.check(backend=SERVE_SPEC).plan.steps[0].venue == "session"
 
         class _NullStager:
             _discovery = None
 
+            def open_session(self):
+                return _FakeServeSession()
+
             def stage_artifacts(self, payloads):
+                return None
+
+            def release(self):
                 return None
 
         pipeline._backends[SERVE_SPEC] = _NullStager()

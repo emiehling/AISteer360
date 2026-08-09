@@ -4,6 +4,7 @@ from abc import ABC
 from dataclasses import fields
 
 from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import Capability
 from aisteer360.algorithms.core.execution.contracts import Requirements, needs
 
@@ -59,8 +60,8 @@ class BaseControl(ABC):
     def requirements(self) -> Requirements:
         """Backend requirements computed from this instance's configuration, per phase.
 
-        The default requires `Capability.IN_PROCESS_TORCH` at generate and nothing at steer or
-        score, which only the Hugging Face backend satisfies. A control with portable mechanisms
+        The default requires `Capability.IN_PROCESS_TORCH` at generate and nothing at score,
+        which only the Hugging Face backend satisfies. A control with portable mechanisms
         overrides this to state weaker or alternative requirements. Configuration determines the
         result, so two configurations of one class may differ. Only enabled controls are
         consulted during support evaluation.
@@ -69,6 +70,34 @@ class BaseControl(ABC):
             The control's phase-keyed requirements.
         """
         return Requirements(generate=needs(Capability.IN_PROCESS_TORCH))
+
+    def steer_access(self) -> ModelAccess:
+        """The model access this instance's steer step requires, on the `ModelAccess` ladder.
+
+        The default is `ModelAccess.FACTS` (layout and tokenizer only). A control whose steer
+        step generates or scores through the session declares `ROLLOUTS`, one that captures
+        hidden states declares `CAPTURE`, and one that touches the model as a live
+        `torch.nn.Module` declares `MODULE`. Configuration determines the result. The pipeline
+        hands `steer()` a session scoped to the declared rung, and the live model only at
+        `MODULE`. A control may retain the pipeline model beyond `steer()` only if its
+        generate phase requires `Capability.IN_PROCESS_TORCH`.
+
+        Returns:
+            The declared access rung.
+        """
+        return ModelAccess.FACTS
+
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """The fit artifacts this instance's steer step will produce, for the steer plan.
+
+        Each entry is `(artifact, artifact_class)`, where `artifact` is the fit source or
+        recipe class name and `artifact_class` is `"direction"` or `"calibrated"`. The default
+        is an empty tuple (no fits).
+
+        Returns:
+            The declared fit artifacts, in declaration order.
+        """
+        return ()
 
     def clone_for_call(self, seed: int | None = None):
         """A configuration-preserving shallow clone for one generation call.

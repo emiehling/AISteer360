@@ -14,8 +14,8 @@ from typing import Any
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.execution.contracts import Capability
-from aisteer360.algorithms.core.execution.contracts import Requirements, needs
+from aisteer360.algorithms.core.execution.access import ModelAccess
+from aisteer360.algorithms.core.execution.session_utils import SessionLM
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.input_control._common.formatters.system_prompt import (
     SystemPromptFormatter,
@@ -85,24 +85,26 @@ class PRewrite(InputControl):
     tokenizer: Any = None
     _formatter: SystemPromptFormatter | None = None
 
-    def requirements(self) -> Requirements:
-        """The steer phase reads the live pipeline model for rollouts and scoring, so it
-        requires `Capability.IN_PROCESS_TORCH`; the generate phase is prompt-only."""
-        return Requirements(steer=needs(Capability.IN_PROCESS_TORCH))
+    def steer_access(self) -> ModelAccess:
+        """`ModelAccess.ROLLOUTS`; rewriting and dev-set scoring generate through the
+        session, and adaptation is a formatter."""
+        return ModelAccess.ROLLOUTS
 
     def steer(
         self,
         model=None,
         tokenizer=None,
+        session=None,
         **kwargs,
     ) -> None:
         self.tokenizer = tokenizer
 
-        rewriter_lm, rewriter_tok = self._resolve_rewriter(model, tokenizer)
+        task_lm = SessionLM(session) if session is not None else model
+        rewriter_lm, rewriter_tok = self._resolve_rewriter(task_lm, tokenizer)
         meta_prompt = self.meta_prompt or meta_prompts.DEFAULT
 
         if self.train_rewriter:
-            reward_fn = self._build_reward_fn(task_lm=model, task_tok=tokenizer)
+            reward_fn = self._build_reward_fn(task_lm=task_lm, task_tok=tokenizer)
             rewriter_lm = self._grpo_train_rewriter(rewriter_lm, rewriter_tok, meta_prompt, reward_fn)
 
         proposer = LLMMetaPromptProposer(
@@ -125,7 +127,7 @@ class PRewrite(InputControl):
                 best = self.initial_instruction
             else:
                 scorer = TaskEvaluationScorer(
-                    task_lm=model,
+                    task_lm=task_lm,
                     tokenizer=tokenizer,
                     dev_set=self.dev_set,
                     metric=self.metric,
@@ -147,14 +149,15 @@ class PRewrite(InputControl):
         self.memory = TextMemory(slots={"instruction": best})
         self._formatter = SystemPromptFormatter()
 
-    def _resolve_rewriter(self, model, tokenizer) -> tuple[Any, Any]:
+    def _resolve_rewriter(self, task_lm, tokenizer) -> tuple[Any, Any]:
         """Pick the rewriter LLM.
 
         Resolution order:
 
           1. Pre-loaded `rewriter_model` (+ `rewriter_tokenizer`) if supplied.
           2. Load from `rewriter_model_name_or_path` if supplied.
-          3. Default: reuse the task model (forbidden under `train_rewriter=True`; rejected at args time).
+          3. Default: reuse the task model through the session (forbidden under
+             `train_rewriter=True`; rejected at args time).
         """
         if self.rewriter_model is not None:
             rewriter_tok = self.rewriter_tokenizer
@@ -170,7 +173,7 @@ class PRewrite(InputControl):
                 rewriter_tok = AutoTokenizer.from_pretrained(source, trust_remote_code=self.trust_remote_code)
             return self.rewriter_model, rewriter_tok
         if self.rewriter_model_name_or_path is None:
-            return model, tokenizer
+            return task_lm, tokenizer
         rewriter_lm = AutoModelForCausalLM.from_pretrained(
             self.rewriter_model_name_or_path,
             device_map="auto",
@@ -188,8 +191,8 @@ class PRewrite(InputControl):
 
         Uses a user-supplied `reward_fn` if present. Otherwise builds a `TaskEvaluationScorer` that
         applies each rewrite with the frozen task model over `dev_set` and aggregates `metric` to a
-        scalar. The reward's `task_lm` is the task model passed to `steer()` and stays frozen; only the
-        rewriter is trained.
+        scalar. The reward's `task_lm` generates through the steering session and stays frozen; only
+        the rewriter is trained.
         """
         if self.reward_fn is not None:
             return self.reward_fn

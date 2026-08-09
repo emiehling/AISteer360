@@ -77,7 +77,7 @@ def test_angular_single_opener_and_offset_advance(monkeypatch):
 
     # four hooked norm modules (2 active layers x 2 norms), exactly one built as pass opener
     input_ids = torch.arange(3, 7, dtype=torch.long).unsqueeze(0)  # prompt_len 4
-    hooks = control.get_hooks(input_ids, None)
+    hooks = control.get_hooks(input_ids, None, model=pipeline.model)
     assert len(hooks["pre"]) == 4
     assert capture.last._opener_built is True  # exactly one opener (two would have raised)
 
@@ -97,7 +97,7 @@ def test_iti_multilayer_single_opener_and_offset_advance(monkeypatch):
     capture = capture_built_runtimes(monkeypatch)
 
     input_ids = torch.arange(3, 7, dtype=torch.long).unsqueeze(0)  # prompt_len 4
-    hooks = control.get_hooks(input_ids, None)
+    hooks = control.get_hooks(input_ids, None, model=pipeline.model)
     assert len(hooks["pre"]) == 2  # layers 1 and 2
     assert capture.last._opener_built is True
 

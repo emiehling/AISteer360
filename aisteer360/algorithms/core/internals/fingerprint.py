@@ -46,6 +46,35 @@ def model_fingerprint(model: PreTrainedModel) -> str:
     return digest.hexdigest()[:16]
 
 
+def session_artifact_identity(session) -> tuple[str, dict]:
+    """`(model_type, meta)` recorded for a session-fitted artifact, from the session layout.
+
+    The meta carries the layout's `model_fingerprint` and `model_ref` when present, so
+    identity checks against the venue that will read the artifact stay possible without a
+    live model. Returns `("unknown", {})` when no session layout is available.
+
+    Args:
+        session: The `SteeringSession` the artifact was fitted through, or None.
+
+    Returns:
+        The model type and the provenance mapping.
+    """
+    layout = None
+    if session is not None:
+        try:
+            layout = session.layout
+        except Exception:
+            layout = None
+    if layout is None:
+        return "unknown", {}
+    meta: dict = {}
+    if layout.model_fingerprint:
+        meta["model_fingerprint"] = layout.model_fingerprint
+    if layout.model_ref:
+        meta["model_ref"] = layout.model_ref
+    return layout.model_type or "unknown", meta
+
+
 def artifact_provenance_meta(model, tokenizer=None) -> dict:
     """Provenance fingerprints for a fitted steering artifact.
 

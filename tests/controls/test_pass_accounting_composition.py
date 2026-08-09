@@ -13,6 +13,7 @@ import warnings
 import pytest
 import torch
 
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.output_control._common.candidate_forward import CandidateForward
 from aisteer360.algorithms.output_control._common.logit_sources import PromptVariantSource
@@ -109,6 +110,9 @@ class _SameModelScoringControl(OutputControl):
 
     Args = None
     same_model_forwards = True
+
+    def steer_access(self) -> ModelAccess:
+        return ModelAccess.MODULE
 
     def steer(self, model, tokenizer=None, **kwargs):
         self.model = model

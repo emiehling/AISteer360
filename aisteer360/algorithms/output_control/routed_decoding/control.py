@@ -7,6 +7,7 @@ from dataclasses import replace
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import Capability, CaptureKinds
 from aisteer360.algorithms.core.execution.contracts import Requirements, any_of, needs
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
@@ -122,6 +123,20 @@ class RoutedDecoding(PhasedDriver):
             ),
         )
 
+    def steer_access(self) -> ModelAccess:
+        """`ModelAccess.CAPTURE` when `probes` is a `ProbeSetFit` (the fit extracts hidden
+        states), `ModelAccess.FACTS` for a fitted `ProbeSet` (identity checks read the session
+        layout)."""
+        if isinstance(self.probes, ProbeSetFit):
+            return ModelAccess.CAPTURE
+        return ModelAccess.FACTS
+
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """One `("ProbeSetFit", "calibrated")` entry when the probes arrive as a fit recipe."""
+        if isinstance(self.probes, ProbeSetFit):
+            return (("ProbeSetFit", "calibrated"),)
+        return ()
+
     def steer(
         self,
         model: PreTrainedModel | None = None,
@@ -129,51 +144,86 @@ class RoutedDecoding(PhasedDriver):
         session=None,
         **__,
     ) -> PreTrainedModel | None:
-        """Attach the tokenizer, resolve the probes on the pipeline's model, and validate.
+        """Attach the tokenizer, resolve the probes, and validate their identity.
 
-        A `ProbeSetFit` is fitted here, on the model the pipeline provides (its `StatsSpec`,
-        when present, is estimated on that model first). A fitted `ProbeSet` is checked
-        against the model instead: any probe whose recorded `model_fingerprint` differs
-        raises unless `allow_model_mismatch=True`, and probes with no recorded fingerprint
-        are exempt.
+        A `ProbeSetFit` is fitted here, on the model or session the pipeline provides (its
+        `StatsSpec`, when present, is estimated first). A fitted `ProbeSet` is checked
+        instead, venue-matched: with a live model, any probe whose recorded
+        `model_fingerprint` differs raises unless `allow_model_mismatch=True` (probes with no
+        recorded fingerprint are exempt); without one, the recorded `model_ref` and
+        `model_type` are compared against the session layout's, with unrecorded values
+        exempt.
 
         Args:
-            model: The pipeline's model.
+            model: The pipeline's model, or None on backends without a live model.
             tokenizer: Tokenizer used for splicing and padding. If None, attempts to retrieve
                 from model attributes.
+            session: `SteeringSession` scoped to this control, provided by the pipeline.
 
         Returns:
             The input model, unchanged.
 
         Raises:
-            ValueError: If a fitted set's recorded fingerprints differ from the model's, the
-                set's `model_type` does not match the model, or a rule references a probe name
-                the set does not define.
+            ValueError: If a fitted set's recorded identity differs from the venue's, or a
+                rule references a probe name the set does not define.
         """
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
 
+        layout = None
+        if model is None and session is not None:
+            layout = session.layout
+
         if isinstance(self.probes, ProbeSetFit):
             self.probes = self.probes.fit(model, self.tokenizer, session=session)
-        elif model is not None and not self.allow_model_mismatch:
-            live_fingerprint = model_fingerprint(model)
-            mismatched = [
-                name for name, probe in self.probes.probes.items()
-                if probe.meta.get("model_fingerprint") not in (None, live_fingerprint)
-            ]
-            if mismatched:
-                raise ValueError(
-                    "ProbeSet was fitted on a different model than this pipeline produced. "
-                    "Pass a ProbeSetFit for steer-time fitting on the pipeline's final model, "
-                    "or set allow_model_mismatch=True."
-                )
+        elif not self.allow_model_mismatch:
+            live_fingerprint = None
+            if model is not None:
+                live_fingerprint = model_fingerprint(model)
+            elif layout is not None and getattr(session, "in_process", False):
+                live_fingerprint = layout.model_fingerprint
+            if live_fingerprint is not None:
+                mismatched = [
+                    name for name, probe in self.probes.probes.items()
+                    if probe.meta.get("model_fingerprint") not in (None, live_fingerprint)
+                ]
+                if mismatched:
+                    raise ValueError(
+                        "ProbeSet was fitted on a different model than this pipeline produced. "
+                        "Pass a ProbeSetFit for steer-time fitting on the pipeline's final model, "
+                        "or set allow_model_mismatch=True."
+                    )
+            elif layout is not None and layout.model_ref is not None:
+                mismatched = [
+                    name for name, probe in self.probes.probes.items()
+                    if probe.meta.get("model_ref") not in (None, layout.model_ref)
+                ]
+                if mismatched:
+                    raise ValueError(
+                        "ProbeSet records a model reference that differs from the one this "
+                        f"backend serves ({layout.model_ref!r}). Pass a ProbeSetFit for "
+                        "steer-time fitting on the pipeline's final model, or set "
+                        "allow_model_mismatch=True."
+                    )
 
-        if model is not None:
-            live_model_type = getattr(model.config, "model_type", "unknown")
+        if model is not None or (layout is not None and getattr(session, "in_process", False)):
+            live_model_type = (
+                getattr(model.config, "model_type", "unknown") if model is not None
+                else (layout.model_type or "unknown")
+            )
             if self.probes.model_type != live_model_type:
                 raise ValueError(
                     f"ProbeSet was fitted on model_type {self.probes.model_type!r} but the "
                     f"pipeline's model is {live_model_type!r}."
                 )
+        elif (
+            layout is not None
+            and layout.model_type is not None
+            and self.probes.model_type not in ("unknown", layout.model_type)
+        ):
+            raise ValueError(
+                f"ProbeSet was fitted on model_type {self.probes.model_type!r} but this "
+                f"backend serves {layout.model_type!r}."
+            )
 
         self.rules.validate_names(set(self.probes.names))
         return model

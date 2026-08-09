@@ -165,19 +165,21 @@ A benchmark can also optionally accept
 - `seed`: benchmark-level base seed; when set, one seed is derived per (config, trial), threaded into `gen_kwargs` and
   into use-case-side RNG, and recorded on each run dict, so a resumed trial reproduces the same sampling on the same
   hardware, dtype, and torch/vLLM versions.
-- `backend` / `steer_backend`: the inference and steering backends forwarded to each pipeline, as a `BackendSpec` or a
-  known kind name (`"huggingface"`, `"vllm"`, `"vllm-serve"`); both default to the in-process Hugging Face backend.
+- `backend`: the backend forwarded to each pipeline, as a `BackendSpec` or a known kind name (`"huggingface"`,
+  `"vllm"`, `"vllm-serve"`); defaults to the in-process Hugging Face backend.
+- `fit`: the fit venue policy forwarded to each pipeline (`"auto"` or `"in_process"`); part of checkpoint identity.
 - `on_unsupported`: `"raise"` (default) fails the run with one aggregate error if any sweep point is unsupported on the
-  configured backends, checked before any model or engine work; `"skip"` runs the supported points and warns once per
+  configured backend, checked before any model or engine work; `"skip"` runs the supported points and warns once per
   skipped point.
 - `checkpoint_every`: `"trial"` (default) writes the checkpoint after every trial; `"config"` writes once per
   configuration.
 
-When `save_dir` is set, the run is checkpointed to a versioned envelope and resume is trial-granular: a subsequent
+When `save_dir` is set, the run is checkpointed to an envelope and resume is trial-granular: a subsequent
 call with the same `save_dir` completes only the trials still missing from each configuration (and raising
-`num_trials` runs only the delta). Resume accepts only a current-format checkpoint whose identity metadata matches the
-current configuration; a checkpoint produced under a different configuration is refused with an error naming the
-differing field, and any other file at the checkpoint path is ignored with a warning and overwritten on the next save.
+`num_trials` runs only the delta). Resume accepts only a checkpoint whose identity metadata matches the
+current configuration; a well-shaped checkpoint produced under a different configuration or an earlier format is
+refused with an error naming the differing field, and anything unreadable or wrong-shaped at the checkpoint path is
+ignored with a warning and overwritten on the next save.
 
 The benchmark for `CommonsenseMCQA` can now be constructed as follows:
 ```python

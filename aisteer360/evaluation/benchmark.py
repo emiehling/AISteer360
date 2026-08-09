@@ -14,11 +14,10 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import aisteer360
-from aisteer360.algorithms.core.execution.spec import BackendSpec, KNOWN_BACKEND_KINDS
+from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.core.specs import ControlSpec
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.utils.tokenization import ensure_pad_token
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.evaluation.use_cases.base import UseCase
 from aisteer360.evaluation.utils.data_utils import to_jsonable
@@ -30,13 +29,14 @@ from aisteer360.evaluation.utils.identity import (
     derive_trial_seed,
     qualname,
 )
+from aisteer360.utils.tokenization import ensure_pad_token
 
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_FILENAME = "checkpoint.json"
-_CHECKPOINT_VERSION = 1
+_CHECKPOINT_FORMAT = 3
 _IDENTITY_META_FIELDS = (
-    "model", "backend", "steer_backend", "use_case", "evaluation_data_digest", "gen_kwargs_digest",
+    "format", "model", "backend", "fit", "use_case", "evaluation_data_digest", "gen_kwargs_digest",
 )
 
 
@@ -65,19 +65,21 @@ class Benchmark:
     an uninterrupted trial would have. Reproduction holds on the same hardware, dtype, and torch/vLLM versions; it is
     a reproducibility handle, not a cross-version guarantee.
 
-    When ``save_dir`` is provided, results are checkpointed to a versioned envelope after each trial (or after each
-    config when ``checkpoint_every="config"``), so a run can be interrupted and resumed. Resume is trial-granular, so a
-    config completes only its missing trials and raising ``num_trials`` runs only the delta. Only a current-format
-    envelope whose identity metadata matches the current configuration resumes; a valid envelope produced under a
-    different configuration is refused with an error naming the differing field, while anything else at the checkpoint
-    path (unreadable, wrong-shape, or an earlier bare-dict file) is ignored with one warning and overwritten by the
+    When ``save_dir`` is provided, results are checkpointed to an envelope after each trial (or after each config
+    when ``checkpoint_every="config"``), so a run can be interrupted and resumed. Resume is trial-granular, so a
+    config completes only its missing trials and raising ``num_trials`` runs only the delta. Only an envelope whose
+    identity metadata (``format`` first) matches the current configuration resumes; a well-shaped envelope produced
+    under a different configuration or an earlier format is refused with an error naming the differing field, while
+    anything unreadable or wrong-shaped at the checkpoint path is ignored with one warning and overwritten by the
     next save.
 
-    Backends are forwarded to the pipelines this benchmark builds. ``device_map`` and ``hf_model_kwargs`` govern
-    in-process (Hugging Face) arms only; the shared-preloaded-model fast path and the fingerprint tripwire are
-    Hugging Face features. Everything else about placement belongs on the ``BackendSpec``. Before any model or engine
-    work, ``_preflight`` evaluates every sweep point's ``check()`` and either raises one aggregate error
-    (``on_unsupported="raise"``) or skips the unsupported points with a warning (``on_unsupported="skip"``).
+    The backend is forwarded to the pipelines this benchmark builds. ``device_map`` and ``hf_model_kwargs`` govern
+    in-process model loading, including each engine arm's staged steer model; the shared-preloaded-model fast path
+    and the fingerprint tripwire are Hugging Face features. Everything else about placement belongs on the
+    ``BackendSpec``. Before any model or engine work, ``_preflight`` evaluates every sweep point's ``check()`` and
+    either raises one aggregate error (``on_unsupported="raise"``) or skips the unsupported points with a warning
+    (``on_unsupported="skip"``). On engine arms, each configuration whose steer plan stages loads and frees its own
+    staged model; benchmark-level stage reuse is not performed.
 
     Non-structural Hugging Face pipelines share one preloaded base model; structural pipelines load their own model
     from ``base_model_name_or_path``. The shared base is expected not to be mutated by a non-structural configuration.
@@ -94,18 +96,19 @@ class Benchmark:
         runtime_overrides: Optional overrides passed through to `UseCase.generate` for runtime control parameters.
             Overrides are routed by control class name over the pipeline's supplied controls, so two instances of
             the same class in one pipeline share a single override entry.
-        hf_model_kwargs: Extra kwargs forwarded to `AutoModelForCausalLM.from_pretrained` on in-process arms.
+        hf_model_kwargs: Extra kwargs forwarded to `AutoModelForCausalLM.from_pretrained` on in-process loads.
         gen_kwargs: Generation kwargs forwarded to :meth:`UseCase.generate`.
         device_map: Device placement strategy used when loading in-process (Hugging Face) models.
         num_trials: Number of evaluation trials to run per concrete pipeline configuration. Not part of config
             identity; it is a completion target recorded in checkpoint metadata.
         batch_size: Generation batch size forwarded as a keyword into ``UseCase.generate``.
-        save_dir: Optional directory for incremental checkpoints. When set, runs are written to a versioned
+        save_dir: Optional directory for incremental checkpoints. When set, runs are written to a
             ``checkpoint.json`` envelope and the use case's ``export()`` is called after each pipeline finishes.
         seed: Optional benchmark-level base seed; when set, a per-(config, trial) seed is derived from it.
-        backend: Inference backend forwarded to each pipeline (a `BackendSpec` or a known kind name); None uses the
+        backend: Backend forwarded to each pipeline (a `BackendSpec` or a known kind name); None uses the
             in-process Hugging Face backend.
-        steer_backend: Steering backend forwarded to each pipeline; None defaults to ``backend``.
+        fit: Fit venue policy forwarded to each pipeline (`"auto"` or `"in_process"`). Part of checkpoint
+            identity, since the fit venue affects artifacts and therefore results.
         on_unsupported: ``"raise"`` (default) fails the run with one aggregate error on any unsupported sweep point;
             ``"skip"`` runs the supported points and warns once per skipped point.
         checkpoint_every: ``"trial"`` (default) writes the checkpoint after every trial; ``"config"`` writes once per
@@ -126,7 +129,7 @@ class Benchmark:
         save_dir: str | Path | None = None,
         seed: int | None = None,
         backend: "BackendSpec | str | None" = None,
-        steer_backend: "BackendSpec | str | None" = None,
+        fit: Literal["auto", "in_process"] = "auto",
         on_unsupported: Literal["raise", "skip"] = "raise",
         checkpoint_every: Literal["trial", "config"] = "trial",
     ) -> None:
@@ -146,11 +149,12 @@ class Benchmark:
         if self.batch_size < 1:
             raise ValueError("batch_size must be >= 1.")
 
-        for arg_name, value in (("backend", backend), ("steer_backend", steer_backend)):
-            if value is not None and not isinstance(value, BackendSpec) and value not in KNOWN_BACKEND_KINDS:
-                raise TypeError(
-                    f"{arg_name} must be a BackendSpec or one of {', '.join(KNOWN_BACKEND_KINDS)}; got {value!r}."
-                )
+        if backend is not None and not isinstance(backend, BackendSpec) and backend not in KNOWN_BACKEND_KINDS:
+            raise TypeError(
+                f"backend must be a BackendSpec or one of {', '.join(KNOWN_BACKEND_KINDS)}; got {backend!r}."
+            )
+        if fit not in ("auto", "in_process"):
+            raise ValueError(f"fit must be 'auto' or 'in_process'; got {fit!r}.")
         if on_unsupported not in ("raise", "skip"):
             raise ValueError(f"on_unsupported must be 'raise' or 'skip'; got {on_unsupported!r}.")
         if checkpoint_every not in ("trial", "config"):
@@ -168,10 +172,12 @@ class Benchmark:
         self.save_dir = Path(save_dir) if save_dir is not None else None
         self.seed = seed
         self.backend = backend
-        self.steer_backend = steer_backend
+        self.fit = fit
         self.on_unsupported = on_unsupported
         self.checkpoint_every = checkpoint_every
-        self._inference_kind = backend.kind if isinstance(backend, BackendSpec) else (backend or "huggingface")
+        self._backend_kind = (
+            backend.kind if isinstance(backend, BackendSpec) else (backend or "huggingface")
+        )
         self._skipped: set[tuple[str, str]] = set()
 
         # lazy-init shared base model/tokenizer
@@ -261,13 +267,12 @@ class Benchmark:
     def _checkpoint_meta(self) -> dict:
         """Checkpoint envelope metadata; only ``_IDENTITY_META_FIELDS`` participate in the resume match."""
         return {
+            "format": _CHECKPOINT_FORMAT,
             "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "toolkit_version": getattr(aisteer360, "__version__", "unknown"),
             "model": str(self.base_model_name_or_path),
             "backend": self._backend_meta(self.backend),
-            "steer_backend": self._backend_meta(
-                self.steer_backend if self.steer_backend is not None else self.backend
-            ),
+            "fit": self.fit,
             "use_case": qualname(type(self.use_case)),
             "evaluation_data_digest": config_digest(
                 {"data": canonical_value(self.use_case.evaluation_data)}
@@ -278,14 +283,18 @@ class Benchmark:
         }
 
     def _load_checkpoint(self) -> dict[str, list[dict[str, Any]]]:
-        """Load profiles from a valid envelope; ignore anything else; refuse an identity mismatch.
+        """Load profiles from a well-shaped envelope; ignore anything else; refuse an identity
+        mismatch.
+
+        Identity is gated once, field by field with ``format`` first, so a readable envelope
+        from an earlier format refuses loudly rather than being overwritten.
 
         Returns:
             The recorded profiles dict, or an empty dict when there is nothing to resume.
 
         Raises:
-            ValueError: If the file is a valid current-format envelope produced under a different
-                configuration; the message names the first differing identity field.
+            ValueError: If the file is a well-shaped envelope produced under a different
+                configuration or format; the message names the first differing identity field.
         """
         if self.save_dir is None:
             return {}
@@ -300,15 +309,15 @@ class Benchmark:
             return {}
         if not (
             isinstance(payload, dict)
-            and payload.get("version") == _CHECKPOINT_VERSION
+            and isinstance(payload.get("meta"), dict)
             and isinstance(payload.get("profiles"), dict)
         ):
             logger.warning(
-                "Checkpoint at %s is not a version-%d envelope; ignoring it (the next save overwrites it).",
-                path, _CHECKPOINT_VERSION,
+                "Checkpoint at %s is not a checkpoint envelope; ignoring it (the next save overwrites it).",
+                path,
             )
             return {}
-        meta = payload.get("meta", {})
+        meta = payload["meta"]
         expected = self._checkpoint_meta()
         for field in _IDENTITY_META_FIELDS:
             if meta.get(field) != expected[field]:
@@ -323,12 +332,11 @@ class Benchmark:
         return profiles
 
     def _save_checkpoint(self, profiles: dict[str, list[dict[str, Any]]]) -> None:
-        """Atomically write the current profiles to a versioned checkpoint envelope."""
+        """Atomically write the current profiles to a checkpoint envelope."""
         if self.save_dir is None:
             return
         self.save_dir.mkdir(parents=True, exist_ok=True)
         payload = {
-            "version": _CHECKPOINT_VERSION,
             "meta": self._checkpoint_meta(),
             "profiles": to_jsonable(profiles),
         }
@@ -345,7 +353,7 @@ class Benchmark:
         configuration, the model is steered once and evaluated over the trials still missing from any resumed
         checkpoint.
 
-        When ``save_dir`` was provided at construction time, runs are persisted incrementally to a versioned envelope
+        When ``save_dir`` was provided at construction time, runs are persisted incrementally to a checkpoint envelope
         and the use case's ``export()`` method is called after each pipeline finishes. A subsequent call with the same
         ``save_dir`` resumes only the missing trials of each configuration.
 
@@ -405,11 +413,9 @@ class Benchmark:
         return "baseline"
 
     def _provenance(self) -> dict[str, Any]:
-        """Backend kinds, model fingerprint, and toolkit version recorded on each run dict."""
-        steer = self.steer_backend if self.steer_backend is not None else self.backend
+        """Backend kind, model fingerprint, and toolkit version recorded on each run dict."""
         return {
-            "backend": self._inference_kind,
-            "steer_backend": steer.kind if isinstance(steer, BackendSpec) else (steer or "huggingface"),
+            "backend": self._backend_kind,
             "model_fingerprint": self._base_fingerprint,
             "toolkit_version": getattr(aisteer360, "__version__", "unknown"),
         }
@@ -455,7 +461,7 @@ class Benchmark:
             return existing
 
         uses_shared_base = (
-            self._inference_kind == "huggingface" and not self._has_structural_control(controls)
+            self._backend_kind == "huggingface" and not self._has_structural_control(controls)
         )
         pipeline: SteeringPipeline | None = None
         new_runs: list[dict[str, Any]] = []
@@ -505,6 +511,7 @@ class Benchmark:
                             cleanup_fn()
                         except Exception:
                             logger.warning("Control cleanup failed", exc_info=True)
+                pipeline.release_backends()  # deterministic engine shutdown
                 del pipeline
             if uses_shared_base:
                 self._verify_shared_base_model(controls)
@@ -514,12 +521,13 @@ class Benchmark:
                 torch.cuda.empty_cache()
 
     def _build_config_pipeline(self, controls: list[Any]) -> SteeringPipeline:
-        """Build and steer the pipeline for one configuration under the configured backends.
+        """Build and steer the pipeline for one configuration under the configured backend.
 
-        The shared-preloaded-model fast path and the fingerprint guard are Hugging Face features; on other kinds
-        every configuration constructs lazily and core owns model and engine lifecycle (a Hugging Face steering arm
-        still honors ``device_map`` and ``hf_model_kwargs`` through the pipeline's implicit spec). Which controls run
-        where is core's contract; unsupported arrangements were already refused by the pre-flight check.
+        The shared-preloaded-model fast path and the fingerprint guard are Hugging Face features; on engine kinds
+        every configuration constructs lazily and core owns model, stage, and engine lifecycle (``device_map`` and
+        ``hf_model_kwargs`` configure the staged steer model through the pipeline's constructor knobs). Which
+        controls run where is core's contract; unsupported arrangements were already refused by the pre-flight
+        check.
 
         Args:
             controls: Instantiated steering controls for this configuration.
@@ -528,9 +536,11 @@ class Benchmark:
             The steered `SteeringPipeline`.
         """
         common: dict[str, Any] = {
-            "controls": list(controls), "backend": self.backend, "steer_backend": self.steer_backend,
+            "controls": list(controls),
+            "backend": self.backend,
+            "fit": self.fit,
         }
-        if self._inference_kind != "huggingface":
+        if self._backend_kind != "huggingface":
             pipeline = SteeringPipeline(
                 model_name_or_path=self.base_model_name_or_path, lazy_init=True,
                 device_map=self.device_map, hf_model_kwargs=self.hf_model_kwargs, **common,
@@ -642,7 +652,7 @@ class Benchmark:
                 config_id = self._config_id(specs=specs, params=params, controls=controls)
                 probe = SteeringPipeline(
                     model_name_or_path=self.base_model_name_or_path, controls=controls,
-                    lazy_init=True, backend=self.backend, steer_backend=self.steer_backend,
+                    lazy_init=True, backend=self.backend, fit=self.fit,
                 )
                 report = probe.check()
                 if report.ok:
@@ -665,11 +675,11 @@ class Benchmark:
         if self.save_dir is None:
             return
         try:
-            self.export(profiles, str(self.save_dir))
+            self.export(profiles)
         except Exception:
             logger.warning("Incremental export failed; checkpoint is still intact.", exc_info=True)
 
-    def export(self, profiles: dict[str, list[dict[str, Any]]], save_dir: str) -> None:
+    def export(self, profiles: dict[str, list[dict[str, Any]]], save_dir: str | Path | None = None) -> None:
         """Export benchmark results to disk.
 
         Sanitizes the profiles to a JSON-friendly structure. When the use case overrides `export`, its
@@ -679,13 +689,21 @@ class Benchmark:
 
         Args:
             profiles: The benchmark profiles to export.
-            save_dir: Directory to export into; created if absent.
+            save_dir: Directory to export into; created if absent. When omitted, falls back to the
+                ``save_dir`` provided at construction.
+
+        Raises:
+            ValueError: If no ``save_dir`` is given and none was provided at construction.
         """
+        if save_dir is None:
+            save_dir = self.save_dir
+        if save_dir is None:
+            raise ValueError("No save_dir provided; pass one to export() or set save_dir at construction.")
         save_path = Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
         safe_profiles = to_jsonable(profiles)
         if type(self.use_case).export is not UseCase.export:  # instance-attribute exports are not detected
-            self.use_case.export(safe_profiles, save_dir)
+            self.use_case.export(safe_profiles, str(save_path))
             return
         with open(save_path / "profiles.json", "w", encoding="utf-8") as f:
             json.dump(safe_profiles, f, indent=4, ensure_ascii=False)

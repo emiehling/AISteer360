@@ -21,7 +21,11 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, needs
+from aisteer360.algorithms.core.execution.contracts import (
+    Capability,
+    Requirements,
+    needs,
+)
 from aisteer360.algorithms.core.specs import ControlSpec
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.evaluation.benchmark import (
@@ -518,7 +522,8 @@ class TestBenchmarkCheckpointing:
         assert checkpoint_path.exists()
         with open(checkpoint_path) as f:
             saved = json.load(f)
-        assert saved["version"] == 1
+        assert "version" not in saved
+        assert saved["meta"]["format"] == 3
         assert set(_IDENTITY_META_FIELDS) <= set(saved["meta"].keys())
         assert set(saved["profiles"]) == {"baseline"}
         assert len(saved["profiles"]["baseline"]) == len(profiles["baseline"])
@@ -954,9 +959,7 @@ class TestCheckpointEnvelope:
         run = benchmark.run()["steered"][0]
         assert run["config_id"] != "baseline"
         assert run["seed"] == derive_trial_seed(11, run["config_id"], 0)
-        assert set(run["provenance"]) == {
-            "backend", "steer_backend", "model_fingerprint", "toolkit_version"
-        }
+        assert set(run["provenance"]) == {"backend", "model_fingerprint", "toolkit_version"}
         assert run["provenance"]["backend"] == "huggingface"
 
     def test_non_envelope_file_is_ignored_and_overwritten(
@@ -975,13 +978,37 @@ class TestCheckpointEnvelope:
         with caplog.at_level("WARNING", logger="aisteer360.evaluation.benchmark"):
             profiles = benchmark.run()
 
-        assert any("not a version-1 envelope" in r.getMessage() for r in caplog.records)
+        assert any("not a checkpoint envelope" in r.getMessage() for r in caplog.records)
         assert len(use_case._generate_calls) == 1  # ran fresh, not resumed
         assert len(profiles["baseline"]) == 1
         with open(tmp_path / "checkpoint.json") as f:
             rewritten = json.load(f)
-        assert rewritten["version"] == 1  # the old content is gone
+        assert rewritten["meta"]["format"] == 3  # the old content is gone
         assert set(rewritten["profiles"]) == {"baseline"}
+
+    def test_prior_format_envelope_refuses_naming_format(
+            self, sample_evaluation_data, mock_base_model, tmp_path
+    ):
+        # a well-shaped envelope from an earlier checkpoint format refuses loudly, so runs the
+        # user may want to finish on the old toolkit version are preserved
+        (tmp_path / "checkpoint.json").write_text(json.dumps({
+            "version": 2,
+            "meta": {"model": "test-model", "backend": {"kind": "huggingface"}},
+            "profiles": {"baseline": [{"trial_id": 0}]},
+        }))
+        use_case = _make_use_case(sample_evaluation_data)
+        benchmark = Benchmark(
+            use_case=use_case,
+            base_model_name_or_path="test-model",
+            steering_pipelines={"baseline": []},
+            save_dir=tmp_path,
+        )
+
+        with pytest.raises(ValueError, match="format was None, now 3"):
+            benchmark.run()
+        with open(tmp_path / "checkpoint.json") as f:
+            preserved = json.load(f)
+        assert preserved["profiles"] == {"baseline": [{"trial_id": 0}]}  # nothing overwritten
 
     @pytest.mark.parametrize("field", _IDENTITY_META_FIELDS)
     def test_identity_mismatch_refuses_naming_field(
@@ -1210,8 +1237,12 @@ class TestSeededTrials:
             )
 
     def test_commonsense_shuffle_determinism(self, monkeypatch):
-        from aisteer360.evaluation.metrics.custom.commonsense_mcqa.mcqa_accuracy import MCQAAccuracy
-        from aisteer360.evaluation.use_cases.commonsense_mcqa.use_case import CommonsenseMCQA
+        from aisteer360.evaluation.metrics.custom.commonsense_mcqa.mcqa_accuracy import (
+            MCQAAccuracy,
+        )
+        from aisteer360.evaluation.use_cases.commonsense_mcqa.use_case import (
+            CommonsenseMCQA,
+        )
 
         recorded_prompts = []
 
@@ -1265,6 +1296,7 @@ class _RecordingPipeline:
         self.input_controls = []
         self.state_controls = []
         self.output_controls = []
+        self.release_calls = 0
         _RecordingPipeline.instances.append(self)
 
     def check(self):
@@ -1275,6 +1307,9 @@ class _RecordingPipeline:
 
     def steer(self):
         self._is_steered = True
+
+    def release_backends(self):
+        self.release_calls += 1
 
 
 @pytest.fixture
@@ -1290,9 +1325,9 @@ def recording_pipeline(monkeypatch):
 
 
 class TestBackendPassthrough:
-    """`backend`/`steer_backend` are forwarded; non-HF kinds never load the shared base."""
+    """`backend`/`fit` are forwarded; non-HF kinds never load the shared base."""
 
-    def test_vllm_backend_never_loads_shared_base_and_forwards_kinds(
+    def test_vllm_backend_never_loads_shared_base_and_forwards_kind(
             self, sample_evaluation_data, mock_base_model, recording_pipeline
     ):
         use_case = _make_use_case(sample_evaluation_data)
@@ -1301,17 +1336,17 @@ class TestBackendPassthrough:
             base_model_name_or_path="test-model",
             steering_pipelines={"steered": [MockInputControl()]},
             backend="vllm",
-            steer_backend="huggingface",
+            fit="in_process",
         )
 
         benchmark.run()
 
-        assert mock_base_model == []  # shared base never loaded on a non-HF inference kind
+        assert mock_base_model == []  # shared base never loaded on a non-HF backend kind
         # one probe pipeline (pre-flight) + one build pipeline
         assert len(recording_pipeline) == 2
         for instance in recording_pipeline:
             assert instance.kwargs["backend"] == "vllm"
-            assert instance.kwargs["steer_backend"] == "huggingface"
+            assert instance.kwargs["fit"] == "in_process"
             assert instance.kwargs["lazy_init"] is True
 
     def test_unknown_backend_kind_raises_type_error(self, sample_evaluation_data):
@@ -1336,6 +1371,58 @@ class TestBackendPassthrough:
         assert mock_base_model == [1]  # shared-base path active by default
         pipeline = use_case._generate_calls[0]["model_or_pipeline"]
         assert pipeline.model is benchmark._base_model
+
+
+class TestBenchmarkReleasesBackends:
+    """The benchmark releases each configuration's backends, including when a trial raises."""
+
+    @pytest.fixture
+    def recording_release(self, monkeypatch):
+        """Wrap `SteeringPipeline.release_backends` with a counter that still calls through."""
+        calls = []
+        original = SteeringPipeline.release_backends
+
+        def wrapper(self):
+            calls.append(1)
+            return original(self)
+
+        monkeypatch.setattr(SteeringPipeline, "release_backends", wrapper)
+        return calls
+
+    def test_release_called_once_per_configuration(
+        self, sample_evaluation_data, mock_base_model, recording_release
+    ):
+        spec = ControlSpec(control_cls=MockInputControl, vars={"num_examples": [1, 2]})
+        benchmark = Benchmark(
+            use_case=_make_use_case(sample_evaluation_data),
+            base_model_name_or_path="test-model",
+            steering_pipelines={"sweep": [spec]},
+        )
+
+        benchmark.run()
+
+        assert len(recording_release) == 2  # one per swept configuration
+
+    def test_release_called_when_a_trial_raises(
+        self, sample_evaluation_data, mock_base_model, recording_release
+    ):
+        class _FailingUseCase(MockUseCase):
+            def generate(self, *args, **kwargs):
+                raise RuntimeError("trial boom")
+
+        benchmark = Benchmark(
+            use_case=_FailingUseCase(
+                evaluation_data=sample_evaluation_data,
+                evaluation_metrics=[MockAccuracyMetric()],
+            ),
+            base_model_name_or_path="test-model",
+            steering_pipelines={"steered": [MockInputControl()]},
+        )
+
+        with pytest.raises(RuntimeError, match="trial boom"):
+            benchmark.run()
+
+        assert len(recording_release) == 1  # released in the finally despite the failure
 
 
 # Pre-flight support tests

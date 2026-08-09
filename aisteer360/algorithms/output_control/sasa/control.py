@@ -12,6 +12,7 @@ from aisteer360.algorithms.output_control._common.estimators.linear_probe import
     LinearProbe,
     LinearProbeEstimator,
 )
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.output_control._common.processors.value_guided import ValueGuidedProcessor
 from aisteer360.algorithms.core.internals.data import LabeledExamples
 from aisteer360.algorithms.output_control._common.values.subspace_margin import SubspaceMarginValue
@@ -75,6 +76,12 @@ class SASA(OutputControl):
     probe: LinearProbe | None = None
 
     beta: float
+
+    def steer_access(self) -> ModelAccess:
+        """`ModelAccess.MODULE`; the probe fits on the live model, whose pad-token
+        configuration is set here, and the model is retained for the per-step value forwards
+        (the generate phase is in-process)."""
+        return ModelAccess.MODULE
 
     def steer(
             self,

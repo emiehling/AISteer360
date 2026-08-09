@@ -26,13 +26,14 @@ from aisteer360.algorithms.core.output import (
     infer_finish_reasons,
     truncate_at_stop_strings,
 )
+from aisteer360.algorithms.core.execution.access import ModelAccess
+from aisteer360.algorithms.core.execution.session_utils import session_generate
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.input_control.gepa.control import GEPA
 from aisteer360.algorithms.input_control.prewrite.control import PRewrite
 from aisteer360.algorithms.output_control.base import (
     DecodingDriver,
-    session_generate,
     stack_generate_kwargs,
 )
 from aisteer360.algorithms.output_control.best_of_n.control import BestOfN
@@ -476,9 +477,7 @@ class TestPortableRequirements:
 
     def _generate_ok_on_vllm(self, control) -> bool:
         pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        report = pipeline.check(
-            steer_backend="huggingface", inference_backend=VLLM_SPEC,
-        )
+        report = pipeline.check(backend=VLLM_SPEC)
         return report.supported("generate")
 
     def test_stopping_rules_supported_everywhere(self):
@@ -501,9 +500,7 @@ class TestPortableRequirements:
         beam = SearchDecoding(scorer=scorer, num_candidates=2, propose_mode="beam")
         assert not self._generate_ok_on_vllm(beam)
         deal = DeAL(reward_func=scorer)
-        report = SteeringPipeline(controls=[deal], lazy_init=True).check(
-            steer_backend="huggingface", inference_backend=VLLM_SPEC,
-        )
+        report = SteeringPipeline(controls=[deal], lazy_init=True).check(backend=VLLM_SPEC)
         assert not report.supported("generate")
         assert any("BEAM_PROPOSALS" in failure.message for failure in report.failures)
 
@@ -514,13 +511,12 @@ class TestPortableRequirements:
 
         assert _Passthrough().requirements().generate == ()
 
-    def test_refinement_input_controls_require_torch_at_steer(self):
+    def test_refinement_input_controls_declare_rollouts_access(self):
         for cls in (PRewrite, GEPA):
             control = object.__new__(cls)
             requirements = control.requirements()
             assert requirements.generate == ()
-            assert len(requirements.steer) == 1
-            assert Capability.IN_PROCESS_TORCH in requirements.steer[0].atoms
+            assert control.steer_access() is ModelAccess.ROLLOUTS
 
 
 class _CheckpointProducingControl(StructuralControl):
@@ -546,12 +542,13 @@ class TestStructuralArtifacts:
         assert len(requirements.generate) == 2
         assert Capability.SERVE_CHECKPOINT in requirements.generate[1].atoms
 
-    def test_check_passes_with_hf_steer_and_vllm_serving(self):
+    def test_check_passes_with_staged_steer_and_vllm_serving(self):
         pipeline = SteeringPipeline(controls=[_CheckpointProducingControl()], lazy_init=True)
-        report = pipeline.check(steer_backend="huggingface", inference_backend=VLLM_SPEC)
+        report = pipeline.check(backend=VLLM_SPEC)
         assert report.supported("generate")
-        assert not report.supported("steer") or True  # steer evaluated against HF: supported
         assert report.ok
+        assert report.plan.steps[0].venue == "stage"
+        assert report.plan.stages is True
 
     def test_pipeline_collects_and_stamps_artifacts(self, model, tokenizer):
         control = _CheckpointProducingControl()

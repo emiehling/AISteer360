@@ -5,6 +5,7 @@ import gc
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.output_control._common.processors.contrastive_mixture import ContrastiveMixtureProcessor
 from aisteer360.algorithms.output_control._common.resolve import resolve_source
 from aisteer360.algorithms.output_control.base import OutputControl
@@ -59,6 +60,12 @@ class ContrastiveGuidance(OutputControl):
     # placeholders (filled by steer)
     tokenizer: PreTrainedTokenizer | None = None
     _sources: list | None = None
+
+    def steer_access(self) -> ModelAccess:
+        """`ModelAccess.MODULE`; sources may bind the live model (the prompt-variant source
+        forwards it during decoding), which is retained past steer (the generate phase is
+        in-process)."""
+        return ModelAccess.MODULE
 
     def steer(
         self,

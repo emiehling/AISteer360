@@ -4,7 +4,9 @@ A capability atom marks a mechanism that some control requirement can fail on; f
 every backend belong to the session protocol contract instead. Kind sets state which activation
 edits, per-step logit processors, capture forms, and native constraints a capable backend
 executes. Controls state what a backend must provide as phase-keyed `Requirements`, and
-`evaluate_support` renders binary per-control, per-phase verdicts against a backend pair.
+`evaluate_support` renders binary per-control, per-phase verdicts against the pipeline's
+backend. The steer phase produces no verdicts; steer-time model access is declared through
+`ModelAccess` and satisfied by the pipeline's steer plan.
 """
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -27,8 +29,6 @@ class Capability(Enum):
         HIDDEN_CAPTURE: The backend serves hidden-state capture through `SteeringSession.capture`.
         BEAM_PROPOSALS: The backend implements beam-search proposal semantics (`num_beams` with
             multiple returned sequences).
-        WEIGHT_TRAINING: The backend supports weight updates against the pipeline model.
-        MODEL_ADOPTION: The backend can adopt an in-memory model produced by a structural control.
         SERVE_CHECKPOINT: The backend can serve a checkpoint directory produced elsewhere.
         SERVE_LORA: The backend can serve a LoRA adapter produced elsewhere.
         GUIDED_DECODING: The backend hosts declarative constrained decoding natively, rendered
@@ -43,8 +43,6 @@ class Capability(Enum):
     PER_STEP_LOGIT_SPECS = "per_step_logit_specs"
     HIDDEN_CAPTURE = "hidden_capture"
     BEAM_PROPOSALS = "beam_proposals"
-    WEIGHT_TRAINING = "weight_training"
-    MODEL_ADOPTION = "model_adoption"
     SERVE_CHECKPOINT = "serve_checkpoint"
     SERVE_LORA = "serve_lora"
     GUIDED_DECODING = "guided_decoding"
@@ -168,11 +166,12 @@ class BackendCapabilities:
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from aisteer360.algorithms.core.execution.access import SteerPlan
 from aisteer360.algorithms.core.execution.spec import BackendSpec
 
 KindSet = InterventionKinds | ProcessorKinds | CaptureKinds | ConstraintKinds
 
-PHASES: tuple[str, ...] = ("steer", "generate", "score")
+PHASES: tuple[str, ...] = ("generate", "score")
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,7 +290,7 @@ class SpecConstraint:
 
     description: str
     predicate: Callable[[BackendSpec], bool]
-    phases: tuple[str, ...] = ("steer", "generate")
+    phases: tuple[str, ...] = ("generate",)
 
     def __post_init__(self) -> None:
         unknown = [phase for phase in self.phases if phase not in PHASES]
@@ -304,23 +303,22 @@ class Requirements:
     """Phase-keyed backend requirements computed by a control instance.
 
     Each phase holds a tuple of `Alternative`s (a disjunction); an empty tuple requires nothing
-    beyond the session contract, which includes the model layout.
+    beyond the session contract, which includes the model layout. The steer phase carries no
+    requirements; a control declares its steer-time model access through `steer_access()`.
 
     Attributes:
-        steer: Alternatives for the steer phase, evaluated against the steering backend.
-        generate: Alternatives for the generate phase, evaluated against the inference backend.
-        score: Alternatives for the score phase, evaluated against the inference backend.
+        generate: Alternatives for the generate phase.
+        score: Alternatives for the score phase.
         spec_constraints: Backend-configuration predicates, each evaluated against the spec of
             every phase it names.
     """
 
-    steer: tuple[Alternative, ...] = ()
     generate: tuple[Alternative, ...] = ()
     score: tuple[Alternative, ...] = ()
     spec_constraints: tuple[SpecConstraint, ...] = ()
 
     def for_phase(self, phase: str) -> tuple[Alternative, ...]:
-        """The alternatives for `phase` (one of `"steer"`, `"generate"`, `"score"`).
+        """The alternatives for `phase` (one of `"generate"`, `"score"`).
 
         Raises:
             ValueError: If `phase` is not a known phase name.
@@ -340,7 +338,7 @@ _DEFAULT_HINT = "run this pipeline on the huggingface backend"
 
 
 class UnsupportedPipelineError(RuntimeError):
-    """Raised when an operation targets a backend pair that does not support the pipeline.
+    """Raised when an operation targets a backend that does not support the pipeline.
 
     Attributes:
         report: The `SupportReport` whose failures triggered the error.
@@ -366,7 +364,7 @@ class SupportFailure:
 
     Attributes:
         control: Class name of the failing control.
-        phase: The phase the verdict applies to (`"steer"`, `"generate"`, or `"score"`).
+        phase: The phase the verdict applies to (`"generate"` or `"score"`).
         message: Stable, tested message naming the gap and a fix.
     """
 
@@ -377,17 +375,16 @@ class SupportFailure:
 
 @dataclass(frozen=True, slots=True)
 class SupportReport:
-    """The result of evaluating every enabled control against a backend pair.
+    """The result of evaluating every enabled control against a backend.
 
     Attributes:
-        steer_spec: The steering backend spec the steer phase was evaluated against.
-        inference_spec: The inference backend spec the generate and score phases were evaluated
-            against.
+        spec: The backend spec the phases were evaluated against.
+        plan: The deterministic steer plan for this configuration.
         failures: All unsupported verdicts, in controls-list order then phase order.
     """
 
-    steer_spec: BackendSpec
-    inference_spec: BackendSpec
+    spec: BackendSpec
+    plan: SteerPlan = field(default_factory=SteerPlan)
     failures: tuple[SupportFailure, ...] = ()
 
     @property
@@ -407,10 +404,6 @@ class SupportReport:
         """Raise `UnsupportedPipelineError` listing every failing control in `phases`, if any."""
         if not self.supported(*phases):
             raise UnsupportedPipelineError(self, phases)
-
-
-def _spec_for_phase(phase: str, steer_spec: BackendSpec, inference_spec: BackendSpec) -> BackendSpec:
-    return steer_spec if phase == "steer" else inference_spec
 
 
 def _phase_failure_message(
@@ -442,24 +435,19 @@ def _phase_failure_message(
 
 def evaluate_support(
     controls: Iterable[Any],
-    steer_spec: BackendSpec,
-    inference_spec: BackendSpec,
-    steer_capabilities: BackendCapabilities,
-    inference_capabilities: BackendCapabilities,
+    spec: BackendSpec,
+    capabilities: BackendCapabilities,
 ) -> SupportReport:
-    """Evaluate every enabled control's requirements against a backend pair.
+    """Evaluate every enabled control's requirements against a backend.
 
     For each enabled control, `control.requirements()` is read once and each declared phase is
-    checked against the matching backend's capabilities (`steer` against the steering backend,
-    `generate` and `score` against the inference backend). Spec constraints are checked against
-    the spec of every phase they name. Controls whose `enabled` attribute is False are skipped.
+    checked against the backend's capabilities. Spec constraints are checked for every phase
+    they name. Controls whose `enabled` attribute is False are skipped.
 
     Args:
         controls: Control instances, in pipeline order.
-        steer_spec: The steering backend spec.
-        inference_spec: The inference backend spec.
-        steer_capabilities: Capability advertisement of the steering backend.
-        inference_capabilities: Capability advertisement of the inference backend.
+        spec: The backend spec.
+        capabilities: Capability advertisement of the backend.
 
     Returns:
         A `SupportReport` whose `failures` hold one entry per unsupported (control, phase) pair
@@ -476,10 +464,8 @@ def evaluate_support(
             alternatives = requirements.for_phase(phase)
             if not alternatives:
                 continue
-            capabilities = steer_capabilities if phase == "steer" else inference_capabilities
             if any(alternative.satisfied_by(capabilities) for alternative in alternatives):
                 continue
-            spec = _spec_for_phase(phase, steer_spec, inference_spec)
             failures.append(SupportFailure(
                 control=control_name,
                 phase=phase,
@@ -488,7 +474,6 @@ def evaluate_support(
 
         for constraint in requirements.spec_constraints:
             for phase in constraint.phases:
-                spec = _spec_for_phase(phase, steer_spec, inference_spec)
                 if constraint.predicate(spec):
                     continue
                 failures.append(SupportFailure(
@@ -500,4 +485,4 @@ def evaluate_support(
                     ),
                 ))
 
-    return SupportReport(steer_spec=steer_spec, inference_spec=inference_spec, failures=tuple(failures))
+    return SupportReport(spec=spec, failures=tuple(failures))

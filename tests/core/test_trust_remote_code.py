@@ -75,7 +75,7 @@ class TestPRewriteTrustRemoteCode:
         ):
             model_cls.from_pretrained.return_value = _mock_model()
             tokenizer_cls.from_pretrained.return_value = _mock_tokenizer()
-            prewrite._resolve_rewriter(model=None, tokenizer=None)
+            prewrite._resolve_rewriter(task_lm=None, tokenizer=None)
         return model_cls, tokenizer_cls
 
     def test_default_false(self):

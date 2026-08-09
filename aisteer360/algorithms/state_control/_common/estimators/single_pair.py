@@ -4,7 +4,10 @@ import logging
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.fingerprint import artifact_provenance_meta
+from aisteer360.algorithms.core.internals.fingerprint import (
+    artifact_provenance_meta,
+    session_artifact_identity,
+)
 from aisteer360.algorithms.core.internals.capture import capture_hidden
 
 from ..steering_vector import SteeringVector
@@ -52,9 +55,11 @@ class SinglePairEstimator(BaseEstimator[SteeringVector]):
             SteeringVector with [T, H] directions per layer.
         """
         device = next(model.parameters()).device if model is not None else torch.device("cpu")
-        model_type = (
-            getattr(model.config, "model_type", "unknown") if model is not None else "unknown"
-        )
+        if model is not None:
+            model_type = getattr(model.config, "model_type", "unknown")
+            session_meta: dict = {}
+        else:
+            model_type, session_meta = session_artifact_identity(session)
 
         # prepend BOS token to ensure positional (not broadcast) injection mode
         # (note: TransformerLens prepends BOS by default)
@@ -112,7 +117,7 @@ class SinglePairEstimator(BaseEstimator[SteeringVector]):
         )
 
         logger.debug("Finished fitting single-pair directions with T=%d tokens", direction.size(0))
-        meta = artifact_provenance_meta(model, tokenizer) if model is not None else {}
+        meta = artifact_provenance_meta(model, tokenizer) if model is not None else session_meta
         return SteeringVector(
             model_type=model_type,
             directions=directions,

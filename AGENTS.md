@@ -10,10 +10,13 @@ AISteer360 is a toolkit for steering large language models (Hugging Face causal 
 ("controls") across four model control surfaces, a `SteeringPipeline` that composes controls from any categories into
 one operation on a model, and an evaluation stack (use cases, metrics, benchmarks) for comparing steering pipelines.
 
-Pipelines execute on a configurable backend: the in-process Hugging Face backend (default), the offline vLLM engine
-(`kind="vllm"`), or a vLLM server (`kind="vllm-serve"`). Support is binary per control configuration and backend;
-`pipeline.check()` reports unsupported combinations with a verdict naming the gap and the fix, and unsupported
-operations raise before any work happens (see Execution backends below).
+Pipelines execute on one configurable backend: the in-process Hugging Face backend (default), the offline vLLM
+engine (`kind="vllm"`), or a vLLM server (`kind="vllm-serve"`). Support is binary per control configuration and
+backend for the generate and score phases; `pipeline.check()` reports unsupported combinations with a verdict naming
+the gap and the fix, and unsupported operations raise before any work happens. The steer phase produces no verdicts:
+each control declares its steer step's model access on the `ModelAccess` ladder (`facts` < `rollouts` < `capture` <
+`module`), and `check()` additionally returns a deterministic steer plan stating where each step and fit will run
+(see Execution backends below).
 
 The four control categories, defined by what a method touches:
 
@@ -200,9 +203,9 @@ Behaviors that differ from bare Hugging Face usage:
 
 ### Execution backends
 
-`SteeringPipeline` takes `backend=` (inference) and `steer_backend=` (steer phase; defaults to the inference spec),
-each a `BackendSpec` or a kind string. The default is the in-process Hugging Face backend, and pipelines that never
-name a backend behave exactly as before.
+`SteeringPipeline` takes `backend=`, a `BackendSpec` or a kind string. The default is the in-process Hugging Face
+backend, and pipelines that never name a backend behave exactly as before. `fit=` (`"auto"` or `"in_process"`)
+selects the fit venue policy.
 
 ```python
 from aisteer360.algorithms.core.execution import BackendSpec
@@ -210,24 +213,34 @@ from aisteer360.algorithms.core.execution import BackendSpec
 pipeline = SteeringPipeline(
     controls=[caa],
     backend=BackendSpec(kind="vllm", model="meta-llama/Llama-3.1-8B-Instruct", options={"hook_plugin": True}),
-    steer_backend="huggingface",
     lazy_init=True,
 )
 ```
 
 - `pipeline.check()` returns a `SupportReport` without doing any work; `steer()` runs it and raises
-  `UnsupportedPipelineError` for unsupported control/backend combinations. Verdict messages are stable tested
-  strings naming the gap and the fix. The per-control support boundary is the compatibility matrix in
-  `docs/reference/backends.md`.
+  `UnsupportedPipelineError` for unsupported control/backend combinations at generate. Verdict messages are
+  stable tested strings naming the gap and the fix. The report also carries `plan`, the deterministic steer
+  plan (per-control access and venue, per-fit venue, whether a stage runs, and the warnings that will fire).
+  The per-control support boundary is the compatibility matrix in `docs/reference/backends.md`.
+- The steer phase satisfies each control's declared `steer_access()` by venue: `facts` and `rollouts` run
+  through the backend's session on every kind, `capture` runs through session capture where the spec
+  advertises it (the offline plugin engine) and on a staged in-process model where not (serve, or
+  `fit="in_process"`), and `module` always stages. On engine backends the staged model is loaded, used, and
+  freed before the engine boots; exported artifacts are the handoff, so in-process weights and engine-served
+  weights never coexist. If engine capture fails a steer-time smoke test, fitting degrades to the stage with a
+  warning; support verdicts never depend on the plugin's presence.
 - Activation-steering state controls execute on vLLM through the vLLM-Hook plugin (`hook_plugin: True` on the
   spec): the control's steering tuple serializes as an intervention spec, and tensor payloads travel as
   content-addressed artifacts (`artifact_dir` option; on serve this must be a filesystem shared with the server).
   A configuration either serializes exactly or is honestly in-process-only; there is no approximate lowering.
-- Structural controls steer on Hugging Face and serve their artifacts (checkpoint or LoRA) on vLLM backends.
+- Structural controls train on the staged model and serve their artifacts (checkpoint or LoRA) on vLLM backends.
 - Declarative constrained decoding lowers to vLLM's native structured outputs; hidden-state capture (probe
   fitting and reads, routed decoding) is served in process and on the offline plugin engine, not on serve.
-- `compute_logprobs` scores through the inference backend; an enabled output control with
+- `compute_logprobs` scores through the backend; an enabled output control with
   `include_in_scoring=True` keeps scoring in-process.
+- Discarding a pipeline that booted a vLLM engine should go through `release_backends()` (or a
+  `with` block over the pipeline) rather than relying on garbage collection, which is not prompt at
+  freeing the engine. `Benchmark` does this per configuration.
 
 ### Composition rules
 
@@ -293,12 +306,13 @@ versions). On the in-process Hugging Face backend, pipelines with a structural c
 others reuse a shared preloaded base model; `runtime_overrides` is keyed by control class name, so two instances of
 one class in a pipeline share a single entry.
 
-`backend=` and `steer_backend=` forward to the pipelines the benchmark builds (a `BackendSpec` or a known kind name);
+`backend=` and `fit=` forward to the pipelines the benchmark builds (a `BackendSpec` or a known kind name);
 before any model or engine work, a pre-flight `check()` over every sweep point either raises one aggregate error
 (`on_unsupported="raise"`, the default) or skips the unsupported points with a warning (`on_unsupported="skip"`). Only
-a current-format checkpoint whose identity metadata matches resumes; a valid envelope from a different configuration is
-refused naming the differing field, and anything else at the checkpoint path is ignored with one warning and
-overwritten on the next save.
+a checkpoint whose identity metadata matches (`format` first, then model, backend, fit, use case, and digests)
+resumes; a well-shaped envelope from a different configuration or an earlier format is refused naming the differing
+field, and anything unreadable or wrong-shaped at the checkpoint path is ignored with one warning and overwritten on
+the next save.
 
 Every benchmark generation, baseline included, routes through `pipeline.generate(messages=...)` (or `text=` for a
 template-less tokenizer), so the pipeline owns chat templating, tokenization, and padding, `adapt_messages` input
@@ -373,12 +387,20 @@ output controls `include_in_scoring` and `same_model_forwards`.
 Backend support is declared through `requirements()`. The default (`IN_PROCESS_TORCH` at generate) is honest for a
 new control and keeps it Hugging Face-only; do not widen it speculatively. An `InterventionControl` derives its
 requirements from the template: generate offers the intervention-spec alternative exactly when every component has
-a wire form (`Intervention.wire_kinds()` reads component and source declarations before `steer()`), steer requires
-model-side work exactly when the template carries unbound sources, and score is in-process. Components describe
-their own wire form (`wire_kind` class attribute, `export()` per configuration), and the equivalence of hooks and
-specs is pinned by `tests/core/test_spec_hook_equivalence.py`. An output control whose behavior is
-sampling-expressible lowers via `export_generation_params()`, a declarative constraint via `export_constraint()`,
-and an engine-hosted per-step processor via `export_processor_spec()`.
+a wire form (`Intervention.wire_kinds()` reads component and source declarations before `steer()`), and score is
+in-process. Components describe their own wire form (`wire_kind` class attribute, `export()` per configuration),
+and the equivalence of hooks and specs is pinned by `tests/core/test_spec_hook_equivalence.py`. An output control
+whose behavior is sampling-expressible lowers via `export_generation_params()`, a declarative constraint via
+`export_constraint()`, and an engine-hosted per-step processor via `export_processor_spec()`.
+
+A control's steer step declares one of four access levels via `steer_access()`: `facts` (layout and tokenizer),
+`rollouts` (generate and score through the session), `capture` (hidden states), or `module` (the model as a live
+`torch.nn.Module`). Declare the highest rung your steer touches; intervention templates derive it from their
+sources, and structural controls are `module` by definition. The pipeline hands your `steer()` a session scoped to
+that rung — and the model itself only at `module` — and it arranges residency: on an engine backend, module-level
+steps run on a temporary in-process model that is freed before the engine starts, with exported artifacts as the
+handoff. Do not hold the model past `steer()` unless your generate phase requires `IN_PROCESS_TORCH`. Generate- and
+score-phase requirements are unchanged.
 
 `__init__.py` exports the discovery dict:
 
@@ -515,35 +537,44 @@ updating; does it affect other parts of the system. A finished method contributi
 Rules that hold regardless of task:
 
 1. `steer()` must run before `generate()` or `compute_logprobs()`; it runs once per pipeline and heavy work belongs
-   there, not in control constructors.
+   there, not in control constructors. On engine backends the steer phase runs in residency phases: stage-venued
+   steps (module access, and capture where the engine serves none) run first on a temporary in-process model that
+   is freed before the engine boots, then session-venued steps run through the engine session. The pipeline
+   model's in-process weights and its engine-served weights never coexist.
 2. Steering order is fixed (structural, input, state, output); list order within a category is the composition
-   order. For state controls, entry order equals spec op order equals worker application order, so an in-process
-   composition and its wire form apply edits in the same sequence.
-3. The decode loop does not compose; at most one enabled `DecodingDriver` exists per pipeline, and a driver must
+   order, preserved within each residency phase (phases run module-first, and the only channel between steers is
+   the pipeline model, which only stage-phase controls can touch). For state controls, entry order equals spec op
+   order equals worker application order, so an in-process composition and its wire form apply edits in the same
+   sequence.
+3. The steer phase produces no support verdicts; each control declares its steer step's model access via
+   `steer_access()`, and scoped sessions enforce the declaration on every backend. A control may retain the
+   pipeline model beyond `steer()` only if its generate phase requires `IN_PROCESS_TORCH`; on engine backends the
+   free protocol verifies the staged weights are gone and raises naming any retaining control.
+4. The decode loop does not compose; at most one enabled `DecodingDriver` exists per pipeline, and a driver must
    apply the received `logits_processors` and `stopping_criteria` at every scoring step of every forward pass it
    issues.
-4. Logits processors behave as functions of `(prefix_ids, scores)`; internal state is permitted only as memoization
+5. Logits processors behave as functions of `(prefix_ids, scores)`; internal state is permitted only as memoization
    keyed on the prefix (subclass `PrefixKeyedProcessor`), and `get_logits_processors` returns fresh instances per
    call.
-5. Extra forward passes through the pipeline's own model during decoding are wrapped in `auxiliary_pass()` (from
+6. Extra forward passes through the pipeline's own model during decoding are wrapped in `auxiliary_pass()` (from
    `core/utils/auxiliary_pass.py`), and the component declares `same_model_forwards = True`.
-6. Hooks exist only inside a session's execution of work (per item, or for the span of a driver decode the
+7. Hooks exist only inside a session's execution of work (per item, or for the span of a driver decode the
    session hosts); controls never register hooks and hold no model reference. Hooks travel exclusively as
    `HookEntry` contributions built by the pipeline.
-7. Never mutate caller-supplied artifacts (steering vectors, probes, configs); clone before moving devices or
+8. Never mutate caller-supplied artifacts (steering vectors, probes, configs); clone before moving devices or
    normalizing.
-8. One in-flight generation per control instance: gate instances embedded in a control's interventions carry
+9. One in-flight generation per control instance: gate instances embedded in a control's interventions carry
    per-generation decisions, so do not share control instances across concurrently running pipelines.
-9. `generate()` returns continuation-only ids by default; never re-slice its result by prompt length.
-10. `runtime_kwargs` is a single shared namespace per call; declare consumed names in `RUNTIME_KWARGS_SCHEMA` and
+10. `generate()` returns continuation-only ids by default; never re-slice its result by prompt length.
+11. `runtime_kwargs` is a single shared namespace per call; declare consumed names in `RUNTIME_KWARGS_SCHEMA` and
     expect shared values on name collisions.
-11. Declare `supports_batching=True` only when a control is safe under batched prompts; the pipeline and the
+12. Declare `supports_batching=True` only when a control is safe under batched prompts; the pipeline and the
     evaluation utilities read it to choose between batched and per-example generation.
-12. A control's behavior has exactly one declarative statement (the adapted prompt, a structural artifact, an
+13. A control's behavior has exactly one declarative statement (the adapted prompt, a structural artifact, an
     intervention tuple, or exported params/specs); every backend consumes the highest representation it supports;
     hooks are per-generation products of the pipeline and specs are per-steer products of it; and no code path
     reconstructs a control's configuration by inspecting another representation of it.
-13. Prompt-relative scope kinds (`after_prompt`, `last_k`) are client-side sugar; their wire form inside a driver
+14. Prompt-relative scope kinds (`after_prompt`, `last_k`) are client-side sugar; their wire form inside a driver
     generation is absolute (`from_position` at the generation's original prompt boundary).
 
 ## Pointers

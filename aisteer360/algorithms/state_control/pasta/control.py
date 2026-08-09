@@ -7,6 +7,7 @@ from typing import Sequence
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import Capability
 from aisteer360.algorithms.core.execution.contracts import (
     Requirements,
@@ -125,10 +126,14 @@ class PASTA(HookControl):
                         "attention mask; set attn_implementation=\"eager\" in hf_model_kwargs."
                     ),
                     predicate=_attn_implementation_supported,
-                    phases=("generate",),
                 ),
             ),
         )
+
+    def steer_access(self) -> ModelAccess:
+        """`ModelAccess.MODULE`; the attention module paths resolve on the live model, which
+        is retained for the hook closures (the generate phase is in-process)."""
+        return ModelAccess.MODULE
 
     def steer(
         self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer | None = None, **__

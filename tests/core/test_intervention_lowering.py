@@ -177,7 +177,7 @@ class TestVerdictStrings:
             layer_id=1,
         )
         pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        report = pipeline.check(inference_backend=BackendSpec(
+        report = pipeline.check(backend=BackendSpec(
             kind="vllm", model="m", options={"hook_plugin": True},
         ))
         (failure,) = report.failures_for("generate")
@@ -193,7 +193,7 @@ class TestVerdictStrings:
 
         control = CAST(behavior_vector=None, behavior_data={"positives": ["a"], "negatives": ["b"]})
         pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        report = pipeline.check(inference_backend=BackendSpec(
+        report = pipeline.check(backend=BackendSpec(
             kind="vllm", model="m", options={"hook_plugin": True},
         ))
         messages = [failure.message for failure in report.failures_for("generate")]
@@ -210,11 +210,11 @@ class TestVerdictStrings:
             layer_id=1,
         )
         pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        report = pipeline.check(inference_backend=BackendSpec(
+        report = pipeline.check(backend=BackendSpec(
             kind="vllm", model="m", options={"hook_plugin": True},
         ))
         assert report.supported("generate")
-        bare = pipeline.check(inference_backend=BackendSpec(kind="vllm", model="m"))
+        bare = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert not bare.supported("generate")
 
 

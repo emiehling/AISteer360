@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, ClassVar, Mapping, Protocol, Sequence, runtime
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
+from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.state_control._common.estimators import (
     ContrastiveDirectionEstimator,
     MeanDifferenceEstimator,
@@ -89,10 +90,7 @@ class ContrastiveFit:
     """
 
     produces_positional: ClassVar[bool] = False
-    steer_hint: ClassVar[str] = (
-        "supply a fitted `steering_vector`, or run the steer phase on a backend "
-        "with hidden-state capture (huggingface, or offline vLLM with the plugin)"
-    )
+    artifact_class: ClassVar[str] = "direction"
 
     data: ContrastivePairs | dict
     method: str = "pca_pairwise"
@@ -108,10 +106,11 @@ class ContrastiveFit:
     _master: SteeringVector | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
-    def steer_needs(self) -> str:
-        """`"hidden_capture"` for the built-in estimators, whose extraction runs through
-        session capture; a custom estimator may need the live model, so it is conservative."""
-        return "in_process_torch" if self.estimator is not None else "hidden_capture"
+    def access(self) -> ModelAccess:
+        """`ModelAccess.CAPTURE` for the built-in estimators, whose extraction runs through
+        session capture; a custom estimator may need the live model, so it declares
+        `ModelAccess.MODULE`."""
+        return ModelAccess.MODULE if self.estimator is not None else ModelAccess.CAPTURE
 
     def __post_init__(self):
         if not isinstance(self.data, ContrastivePairs):
@@ -187,11 +186,11 @@ class _Precomputed:
 
     Lets resolvers treat concrete artifacts and sources uniformly, so precomputed vectors take
     the same bind path as fitted ones (defensive clone, device/dtype cast). Resolution is
-    model-free, so the source declares no steer-phase requirement. Not part of the public API;
-    users pass vectors, mappings, or sources directly.
+    model-free, so the source declares `ModelAccess.FACTS` and runs no fit. Not part of the
+    public API; users pass vectors, mappings, or sources directly.
     """
 
-    steer_needs: ClassVar[str] = "none"
+    access: ClassVar[ModelAccess] = ModelAccess.FACTS
 
     def __init__(self, steering_vector: SteeringVector):
         self._steering_vector = steering_vector
@@ -244,8 +243,8 @@ class SinglePairFit:
     """
 
     produces_positional: ClassVar[bool] = True
-    steer_needs: ClassVar[str] = "in_process_torch"
-    steer_hint: ClassVar[str] = "supply a fitted `steering_vector`, or steer on the huggingface backend"
+    access: ClassVar[ModelAccess] = ModelAccess.MODULE
+    artifact_class: ClassVar[str] = "direction"
 
     positive_prompt: str
     negative_prompt: str
@@ -305,7 +304,8 @@ class ConditionPointSearch:
     `AlwaysOpenGate` and no condition.
 
     The projected-cosine condition has no wire gate form, so `wire_gate_kinds` is None and any
-    intervention gated this way runs in process.
+    intervention gated this way runs in process, where the read venue and the fit venue
+    coincide by construction.
 
     Attributes:
         condition_vector: Precomputed condition directions, cloned rather than refit.
@@ -322,7 +322,8 @@ class ConditionPointSearch:
     """
 
     wire_gate_kinds: ClassVar[frozenset[str] | None] = None
-    steer_needs: ClassVar[str] = "in_process_torch"
+    access: ClassVar[ModelAccess] = ModelAccess.MODULE
+    artifact_class: ClassVar[str] = "calibrated"
 
     condition_vector: SteeringVector | None = None
     condition_data: ContrastivePairs | dict | None = None
@@ -445,7 +446,7 @@ class ConditionPointSearch:
 class LayerFilteredFit:
     """Wraps a source and restricts the resolved directions to a layer range.
 
-    Steer-phase declarations and positional-ness delegate to the wrapped source. The filtered
+    Access, artifact class, and positional-ness delegate to the wrapped source. The filtered
     result keeps the inner artifact's metadata and per-layer statistics for the surviving
     layers.
 
@@ -458,12 +459,12 @@ class LayerFilteredFit:
     layer_range: tuple[int, int] | None = None
 
     @property
-    def steer_needs(self) -> str | None:
-        return getattr(self.inner, "steer_needs", None)
+    def access(self) -> ModelAccess | None:
+        return getattr(self.inner, "access", None)
 
     @property
-    def steer_hint(self) -> str | None:
-        return getattr(self.inner, "steer_hint", None)
+    def artifact_class(self) -> str | None:
+        return getattr(self.inner, "artifact_class", None)
 
     @property
     def produces_positional(self) -> bool:
