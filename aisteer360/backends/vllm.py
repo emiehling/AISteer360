@@ -358,6 +358,22 @@ def render_guided_decoding_field(source: ConstraintSource) -> tuple[str, Any]:
     return "choice", list(source.value)
 
 
+def render_constraint_sampling_args(field: str, value: Any) -> dict:
+    """Constraint kwargs for `SamplingParams`, tolerant of the structured-outputs rename.
+
+    Newer vLLM removes `GuidedDecodingParams` in favor of `StructuredOutputsParams` passed as
+    `structured_outputs=`; older versions serve `guided_decoding=`. The declarative field names
+    (`json`, `regex`, `grammar`, `choice`) are shared by both surfaces.
+    """
+    try:
+        from vllm.sampling_params import StructuredOutputsParams
+    except ImportError:
+        # legacy api: compact whitespace is only enforced on the structured-outputs surface
+        from vllm.sampling_params import GuidedDecodingParams
+        return {"guided_decoding": GuidedDecodingParams(**{field: value})}
+    return {"structured_outputs": StructuredOutputsParams(**{field: value})}
+
+
 def merge_intervention_specs(specs: Sequence[InterventionSpec]) -> InterventionSpec:
     """One spec carrying every op of `specs`, in order, with tensor payloads unioned."""
     if len(specs) == 1:
@@ -615,6 +631,9 @@ class VLLMBackend(Backend):
         _reject_encoder_decoder(model_ref, trust_remote_code)
 
         engine_kwargs = dict(spec.get_option("engine_kwargs", default={}) or {})
+        # default to a compact grammar so json constraints match the in-process automaton
+        # (disable_any_whitespace needs an explicit backend); caller kwargs win
+        engine_kwargs.setdefault("structured_outputs_config", {"disable_any_whitespace": True, "backend": "xgrammar"})
         if lora is not None:
             engine_kwargs.setdefault("enable_lora", True)
         if trust_remote_code:
@@ -963,7 +982,10 @@ class VLLMOfflineSession(_RequestSessionBase):
         from vllm import SamplingParams, TokensPrompt
 
         layer_ids = [int(layer) for layer in layers]
-        capture_spec = {"layers": layer_ids, "mode": mode, "location": location}
+        # the client's validator and assembly expect full prompt coverage and pool the last real
+        # position themselves, so every wire capture requests all_tokens
+        wire_mode = "all_tokens" if mode == "last_token" else mode
+        capture_spec = {"layers": layer_ids, "mode": wire_mode, "location": location}
         engine_prompts = []
         prompt_lens: list[int] = []
         for prompt in prompts:
@@ -1054,10 +1076,8 @@ class VLLMOfflineSession(_RequestSessionBase):
             if seed is not None:
                 args["seed"] = seed
             if item_constraints[index] is not None:
-                from vllm.sampling_params import GuidedDecodingParams
-
                 field, value = render_guided_decoding_field(item_constraints[index])
-                args["guided_decoding"] = GuidedDecodingParams(**{field: value})
+                args.update(render_constraint_sampling_args(field, value))
             if item_specs[index] is not None:
                 args["extra_args"] = {"intervention_spec": item_specs[index].to_wire()}
             prompt = TokensPrompt(prompt_token_ids=ids)

@@ -753,9 +753,9 @@ class ExclusiveSession:
         """Capture residual-stream hidden states for `prompts` at `layers`.
 
         Prompts resolve to token ids, right-pad into one batch, and run through the shared
-        layerwise extraction. In `"all_tokens"` mode each layer's tensor is `[N, T, H]`; in
-        `"last_token"` mode the last real (non-pad) position of each row is selected, giving
-        `[N, H]`.
+        layerwise extraction. In `"all_tokens"` mode each layer's tensor is `[N, T, H]` with rows
+        outside the attention mask zeroed; in `"last_token"` mode the last real (non-pad) position
+        of each row is selected, giving `[N, H]`.
 
         Args:
             prompts: The prompts to capture.

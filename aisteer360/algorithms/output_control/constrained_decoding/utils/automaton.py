@@ -1,4 +1,8 @@
-"""Client-side automaton compilation for declarative constraints, over xgrammar."""
+"""Client-side automaton compilation for declarative constraints, over xgrammar.
+
+Json-schema constraints compile compact (`any_whitespace=False`) so the grammar matches the
+whitespace policy applied on every venue.
+"""
 from __future__ import annotations
 
 import json
@@ -74,7 +78,8 @@ def compile_constraint_automaton(source: ConstraintSource, tokenizer) -> XGramma
     compiler = xgrammar.GrammarCompiler(tokenizer_info)
     if source.kind == "json_schema":
         schema = source.value if isinstance(source.value, str) else json.dumps(dict(source.value))
-        compiled = compiler.compile_json_schema(schema)
+        # compile compact on every venue rather than inheriting each backend's whitespace default
+        compiled = compiler.compile_json_schema(schema, any_whitespace=False)
     elif source.kind == "regex":
         compiled = compiler.compile_regex(source.value)
     elif source.kind == "grammar":

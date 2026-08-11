@@ -87,9 +87,12 @@ def layerwise_tokenwise_hidden(
     """Extract per-layer hidden states for all tokens.
 
     `outputs.hidden_states` is a tuple of `num_layers + 1` tensors: index 0 is the embedding output
-    (the input to layer 0) and index `i` is the output of layer `i - 1`.
+    (the input to layer 0) and index `i` is the output of layer `i - 1`, except the final entry,
+    which transformers returns with the model's final norm already applied.
 
-    - `location="layer_output"`: key `l` maps to the output of layer `l` (`hidden_states[l + 1]`).
+    - `location="layer_output"`: key `l` maps to the raw output boundary of layer `l`
+        (`hidden_states[l + 1]` for `l < num_layers - 1`; the final layer is re-captured pre-norm
+        by a forward hook on the last decoder layer, matching hook runtimes and engine capture).
     - `location="layer_input"`: key `l` maps to the input of layer `l`, i.e. the output of layer
         `l - 1` (`hidden_states[l]`), the boundary a layer pre-hook observes.
 
@@ -102,7 +105,8 @@ def layerwise_tokenwise_hidden(
         location: Which residual-stream boundary each layer key maps to.
 
     Returns:
-        Dict mapping layer_id (`0 .. num_layers - 1`) to tensor of shape [N, T, H].
+        Dict mapping layer_id (`0 .. num_layers - 1`) to tensor of shape [N, T, H]. Rows outside
+        `attention_mask` are zeroed when a mask is provided.
 
     Raises:
         ValueError: If `location` is unsupported or the number of mapped states does not equal the
@@ -114,6 +118,16 @@ def layerwise_tokenwise_hidden(
     input_ids = enc["input_ids"]
     attention_mask = enc.get("attention_mask")
     N = input_ids.size(0)
+    final_layer_module = None
+    if location == "layer_output":
+        # the last `hidden_states` entry is post-final-norm; recover the final layer's raw output
+        # boundary with a forward hook on the last decoder layer
+        from aisteer360.algorithms.state_control._common.hook_utils import (
+            get_model_layer_list,
+        )
+
+        layer_modules, _ = get_model_layer_list(model)
+        final_layer_module = layer_modules[-1]
 
     # collect states per layer
     all_hidden: dict[int, list[torch.Tensor]] = {}
@@ -124,17 +138,39 @@ def layerwise_tokenwise_hidden(
         batch_ids = input_ids[start:end]
         batch_mask = attention_mask[start:end] if attention_mask is not None else None
 
-        outputs = model(
-            input_ids=batch_ids,
-            attention_mask=batch_mask,
-            output_hidden_states=True,
-            return_dict=True,
-            use_cache=False,
-        )
+        final_boundary: list[torch.Tensor] = []
+        handle = None
+        if final_layer_module is not None:
+            def _grab_final(module, args, output):
+                raw = output[0] if isinstance(output, tuple) else output
+                final_boundary.append(raw)
+
+            handle = final_layer_module.register_forward_hook(_grab_final)
+        try:
+            outputs = model(
+                input_ids=batch_ids,
+                attention_mask=batch_mask,
+                output_hidden_states=True,
+                return_dict=True,
+                use_cache=False,
+            )
+        finally:
+            if handle is not None:
+                handle.remove()
 
         num_layers = len(outputs.hidden_states) - 1
-        layer_states = outputs.hidden_states[1:] if location == "layer_output" else outputs.hidden_states[:-1]
+        layer_states = list(outputs.hidden_states[1:]) if location == "layer_output" else list(outputs.hidden_states[:-1])
+        if final_layer_module is not None:
+            if len(final_boundary) != 1:
+                raise RuntimeError(
+                    f"Expected exactly one final-layer forward per batch, observed {len(final_boundary)}."
+                )
+            layer_states[-1] = final_boundary[0]
+        batch_row_mask = batch_mask.unsqueeze(-1) if batch_mask is not None else None
         for layer_idx, hs in enumerate(layer_states):
+            if batch_row_mask is not None:
+                # zero rows outside the attention mask; they carry computed but meaningless values
+                hs = hs * batch_row_mask.to(device=hs.device)
             all_hidden.setdefault(layer_idx, []).append(hs.cpu())
 
         if on_batch is not None:

@@ -115,7 +115,7 @@ class TestOfflineEngine:
 
 
 class TestConstraintParityOnEngine:
-    """P4 parity fixture: one declarative source constrains identically on both arms."""
+    """Parity fixture: one declarative source constrains identically on both arms."""
 
     def test_json_schema_constrained_parity(self, engine_backend):
         import json
@@ -125,7 +125,12 @@ class TestConstraintParityOnEngine:
         )
 
         pytest.importorskip("xgrammar")
-        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+        schema = {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        }
         prompt = "Return a JSON object:"
 
         def run(backend_spec, backend=None):
@@ -138,10 +143,17 @@ class TestConstraintParityOnEngine:
             if backend is not None:
                 pipeline._backends[backend.spec] = backend
             pipeline.steer()
-            return pipeline.generate(text=prompt, max_new_tokens=24, do_sample=False)
+            return pipeline.generate(text=prompt, max_new_tokens=64, do_sample=False)
 
         hf_text = run("huggingface")
         engine_text = run(engine_backend.spec, engine_backend)
-        assert json.loads(engine_text) is not None
-        assert json.loads(hf_text) is not None
+
+        def parsed(label: str, text: str):
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as error:
+                pytest.fail(f"{label} arm produced incomplete or invalid JSON ({error}): {text!r}")
+
+        assert parsed("engine", engine_text) is not None
+        assert parsed("hf", hf_text) is not None
         assert engine_text == hf_text

@@ -184,8 +184,9 @@ class TestSpecParityOnEngine:
         assert baseline_again[0].output.output_ids.tolist() == baseline_first[0].output.output_ids.tolist()
 
     def test_scored_vs_generated_scope_agreement(self, plugin_backend):
-        """`after_prompt` scoring remaps to `from_position` at the original prompt length, so a
-        reference scored under the spec matches in-process scoring under the same hooks."""
+        """The vLLM engine backend refuses `compute_logprobs` for a scoped intervention, since its
+        prompt-logprob scoring would anchor token scopes at the request's prompt end rather than the
+        control's scope; the huggingface arm scores normally."""
         from aisteer360.algorithms.state_control.caa.control import CAA
 
         hidden = plugin_backend._layout.hidden_size
@@ -211,8 +212,12 @@ class TestSpecParityOnEngine:
         engine_pipeline.tokenizer = tokenizer
         engine_pipeline._backends[plugin_backend.spec] = plugin_backend
         engine_pipeline.steer()
-        engine_scores = engine_pipeline.compute_logprobs(prompt_ids, ref_output_ids=ref_ids)
-        assert torch.allclose(hf_scores, engine_scores, atol=5e-2, rtol=5e-2)
+        # the backend refuses rather than return silently mis-anchored scores
+        from aisteer360.algorithms.core.execution.contracts import UnsupportedPipelineError
+
+        with pytest.raises(UnsupportedPipelineError, match="unsupported at score on backend kind 'vllm'"):
+            engine_pipeline.compute_logprobs(prompt_ids, ref_output_ids=ref_ids)
+        assert hf_scores.shape == (1, ref_ids.shape[-1])
 
     def test_chunked_prefill_last_k_exactness(self, plugin_backend):
         """`last_k` selects absolute positions, so a long prompt under chunked prefill steers
@@ -243,7 +248,7 @@ class TestSpecParityOnEngine:
 
 
 class TestCaptureOnEngine:
-    """P3 capture and probe-path fixtures. Skip without a live plugin engine."""
+    """Capture and probe-path fixtures. Skip without a live plugin engine."""
 
     @pytest.mark.parametrize("location", ["layer_output", "layer_input"])
     @pytest.mark.parametrize("mode", ["all_tokens", "last_token"])
@@ -257,7 +262,8 @@ class TestCaptureOnEngine:
             PreparedPrompt.from_text("The committee reviewed the proposal"),
             PreparedPrompt.from_text("A short prompt"),
         ]
-        layers = [1, 2]
+        num_layers = plugin_backend._layout.num_layers
+        layers = sorted({max(0, num_layers - 2), num_layers - 1})
 
         hf_backend = HFBackend.adopt(
             BackendSpec(kind="huggingface"), lambda: model, lambda: tokenizer,
@@ -302,7 +308,7 @@ class TestCaptureOnEngine:
 
     def test_conditional_gate_open_vs_closed_matches_in_process(self, plugin_backend):
         """A probe-gated adapter fires on the gate-open prompt and stays inert on the
-        gate-closed prompt, matching in-process decisions (P3.5)."""
+        gate-closed prompt, matching in-process decisions."""
         from aisteer360.algorithms.core.internals.probes import Probe
         from aisteer360.algorithms.state_control._common.transforms import (
             AdditiveTransform,
@@ -313,6 +319,9 @@ class TestCaptureOnEngine:
 
         layout = plugin_backend._layout
         hidden = layout.hidden_size
+        num_layers = layout.num_layers
+        cond_layer = max(0, num_layers - 2)
+        intv_layer = num_layers - 1
         tokenizer = _tokenizer()
         model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
 
@@ -327,24 +336,24 @@ class TestCaptureOnEngine:
         )
         hs_open = layerwise_tokenwise_hidden(model, dict(enc_open), location="layer_input")
         hs_closed = layerwise_tokenwise_hidden(model, dict(enc_closed), location="layer_input")
-        weight = (hs_open[1].mean(dim=(0, 1)) - hs_closed[1].mean(dim=(0, 1))).float()
+        weight = (hs_open[cond_layer].mean(dim=(0, 1)) - hs_closed[cond_layer].mean(dim=(0, 1))).float()
         weight = weight / weight.norm()
-        score_open = float(hs_open[1].float().mean(dim=(0, 1)) @ weight)
-        score_closed = float(hs_closed[1].float().mean(dim=(0, 1)) @ weight)
+        score_open = float(hs_open[cond_layer].float().mean(dim=(0, 1)) @ weight)
+        score_closed = float(hs_closed[cond_layer].float().mean(dim=(0, 1)) @ weight)
         bias = -(score_open + score_closed) / 2
         probe = Probe(
             model_type=getattr(model.config, "model_type", "unknown"),
-            location="layer_input", pooling="mean", layer_ids=[1],
-            weights={1: weight}, bias=bias, meta={},
+            location="layer_input", pooling="mean", layer_ids=[cond_layer],
+            weights={cond_layer: weight}, bias=bias, meta={},
         )
 
         generator = torch.Generator().manual_seed(9)
-        vector = {2: 6.0 * torch.randn(1, hidden, generator=generator)}
+        vector = {intv_layer: 6.0 * torch.randn(1, hidden, generator=generator)}
 
         def factory():
             return ActivationAdapter(
                 transform=AdditiveTransform(vector, strength=1.0),
-                layer_ids=[2], hook_point="layer_input", token_scope="all",
+                layer_ids=[intv_layer], hook_point="layer_input", token_scope="all",
                 **probe.as_condition(allow_model_mismatch=True),
             )
 
