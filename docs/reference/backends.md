@@ -101,7 +101,8 @@ spec = BackendSpec(
 
 When serving activation interventions through the vLLM-Hook plugin, the serving environment carries the plugin, the
 server starts with `VLLM_HOOK_WORKER=unified` and eager execution, the spec adds `hook_plugin: True`, and `artifact_dir`
-names a filesystem shared with the server.
+names the server's registry directory (its `VLLM_HOOK_REGISTRY_DIR`) on a filesystem shared with the server;
+without `artifact_dir` the client PUTs artifacts over the server's artifact route instead.
 
 ## API
 

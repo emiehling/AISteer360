@@ -61,6 +61,7 @@ from aisteer360.algorithms.core.execution.payloads import (
     remap_prompt_relative_scopes,
 )
 from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
+from aisteer360.algorithms.core.internals.fingerprint import is_absent_chat_template_fingerprint
 from aisteer360.algorithms.core.output import (
     Output,
     infer_finish_reasons,
@@ -1153,19 +1154,27 @@ class SteeringPipeline:
 
     @staticmethod
     def _warn_on_provenance_mismatch(state_control, served_model: Mapping) -> None:
-        """Warn when a control's steering-artifact fingerprints differ from the served model's."""
+        """Warn when a control's steering-artifact fingerprints differ from the served model's.
+
+        A served `chat_template_fingerprint` equal to the absent-template digest means the
+        engine exposes no chat template; that key is skipped since a mismatch against it
+        reflects exposure rather than divergence.
+        """
         artifact = getattr(state_control, "_steering_vector", None)
         meta = getattr(artifact, "meta", None) or {}
         for key in ("config_fingerprint", "chat_template_fingerprint"):
             local = meta.get(key)
             remote = served_model.get(key)
-            if local and remote and local != remote:
-                warnings.warn(
-                    f"{type(state_control).__name__}'s steering artifact records a {key} of "
-                    f"{local}, but the serving engine reports {remote}; the artifact was fitted "
-                    "on a different model or tokenizer configuration than the one serving it.",
-                    UserWarning,
-                )
+            if not local or not remote or local == remote:
+                continue
+            if key == "chat_template_fingerprint" and is_absent_chat_template_fingerprint(remote):
+                continue
+            warnings.warn(
+                f"{type(state_control).__name__}'s steering artifact records a {key} of "
+                f"{local}, but the serving engine reports {remote}; the artifact was fitted "
+                "on a different model or tokenizer configuration than the one serving it.",
+                UserWarning,
+            )
 
     def _processor_spec_contributions(
         self, runtime_kwargs: dict | None, inference_capabilities: BackendCapabilities,
@@ -1415,6 +1424,7 @@ class SteeringPipeline:
             self,
             messages: Any,
             runtime_kwargs: dict,
+            chat_template_kwargs: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, set[int], bool]:
         """Validate a chat prompt, then adapt and chat-template tokenize it (design §4.3.2).
 
@@ -1425,6 +1435,8 @@ class SteeringPipeline:
         Args:
             messages: One conversation or a batch of conversations.
             runtime_kwargs: Per-call parameters forwarded to `adapt_messages`.
+            chat_template_kwargs: Extra keyword arguments forwarded to `apply_chat_template` after the
+                pipeline-owned kwargs. None or an empty mapping adds nothing.
 
         Returns:
             tuple[input_ids, attention_mask, message_handled, is_single], where `message_handled`
@@ -1463,7 +1475,8 @@ class SteeringPipeline:
             )
 
         input_ids, attention_mask, message_handled = apply_adapt_messages_and_tokenize(
-            self.input_controls, self.tokenizer, normalized, runtime_kwargs
+            self.input_controls, self.tokenizer, normalized, runtime_kwargs,
+            chat_template_kwargs=chat_template_kwargs,
         )
         return input_ids, attention_mask, message_handled, is_single
 
@@ -1626,7 +1639,9 @@ class SteeringPipeline:
 
         Unlike `model.generate`, the returned token ids exclude the prompt by default. Do not slice
         the result by prompt length, since that discards generated tokens. Pass
-        `return_full_sequence=True` to get HF-style prompt+continuation output.
+        `return_full_sequence=True` to get HF-style prompt+continuation output. A stop string that
+        also occurs inside a reasoning model's thinking segment cuts the decoded text there, so pass
+        stop strings that cannot appear before the closing think tag when generating with thinking on.
 
         `attention_mask` is valid only with token input (`input_ids=`); it is derived automatically
         for `text=` and `messages=`, and passing it with either raises `TypeError`.
@@ -1648,8 +1663,18 @@ class SteeringPipeline:
             input_ids: Token prompt as a 1-D/2-D integer tensor, `list[int]`, or `list[list[int]]`.
             **gen_kwargs: Generation parameters in `model.generate` vocabulary, normalized
                 through `GenerationParams` and executed by the inference backend's session
-                (unlisted keys pass through in process and raise on API backends). May include
-                `return_full_sequence: bool` to include the prompt in the returned token IDs.
+                (unlisted keys pass through in process and raise on API backends). Two keys are
+                reserved and consumed here rather than forwarded to the backend:
+
+                    - `return_full_sequence: bool` to include the prompt in the returned token IDs.
+                    - `chat_template_kwargs: dict` forwarded to `apply_chat_template` after the
+                        pipeline-owned template kwargs. Valid only with `messages=` (pairing it with
+                        `text=`/`input_ids=` raises `TypeError`); it may not name any pipeline-owned
+                        template kwarg (`return_tensors`, `padding`, `add_generation_prompt`,
+                        `return_dict`, else `ValueError`). An empty mapping is a no-op. The toolkit
+                        does not interpret the mapping; keys are model-family specific (e.g.
+                        `enable_thinking`), and models whose templates expose no such switch are
+                        unaffected.
 
         Returns:
             See dispatch table above.
@@ -1657,15 +1682,33 @@ class SteeringPipeline:
         Raises:
             RuntimeError: If `steer()` has not yet been called.
             TypeError: If no prompt source or more than one is provided, if a source fails
-                validation, or if `attention_mask` is paired with `text=`/`messages=`.
-            ValueError: If a token tensor is not 1-D/2-D, nested token lists are ragged, or a text/
-                chat sequence is empty.
+                validation, if `attention_mask` is paired with `text=`/`messages=`, if
+                `chat_template_kwargs` is paired with `text=`/`input_ids=`, or if
+                `chat_template_kwargs` is not a mapping.
+            ValueError: If a token tensor is not 1-D/2-D, nested token lists are ragged, a text/
+                chat sequence is empty, or `chat_template_kwargs` names a pipeline-owned template
+                argument.
         """
         if not self._is_steered:
             raise RuntimeError("Must call `.steer()` before `.generate()`.")
 
         runtime_kwargs = runtime_kwargs or {}
         return_full_sequence = bool(gen_kwargs.pop("return_full_sequence", False))
+        chat_template_kwargs = gen_kwargs.pop("chat_template_kwargs", None)
+
+        if chat_template_kwargs is not None:
+            if not isinstance(chat_template_kwargs, Mapping):
+                raise TypeError(
+                    "chat_template_kwargs must be a mapping of chat-template keyword arguments; got "
+                    f"{type(chat_template_kwargs).__name__}."
+                )
+            reserved = {"return_tensors", "padding", "add_generation_prompt", "return_dict"}
+            collisions = reserved & set(chat_template_kwargs)
+            if collisions:
+                names = ", ".join(sorted(collisions))
+                raise ValueError(
+                    f"chat_template_kwargs may not override pipeline-owned template arguments: {names}."
+                )
 
         kind, payload = self._resolve_generate_source(inputs, text, messages, input_ids)
 
@@ -1676,13 +1719,20 @@ class SteeringPipeline:
                 "automatically for text= and messages=."
             )
 
+        # chat_template_kwargs pairing
+        if chat_template_kwargs is not None and kind != "messages":
+            raise TypeError(
+                "chat_template_kwargs is only valid with chat input (messages=); text= and input_ids= "
+                "are already templated or template-free."
+            )
+
         # resolve the prompt tensors per modality
         message_handled: set[int] = set()
         if kind == "text":
             prompt_input_ids, prompt_attention_mask, is_single = self._resolve_text_prompt(payload)
         elif kind == "messages":
             prompt_input_ids, prompt_attention_mask, message_handled, is_single = (
-                self._resolve_messages_prompt(payload, runtime_kwargs)
+                self._resolve_messages_prompt(payload, runtime_kwargs, chat_template_kwargs=chat_template_kwargs)
             )
         else:  # tokens
             prompt_input_ids, prompt_attention_mask, is_single = self._resolve_token_prompt(

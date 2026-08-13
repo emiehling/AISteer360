@@ -107,3 +107,29 @@ def artifact_provenance_meta(model, tokenizer=None) -> dict:
             getattr(tokenizer, "chat_template", None)
         )
     return meta
+
+
+_ABSENT_TEMPLATE_DIGEST = hashlib.sha256(b"").hexdigest()
+
+
+def is_absent_chat_template_fingerprint(fingerprint: str | None) -> bool:
+    """Whether `fingerprint` denotes an absent chat template under the plugin recipe.
+
+    A serving engine that exposes no chat template reports the fingerprint of an empty
+    template, so a mismatch against such a value reflects exposure rather than divergence
+    and comparisons should skip it. Uses the plugin recipe when `vllm_hook_plugins` is
+    installed and falls back to the recipe's stable digest of an empty template otherwise.
+
+    Args:
+        fingerprint: The reported fingerprint, or None when none was reported.
+
+    Returns:
+        True when the fingerprint denotes an absent chat template.
+    """
+    if not fingerprint:
+        return True
+    try:
+        from vllm_hook_plugins.core.fingerprints import chat_template_fingerprint
+    except ImportError:
+        return fingerprint in (f"sha256:{_ABSENT_TEMPLATE_DIGEST}", _ABSENT_TEMPLATE_DIGEST)
+    return fingerprint in (chat_template_fingerprint(None), chat_template_fingerprint(""))

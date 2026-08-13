@@ -53,6 +53,11 @@ def truncate_at_stop_strings(text: str, stop_strings: Sequence[str]) -> str:
     backend. Token ids are never modified; only the decoded text is cut, at the start of the
     earliest match.
 
+    With reasoning models the earliest-match rule interacts with thinking segments: a stop string
+    that also occurs inside the reasoning (e.g. `"Answer:"`) cuts the text mid-thinking, so the
+    thinking segment is left unclosed and a later split reports an empty answer. Choose stop strings
+    that cannot appear before the closing think tag, or omit them when generating with thinking on.
+
     Args:
         text: Decoded continuation text.
         stop_strings: Stop strings; empty leaves `text` unchanged.

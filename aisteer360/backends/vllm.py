@@ -10,6 +10,7 @@ import gc
 import hashlib
 import json
 import logging
+import os
 import re
 import urllib.error
 import urllib.request
@@ -56,6 +57,7 @@ from aisteer360.algorithms.core.execution.payloads import (
     StackEntry,
 )
 from aisteer360.algorithms.core.execution.spec import BackendSpec
+from aisteer360.algorithms.core.internals.fingerprint import is_absent_chat_template_fingerprint
 from aisteer360.algorithms.core.output import Output
 from aisteer360.utils.optional import require
 from aisteer360.utils.tokenization import ensure_pad_token
@@ -1264,8 +1266,8 @@ class VLLMServeBackend(Backend):
             trust_remote_code,
         )
         self._plain_salt = uuid.uuid4().hex
-        # spec artifacts write to the registry root the server reads; the shared_fs transport
-        # assumes this filesystem is shared with the server
+        # spec artifacts write to the registry root the server reads; shared_fs visibility
+        # is verified against the server after writing (see stage_artifacts)
         self._artifact_uploader = _ArtifactUploader(spec.get_option("artifact_dir"))
         if self._discovery is not None:
             self._verify_fingerprints(tokenizer_source)
@@ -1277,15 +1279,18 @@ class VLLMServeBackend(Backend):
     def stage_artifacts(self, payloads) -> None:
         """Make each content-addressed artifact available to the serving engine.
 
-        With an `artifact_dir` option the payloads are written into that registry root (a
-        filesystem shared with the server). Otherwise each payload is PUT to the plugin's
-        artifact route (`/v1/hook/artifacts/{id}`, body safetensors bytes, id verified
-        server-side); already-exists is success.
+        With an `artifact_dir` option the payloads are written into that registry root, which
+        must be the server's registry directory (its `VLLM_HOOK_REGISTRY_DIR`) on a shared
+        filesystem; visibility is verified through the server's artifact route when the
+        discovery payload advertises `artifact_registry_root`. Otherwise each payload is PUT
+        to the plugin's artifact route (`/v1/hook/artifacts/{id}`, body safetensors bytes, id
+        verified server-side); already-exists is success.
         """
         if not payloads:
             return
         if self.spec.get_option("artifact_dir"):
             self._artifact_uploader.upload_payloads(payloads)
+            self._verify_shared_fs_visibility(payloads)
             return
         import safetensors.torch
 
@@ -1295,6 +1300,43 @@ class VLLMServeBackend(Backend):
             data = safetensors.torch.save({name: tensors[name] for name in sorted(tensors)})
             self._put_bytes(f"/v1/hook/artifacts/{artifact_id}", data)
             self._artifact_uploader._written.add(artifact_id)
+
+    def _verify_shared_fs_visibility(self, payloads) -> None:
+        """Probe that shared_fs artifacts are visible to the server's registry.
+
+        Gated on the discovery payload advertising `artifact_registry_root` (servers that
+        advertise it also serve `HEAD /v1/hook/artifacts/{id}`); older servers skip the
+        probe and keep the write-and-trust behavior.
+        """
+        server_root = (self._discovery or {}).get("artifact_registry_root")
+        if not server_root:
+            return
+        client_root = os.path.abspath(self.spec.get_option("artifact_dir"))
+        for artifact_id in payloads:
+            if self._head_ok(f"/v1/hook/artifacts/{artifact_id}"):
+                continue
+            raise ValueError(
+                f"artifact {artifact_id} written under {client_root} is not visible to the "
+                f"server's registry ({server_root}); the shared_fs transport requires "
+                "artifact_dir and the server's VLLM_HOOK_REGISTRY_DIR to name the same "
+                "directory. Set VLLM_HOOK_REGISTRY_DIR on the server, point artifact_dir at "
+                "the server's registry root, or drop artifact_dir to use the HTTP artifact "
+                "route."
+            )
+
+    def _head_ok(self, path: str) -> bool:
+        """HEAD a server path; True on 200, False on 404, raise otherwise."""
+        request = urllib.request.Request(f"{self._base_url}{path}", method="HEAD")
+        if self._api_key:
+            request.add_header("Authorization", f"Bearer {self._api_key}")
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout):
+                return True
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                return False
+            body = error.read().decode("utf-8", errors="replace")
+            raise ValueError(f"HTTP {error.code} from {self._base_url}{path}: {body}") from error
 
     def _put_bytes(self, path: str, data: bytes) -> None:
         """PUT raw bytes to the server, mapping a missing route to a configuration error."""
@@ -1354,11 +1396,20 @@ class VLLMServeBackend(Backend):
 
         Uses the plugin's engine-free `core.fingerprints` when the `vllm_hook_plugins` package
         is installed; mismatches warn rather than raise. Without the package, verification is
-        skipped with a warning.
+        skipped with a warning. A served fingerprint equal to the absent-template digest means
+        the server exposes no chat template, so the comparison is skipped since a mismatch
+        against it would reflect exposure rather than divergence.
         """
         model_block = (self._discovery or {}).get("model", {})
         remote_chat = model_block.get("chat_template_fingerprint")
         if remote_chat is None:
+            return
+        if is_absent_chat_template_fingerprint(remote_chat):
+            logger.debug(
+                "The server at %s does not expose a chat template (fingerprint %s is the "
+                "absent-template digest); skipping the chat template comparison.",
+                self._base_url, remote_chat,
+            )
             return
         try:
             from vllm_hook_plugins.core.fingerprints import chat_template_fingerprint

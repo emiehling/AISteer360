@@ -184,6 +184,12 @@ Behaviors that differ from bare Hugging Face usage:
 
 - Returned token ids exclude the prompt by default. Do not slice the result by prompt length; pass
   `return_full_sequence=True` for HF-style prompt-plus-continuation output.
+- `chat_template_kwargs` is a reserved key inside `gen_kwargs`, forwarded to `apply_chat_template`
+  after the pipeline-owned template kwargs. It is valid only with `messages=` (pairing it with
+  `text=`/`input_ids=` raises `TypeError`), may not name a pipeline-owned template kwarg
+  (`return_tensors`, `padding`, `add_generation_prompt`, `return_dict`), and is not interpreted by
+  the toolkit (keys are model-family specific, e.g. `enable_thinking`). Because it rides inside
+  `gen_kwargs`, thinking-on and thinking-off runs get distinct benchmark checkpoint identities.
 - Token ids are returned as generated on every backend (stop text and any token-boundary overrun stay in the ids);
   decoded continuation text is truncated at the first stop-string occurrence by one client-side rule.
 - `generate(..., return_output=True)` returns an `Output` object (or list of them) with fields `output_ids`,
@@ -320,6 +326,13 @@ controls fire during benchmarking, and `runtime_overrides` columns live on the p
 prompt expansion by construction). The shared-preloaded-model reuse and its fingerprint tripwire are Hugging Face
 features: after each shared-base configuration, the tripwire checks the shared model for mutation and, on detecting
 one, warns naming the configuration and reloads a clean base for the next.
+
+`batch_retry_generate` and `generate_on_pipeline` split each decoded continuation into a thinking segment and an
+answer segment (the `think_tags` parameter, default `("<think>", "</think>")`). Metrics and `parse_fn` see the answer
+segment only, so reasoning tokens do not blend into scoring; the thinking segment is retained and the built-in use
+cases store it under a `"thinking"` generation-dict column (`str | None`). Pass `think_tags=None` to disable the
+split and score the full continuation. A generation that opens a thinking segment but never closes it (the budget was
+spent thinking) logs one warning naming the count.
 
 ## Developer guide
 
@@ -461,8 +474,8 @@ keywords and missing required parameters raise `TypeError` at construction, and 
 cases, where `generate()` builds prompt rows and calls `batch_retry_generate` from
 `evaluation/utils/generation_utils.py` (batched decoding with parsing and retry), and `evaluate()` maps metric names to
 computed results. Build each prompt row by spreading its source instance (`{**instance, "prompt": ...}`) so the row
-carries its own columns and `runtime_overrides` map per row; constructed keys (`"prompt"`, `"reference_answer"`, ...)
-shadow same-named instance columns, so name override columns distinctly from them.
+carries its own columns and `runtime_overrides` map per row; constructed keys (`"prompt"`, `"reference_answer"`,
+`"thinking"`, ...) shadow same-named instance columns, so name override columns distinctly from them.
 
 ### Testing
 

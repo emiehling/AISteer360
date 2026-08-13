@@ -757,3 +757,46 @@ class TestReleaseBackends:
             with pipeline:
                 raise RuntimeError("body error")
         assert recorder.release_calls == 1
+
+
+class TestProvenanceMismatchWarnings:
+    """`_warn_on_provenance_mismatch` against a serving engine's model block."""
+
+    @staticmethod
+    def _control_with_meta(meta):
+        artifact = MagicMock()
+        artifact.meta = meta
+        control = MagicMock()
+        control._steering_vector = artifact
+        return control
+
+    @staticmethod
+    def _absent_fingerprint():
+        try:
+            from vllm_hook_plugins.core.fingerprints import chat_template_fingerprint
+        except ImportError:
+            import hashlib
+            return f"sha256:{hashlib.sha256(b'').hexdigest()}"
+        return chat_template_fingerprint(None)
+
+    def test_differing_chat_template_fingerprints_warn(self):
+        control = self._control_with_meta({"chat_template_fingerprint": "sha256:aaa"})
+        with pytest.warns(UserWarning, match="chat_template_fingerprint"):
+            SteeringPipeline._warn_on_provenance_mismatch(
+                control, {"chat_template_fingerprint": "sha256:bbb"},
+            )
+
+    def test_absent_served_chat_template_fingerprint_does_not_warn(self):
+        control = self._control_with_meta({"chat_template_fingerprint": "sha256:aaa"})
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            SteeringPipeline._warn_on_provenance_mismatch(
+                control, {"chat_template_fingerprint": self._absent_fingerprint()},
+            )
+
+    def test_differing_config_fingerprints_still_warn(self):
+        control = self._control_with_meta({"config_fingerprint": "sha256:aaa"})
+        with pytest.warns(UserWarning, match="config_fingerprint"):
+            SteeringPipeline._warn_on_provenance_mismatch(
+                control, {"config_fingerprint": "sha256:bbb"},
+            )

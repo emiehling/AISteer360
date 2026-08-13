@@ -83,6 +83,8 @@ class InstructionFollowing(UseCase):
                 - "instructions": List of specific instructions the model should follow
                 - "instruction_id_list": Identifiers for each instruction type
                 - "kwargs": Additional metadata for instruction evaluation
+                - "thinking": Reasoning segment split from the continuation, or None if no think tag
+                    is present. This constructed key shadows any same-named instance column.
         """
         if not self.evaluation_data:
             logger.warning("No evaluation data provided")
@@ -94,13 +96,14 @@ class InstructionFollowing(UseCase):
         for instance in self.evaluation_data:
             prompt_data.append({**instance, "prompt": [{"role": "user", "content": instance["prompt"]}]})
 
-        responses, _, outputs = batch_retry_generate(
+        responses, _, outputs, thinking = batch_retry_generate(
             prompt_data=prompt_data,
             model_or_pipeline=model_or_pipeline,
             tokenizer=tokenizer,
             gen_kwargs=gen_kwargs,
             runtime_overrides=runtime_overrides,
             return_outputs=True,
+            return_thinking=True,
             batch_size=batch_size
         )
 
@@ -113,9 +116,10 @@ class InstructionFollowing(UseCase):
                 "instructions": eval_data["instructions"],
                 "instruction_id_list": eval_data["instruction_id_list"],
                 "kwargs": eval_data["kwargs"],
+                "thinking": think,
                 **output_record_fields(output, tokenizer),
             }
-            for eval_data, response, output in zip(self.evaluation_data, responses, outputs)
+            for eval_data, response, output, think in zip(self.evaluation_data, responses, outputs, thinking)
         ]
 
         return generations

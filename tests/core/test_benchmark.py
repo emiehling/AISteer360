@@ -1036,6 +1036,26 @@ class TestCheckpointEnvelope:
         with pytest.raises(ValueError, match=field):
             resumed.run()
 
+    def test_chat_template_kwargs_changes_gen_kwargs_digest(
+            self, sample_evaluation_data, mock_base_model
+    ):
+        # two gen_kwargs differing only in chat_template_kwargs get distinct checkpoint identities
+        thinking_off = Benchmark(
+            use_case=_make_use_case(sample_evaluation_data),
+            base_model_name_or_path="test-model",
+            steering_pipelines={"baseline": []},
+            gen_kwargs={"max_new_tokens": 8, "chat_template_kwargs": {"enable_thinking": False}},
+        )
+        thinking_on = Benchmark(
+            use_case=_make_use_case(sample_evaluation_data),
+            base_model_name_or_path="test-model",
+            steering_pipelines={"baseline": []},
+            gen_kwargs={"max_new_tokens": 8, "chat_template_kwargs": {"enable_thinking": True}},
+        )
+        off_digest = thinking_off._checkpoint_meta()["gen_kwargs_digest"]
+        on_digest = thinking_on._checkpoint_meta()["gen_kwargs_digest"]
+        assert off_digest != on_digest
+
     def test_checkpoint_every_trial_grows_on_disk_per_trial(
             self, sample_evaluation_data, mock_base_model, tmp_path
     ):
@@ -1256,7 +1276,7 @@ class TestSeededTrials:
         def fake_batch_retry_generate(prompt_data, **kwargs):
             recorded_prompts.append([row["reference_answer"] for row in prompt_data])
             n = len(prompt_data)
-            return ["A"] * n, ["A"] * n, [None] * n
+            return ["A"] * n, ["A"] * n, [None] * n, [None] * n
 
         monkeypatch.setattr(
             "aisteer360.evaluation.use_cases.commonsense_mcqa.use_case.batch_retry_generate",

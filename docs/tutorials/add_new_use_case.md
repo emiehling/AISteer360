@@ -219,8 +219,8 @@ to (robustly) evaluate a model's ability to accurately answer (common sense) mul
 present the same question to the model under various orderings/shufflings of the answers. Each prompt row spreads its
 source instance (`**instance`) and then sets the constructed `prompt` (the question) and `reference_answer` for that
 shuffle. Spreading the instance means every prompt row carries the instance's own columns, so `runtime_overrides` map
-per row (a `runtime_overrides` column resolves against these rows). Constructed keys such as `prompt` and
-`reference_answer` shadow same-named instance columns, so name any override column distinctly from them.
+per row (a `runtime_overrides` column resolves against these rows). Constructed keys such as `prompt`,
+`reference_answer`, and `thinking` shadow same-named instance columns, so name any override column distinctly from them.
 
 Once the prompt data has been prepared for the use case, it then needs to be passed into the model (or steering
 pipeline) to generate responses. We strongly advise that contributors make use of the `batch_retry_generate` helper
@@ -228,6 +228,12 @@ function to aid in this process. This function implements conversion to a model'
 generation, batch decoding, and parsing (via `parse_fn`), and retry logic for a given list of prompts. For the example
 use case, we define the parsing function as a custom `parse_letter` method, such that the model's choices can be
 reliably extracted from its response (and stored as `choices`).
+
+For reasoning models, `batch_retry_generate` splits each decoded continuation into a thinking segment and an answer
+segment (the `think_tags` parameter, default `("<think>", "</think>")`). The raw text and `parse_fn` see the answer
+segment only, so reasoning tokens do not blend into parsing or scoring. To retain the reasoning, pass
+`return_thinking=True` and store the returned list under a `"thinking"` column, as the built-in use cases do; pass
+`think_tags=None` to disable the split and keep the full continuation.
 
 Lastly, we store each choice under the `response` key along with the prompt, question ID, and reference answer across
 all elements of the prompt data.

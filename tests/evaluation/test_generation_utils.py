@@ -108,20 +108,20 @@ class TestGenerateOnPipeline:
 
     def test_batched_branch_aligned(self, batching_pipeline):
         assert batching_pipeline.supports_batching
-        texts, outputs = generate_on_pipeline(
+        texts, outputs, thinking = generate_on_pipeline(
             batch=_prompt_batch(3), pipeline=batching_pipeline, gen_kwargs=GEN_KWARGS, batch_size=8,
         )
-        assert len(texts) == len(outputs) == 3
+        assert len(texts) == len(outputs) == len(thinking) == 3
         assert all(isinstance(text, str) for text in texts)
         assert all(isinstance(out, Output) for out in outputs)
         assert all(out.adapted_input_ids is not None for out in outputs)
 
     def test_fallback_branch_aligned(self, fallback_pipeline):
         assert not fallback_pipeline.supports_batching
-        texts, outputs = generate_on_pipeline(
+        texts, outputs, thinking = generate_on_pipeline(
             batch=_prompt_batch(3), pipeline=fallback_pipeline, gen_kwargs=GEN_KWARGS, batch_size=8,
         )
-        assert len(texts) == len(outputs) == 3
+        assert len(texts) == len(outputs) == len(thinking) == 3
         assert all(isinstance(out, Output) for out in outputs)
 
 
@@ -146,7 +146,7 @@ class TestNoBypassWarning:
         pipeline.steer()
         _ensure_chat_template(pipeline.tokenizer)
 
-        _, outputs = generate_on_pipeline(
+        _, outputs, _ = generate_on_pipeline(
             batch=_prompt_batch(2), pipeline=pipeline, gen_kwargs=GEN_KWARGS, batch_size=8,
         )
         # the message control's injected system content appears exactly once (no re-templating round-trip),
@@ -177,15 +177,21 @@ class TestBatchRetryGenerate:
     """Return-shape matrix over (return_raw, return_outputs) and retry alignment of `outputs`."""
 
     @pytest.mark.parametrize(
-        "return_raw,return_outputs,expected_len",
+        "return_raw,return_outputs,return_thinking,expected_len",
         [
-            (False, False, None),  # plain list
-            (True, False, 2),
-            (False, True, 3),
-            (True, True, 3),  # return_outputs wins regardless of return_raw
+            (False, False, False, None),  # plain list
+            (True, False, False, 2),
+            (False, True, False, 3),
+            (True, True, False, 3),  # return_outputs wins regardless of return_raw
+            (False, False, True, 2),  # (parsed, thinking)
+            (True, False, True, 3),  # (parsed, raw, thinking)
+            (False, True, True, 4),  # (parsed, raw, outputs, thinking)
+            (True, True, True, 4),  # return_outputs wins; thinking appended last
         ],
     )
-    def test_return_shape_matrix(self, batching_pipeline, tokenizer, return_raw, return_outputs, expected_len):
+    def test_return_shape_matrix(
+        self, batching_pipeline, tokenizer, return_raw, return_outputs, return_thinking, expected_len
+    ):
         result = batch_retry_generate(
             prompt_data=_prompt_batch(2),
             model_or_pipeline=batching_pipeline,
@@ -193,6 +199,7 @@ class TestBatchRetryGenerate:
             gen_kwargs=GEN_KWARGS,
             return_raw=return_raw,
             return_outputs=return_outputs,
+            return_thinking=return_thinking,
             batch_size=8,
         )
         if expected_len is None:
@@ -201,14 +208,18 @@ class TestBatchRetryGenerate:
         else:
             assert isinstance(result, tuple)
             assert len(result) == expected_len
+            if return_thinking:
+                thinking = result[-1]
+                assert len(thinking) == 2
+                assert all(think is None or isinstance(think, str) for think in thinking)
             if return_outputs:
-                parsed, raw, outputs = result
-                assert len(parsed) == len(raw) == len(outputs) == 2
+                outputs = result[2]
+                assert len(outputs) == 2
                 assert all(isinstance(out, Output) for out in outputs)
 
     def test_retry_aligns_outputs_with_final_response(self, batching_pipeline, tokenizer):
         batch = _prompt_batch(3)
-        first_texts, _ = generate_on_pipeline(
+        first_texts, _, _ = generate_on_pipeline(
             batch=batch, pipeline=batching_pipeline, gen_kwargs=GEN_KWARGS, batch_size=8,
         )
         parse_fn = _CountingParse(fail_first_for=first_texts[1])
@@ -460,3 +471,187 @@ class TestUseCaseSurfacing:
         for row in rows:
             assert "steered_finish_reason" in row
             assert "steered_adapted_prompt" in row
+
+
+class _ScriptedTokenizer:
+    """Decodes an `Output` back to its scripted continuation text (marker int -> string)."""
+
+    chat_template = "{{ messages }}"  # non-None so has_chat_template is True
+    padding_side = "left"
+    pad_token_id = None
+
+    def __init__(self, script: list[str]):
+        self._script = script
+
+    def batch_decode(self, output_ids, skip_special_tokens=True):
+        index = int(output_ids[0][0])
+        return [self._script[index]]
+
+
+class _ScriptedPipeline(SteeringPipeline):
+    """Pipeline double returning one `Output` per row, decoded via `_ScriptedTokenizer`.
+
+    Each `Output.output_ids` carries a marker index into the tokenizer's script, so decoding yields
+    exactly the scripted continuation for that row. It subclasses `SteeringPipeline` so
+    `batch_retry_generate` uses it as given (no bare-model wrapping); `model` is None so
+    `ensure_left_padding` is a no-op and no live model is required.
+    """
+
+    supports_batching = True
+
+    def __init__(self, script: list[str]):
+        super().__init__(model_name_or_path=None, controls=[], lazy_init=True)
+        self.model = None
+        self.tokenizer = _ScriptedTokenizer(script)
+        self._cursor = 0
+
+    def generate(self, *, messages=None, text=None, runtime_kwargs=None, return_output=True, **gen_kwargs):
+        source = messages if messages is not None else text
+        outputs = []
+        for _ in source:
+            marker = self._cursor
+            self._cursor += 1
+            outputs.append(Output(output_ids=torch.tensor([[marker]]), adapted_input_ids=None))
+        return outputs
+
+
+class TestThinkingSplitInGeneration:
+    """`generate_on_pipeline` returns answer-only text with an aligned thinking list."""
+
+    def test_split_answer_and_thinking(self):
+        script = [
+            "<think>reason zero</think>answer zero",
+            "<think>reason one</think>answer one",
+        ]
+        pipeline = _ScriptedPipeline(script)
+        decoded, outputs, thinking = generate_on_pipeline(
+            batch=_prompt_batch(2), pipeline=pipeline, gen_kwargs=GEN_KWARGS, batch_size=8,
+        )
+        assert decoded == ["answer zero", "answer one"]
+        assert thinking == ["reason zero", "reason one"]
+        assert len(outputs) == 2
+
+    def test_think_tags_none_keeps_blended_text_and_all_none_thinking(self):
+        script = ["<think>reason</think>answer", "plain answer"]
+        pipeline = _ScriptedPipeline(script)
+        decoded, _, thinking = generate_on_pipeline(
+            batch=_prompt_batch(2), pipeline=pipeline, gen_kwargs=GEN_KWARGS, batch_size=8,
+            think_tags=None,
+        )
+        assert decoded == ["<think>reason</think>answer", "plain answer"]
+        assert thinking == [None, None]
+
+    def test_tagless_text_is_full_answer_with_none_thinking(self):
+        script = ["just an answer", "another answer"]
+        pipeline = _ScriptedPipeline(script)
+        decoded, _, thinking = generate_on_pipeline(
+            batch=_prompt_batch(2), pipeline=pipeline, gen_kwargs=GEN_KWARGS, batch_size=8,
+        )
+        assert decoded == ["just an answer", "another answer"]
+        assert thinking == [None, None]
+
+
+class TestBatchRetryThinking:
+    """`batch_retry_generate` parses answer-only text and surfaces the thinking segment."""
+
+    def test_parse_fn_sees_answer_only(self):
+        script = ["<think>ignore this: B</think>A"]
+        pipeline = _ScriptedPipeline(script)
+        seen = []
+
+        def parse_fn(text):
+            seen.append(text)
+            return text
+
+        parsed, thinking = batch_retry_generate(
+            prompt_data=_prompt_batch(1),
+            model_or_pipeline=pipeline,
+            tokenizer=None,
+            gen_kwargs=GEN_KWARGS,
+            parse_fn=parse_fn,
+            return_thinking=True,
+            batch_size=8,
+        )
+        assert seen == ["A"]  # parse_fn never sees the thinking segment
+        assert parsed == ["A"]
+        assert thinking == ["ignore this: B"]
+
+    def test_answer_only_parse_does_not_consume_retries(self):
+        # parse_fn fails on any text containing "reason" (blended) but succeeds on the answer alone;
+        # with the split, the first pass already parses, so no retry round runs
+        script = ["<think>reason</think>final"]
+        pipeline = _ScriptedPipeline(script)
+        calls = {"count": 0}
+
+        def parse_fn(text):
+            calls["count"] += 1
+            return None if "reason" in text else text
+
+        parsed = batch_retry_generate(
+            prompt_data=_prompt_batch(1),
+            model_or_pipeline=pipeline,
+            tokenizer=None,
+            gen_kwargs=GEN_KWARGS,
+            parse_fn=parse_fn,
+            max_retries=2,
+            batch_size=8,
+        )
+        assert parsed == ["final"]
+        assert calls["count"] == 1  # one parse, no retries consumed
+
+    def test_retry_replaces_thinking_entry(self):
+        # row 0 parses on the first pass; row 1 fails once then succeeds, and its thinking updates
+        script = [
+            "<think>keep zero</think>ok0",   # row 0, first pass (parses)
+            "<think>stale one</think>bad1",  # row 1, first pass (fails)
+            "<think>fresh one</think>ok1",   # row 1, retry (parses)
+        ]
+        pipeline = _ScriptedPipeline(script)
+
+        def parse_fn(text):
+            return None if text.startswith("bad") else text
+
+        parsed, raw, outputs, thinking = batch_retry_generate(
+            prompt_data=_prompt_batch(2),
+            model_or_pipeline=pipeline,
+            tokenizer=None,
+            gen_kwargs=GEN_KWARGS,
+            parse_fn=parse_fn,
+            max_retries=1,
+            return_outputs=True,
+            return_thinking=True,
+            batch_size=8,
+        )
+        assert parsed == ["ok0", "ok1"]
+        assert thinking == ["keep zero", "fresh one"]  # row 1's thinking reflects the retry
+
+    def test_default_flags_byte_identical_for_tagless_text(self):
+        # for text with no think tags, default flags return exactly the current shape (a plain list)
+        script = ["plain zero", "plain one"]
+        pipeline = _ScriptedPipeline(script)
+        result = batch_retry_generate(
+            prompt_data=_prompt_batch(2),
+            model_or_pipeline=pipeline,
+            tokenizer=None,
+            gen_kwargs=GEN_KWARGS,
+            batch_size=8,
+        )
+        assert result == ["plain zero", "plain one"]
+        assert isinstance(result, list) and not isinstance(result, tuple)
+
+    def test_unclosed_thinking_warning(self, caplog):
+        # a truncated thinking segment (open tag, no close) yields an empty answer and one warning
+        script = ["<think>reasoning never closes", "<think>done</think>answer"]
+        pipeline = _ScriptedPipeline(script)
+        with caplog.at_level("WARNING", logger="aisteer360.evaluation.utils.generation_utils"):
+            parsed, thinking = batch_retry_generate(
+                prompt_data=_prompt_batch(2),
+                model_or_pipeline=pipeline,
+                tokenizer=None,
+                gen_kwargs=GEN_KWARGS,
+                return_thinking=True,
+                batch_size=8,
+            )
+        assert parsed == ["", "answer"]
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("1 of 2 generations opened a thinking segment that never closed" in m for m in messages)

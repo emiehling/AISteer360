@@ -1,5 +1,7 @@
 """Tests for `VLLMServeBackend` and `VLLMServeSession` against a mocked vLLM server, plus the
 encoder-decoder spec rejection. No vLLM installation or live server is required."""
+import logging
+
 import pytest
 import torch
 from transformers import LlamaConfig, T5Config
@@ -122,6 +124,47 @@ class TestServeBackendConstruction:
     def test_hook_plugin_without_discovery_surface_rejected(self, fake_server):
         with pytest.raises(ValueError, match="hook"):
             VLLMServeBackend(_serve_spec(hook_plugin=True))
+
+
+class TestServeFingerprintVerification:
+    """The chat-template comparison against the discovery payload's fingerprint."""
+
+    @staticmethod
+    def _templated_tokenizer():
+        tokenizer = wordlevel_tokenizer()
+        tokenizer.chat_template = "{% for message in messages %}{{ message['content'] }}{% endfor %}"
+        return tokenizer
+
+    @pytest.fixture()
+    def templated_client(self, monkeypatch):
+        monkeypatch.setattr(
+            "aisteer360.backends.vllm._client_tokenizer",
+            lambda source, trust_remote_code=False: self._templated_tokenizer(),
+        )
+
+    def test_absent_served_template_fingerprint_skips_comparison(
+        self, fake_server, templated_client, tmp_path, caplog,
+    ):
+        from vllm_hook_plugins.core.fingerprints import chat_template_fingerprint
+
+        payload = _discovery_payload()
+        payload["model"]["chat_template_fingerprint"] = chat_template_fingerprint(None)
+        fake_server.discovery = payload
+        with caplog.at_level(logging.WARNING, logger="aisteer360.backends.vllm"):
+            VLLMServeBackend(_serve_spec(hook_plugin=True, artifact_dir=str(tmp_path)))
+        assert not any("differs from the served" in record.getMessage() for record in caplog.records)
+
+    def test_differing_served_template_fingerprint_warns(
+        self, fake_server, templated_client, tmp_path, caplog,
+    ):
+        from vllm_hook_plugins.core.fingerprints import chat_template_fingerprint
+
+        payload = _discovery_payload()
+        payload["model"]["chat_template_fingerprint"] = chat_template_fingerprint("{{ other }}")
+        fake_server.discovery = payload
+        with caplog.at_level(logging.WARNING, logger="aisteer360.backends.vllm"):
+            VLLMServeBackend(_serve_spec(hook_plugin=True, artifact_dir=str(tmp_path)))
+        assert any("differs from the served" in record.getMessage() for record in caplog.records)
 
 
 class TestServeSessionGenerate:
@@ -637,3 +680,39 @@ class TestStageArtifacts:
     def test_stage_is_a_noop_without_payloads(self, fake_server):
         backend = VLLMServeBackend(_serve_spec())
         backend.stage_artifacts({})
+
+
+class TestSharedFsVisibility:
+    """`stage_artifacts` verifies shared_fs visibility when the server advertises its registry."""
+
+    def _backend(self, fake_server, monkeypatch, tmp_path, registry_root):
+        payload = _discovery_payload()
+        if registry_root is not None:
+            payload["artifact_registry_root"] = registry_root
+        fake_server.discovery = payload
+        monkeypatch.setattr(
+            "aisteer360.backends.vllm._ArtifactUploader.upload_payloads",
+            lambda self, payloads: None,
+        )
+        spec = _serve_spec(hook_plugin=True, artifact_dir=str(tmp_path))
+        return VLLMServeBackend(spec)
+
+    def test_invisible_artifact_raises_with_both_roots(self, fake_server, monkeypatch, tmp_path):
+        backend = self._backend(fake_server, monkeypatch, tmp_path, "/srv/registry")
+        monkeypatch.setattr(VLLMServeBackend, "_head_ok", lambda self, path: False)
+        with pytest.raises(ValueError, match="not visible to the server's registry"):
+            backend.stage_artifacts({"sha256:" + "ab" * 32: {}})
+
+    def test_visible_artifact_passes(self, fake_server, monkeypatch, tmp_path):
+        backend = self._backend(fake_server, monkeypatch, tmp_path, "/srv/registry")
+        monkeypatch.setattr(VLLMServeBackend, "_head_ok", lambda self, path: True)
+        backend.stage_artifacts({"sha256:" + "ab" * 32: {}})
+
+    def test_server_without_advertised_root_skips_probe(self, fake_server, monkeypatch, tmp_path):
+        backend = self._backend(fake_server, monkeypatch, tmp_path, None)
+
+        def _fail(self, path):
+            raise AssertionError("probe must not run without an advertised registry root")
+
+        monkeypatch.setattr(VLLMServeBackend, "_head_ok", _fail)
+        backend.stage_artifacts({"sha256:" + "ab" * 32: {}})

@@ -98,6 +98,8 @@ class CommonsenseMCQA(UseCase):
                 - "prompt": Full prompt text sent to the model
                 - "question_id": Identifier from the original evaluation data
                 - "reference_answer": Correct letter choice for this shuffled ordering
+                - "thinking": Reasoning segment split from the continuation, or None if no think tag
+                    is present. This constructed key shadows any same-named instance column.
 
         Note:
 
@@ -140,7 +142,7 @@ class CommonsenseMCQA(UseCase):
                 })
 
         # batch template/generate/decode
-        choices, _, outputs = batch_retry_generate(
+        choices, _, outputs, thinking = batch_retry_generate(
             prompt_data=prompt_data,
             model_or_pipeline=model_or_pipeline,
             tokenizer=tokenizer,
@@ -148,6 +150,7 @@ class CommonsenseMCQA(UseCase):
             gen_kwargs=gen_kwargs,
             runtime_overrides=runtime_overrides,
             return_outputs=True,
+            return_thinking=True,
             batch_size=batch_size
         )
 
@@ -160,9 +163,10 @@ class CommonsenseMCQA(UseCase):
                 "prompt": prompt_dict["prompt"],
                 "question_id": prompt_dict["id"],
                 "reference_answer": prompt_dict["reference_answer"],
+                "thinking": think,
                 **output_record_fields(output, tokenizer),
             }
-            for prompt_dict, choice, output in zip(prompt_data, choices, outputs)
+            for prompt_dict, choice, output, think in zip(prompt_data, choices, outputs, thinking)
         ]
 
         return generations

@@ -142,6 +142,19 @@ output = pipeline.generate(
 )
 ```
 
+For reasoning models that toggle thinking through a chat-template keyword, we pass `chat_template_kwargs` alongside
+`messages=`. This mapping is forwarded to `apply_chat_template` and is not interpreted by the toolkit, so the keys
+are whatever the model family expects (for example `enable_thinking`). It is valid only with `messages=`, and pairing
+it with `text=` or `input_ids=` raises a `TypeError`.
+
+```python
+output = pipeline.generate(
+    messages=[{"role": "user", "content": PROMPT}],
+    chat_template_kwargs={"enable_thinking": False},
+    max_new_tokens=20,
+)
+```
+
 To tokenize explicitly and pass token IDs, encode via the pipeline's tokenizer, applying the chat template if
 available:
 

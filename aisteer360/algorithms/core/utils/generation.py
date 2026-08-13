@@ -16,6 +16,7 @@ def apply_adapt_messages_and_tokenize(
         tokenizer: "PreTrainedTokenizerBase",
         messages_batch: list[list[dict]],
         runtime_kwargs: dict,
+        chat_template_kwargs: dict | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None, set[int]]:
     """Fold every input control's `adapt_messages` over the message batch, then chat-template tokenize once.
 
@@ -23,6 +24,16 @@ def apply_adapt_messages_and_tokenize(
     that control as handled at message level; a None return passes the messages through unchanged
     and leaves the control unmarked, so the pipeline later runs its token-level `adapt` instead.
     Each control is therefore applied exactly once per call.
+
+    Args:
+        input_controls: Input controls whose `adapt_messages` runs in list order.
+        tokenizer: Tokenizer whose `apply_chat_template` performs the tokenization.
+        messages_batch: One conversation per row, each a list of chat-message mappings.
+        runtime_kwargs: Per-call parameters forwarded to `adapt_messages`.
+        chat_template_kwargs: Extra keyword arguments forwarded to `apply_chat_template` after the
+            four pipeline-owned kwargs (`return_tensors`, `padding`, `add_generation_prompt`,
+            `return_dict`). None or an empty mapping adds nothing. The toolkit does not interpret
+            the keys; they are model-family specific (e.g. `enable_thinking`).
 
     Returns:
         tuple[input_ids, attention_mask, handled] where `handled` contains `id(control)` for each
@@ -44,6 +55,7 @@ def apply_adapt_messages_and_tokenize(
         padding=True,
         add_generation_prompt=True,
         return_dict=True,
+        **(chat_template_kwargs or {}),
     )
     input_ids = encoded["input_ids"]
     attention_mask = encoded.get("attention_mask")

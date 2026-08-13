@@ -80,6 +80,8 @@ class TruthfulQA(UseCase):
                 - ``incorrect_answers``: List of common misconception answers.
                 - ``best_answer``: Single best reference answer (if present in the dataset).
                 - ``category``: Question category (if present in the dataset).
+                - ``thinking``: Reasoning segment split from the continuation, or None if no think
+                    tag is present. This constructed key shadows any same-named instance column.
         """
         if not self.evaluation_data:
             logger.warning("No evaluation data provided")
@@ -97,13 +99,14 @@ class TruthfulQA(UseCase):
             )
             prompt_data.append({**instance, "prompt": [{"role": "user", "content": prompt_text}]})
 
-        responses, _, outputs = batch_retry_generate(
+        responses, _, outputs, thinking = batch_retry_generate(
             prompt_data=prompt_data,
             model_or_pipeline=model_or_pipeline,
             tokenizer=tokenizer,
             gen_kwargs=gen_kwargs,
             runtime_overrides=runtime_overrides,
             return_outputs=True,
+            return_thinking=True,
             batch_size=batch_size,
         )
 
@@ -118,9 +121,10 @@ class TruthfulQA(UseCase):
                 "incorrect_answers": instance["incorrect_answers"],
                 "best_answer": instance.get("best_answer", ""),
                 "category": instance.get("category", ""),
+                "thinking": think,
                 **output_record_fields(output, tokenizer),
             }
-            for instance, response, output in zip(self.evaluation_data, responses, outputs)
+            for instance, response, output, think in zip(self.evaluation_data, responses, outputs, thinking)
         ]
 
         return generations

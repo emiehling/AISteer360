@@ -16,6 +16,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from aisteer360.algorithms.core.output import Output
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.utils.rendering import has_chat_template
+from aisteer360.utils.thinking import DEFAULT_THINK_TAGS, split_thinking
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,20 @@ def log_truncation_count(outputs: Sequence[Output | None]) -> None:
             "length-sensitive metrics may be affected.",
             truncated,
             len(outputs),
+        )
+
+
+def log_unclosed_thinking_count(thinking: Sequence[str | None], answers: Sequence[str]) -> None:
+    """Log one warning naming how many items opened a thinking segment that never closed."""
+    unclosed = sum(
+        1 for think, answer in zip(thinking, answers) if think is not None and answer == ""
+    )
+    if unclosed:
+        logger.warning(
+            "%d of %d generations opened a thinking segment that never closed (no answer segment); "
+            "consider raising max_new_tokens or using budget_forcing.",
+            unclosed,
+            len(thinking),
         )
 
 
@@ -197,13 +212,25 @@ def generate_on_pipeline(
     gen_kwargs: dict[str, Any] | None = None,
     runtime_overrides: dict[str, dict[str, Any]] | None = None,
     batch_size: int = DEFAULT_EVAL_BATCH_SIZE,
-) -> tuple[list[str], list[Output]]:
-    """Generate on a steered pipeline; returns decoded texts and aligned `Output` records.
+    think_tags: tuple[str, str] | None = DEFAULT_THINK_TAGS,
+) -> tuple[list[str], list[Output], list[str | None]]:
+    """Generate on a steered pipeline; returns answer texts, aligned `Output` records, and thinking.
 
     Every chunk routes through `pipeline.generate(messages=...)` (or `text=` when the tokenizer has
     no chat template), so message-level input controls apply, and the pipeline owns templating,
     tokenization, and padding. Override columns resolve against `batch` rows, so any subset of rows
     (a retry batch, an expanded prompt set) stays aligned by construction.
+
+    Each decoded continuation is split into a thinking segment and an answer segment when
+    `think_tags` is set. The returned `decoded[i]` is the answer segment, and `thinking[i]` is the
+    reasoning segment (or None when no think tag is present). Setting `think_tags=None` disables
+    splitting: `decoded[i]` is then the full continuation and every `thinking[i]` is None, so the
+    return arity is constant.
+
+    Note that with a template-less tokenizer the pipeline falls back to `text=`; because
+    `chat_template_kwargs` is valid only with `messages=`, setting it in `gen_kwargs` for a
+    template-less tokenizer raises the pairing `TypeError` from `pipeline.generate`. This is
+    intended, since a chat-template kwarg was configured for a model with no chat template.
 
     Args:
         batch: Prompt rows, each with a `"prompt"` (str or chat-message list) and any override columns.
@@ -212,10 +239,13 @@ def generate_on_pipeline(
         runtime_overrides: A mapping from control class name to `{variable: column}`; columns resolve
             against `batch`.
         batch_size: Chunk size for generation.
+        think_tags: The `(open_tag, close_tag)` pair used to split thinking from the answer, or None
+            to disable splitting.
 
     Returns:
-        A tuple `(decoded, records)`; `decoded[i]` is the decoded text for row `i` and `records[i]`
-        is its aligned `Output` (carrying `adapted_input_ids` and `finish_reason`).
+        A tuple `(decoded, records, thinking)`; `decoded[i]` is the answer text for row `i`,
+        `records[i]` is its aligned `Output` (carrying `adapted_input_ids` and `finish_reason`), and
+        `thinking[i]` is the reasoning segment (`str | None`).
 
     Raises:
         TypeError: If a prompt is a chat message list but the tokenizer has no chat template.
@@ -242,6 +272,7 @@ def generate_on_pipeline(
 
     decoded: list[str] = []
     records: list[Output] = []
+    thinking: list[str | None] = []
     for start in range(0, len(conversations), batch_size):
         stop = start + batch_size
         chunk = conversations[start:stop]
@@ -264,8 +295,16 @@ def generate_on_pipeline(
             logger.warning("Generation failed for chunk %d.", start // batch_size, exc_info=True)
             raise
         records.extend(outputs)
-        decoded.extend(output.decode(pipeline.tokenizer)[0] for output in outputs)
-    return decoded, records
+        for output in outputs:
+            text = output.decode(pipeline.tokenizer)[0]
+            if think_tags is None:
+                decoded.append(text)
+                thinking.append(None)
+            else:
+                split = split_thinking(text, think_tags)
+                decoded.append(split.answer)
+                thinking.append(split.thinking)
+    return decoded, records, thinking
 
 
 def _as_pipeline(model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> SteeringPipeline:
@@ -288,15 +327,24 @@ def batch_retry_generate(
     max_retries: int = 2,
     return_raw: bool = False,
     return_outputs: bool = False,
+    return_thinking: bool = False,
+    think_tags: tuple[str, str] | None = DEFAULT_THINK_TAGS,
     batch_size: int | None = None,
-) -> list[Any] | tuple[list[Any], list[str]] | tuple[list[Any], list[str], list[Output]]:
+) -> (
+    list[Any]
+    | tuple[list[Any], ...]
+):
     """Generate on a model or pipeline with optional parsing and retry.
 
     A bare `PreTrainedModel` is wrapped as an empty steered pipeline; a `SteeringPipeline` is used as
     given. Generation routes through `generate_on_pipeline`, so every path is core's. When `parse_fn`
     is supplied, only the rows whose parse returns None are retried (up to `max_retries` rounds), and
-    each retry replaces the raw text, parsed value, and `Output` at that row. Retry rows carry their
-    own override columns, so retries are aligned by construction.
+    each retry replaces the raw text, parsed value, `Output`, and thinking segment at that row. Retry
+    rows carry their own override columns, so retries are aligned by construction.
+
+    Raw text and `parse_fn` see the answer segment only, with any thinking segment removed by
+    `generate_on_pipeline` (`think_tags`). Setting `think_tags=None` disables the split, so raw text
+    is the full continuation and every returned thinking value is None.
 
     Args:
         prompt_data: Prompt rows, each with a `"prompt"` and any override columns.
@@ -306,15 +354,25 @@ def batch_retry_generate(
         gen_kwargs: Generation parameters forwarded to the pipeline.
         runtime_overrides: A mapping from control class name to `{variable: column}`; columns resolve
             against `prompt_data` rows.
-        parse_fn: Parser applied to each raw text; a None result marks the row for retry.
+        parse_fn: Parser applied to each raw (answer) text; a None result marks the row for retry.
         max_retries: Maximum retry rounds for rows that fail to parse.
         return_raw: Return `(parsed, raw)` when `return_outputs` is False.
         return_outputs: Return `(parsed, raw, outputs)` regardless of `return_raw`.
+        return_thinking: Append the per-row thinking list as the final element of the returned tuple.
+        think_tags: The `(open_tag, close_tag)` pair forwarded to `generate_on_pipeline`, or None to
+            disable splitting.
         batch_size: Chunk size; defaults to `DEFAULT_EVAL_BATCH_SIZE`.
 
     Returns:
-        `parsed` (default), `(parsed, raw)` (when `return_raw`), or `(parsed, raw, outputs)` (when
-        `return_outputs`).
+        The base shape is `parsed` (default), `(parsed, raw)` (when `return_raw`), or
+        `(parsed, raw, outputs)` (when `return_outputs`). When `return_thinking` is True the thinking
+        list is appended as the final element of that shape:
+
+            - `return_thinking` only: `(parsed, thinking)`.
+            - `return_raw` and `return_thinking`: `(parsed, raw, thinking)`.
+            - `return_outputs` and `return_thinking`: `(parsed, raw, outputs, thinking)`.
+
+        `thinking[i]` is `str | None`. Default flags return the base shape unchanged.
 
     Raises:
         ValueError: If any row is missing the `"prompt"` key.
@@ -330,13 +388,13 @@ def batch_retry_generate(
         else _as_pipeline(model_or_pipeline, tokenizer)
     )
 
-    def _generate(rows: Sequence[dict[str, Any]]) -> tuple[list[str], list[Output]]:
+    def _generate(rows: Sequence[dict[str, Any]]) -> tuple[list[str], list[Output], list[str | None]]:
         return generate_on_pipeline(
             batch=rows, pipeline=pipeline, gen_kwargs=gen_kwargs,
-            runtime_overrides=runtime_overrides, batch_size=batch_size,
+            runtime_overrides=runtime_overrides, batch_size=batch_size, think_tags=think_tags,
         )
 
-    responses, outputs = _generate(prompt_data)
+    responses, outputs, thinking = _generate(prompt_data)
     if parse_fn is not None:
         parsed_responses = [parse_fn(response) for response in responses]
         retry_indices = [i for i, value in enumerate(parsed_responses) if value is None]
@@ -346,17 +404,29 @@ def batch_retry_generate(
 
     tries = 0
     while retry_indices and tries < max_retries:
-        retry_raw, retry_outputs = _generate([prompt_data[i] for i in retry_indices])
+        retry_raw, retry_outputs, retry_thinking = _generate([prompt_data[i] for i in retry_indices])
         for local_i, global_i in enumerate(retry_indices):
             responses[global_i] = retry_raw[local_i]
             outputs[global_i] = retry_outputs[local_i]
+            thinking[global_i] = retry_thinking[local_i]
             parsed_responses[global_i] = parse_fn(retry_raw[local_i])
         retry_indices = [i for i, value in enumerate(parsed_responses) if value is None]
         tries += 1
 
+    if think_tags is not None:
+        log_unclosed_thinking_count(thinking, responses)
+
     if return_outputs:
-        return parsed_responses, responses, outputs
-    return (parsed_responses, responses) if return_raw else parsed_responses
+        base: tuple[list[Any], ...] = (parsed_responses, responses, outputs)
+    elif return_raw:
+        base = (parsed_responses, responses)
+    else:
+        base = (parsed_responses,)
+
+    if return_thinking:
+        result = base + (thinking,)
+        return result if len(result) > 1 else result[0]
+    return base if len(base) > 1 else base[0]
 
 
 def _runtime_kwargs_to_list(flat_dict):
