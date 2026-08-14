@@ -102,6 +102,11 @@ dev = [
 module-root = ""
 module-name = "aisteer360"
 
+[tool.isort]
+profile = "black"
+line_length = 120
+extend_skip = [".claude"]
+
 # build
 [build-system]
 requires = ["uv_build>=0.8.9,<0.9.0"]

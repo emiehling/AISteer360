@@ -2,12 +2,7 @@
 import pytest
 import torch
 
-from aisteer360.algorithms.core.internals.probes.rules import (
-    P,
-    ProbePredicate,
-    RoutingRules,
-    Rule,
-)
+from aisteer360.algorithms.core.internals.probes.rules import P, ProbePredicate, RoutingRules, Rule
 
 
 def _bools(*values) -> torch.Tensor:

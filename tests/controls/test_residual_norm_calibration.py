@@ -7,9 +7,9 @@ Covers `measure_residual_norms` (composition over `render_for_model` + `tokenize
 import pytest
 import torch
 
+from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common import measure_residual_norms
-from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
 from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter

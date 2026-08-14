@@ -13,10 +13,7 @@ import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import (
-    AlignmentAdaptiveTransform,
-    RotationTransform,
-)
+from aisteer360.algorithms.state_control._common.transforms import AlignmentAdaptiveTransform, RotationTransform
 from aisteer360.algorithms.state_control.angular_steering.args import AngularSteeringArgs
 from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
 from tests.utils.sweep import build_param_grid

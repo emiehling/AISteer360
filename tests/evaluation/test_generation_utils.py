@@ -16,12 +16,12 @@ import torch
 from aisteer360.algorithms.core.output import Output
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.utils.rendering import has_chat_template
 from aisteer360.evaluation.utils.generation_utils import (
     batch_retry_generate,
     generate_on_pipeline,
     output_record_fields,
 )
+from aisteer360.utils.rendering import has_chat_template
 
 TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 GEN_KWARGS = {"max_new_tokens": 4, "do_sample": False}

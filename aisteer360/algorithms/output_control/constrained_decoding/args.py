@@ -4,10 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from aisteer360.algorithms.core.base_args import BaseArgs
-from aisteer360.algorithms.core.execution.payloads import (
-    ConstraintSource,
-    as_constraint_source,
-)
+from aisteer360.algorithms.core.execution.payloads import ConstraintSource, as_constraint_source
 
 
 @dataclass

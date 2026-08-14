@@ -4,11 +4,8 @@ import logging
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.fingerprint import (
-    artifact_provenance_meta,
-    session_artifact_identity,
-)
 from aisteer360.algorithms.core.internals.capture import capture_hidden
+from aisteer360.algorithms.core.internals.fingerprint import artifact_provenance_meta, session_artifact_identity
 
 from ..steering_vector import SteeringVector
 from .base import BaseEstimator
@@ -123,4 +120,3 @@ class SinglePairEstimator(BaseEstimator[SteeringVector]):
             directions=directions,
             meta=meta,
         )
-    

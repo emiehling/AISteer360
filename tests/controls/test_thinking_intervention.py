@@ -1,12 +1,9 @@
 import pytest
 import torch
 
-from tests.utils.runtime_helpers import script_session_generate
-
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.output_control.thinking_intervention.control import (
-    ThinkingIntervention,
-)
+from aisteer360.algorithms.output_control.thinking_intervention.control import ThinkingIntervention
+from tests.utils.runtime_helpers import script_session_generate
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = (

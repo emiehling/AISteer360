@@ -4,10 +4,7 @@ from aisteer360.algorithms.state_control._common.selectors import FractionalDept
 from aisteer360.algorithms.state_control._common.sources import ContrastiveFit, _Precomputed
 from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import (
-    AdditiveTransform,
-    NormPreservingTransform,
-)
+from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, NormPreservingTransform
 from aisteer360.algorithms.state_control._common.transforms.base import unwrap_modifiers
 from aisteer360.algorithms.state_control.base import InterventionControl
 

@@ -14,13 +14,9 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control._common.sources import ArtifactSource, ContrastiveFit
 from aisteer360.algorithms.state_control._common.condition_scorers import CosineDirectionScorer
-from aisteer360.algorithms.state_control._common.gates import (
-    AlwaysOpenGate,
-    CacheOnceGate,
-    MultiKeyThresholdGate,
-)
+from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate, CacheOnceGate, MultiKeyThresholdGate
+from aisteer360.algorithms.state_control._common.sources import ArtifactSource, ContrastiveFit
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (
     AdditiveTransform,

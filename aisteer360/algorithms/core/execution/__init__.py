@@ -6,28 +6,30 @@ interacts with backends through these two interfaces. Backend implementations li
 `aisteer360.backends`; this package holds every seam type and imports nothing from
 `aisteer360.backends` at module level.
 """
-from aisteer360.algorithms.core.execution.access import (
-    ModelAccess,
-    PlannedFit,
-    PlannedStep,
-    SteerPlan,
+from aisteer360.algorithms.core.execution.access import ModelAccess, PlannedFit, PlannedStep, SteerPlan
+from aisteer360.algorithms.core.execution.backend import (
+    Backend,
+    SteeringSession,
+    capabilities_for_spec,
+    resolve_backend_class,
 )
-from aisteer360.algorithms.core.execution.payloads import (
-    Artifact,
-    ArtifactProvenance,
-    CheckpointArtifact,
-    LoRAArtifact,
-    ModelArtifact,
-)
-from aisteer360.algorithms.core.execution.backend import Backend
-from aisteer360.algorithms.core.execution.payloads import ConstraintSource, as_constraint_source
 from aisteer360.algorithms.core.execution.contracts import (
+    Alternative,
     BackendCapabilities,
     Capability,
     CaptureKinds,
     ConstraintKinds,
     InterventionKinds,
     ProcessorKinds,
+    Requirements,
+    SpecConstraint,
+    SupportFailure,
+    SupportReport,
+    UnsupportedOperationError,
+    UnsupportedPipelineError,
+    any_of,
+    evaluate_support,
+    needs,
 )
 from aisteer360.algorithms.core.execution.fanout import (
     PartialBatchError,
@@ -36,49 +38,32 @@ from aisteer360.algorithms.core.execution.fanout import (
     run_bounded,
     with_transport_retries,
 )
+from aisteer360.algorithms.core.execution.params import GenerationParams, merge_lowered_params
 from aisteer360.algorithms.core.execution.payloads import (
-    InterventionSpec,
-    ProcessorSpec,
-)
-from aisteer360.algorithms.core.execution.payloads import (
-    ConstraintEntry,
+    Artifact,
+    ArtifactProvenance,
     CaptureResult,
+    CheckpointArtifact,
+    ConstraintEntry,
+    ConstraintSource,
     GenerationItem,
     HookEntry,
     InterventionEntry,
+    InterventionSpec,
     ItemResult,
+    LoRAArtifact,
+    ModelArtifact,
+    ModelFacts,
     OutputControlEntry,
+    PreparedPrompt,
+    ProcessorSpec,
     ProcessorSpecEntry,
     ScoringItem,
     StackEntry,
     StateControlEntry,
+    as_constraint_source,
 )
-from aisteer360.algorithms.core.execution.payloads import ModelFacts
-from aisteer360.algorithms.core.execution.params import (
-    GenerationParams,
-    merge_lowered_params,
-)
-from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
-from aisteer360.algorithms.core.execution.backend import (
-    capabilities_for_spec,
-    resolve_backend_class,
-)
-from aisteer360.algorithms.core.execution.contracts import (
-    Alternative,
-    Requirements,
-    SpecConstraint,
-    any_of,
-    needs,
-)
-from aisteer360.algorithms.core.execution.backend import SteeringSession
 from aisteer360.algorithms.core.execution.spec import BackendSpec
-from aisteer360.algorithms.core.execution.contracts import (
-    SupportFailure,
-    SupportReport,
-    UnsupportedOperationError,
-    UnsupportedPipelineError,
-    evaluate_support,
-)
 
 __all__ = [
     "Artifact",

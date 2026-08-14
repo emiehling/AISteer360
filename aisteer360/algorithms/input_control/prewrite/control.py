@@ -16,26 +16,16 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.session_utils import SessionLM
-from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.input_control._common.formatters.system_prompt import (
-    SystemPromptFormatter,
-)
+from aisteer360.algorithms.input_control._common.formatters.system_prompt import SystemPromptFormatter
 from aisteer360.algorithms.input_control._common.memory.text import TextMemory
-from aisteer360.algorithms.input_control._common.proposers.llm_meta_prompt import (
-    LLMMetaPromptProposer,
-)
-from aisteer360.algorithms.input_control._common.proposers.utils.parsing import (
-    parse_concise_instruction,
-)
-from aisteer360.algorithms.input_control._common.scorers.task_evaluation import (
-    TaskEvaluationScorer,
-)
+from aisteer360.algorithms.input_control._common.proposers.llm_meta_prompt import LLMMetaPromptProposer
+from aisteer360.algorithms.input_control._common.proposers.utils.parsing import parse_concise_instruction
+from aisteer360.algorithms.input_control._common.scorers.task_evaluation import TaskEvaluationScorer
 from aisteer360.algorithms.input_control._common.selectors.top_k import TopKSelector
+from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.input_control.prewrite.args import PRewriteArgs
 from aisteer360.algorithms.input_control.prewrite.utils import meta_prompts
-from aisteer360.algorithms.input_control.prewrite.utils.reward import (
-    make_metric_reward_func,
-)
+from aisteer360.algorithms.input_control.prewrite.utils.reward import make_metric_reward_func
 
 logger = logging.getLogger(__name__)
 
@@ -219,10 +209,7 @@ class PRewrite(InputControl):
         """
         from datasets import Dataset
 
-        from aisteer360.algorithms.structural_control.wrappers.trl.grpotrainer import (
-            GRPO,
-            GRPOArgs,
-        )
+        from aisteer360.algorithms.structural_control.wrappers.trl.grpotrainer import GRPO, GRPOArgs
 
         seeds = self.training_seeds or [self.initial_instruction]
         train_dataset = Dataset.from_dict(

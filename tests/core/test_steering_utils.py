@@ -16,12 +16,7 @@ from aisteer360.algorithms.output_control.base import DecodingDriver
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.utils.tokenization import ensure_pad_token
-from tests.conftest import (
-    MockInputControl,
-    MockOutputControl,
-    MockStateControl,
-    MockStructuralControl,
-)
+from tests.conftest import MockInputControl, MockOutputControl, MockStateControl, MockStructuralControl
 
 
 # merge_controls Tests

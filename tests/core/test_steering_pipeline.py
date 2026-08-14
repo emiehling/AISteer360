@@ -642,12 +642,8 @@ class TestSameModelForwardsMetadata:
     """`same_model_forwards` is declarative component metadata on the declaring classes."""
 
     def test_declared_flags(self):
-        from aisteer360.algorithms.output_control._common.logit_sources import (
-            PromptVariantSource,
-        )
-        from aisteer360.algorithms.output_control._common.values.subspace_margin import (
-            SubspaceMarginValue,
-        )
+        from aisteer360.algorithms.output_control._common.logit_sources import PromptVariantSource
+        from aisteer360.algorithms.output_control._common.values.subspace_margin import SubspaceMarginValue
         from aisteer360.algorithms.output_control.sasa.control import SASA
 
         assert SASA.same_model_forwards is True
@@ -656,9 +652,7 @@ class TestSameModelForwardsMetadata:
         assert OutputControl.same_model_forwards is False
 
     def test_prompt_variant_source_construction_emits_no_warning(self):
-        from aisteer360.algorithms.output_control._common.logit_sources import (
-            PromptVariantSource,
-        )
+        from aisteer360.algorithms.output_control._common.logit_sources import PromptVariantSource
 
         with warnings.catch_warnings():
             warnings.simplefilter("error")

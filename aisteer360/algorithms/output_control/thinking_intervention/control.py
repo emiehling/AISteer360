@@ -4,9 +4,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from aisteer360.algorithms.output_control._common.drivers.phased import Fixed, Generated, PhasedDriver
 from aisteer360.algorithms.output_control.base import OutputControl
-from aisteer360.algorithms.output_control.thinking_intervention.args import (
-    ThinkingInterventionArgs,
-)
+from aisteer360.algorithms.output_control.thinking_intervention.args import ThinkingInterventionArgs
 
 
 class ThinkingIntervention(PhasedDriver):

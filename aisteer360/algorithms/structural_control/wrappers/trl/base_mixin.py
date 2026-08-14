@@ -3,19 +3,10 @@ from dataclasses import fields, is_dataclass
 from typing import Any
 
 from peft import PeftType
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    PreTrainedModel,
-    PreTrainedTokenizer,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.core.execution.payloads import (
-    Artifact,
-    CheckpointArtifact,
-    LoRAArtifact,
-)
 from aisteer360.algorithms.core.execution.contracts import Capability
+from aisteer360.algorithms.core.execution.payloads import Artifact, CheckpointArtifact, LoRAArtifact
 
 
 class TRLMixin:

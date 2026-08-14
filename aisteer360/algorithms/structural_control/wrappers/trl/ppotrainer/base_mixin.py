@@ -2,19 +2,13 @@ from typing import Any
 
 import torch
 from peft import LoraConfig, PeftType
-from transformers import (
-    AutoModelForSequenceClassification,
-    PreTrainedModel,
-    PreTrainedTokenizer,
-)
+from transformers import AutoModelForSequenceClassification, PreTrainedModel, PreTrainedTokenizer
 from trl import PPOConfig, PPOTrainer
 
-from aisteer360.utils.tokenization import ensure_pad_token
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin
-from aisteer360.algorithms.structural_control.wrappers.trl.utils.prompt_schema import (
-    standardize_prompt_dataset,
-)
+from aisteer360.algorithms.structural_control.wrappers.trl.utils.prompt_schema import standardize_prompt_dataset
+from aisteer360.utils.tokenization import ensure_pad_token
 
 
 class PPOTrainerMixin(TRLMixin, StructuralControl):

@@ -16,17 +16,10 @@ from transformers import LlamaConfig, LlamaForSequenceClassification
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.output_control._common.estimators.linear_probe import LinearProbe
-from aisteer360.algorithms.output_control._common.logit_sources import (
-    AuxModelSource,
-    CallableSource,
-)
+from aisteer360.algorithms.output_control._common.logit_sources import AuxModelSource, CallableSource
 from aisteer360.algorithms.output_control._common.processors.contrastive_mixture import ContrastiveMixtureProcessor
 from aisteer360.algorithms.output_control._common.processors.value_guided import ValueGuidedProcessor
-from aisteer360.algorithms.output_control._common.resolve import (
-    resolve_scorer,
-    resolve_source,
-    resolve_value,
-)
+from aisteer360.algorithms.output_control._common.resolve import resolve_scorer, resolve_source, resolve_value
 from aisteer360.algorithms.output_control._common.scorers.majority_vote import MajorityVoteScorer
 from aisteer360.algorithms.output_control._common.scorers.reward_model import RewardModelScorer
 from aisteer360.algorithms.output_control._common.values.base import BaseCandidateValue, StepContext

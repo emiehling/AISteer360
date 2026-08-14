@@ -5,7 +5,7 @@ import torch
 from aisteer360.algorithms.core.execution import ModelFacts
 from aisteer360.algorithms.core.internals.probes.probe import Probe
 from aisteer360.algorithms.core.internals.probes.probe_set import ProbeSet
-from aisteer360.algorithms.core.internals.probes.rules import P, Rule, RoutingRules
+from aisteer360.algorithms.core.internals.probes.rules import P, RoutingRules, Rule
 from aisteer360.algorithms.output_control.routed_decoding import RoutedDecoding
 from aisteer360.algorithms.output_control.routed_decoding.actions import respond
 from tests.utils.tiny_models import wordlevel_tokenizer

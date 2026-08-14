@@ -10,10 +10,7 @@ from typing import Callable
 
 import torch
 
-from aisteer360.algorithms.output_control._common.values.base import (
-    BaseCandidateValue,
-    StepContext,
-)
+from aisteer360.algorithms.output_control._common.values.base import BaseCandidateValue, StepContext
 
 
 class ClassifierValue(BaseCandidateValue):

@@ -30,9 +30,8 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
 from aisteer360.algorithms.core.execution.access import ModelAccess
+from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, any_of, needs
 from aisteer360.algorithms.core.execution.payloads import Artifact
-from aisteer360.algorithms.core.execution.contracts import Capability
-from aisteer360.algorithms.core.execution.contracts import Requirements, any_of, needs
 
 
 class StructuralControl(BaseControl):

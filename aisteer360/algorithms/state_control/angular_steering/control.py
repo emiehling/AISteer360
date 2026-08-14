@@ -2,11 +2,7 @@
 from __future__ import annotations
 
 from aisteer360.algorithms.state_control._common.estimators import SteeringPlaneEstimator
-from aisteer360.algorithms.state_control._common.sources import (
-    ContrastiveFit,
-    LayerFilteredFit,
-    _Precomputed,
-)
+from aisteer360.algorithms.state_control._common.sources import ContrastiveFit, LayerFilteredFit, _Precomputed
 from aisteer360.algorithms.state_control._common.specs import CoveredLayers, Intervention, TokenScope
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (

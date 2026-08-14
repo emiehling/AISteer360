@@ -31,10 +31,7 @@ from aisteer360.algorithms.state_control._common.hook_utils import (
     get_model_layer_list,
     replace_hidden_states,
 )
-from aisteer360.algorithms.state_control._common.token_scope import (
-    compute_prompt_lens,
-    make_token_mask,
-)
+from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens, make_token_mask
 
 
 class TestSteeringVector:
@@ -875,10 +872,7 @@ class TestNormPreservingTransform:
 
     def test_preserves_norm_when_increased(self):
         """Test that norm is preserved when it would increase."""
-        from aisteer360.algorithms.state_control._common.transforms import (
-            AdditiveTransform,
-            NormPreservingTransform,
-        )
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, NormPreservingTransform
 
         # start with unit norm vectors
         hidden = torch.tensor([[[1.0, 0.0, 0.0, 0.0]]])  # norm = 1
@@ -896,10 +890,7 @@ class TestNormPreservingTransform:
 
     def test_does_not_scale_when_norm_decreases(self):
         """Test that scaling doesn't happen when norm decreases."""
-        from aisteer360.algorithms.state_control._common.transforms import (
-            AdditiveTransform,
-            NormPreservingTransform,
-        )
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, NormPreservingTransform
 
         # large initial norm
         hidden = torch.tensor([[[3.0, 0.0, 0.0, 0.0]]])  # norm = 3
@@ -1034,10 +1025,7 @@ class TestTransformBinding:
             HeadAdditiveTransform({0: torch.randn(2, 4)}, active_heads={0: {0}})
 
     def test_norm_preserving_delegates_binding(self):
-        from aisteer360.algorithms.state_control._common.transforms import (
-            AdditiveTransform,
-            NormPreservingTransform,
-        )
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, NormPreservingTransform
         inner = AdditiveTransform(self._stub_source(self._sv()))
         wrapper = NormPreservingTransform(inner)
         assert wrapper.is_bound is False and wrapper.covered_layer_ids is None
@@ -1046,10 +1034,7 @@ class TestTransformBinding:
         assert bound.covered_layer_ids == {0, 1}
 
     def test_alignment_adaptive_two_part_binding(self):
-        from aisteer360.algorithms.state_control._common.transforms import (
-            AdditiveTransform,
-            AlignmentAdaptiveTransform,
-        )
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, AlignmentAdaptiveTransform
         sv = self._sv()
         # own concrete, inner unbound -> not bound (inner unbound)
         inner_unbound = AdditiveTransform(self._stub_source(sv))
@@ -1110,10 +1095,7 @@ class TestResolveTransformSlot:
         return _Precomputed(sv)
 
     def test_bound_instance_passes_through(self):
-        from aisteer360.algorithms.state_control._common.transforms import (
-            AdditiveTransform,
-            resolve_transform_slot,
-        )
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, resolve_transform_slot
 
         transform = AdditiveTransform(self._sv(layers=(0, 1)), strength=1.5)
         built = resolve_transform_slot(transform, self._model(), None, [0, 1])
@@ -1134,10 +1116,7 @@ class TestResolveTransformSlot:
         assert template.is_bound is False  # template untouched
 
     def test_factory_returning_bound_transform(self):
-        from aisteer360.algorithms.state_control._common.transforms import (
-            AdditiveTransform,
-            resolve_transform_slot,
-        )
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, resolve_transform_slot
 
         sv = self._sv(layers=(0, 1))
         built = resolve_transform_slot(
@@ -1203,10 +1182,7 @@ class TestResolveTransformSlot:
         assert built is transform
 
     def test_context_exposes_resolved_layers_and_working_resolve(self):
-        from aisteer360.algorithms.state_control._common.transforms import (
-            AdditiveTransform,
-            resolve_transform_slot,
-        )
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, resolve_transform_slot
 
         seen = {}
 

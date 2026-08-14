@@ -13,10 +13,7 @@ import torch
 
 from aisteer360.algorithms.output_control._common.candidates import select_candidates
 from aisteer360.algorithms.output_control._common.processors.base import PrefixKeyedProcessor
-from aisteer360.algorithms.output_control._common.values.base import (
-    BaseCandidateValue,
-    StepContext,
-)
+from aisteer360.algorithms.output_control._common.values.base import BaseCandidateValue, StepContext
 
 Normalize = Literal["none", "minmax", "softmax"]
 

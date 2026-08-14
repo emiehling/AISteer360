@@ -15,10 +15,7 @@ from aisteer360.algorithms.core.execution.spec import BackendSpec
 from aisteer360.algorithms.core.output import Output
 from aisteer360.evaluation.metrics import backend_utils
 from aisteer360.evaluation.metrics.base_judge import LLMJudgeMetric
-from aisteer360.evaluation.metrics.custom.truthful_qa import (
-    Informativeness,
-    Truthfulness,
-)
+from aisteer360.evaluation.metrics.custom.truthful_qa import Informativeness, Truthfulness
 from tests.utils.tiny_models import wordlevel_tokenizer
 
 # wordlevel vocab: <s>=0 </s>=1 <pad>=2 the=3 cat=4 sat=5 on=6 mat=7 dog=8 ran=9 fast=10 ...

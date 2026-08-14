@@ -19,12 +19,12 @@ import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
+from aisteer360.algorithms.core.internals.data import ContrastivePairs, as_contrastive_pairs
 from aisteer360.algorithms.state_control._common.estimators import (
     ContrastiveDirectionEstimator,
     MeanDifferenceEstimator,
 )
 from aisteer360.algorithms.state_control._common.estimators.base import BaseEstimator
-from aisteer360.algorithms.core.internals.data import ContrastivePairs, as_contrastive_pairs
 from aisteer360.algorithms.state_control._common.specs import (
     Comparator,
     CompMode,

@@ -556,10 +556,7 @@ class TestMergeInterventionSpecs:
 class TestServeConstraintLowering:
 
     def test_constraint_entry_renders_guided_field(self, fake_server):
-        from aisteer360.algorithms.core.execution import (
-            ConstraintEntry,
-            ConstraintSource,
-        )
+        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
 
         backend = VLLMServeBackend(_serve_spec())
         item = GenerationItem(
@@ -574,10 +571,7 @@ class TestServeConstraintLowering:
         assert body["guided_json"] == {"type": "object"}
 
     def test_choice_constraint_renders_guided_choice(self, fake_server):
-        from aisteer360.algorithms.core.execution import (
-            ConstraintEntry,
-            ConstraintSource,
-        )
+        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
 
         backend = VLLMServeBackend(_serve_spec())
         item = GenerationItem(
@@ -592,10 +586,7 @@ class TestServeConstraintLowering:
         assert body["guided_choice"] == ["cat", "dog"]
 
     def test_scoring_with_constraint_entry_refused(self, fake_server):
-        from aisteer360.algorithms.core.execution import (
-            ConstraintEntry,
-            ConstraintSource,
-        )
+        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
 
         backend = VLLMServeBackend(_serve_spec())
         item = ScoringItem(
@@ -610,10 +601,7 @@ class TestServeConstraintLowering:
                 session.score([item], GenerationParams())
 
     def test_two_constraints_per_item_refused(self, fake_server):
-        from aisteer360.algorithms.core.execution import (
-            ConstraintEntry,
-            ConstraintSource,
-        )
+        from aisteer360.algorithms.core.execution import ConstraintEntry, ConstraintSource
 
         backend = VLLMServeBackend(_serve_spec())
         item = GenerationItem(
@@ -629,9 +617,7 @@ class TestServeConstraintLowering:
 
     def test_pipeline_lowers_declarative_constraint_to_serve(self, fake_server):
         from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-        from aisteer360.algorithms.output_control.constrained_decoding import (
-            ConstrainedDecoding,
-        )
+        from aisteer360.algorithms.output_control.constrained_decoding import ConstrainedDecoding
         from tests.utils.tiny_models import tiny_llama
 
         control = ConstrainedDecoding(regex="cat|dog", include_in_scoring=False)

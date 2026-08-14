@@ -3,7 +3,7 @@ model gating below `MODULE`."""
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution import ModelAccess, UnsupportedOperationError
+from aisteer360.algorithms.core.execution import BackendSpec, ModelAccess, UnsupportedOperationError
 from aisteer360.algorithms.core.execution.session_utils import ScopedSession
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.input_control.base import InputControl
@@ -15,7 +15,6 @@ from aisteer360.algorithms.state_control._common.sources import (
 )
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.backends.huggingface import HFBackend
-from aisteer360.algorithms.core.execution import BackendSpec
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 PAIRS = {"prompts": ["q"], "positives": ["a"], "negatives": ["b"]}
@@ -71,7 +70,7 @@ class TestDeclarations:
         from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec
         from aisteer360.algorithms.core.internals.probes.probe import Probe
         from aisteer360.algorithms.core.internals.probes.probe_set import ProbeSet
-        from aisteer360.algorithms.core.internals.probes.rules import P, Rule, RoutingRules
+        from aisteer360.algorithms.core.internals.probes.rules import P, RoutingRules, Rule
         from aisteer360.algorithms.output_control.routed_decoding import RoutedDecoding
         from aisteer360.algorithms.output_control.routed_decoding.actions import respond
 

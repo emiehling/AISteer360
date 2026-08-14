@@ -6,12 +6,8 @@ from aisteer360.algorithms.core.internals.data import (
     as_labeled_examples,
 )
 from aisteer360.algorithms.core.internals.stats import measure_residual_norms
+
 from .runtime import TransformHookRuntime
 from .selectors import FixedLayerSelector, FractionalDepthSelector, TopKHeadSelector
-from .specs import (
-    Comparator,
-    CompMode,
-    ConditionSearchSpec,
-    VectorTrainSpec,
-)
+from .specs import Comparator, CompMode, ConditionSearchSpec, VectorTrainSpec
 from .steering_vector import SteeringVector

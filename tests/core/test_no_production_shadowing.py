@@ -9,7 +9,7 @@ Flags, anywhere under `tests/`:
 
 The module also runs standalone against an arbitrary directory
 (`python3 tests/core/test_no_production_shadowing.py <directory>`), printing findings and
-exiting nonzero when any are present. 
+exiting nonzero when any are present.
 """
 import ast
 import sys

@@ -10,8 +10,8 @@ re-derives another layer's configuration by introspection.
 from __future__ import annotations
 
 import hashlib
-from types import EllipsisType
 from dataclasses import dataclass, field, replace
+from types import EllipsisType
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
 import torch

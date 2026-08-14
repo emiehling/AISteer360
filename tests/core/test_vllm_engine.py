@@ -120,9 +120,7 @@ class TestConstraintParityOnEngine:
     def test_json_schema_constrained_parity(self, engine_backend):
         import json
 
-        from aisteer360.algorithms.output_control.constrained_decoding import (
-            ConstrainedDecoding,
-        )
+        from aisteer360.algorithms.output_control.constrained_decoding import ConstrainedDecoding
 
         pytest.importorskip("xgrammar")
         schema = {

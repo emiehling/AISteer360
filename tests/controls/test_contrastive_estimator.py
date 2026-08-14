@@ -8,15 +8,13 @@ import pytest
 import torch
 from sklearn.decomposition import PCA
 
+from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.state_control._common.estimators.contrastive_direction import (
     ContrastiveDirectionEstimator,
     _orient_direction,
     _prepare_pca_samples,
 )
-from aisteer360.algorithms.state_control._common.estimators.mean_difference import (
-    MeanDifferenceEstimator,
-)
-from aisteer360.algorithms.core.internals.data import ContrastivePairs
+from aisteer360.algorithms.state_control._common.estimators.mean_difference import MeanDifferenceEstimator
 from aisteer360.algorithms.state_control._common.specs import VectorTrainSpec
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

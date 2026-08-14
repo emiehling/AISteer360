@@ -11,18 +11,10 @@ import torch
 from safetensors.torch import load_file, save_file
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.capture import (
-    HiddenStateLocation,
-    capture_hidden,
-    layerwise_tokenwise_hidden,
-)
+from aisteer360.algorithms.core.internals.capture import HiddenStateLocation, capture_hidden, layerwise_tokenwise_hidden
 from aisteer360.algorithms.core.internals.encoding import tokenize_texts
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
-from aisteer360.algorithms.core.internals.pooling import (
-    get_last_token_positions,
-    masked_mean,
-    select_at_positions,
-)
+from aisteer360.algorithms.core.internals.pooling import get_last_token_positions, masked_mean, select_at_positions
 from aisteer360.algorithms.core.utils.auxiliary_pass import auxiliary_pass
 from aisteer360.utils.rendering import PromptFormat, has_chat_template, render_for_model
 

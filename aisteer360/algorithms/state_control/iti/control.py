@@ -6,10 +6,7 @@ from aisteer360.algorithms.state_control._common.selectors import TopKHeadSelect
 from aisteer360.algorithms.state_control._common.sources import _Precomputed
 from aisteer360.algorithms.state_control._common.specs import CoveredLayers, Intervention, TokenScope
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import (
-    HeadAdditiveTransform,
-    NormPreservingTransform,
-)
+from aisteer360.algorithms.state_control._common.transforms import HeadAdditiveTransform, NormPreservingTransform
 from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform, unwrap_modifiers
 from aisteer360.algorithms.state_control.base import InterventionControl
 

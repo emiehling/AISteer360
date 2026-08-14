@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.cast.control import CAST
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.cast.control import CAST
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = (

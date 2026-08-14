@@ -2,13 +2,12 @@
 Core steering pipeline for composing and applying multiple LLM control methods.
 """
 import contextlib
-import dataclasses
 import gc
 import logging
 import warnings
 import weakref
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Sequence, overload
 
@@ -19,20 +18,12 @@ from transformers import (
     AutoTokenizer,
     LogitsProcessorList,
     PreTrainedModel,
+    PreTrainedTokenizerBase,
     StoppingCriteriaList,
 )
 
-from aisteer360.algorithms.core.execution.access import (
-    ModelAccess,
-    PlannedFit,
-    PlannedStep,
-    SteerPlan,
-)
-from aisteer360.algorithms.core.execution.backend import (
-    SteeredSession,
-    capabilities_for_spec,
-    resolve_backend_class,
-)
+from aisteer360.algorithms.core.execution.access import ModelAccess, PlannedFit, PlannedStep, SteerPlan
+from aisteer360.algorithms.core.execution.backend import SteeredSession, capabilities_for_spec, resolve_backend_class
 from aisteer360.algorithms.core.execution.contracts import (
     BackendCapabilities,
     Capability,
@@ -40,11 +31,7 @@ from aisteer360.algorithms.core.execution.contracts import (
     UnsupportedOperationError,
     evaluate_support,
 )
-from aisteer360.algorithms.core.execution.session_utils import ScopedSession
-from aisteer360.algorithms.core.execution.params import (
-    GenerationParams,
-    merge_lowered_params,
-)
+from aisteer360.algorithms.core.execution.params import GenerationParams, merge_lowered_params
 from aisteer360.algorithms.core.execution.payloads import (
     Artifact,
     ArtifactProvenance,
@@ -60,20 +47,12 @@ from aisteer360.algorithms.core.execution.payloads import (
     StateControlEntry,
     remap_prompt_relative_scopes,
 )
+from aisteer360.algorithms.core.execution.session_utils import ScopedSession
 from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
 from aisteer360.algorithms.core.internals.fingerprint import is_absent_chat_template_fingerprint
-from aisteer360.algorithms.core.output import (
-    Output,
-    infer_finish_reasons,
-    truncate_at_stop_strings,
-)
-from aisteer360.algorithms.core.utils.controls import (
-    merge_controls,
-    warn_if_adapt_messages_bypassed,
-)
-from aisteer360.algorithms.core.utils.generation import (
-    apply_adapt_messages_and_tokenize,
-)
+from aisteer360.algorithms.core.output import Output, infer_finish_reasons, truncate_at_stop_strings
+from aisteer360.algorithms.core.utils.controls import merge_controls, warn_if_adapt_messages_bypassed
+from aisteer360.algorithms.core.utils.generation import apply_adapt_messages_and_tokenize
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.output_control.base import DecodingDriver, OutputControl
 from aisteer360.algorithms.state_control.base import StateControl
@@ -186,8 +165,8 @@ class SteeringPipeline:
     fit: Literal["auto", "in_process"] = "auto"
 
     # lazy‑filled fields
-    model: PreTrainedModel | None = field(init=False, default=None)
-    tokenizer: AutoTokenizer | None = field(init=False, default=None)
+    model: PreTrainedModel | None = field(init=False, default=None, repr=False)
+    tokenizer: PreTrainedTokenizerBase | None = field(init=False, default=None, repr=False)
     _support_report: SupportReport | None = field(init=False, default=None, repr=False)
     _backends: dict = field(init=False, default_factory=dict, repr=False)
     _structural_artifacts: tuple = field(init=False, default=(), repr=False)
@@ -456,7 +435,7 @@ class SteeringPipeline:
         controls = (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls)
         report = evaluate_support(controls, spec, capabilities)
         plan = self._compute_plan(controls, spec, capabilities)
-        return dataclasses.replace(report, plan=plan)
+        return replace(report, plan=plan)
 
     def _compute_plan(
         self,
@@ -827,9 +806,7 @@ class SteeringPipeline:
 
         model_fingerprint = None
         if self.model is not None:
-            from aisteer360.algorithms.core.internals.fingerprint import (
-                model_fingerprint as compute_model_fingerprint,
-            )
+            from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint as compute_model_fingerprint
             try:
                 model_fingerprint = compute_model_fingerprint(self.model)
             except Exception:
@@ -838,7 +815,7 @@ class SteeringPipeline:
             backend_spec_hash=spec.spec_hash,
             model_fingerprint=model_fingerprint,
         )
-        return tuple(dataclasses.replace(artifact, provenance=provenance) for artifact in artifacts)
+        return tuple(replace(artifact, provenance=provenance) for artifact in artifacts)
 
     def _structural_out_path(self) -> Path | None:
         """The last structural control's non-empty `args.out_path`, as a tokenizer-directory fallback.
@@ -1136,9 +1113,7 @@ class SteeringPipeline:
     @staticmethod
     def _lowering_failure_reason(state_control) -> str:
         """Name the intervention (and hint) behind a lowering failure, for the raised error."""
-        from aisteer360.algorithms.state_control._common.specs import (
-            lower_interventions,
-        )
+        from aisteer360.algorithms.state_control._common.specs import lower_interventions
 
         interventions = getattr(state_control, "interventions", ())
         num_layers = getattr(state_control, "_num_layers", None)
@@ -1534,7 +1509,7 @@ class SteeringPipeline:
     def generate(
             self,
             inputs: str,
-            attention_mask: torch.Tensor | None = ...,
+            attention_mask: None = ...,
             runtime_kwargs: dict | None = ...,
             return_output: Literal[False] = ...,
             **gen_kwargs: Any,
@@ -1543,7 +1518,7 @@ class SteeringPipeline:
     def generate(
             self,
             inputs: list[str],
-            attention_mask: torch.Tensor | None = ...,
+            attention_mask: None = ...,
             runtime_kwargs: dict | None = ...,
             return_output: Literal[False] = ...,
             **gen_kwargs: Any,
@@ -1607,6 +1582,28 @@ class SteeringPipeline:
             return_output: Literal[True],
             **gen_kwargs: Any,
     ) -> Output | list[Output]: ...
+    @overload
+    def generate(
+            self,
+            inputs: str | list[str] | None = ...,
+            attention_mask: None = ...,
+            runtime_kwargs: dict | None = ...,
+            return_output: bool = ...,
+            *,
+            text: str | Sequence[str] | None = ...,
+            messages: Sequence[Mapping] | Sequence[Sequence[Mapping]] | None = ...,
+            **gen_kwargs: Any,
+    ) -> str | list[str] | Output | list[Output]: ...
+    @overload
+    def generate(
+            self,
+            *,
+            input_ids: torch.Tensor | list[int] | list[list[int]],
+            attention_mask: torch.Tensor | None = ...,
+            runtime_kwargs: dict | None = ...,
+            return_output: bool = ...,
+            **gen_kwargs: Any,
+    ) -> torch.Tensor | Output | list[Output]: ...
 
     def generate(
             self,
@@ -1921,7 +1918,7 @@ class SteeringPipeline:
                         extra["logits_processor"] = user_processors
                     if user_criteria:
                         extra["stopping_criteria"] = user_criteria
-                    params = dataclasses.replace(params, extra=extra)
+                    params = replace(params, extra=extra)
 
                 items = [
                     GenerationItem(

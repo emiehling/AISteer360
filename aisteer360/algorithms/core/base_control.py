@@ -5,8 +5,7 @@ from dataclasses import fields
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.execution.access import ModelAccess
-from aisteer360.algorithms.core.execution.contracts import Capability
-from aisteer360.algorithms.core.execution.contracts import Requirements, needs
+from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, needs
 
 
 class BaseControl(ABC):

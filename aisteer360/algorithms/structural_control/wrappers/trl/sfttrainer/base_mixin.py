@@ -1,11 +1,7 @@
 from typing import Any
 
 from peft import LoraConfig, PeftType
-from transformers import (
-    DataCollatorForLanguageModeling,
-    PreTrainedModel,
-    PreTrainedTokenizer,
-)
+from transformers import DataCollatorForLanguageModeling, PreTrainedModel, PreTrainedTokenizer
 from trl import SFTConfig, SFTTrainer
 
 from aisteer360.algorithms.structural_control.base import StructuralControl

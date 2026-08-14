@@ -6,10 +6,7 @@ import pytest
 import torch
 from transformers import LlamaForCausalLM
 
-from aisteer360.algorithms.core.internals.fingerprint import (
-    is_absent_chat_template_fingerprint,
-    model_fingerprint,
-)
+from aisteer360.algorithms.core.internals.fingerprint import is_absent_chat_template_fingerprint, model_fingerprint
 from tests.utils.tiny_models import tiny_llama
 
 

@@ -297,10 +297,7 @@ class InterventionControl(StateControl):
         themselves (which declare their own `access` or default to the live model), and
         unresolved gate/condition sources, in template order.
         """
-        from aisteer360.algorithms.state_control._common.transforms.base import (
-            BaseTransform,
-            unwrap_modifiers,
-        )
+        from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform, unwrap_modifiers
 
         for intervention in self._template:
             transform = intervention.transform
@@ -347,8 +344,7 @@ class InterventionControl(StateControl):
         request's prompt end (the end of the prompt-plus-reference concatenation), which would
         silently unanchor prompt-relative interventions.
         """
-        from aisteer360.algorithms.core.execution.contracts import Capability
-        from aisteer360.algorithms.core.execution.contracts import Requirements, any_of, needs
+        from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, any_of, needs
 
         kinds = self.wire_kinds()
         in_process = needs(Capability.IN_PROCESS_TORCH)

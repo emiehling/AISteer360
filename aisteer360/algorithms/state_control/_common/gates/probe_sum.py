@@ -85,4 +85,3 @@ class ProbeSumGate(BaseGate):
             params={"pooling": self.probe.pooling},
             tensors={"weights": weights, "bias": torch.tensor(float(self.probe.bias))},
         )
-

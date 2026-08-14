@@ -4,46 +4,33 @@ from collections.abc import Callable, Sequence
 from typing import Literal
 
 import torch
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    LogitsProcessorList,
-    PreTrainedModel,
-    StoppingCriteriaList,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessorList, PreTrainedModel, StoppingCriteriaList
 
 from aisteer360.algorithms.core.execution.backend import Backend
 from aisteer360.algorithms.core.execution.contracts import (
     BackendCapabilities,
     Capability,
     CaptureKinds,
+    UnsupportedOperationError,
 )
 from aisteer360.algorithms.core.execution.fanout import derive_item_seed
+from aisteer360.algorithms.core.execution.params import GenerationParams
 from aisteer360.algorithms.core.execution.payloads import (
     CaptureResult,
     GenerationItem,
     HookEntry,
     ItemResult,
+    ModelFacts,
+    PreparedPrompt,
     ScoringItem,
     StackEntry,
 )
-from aisteer360.algorithms.core.execution.payloads import ModelFacts
-from aisteer360.algorithms.core.execution.params import GenerationParams
-from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
 from aisteer360.algorithms.core.execution.spec import BackendSpec
-from aisteer360.algorithms.core.execution.contracts import UnsupportedOperationError
 from aisteer360.algorithms.core.output import Output, infer_finish_reasons
-from aisteer360.algorithms.output_control._common.criteria import (
-    StopOnSubstring,
-    StopOnTokens,
-)
+from aisteer360.algorithms.output_control._common.criteria import StopOnSubstring, StopOnTokens
 from aisteer360.algorithms.output_control.base import stack_generate_kwargs
 from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
-from aisteer360.utils.tokenization import (
-    ensure_pad_token,
-    infer_attention_mask_from_ids,
-    to_left_pad,
-)
+from aisteer360.utils.tokenization import ensure_pad_token, infer_attention_mask_from_ids, to_left_pad
 
 HF_CAPABILITIES = BackendCapabilities(
     atoms=frozenset({
@@ -776,12 +763,8 @@ class ExclusiveSession:
         if not prompts:
             raise ValueError("capture() requires at least one prompt.")
 
-        from aisteer360.algorithms.core.internals.capture import (
-            layerwise_tokenwise_hidden,
-        )
-        from aisteer360.algorithms.core.internals.pooling import (
-            aggregate_condition_hidden,
-        )
+        from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
+        from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 
         model = self.model
         device = model.device

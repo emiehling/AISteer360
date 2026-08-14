@@ -10,14 +10,10 @@ import copy
 import torch
 from transformers import PreTrainedModel
 
-from aisteer360.algorithms.core.execution.contracts import Capability
-from aisteer360.algorithms.core.execution.contracts import Requirements, needs
+from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, needs
 from aisteer360.algorithms.output_control._common.drivers.frontier import Frontier
 from aisteer360.algorithms.output_control._common.drivers.proposer import SegmentProposer
-from aisteer360.algorithms.output_control.base import (
-    DecodingDriver,
-    resolve_generate_callable,
-)
+from aisteer360.algorithms.output_control.base import DecodingDriver, resolve_generate_callable
 from aisteer360.utils.tokenization import infer_attention_mask_from_ids
 
 

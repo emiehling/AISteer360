@@ -8,10 +8,7 @@ import warnings
 from typing import Any, Callable
 
 from aisteer360.algorithms.core.execution.backend import Backend
-from aisteer360.algorithms.core.execution.params import (
-    NORMALIZED_PARAM_NAMES,
-    GenerationParams,
-)
+from aisteer360.algorithms.core.execution.params import NORMALIZED_PARAM_NAMES, GenerationParams
 from aisteer360.algorithms.core.execution.payloads import GenerationItem, PreparedPrompt
 from aisteer360.algorithms.core.execution.spec import BackendSpec
 from aisteer360.evaluation.metrics.backend_utils import resolve_metric_backend

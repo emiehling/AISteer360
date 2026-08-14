@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Sequence
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
 import aisteer360
 from aisteer360.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
@@ -181,8 +181,8 @@ class Benchmark:
         self._skipped: set[tuple[str, str]] = set()
 
         # lazy-init shared base model/tokenizer
-        self._base_model: AutoModelForCausalLM | None = None
-        self._base_tokenizer: AutoTokenizer | None = None
+        self._base_model: PreTrainedModel | None = None
+        self._base_tokenizer: PreTrainedTokenizerBase | None = None
         self._base_fingerprint: str | None = None
 
     def _ensure_base_model(self) -> None:

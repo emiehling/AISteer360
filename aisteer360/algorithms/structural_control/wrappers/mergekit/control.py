@@ -7,15 +7,10 @@ import mergekit.config as mk_config
 import mergekit.merge as mk_merge
 import torch
 import yaml
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    PreTrainedModel,
-    PreTrainedTokenizer,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.core.execution.payloads import CheckpointArtifact
 from aisteer360.algorithms.core.execution.contracts import Capability
+from aisteer360.algorithms.core.execution.payloads import CheckpointArtifact
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.algorithms.structural_control.wrappers.mergekit.args import MergeKitArgs
 

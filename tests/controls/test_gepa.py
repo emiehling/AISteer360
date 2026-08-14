@@ -229,9 +229,7 @@ class TestGEPASteer:
             seen_contexts.append((context or {}).get("records", ""))
             return ["be concise"]
 
-        from aisteer360.algorithms.input_control._common.proposers.llm_meta_prompt import (
-            LLMMetaPromptProposer,
-        )
+        from aisteer360.algorithms.input_control._common.proposers.llm_meta_prompt import LLMMetaPromptProposer
         monkeypatch.setattr(LLMMetaPromptProposer, "propose", capturing_propose)
 
         # gold target lives in a distinctive sentinel field; format_query returns only the input.
@@ -277,9 +275,7 @@ class TestGEPASteer:
         def fake_propose(self, seed, n=1, context=None):
             return ["x" * 200]
 
-        from aisteer360.algorithms.input_control._common.proposers.llm_meta_prompt import (
-            LLMMetaPromptProposer,
-        )
+        from aisteer360.algorithms.input_control._common.proposers.llm_meta_prompt import LLMMetaPromptProposer
         monkeypatch.setattr(LLMMetaPromptProposer, "propose", fake_propose)
 
         def scored_run(self, task_lm, instruction, batch, *, with_feedback):
@@ -341,9 +337,7 @@ class TestGEPAImprovementAcceptance:
         def fake_propose(self, seed, n=1, context=None):
             return [target_instruction]
 
-        from aisteer360.algorithms.input_control._common.proposers.llm_meta_prompt import (
-            LLMMetaPromptProposer,
-        )
+        from aisteer360.algorithms.input_control._common.proposers.llm_meta_prompt import LLMMetaPromptProposer
         monkeypatch.setattr(LLMMetaPromptProposer, "propose", fake_propose)
 
         gepa = GEPA(

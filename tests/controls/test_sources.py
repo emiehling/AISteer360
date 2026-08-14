@@ -8,13 +8,13 @@ import warnings
 import pytest
 import torch
 
+from aisteer360.algorithms.state_control._common.estimators.base import BaseEstimator
 from aisteer360.algorithms.state_control._common.sources import (
     ArtifactSource,
     ContrastiveFit,
     _as_artifact_source,
     _Precomputed,
 )
-from aisteer360.algorithms.state_control._common.estimators.base import BaseEstimator
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

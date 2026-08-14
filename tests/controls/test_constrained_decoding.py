@@ -3,11 +3,7 @@ in-process xgrammar-compiled automaton, and the automaton-object configuration."
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution import (
-    BackendSpec,
-    Capability,
-    ConstraintSource,
-)
+from aisteer360.algorithms.core.execution import BackendSpec, Capability, ConstraintSource
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.output_control.constrained_decoding import ConstrainedDecoding
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
@@ -86,11 +82,7 @@ class TestRequirements:
         assert opted_out.supported("score")
 
     def test_stale_engine_range_names_the_kind(self):
-        from aisteer360.algorithms.core.execution import (
-            BackendCapabilities,
-            ConstraintKinds,
-            evaluate_support,
-        )
+        from aisteer360.algorithms.core.execution import BackendCapabilities, ConstraintKinds, evaluate_support
 
         control = ConstrainedDecoding(grammar='root ::= "a"', include_in_scoring=False)
         stale = BackendCapabilities(

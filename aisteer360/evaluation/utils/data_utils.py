@@ -40,7 +40,7 @@ def to_jsonable(obj: Any) -> Any:
 
     if callable(obj):
         return f"callable:{getattr(obj, '__qualname__', type(obj).__name__)}"
-    
+
     return repr(obj)
 
 

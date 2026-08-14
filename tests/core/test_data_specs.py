@@ -10,11 +10,7 @@ import importlib
 
 import pytest
 
-from aisteer360.algorithms.core.internals.data import (
-    ContrastivePairs,
-    LabeledExamples,
-    as_labeled_examples,
-)
+from aisteer360.algorithms.core.internals.data import ContrastivePairs, LabeledExamples, as_labeled_examples
 
 
 class TestReExportIdentity:

@@ -3,12 +3,9 @@ from __future__ import annotations
 
 import torch
 
-from aisteer360.algorithms.core.execution.contracts import Capability, ConstraintKinds
+from aisteer360.algorithms.core.execution.contracts import Capability, ConstraintKinds, Requirements, any_of, needs
 from aisteer360.algorithms.core.execution.payloads import ConstraintSource
-from aisteer360.algorithms.core.execution.contracts import Requirements, any_of, needs
-from aisteer360.algorithms.output_control._common.processors.constraint import (
-    ConstraintProcessor,
-)
+from aisteer360.algorithms.output_control._common.processors.constraint import ConstraintProcessor
 from aisteer360.algorithms.output_control.base import OutputControl
 
 from .args import ConstrainedDecodingArgs

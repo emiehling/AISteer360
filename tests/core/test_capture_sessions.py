@@ -7,11 +7,9 @@ import torch
 
 from aisteer360.algorithms.core.execution import BackendSpec
 from aisteer360.algorithms.core.internals.capture import capture_hidden
-from aisteer360.algorithms.core.internals.probes import ProbeFitSpec, ProbeSet, fit_probe
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
-from aisteer360.algorithms.state_control._common.estimators import (
-    MeanDifferenceEstimator,
-)
+from aisteer360.algorithms.core.internals.probes import ProbeFitSpec, ProbeSet, fit_probe
+from aisteer360.algorithms.state_control._common.estimators import MeanDifferenceEstimator
 from aisteer360.algorithms.state_control._common.specs import VectorTrainSpec
 from aisteer360.algorithms.state_control.caa.control import CAA
 from aisteer360.backends.huggingface import HFBackend

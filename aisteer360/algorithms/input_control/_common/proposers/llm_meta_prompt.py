@@ -29,7 +29,7 @@ class LLMMetaPromptProposer(BaseProposer):
             via the tokenizer's chat template before sampling. `None` (default) wraps iff the tokenizer
             has a chat template; `True` wraps iff a template exists (silently raw otherwise); `False`
             never wraps. Base models without a template are unaffected.
-        max_attempts: Maximum number of sampling rounds in `propose`. 
+        max_attempts: Maximum number of sampling rounds in `propose`.
     """
 
     def __init__(

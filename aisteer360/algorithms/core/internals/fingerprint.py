@@ -92,10 +92,7 @@ def artifact_provenance_meta(model, tokenizer=None) -> dict:
     """
     meta = {"model_fingerprint": model_fingerprint(model)}
     try:
-        from vllm_hook_plugins.core.fingerprints import (
-            chat_template_fingerprint,
-            config_fingerprint,
-        )
+        from vllm_hook_plugins.core.fingerprints import chat_template_fingerprint, config_fingerprint
     except ImportError:
         return meta
     try:

@@ -9,48 +9,25 @@ import math
 
 import pytest
 import torch
-
-from tests.utils.runtime_helpers import ScriptedSession, script_session_generate
 from transformers import LogitsProcessorList, StoppingCriteriaList
 
-from aisteer360.algorithms.output_control._common.candidates import (
-    rad_candidate_sizing,
-    select_candidates,
-)
-from aisteer360.algorithms.output_control._common.criteria import (
-    BudgetTokens,
-    StopOnSubstring,
-    StopOnTokens,
-)
-from aisteer360.algorithms.output_control._common.estimators.linear_probe import (
-    LinearProbe,
-    LinearProbeEstimator,
-)
+from aisteer360.algorithms.core.internals.data import LabeledExamples
+from aisteer360.algorithms.output_control._common.candidate_forward import CandidateForward
+from aisteer360.algorithms.output_control._common.candidates import rad_candidate_sizing, select_candidates
+from aisteer360.algorithms.output_control._common.criteria import BudgetTokens, StopOnSubstring, StopOnTokens
+from aisteer360.algorithms.output_control._common.drivers.frontier import Frontier
+from aisteer360.algorithms.output_control._common.drivers.phased import Fixed, Generated, PhasedDriver
+from aisteer360.algorithms.output_control._common.drivers.search import SearchDriver
+from aisteer360.algorithms.output_control._common.estimators.linear_probe import LinearProbe, LinearProbeEstimator
 from aisteer360.algorithms.output_control._common.kv_cache import repeat_cache, select_cache
 from aisteer360.algorithms.output_control._common.logit_sources import BaseLogitSource
-from aisteer360.algorithms.output_control._common.drivers.phased import (
-    Fixed,
-    Generated,
-    PhasedDriver,
-)
 from aisteer360.algorithms.output_control._common.processors.base import PrefixKeyedProcessor
 from aisteer360.algorithms.output_control._common.processors.constraint import ConstraintProcessor
-from aisteer360.algorithms.output_control._common.processors.contrastive_mixture import (
-    ContrastiveMixtureProcessor,
-)
-from aisteer360.algorithms.output_control._common.processors.value_guided import (
-    ValueGuidedProcessor,
-    _normalize,
-)
-from aisteer360.algorithms.output_control._common.drivers.search import SearchDriver
-from aisteer360.algorithms.output_control._common.drivers.frontier import Frontier
-from aisteer360.algorithms.core.internals.data import LabeledExamples
-from aisteer360.algorithms.output_control._common.values.base import (
-    BaseCandidateValue,
-    StepContext,
-)
-from aisteer360.algorithms.output_control._common.candidate_forward import CandidateForward
+from aisteer360.algorithms.output_control._common.processors.contrastive_mixture import ContrastiveMixtureProcessor
+from aisteer360.algorithms.output_control._common.processors.value_guided import ValueGuidedProcessor, _normalize
+from aisteer360.algorithms.output_control._common.values.base import BaseCandidateValue, StepContext
 from aisteer360.algorithms.output_control._common.values.subspace_margin import SubspaceMarginValue
+from tests.utils.runtime_helpers import ScriptedSession, script_session_generate
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 VOCAB = 100

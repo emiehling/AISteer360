@@ -122,9 +122,7 @@ def layerwise_tokenwise_hidden(
     if location == "layer_output":
         # the last `hidden_states` entry is post-final-norm; recover the final layer's raw output
         # boundary with a forward hook on the last decoder layer
-        from aisteer360.algorithms.state_control._common.hook_utils import (
-            get_model_layer_list,
-        )
+        from aisteer360.algorithms.state_control._common.hook_utils import get_model_layer_list
 
         layer_modules, _ = get_model_layer_list(model)
         final_layer_module = layer_modules[-1]

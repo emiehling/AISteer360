@@ -437,5 +437,3 @@ class _RecordingGate(BaseGate):
 
     def is_ready(self):
         return True
-
-

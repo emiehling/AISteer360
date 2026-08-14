@@ -21,10 +21,7 @@ from aisteer360.algorithms.state_control._common.specs import (
     TokenScope,
     VectorTrainSpec,
 )
-from aisteer360.algorithms.state_control._common.transforms import (
-    AdditiveTransform,
-    NormPreservingTransform,
-)
+from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, NormPreservingTransform
 from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform
 from aisteer360.algorithms.state_control.base import InterventionControl
 

@@ -18,9 +18,7 @@ from aisteer360.algorithms.state_control.act_add.control import ActAdd
 from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
 from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
 from aisteer360.algorithms.state_control.caa.control import CAA
-from aisteer360.algorithms.state_control.directional_ablation.control import (
-    DirectionalAblation,
-)
+from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
 from aisteer360.algorithms.state_control.iti.control import ITI
 from aisteer360.backends.huggingface import HFBackend
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer

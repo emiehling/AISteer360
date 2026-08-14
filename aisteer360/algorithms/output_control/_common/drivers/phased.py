@@ -16,11 +16,7 @@ from transformers import PreTrainedModel, StoppingCriteriaList
 
 from aisteer360.algorithms.core.execution.contracts import Requirements
 from aisteer360.algorithms.output_control._common.criteria import BudgetTokens, StopOnSubstring
-from aisteer360.algorithms.output_control.base import (
-    DecodingDriver,
-    resolve_generate_callable,
-    stack_generate_kwargs,
-)
+from aisteer360.algorithms.output_control.base import DecodingDriver, resolve_generate_callable, stack_generate_kwargs
 
 
 @dataclass(frozen=True)

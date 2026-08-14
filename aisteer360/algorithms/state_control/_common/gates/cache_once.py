@@ -51,4 +51,3 @@ class CacheOnceGate(BaseGate):
     def is_ready(self) -> bool:
         """True once the decision is frozen or the inner gate is ready."""
         return self._cached is not None or self.inner.is_ready()
-

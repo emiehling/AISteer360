@@ -5,6 +5,8 @@ functions, full-vocabulary logit sources, sequence scorers, a segment-search dri
 driver, composable stopping criteria, a linear-probe estimator, KV-cache utilities, and the
 `PrefixKeyedProcessor` base for stateful logits processors.
 """
+from aisteer360.algorithms.core.internals.data import LabeledExamples, as_labeled_examples
+
 from .candidate_forward import CandidateForward
 from .candidates import CandidatePolicy, rad_candidate_sizing, select_candidates
 from .criteria import BudgetTokens, StopOnSubstring, StopOnTokens
@@ -18,7 +20,6 @@ from .processors import (
     PrefixKeyedProcessor,
     ValueGuidedProcessor,
 )
-from aisteer360.algorithms.core.internals.data import LabeledExamples, as_labeled_examples
 from .scorers import MajorityVoteScorer, MetricScorer, RewardModelScorer, SequenceScorer
 from .values import (
     BaseCandidateValue,

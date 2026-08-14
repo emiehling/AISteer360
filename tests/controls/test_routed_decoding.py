@@ -8,8 +8,7 @@ probe run. Empty probe `meta` keeps the fingerprint checks dormant except where 
 import pytest
 import torch
 
-from tests.utils.runtime_helpers import script_session_generate
-
+from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.core.internals.probes import (
     P,
@@ -20,17 +19,12 @@ from aisteer360.algorithms.core.internals.probes import (
     RoutingRules,
     Rule,
 )
-from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.core.utils.auxiliary_pass import current_auxiliary_pass
 from aisteer360.algorithms.output_control._common.drivers.phased import Fixed
-from aisteer360.algorithms.output_control.routed_decoding import (
-    RoutedDecoding,
-    generate,
-    prefix,
-    respond,
-)
+from aisteer360.algorithms.output_control.routed_decoding import RoutedDecoding, generate, prefix, respond
 from aisteer360.algorithms.structural_control.base import StructuralControl
+from tests.utils.runtime_helpers import script_session_generate
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32

@@ -57,7 +57,7 @@ class InputControl(BaseControl):
         cleanup() -> None: Release resources allocated during steer (optional).
 
     Subclasses that produce an artifact in `steer()` (instructions, demonstrations, learned weights, ...) may expose it
-    via the `memory` attribute, e.g., see `TextMemory`. 
+    via the `memory` attribute, e.g., see `TextMemory`.
     """
 
     Args: type[BaseArgs] | None = None

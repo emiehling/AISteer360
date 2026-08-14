@@ -22,7 +22,7 @@ class SteeringVector:
         Angular Steering: K=2, D=hidden_size (orthonormal basis pair)
         ITI: K=num_heads, D=head_dim (per-head directions)
 
-    The container is agnostic to what K and D mean (varies depending on the method). 
+    The container is agnostic to what K and D mean (varies depending on the method).
     Semantics come from the consumer (transform).
 
     Attributes:

@@ -6,18 +6,13 @@ from typing import Callable
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.fingerprint import (
-    artifact_provenance_meta,
-    session_artifact_identity,
-)
 from aisteer360.algorithms.core.internals.capture import capture_hidden
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.encoding import tokenize_pairs
-from aisteer360.algorithms.core.internals.pooling import (
-    get_last_token_positions,
-    select_at_positions,
-)
+from aisteer360.algorithms.core.internals.fingerprint import artifact_provenance_meta, session_artifact_identity
+from aisteer360.algorithms.core.internals.pooling import get_last_token_positions
 from aisteer360.algorithms.core.internals.pooling import masked_mean as _masked_mean
+from aisteer360.algorithms.core.internals.pooling import select_at_positions
 from aisteer360.algorithms.core.internals.render import render_contrastive
 from aisteer360.algorithms.state_control._common.estimators.base import BaseEstimator
 from aisteer360.algorithms.state_control._common.specs import VectorTrainSpec

@@ -6,8 +6,6 @@ assertions of the existing hub tests are covered separately in test_deal.py / te
 """
 import pytest
 import torch
-
-from tests.utils.runtime_helpers import script_session_generate
 from transformers import LlamaConfig, LlamaForSequenceClassification
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
@@ -18,6 +16,7 @@ from aisteer360.algorithms.output_control.deal.control import DeAL
 from aisteer360.algorithms.output_control.rad.control import RAD
 from aisteer360.algorithms.output_control.sasa.control import SASA
 from aisteer360.algorithms.output_control.thinking_intervention.control import ThinkingIntervention
+from tests.utils.runtime_helpers import script_session_generate
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 VOCAB = 100

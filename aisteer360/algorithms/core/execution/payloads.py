@@ -595,5 +595,3 @@ class CaptureResult:
     attention_mask: torch.Tensor
     mode: str
     location: str
-
-

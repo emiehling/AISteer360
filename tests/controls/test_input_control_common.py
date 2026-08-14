@@ -4,19 +4,14 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.evaluation.metrics.base import Metric
-
-from aisteer360.algorithms.input_control._common.memory import (
-    Memory,
-    PoolMemory,
-    TextMemory,
-)
+from aisteer360.algorithms.input_control._common import ParetoFrontier, RolloutBudget
 from aisteer360.algorithms.input_control._common.formatters import (
     ChatTemplateSlotFormatter,
     FewShotBlockFormatter,
     PrependTextFormatter,
     SystemPromptFormatter,
 )
+from aisteer360.algorithms.input_control._common.memory import Memory, PoolMemory, TextMemory
 from aisteer360.algorithms.input_control._common.proposers import (
     BaseProposer,
     LLMMetaPromptProposer,
@@ -25,10 +20,7 @@ from aisteer360.algorithms.input_control._common.proposers import (
     parse_fenced_or_whole,
     parse_whole,
 )
-from aisteer360.algorithms.input_control._common.scorers import (
-    BaseScorer,
-    TaskEvaluationScorer,
-)
+from aisteer360.algorithms.input_control._common.scorers import BaseScorer, TaskEvaluationScorer
 from aisteer360.algorithms.input_control._common.selectors import (
     BaseSelector,
     DenseRetrievalSelector,
@@ -36,10 +28,7 @@ from aisteer360.algorithms.input_control._common.selectors import (
     RandomSelector,
     TopKSelector,
 )
-from aisteer360.algorithms.input_control._common import (
-    ParetoFrontier,
-    RolloutBudget,
-)
+from aisteer360.evaluation.metrics.base import Metric
 
 
 class _CallableScorer(BaseScorer):
@@ -1029,9 +1018,7 @@ class TestDenseRetrievalSelector:
 
 class TestGenerateWithSystemPrompt:
     def test_smoke_returns_one_per_query(self, tiny_lm):
-        from aisteer360.algorithms.input_control._common.generation import (
-            generate_with_system_prompt,
-        )
+        from aisteer360.algorithms.input_control._common.generation import generate_with_system_prompt
         model, tokenizer = tiny_lm
         out = generate_with_system_prompt(
             model, tokenizer, "be brief", ["hello", "world", "test"],
@@ -1041,16 +1028,12 @@ class TestGenerateWithSystemPrompt:
         assert all(isinstance(o, str) for o in out)
 
     def test_empty_queries_returns_empty(self, tiny_lm):
-        from aisteer360.algorithms.input_control._common.generation import (
-            generate_with_system_prompt,
-        )
+        from aisteer360.algorithms.input_control._common.generation import generate_with_system_prompt
         model, tokenizer = tiny_lm
         assert generate_with_system_prompt(model, tokenizer, "x", []) == []
 
     def test_padding_side_restored(self, tiny_lm):
-        from aisteer360.algorithms.input_control._common.generation import (
-            generate_with_system_prompt,
-        )
+        from aisteer360.algorithms.input_control._common.generation import generate_with_system_prompt
         model, tokenizer = tiny_lm
         original = tokenizer.padding_side
         try:

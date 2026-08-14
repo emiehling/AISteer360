@@ -11,11 +11,7 @@ import torch
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import UnsupportedOperationError
 from aisteer360.algorithms.core.execution.params import GenerationParams
-from aisteer360.algorithms.core.execution.payloads import (
-    GenerationItem,
-    PreparedPrompt,
-    ScoringItem,
-)
+from aisteer360.algorithms.core.execution.payloads import GenerationItem, PreparedPrompt, ScoringItem
 
 
 def session_generate(session, input_ids, attention_mask=None, **gen_kwargs) -> torch.Tensor:

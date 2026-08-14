@@ -7,15 +7,13 @@ import torch
 from sklearn.decomposition import PCA
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from aisteer360.algorithms.core.internals.fingerprint import (
-    artifact_provenance_meta,
-    session_artifact_identity,
-)
 from aisteer360.algorithms.core.internals.capture import capture_hidden
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.encoding import tokenize_texts
+from aisteer360.algorithms.core.internals.fingerprint import artifact_provenance_meta, session_artifact_identity
 from aisteer360.algorithms.core.internals.pooling import pool_over_spans, select_spans
 from aisteer360.algorithms.core.internals.render import render_contrastive
+
 from ..specs import VectorTrainSpec
 from ..steering_vector import SteeringVector
 from .base import BaseEstimator

@@ -8,12 +8,9 @@ from __future__ import annotations
 
 import torch
 
-from aisteer360.algorithms.output_control._common.estimators.linear_probe import LinearProbe
-from aisteer360.algorithms.output_control._common.values.base import (
-    BaseCandidateValue,
-    StepContext,
-)
 from aisteer360.algorithms.output_control._common.candidate_forward import CandidateForward
+from aisteer360.algorithms.output_control._common.estimators.linear_probe import LinearProbe
+from aisteer360.algorithms.output_control._common.values.base import BaseCandidateValue, StepContext
 
 
 class SubspaceMarginValue(BaseCandidateValue):

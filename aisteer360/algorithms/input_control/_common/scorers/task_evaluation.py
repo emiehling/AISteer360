@@ -6,10 +6,8 @@ from typing import Any, Sequence
 
 from transformers import PreTrainedTokenizerBase
 
+from aisteer360.algorithms.input_control._common.generation import generate_with_system_prompt
 from aisteer360.algorithms.input_control._common.scorers.base import BaseScorer
-from aisteer360.algorithms.input_control._common.generation import (
-    generate_with_system_prompt,
-)
 from aisteer360.evaluation.metrics.base import Metric
 
 logger = logging.getLogger(__name__)

@@ -23,10 +23,7 @@ from sklearn.decomposition import PCA
 from sklearn.ensemble import GradientBoostingRegressor
 
 from aisteer360.algorithms.input_control._common.scorers.base import BaseScorer
-from aisteer360.algorithms.input_control.cpo.utils.embeddings import (
-    TextEncoder,
-    fit_pca,
-)
+from aisteer360.algorithms.input_control.cpo.utils.embeddings import TextEncoder, fit_pca
 from aisteer360.utils.optional import require
 
 logger = logging.getLogger(__name__)

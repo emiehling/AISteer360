@@ -111,11 +111,7 @@ class TestEntrySelection:
 
     @staticmethod
     def _capabilities(**kind_overrides):
-        from aisteer360.algorithms.core.execution import (
-            BackendCapabilities,
-            Capability,
-            InterventionKinds,
-        )
+        from aisteer360.algorithms.core.execution import BackendCapabilities, Capability, InterventionKinds
 
         kinds = {
             "transforms": frozenset({"additive", "directional_ablation", "rotation", "head_additive"}),

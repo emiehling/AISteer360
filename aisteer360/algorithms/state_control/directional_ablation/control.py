@@ -6,17 +6,10 @@ from aisteer360.algorithms.state_control._common.estimators import (
     MeanDifferenceEstimator,
 )
 from aisteer360.algorithms.state_control._common.selectors import FractionalDepthSelector
-from aisteer360.algorithms.state_control._common.sources import (
-    ContrastiveFit,
-    LayerFilteredFit,
-    _Precomputed,
-)
+from aisteer360.algorithms.state_control._common.sources import ContrastiveFit, LayerFilteredFit, _Precomputed
 from aisteer360.algorithms.state_control._common.specs import CoveredLayers, Intervention, TokenScope
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import (
-    DirectionalAblationTransform,
-    NormPreservingTransform,
-)
+from aisteer360.algorithms.state_control._common.transforms import DirectionalAblationTransform, NormPreservingTransform
 from aisteer360.algorithms.state_control._common.transforms.base import unwrap_modifiers
 from aisteer360.algorithms.state_control.base import InterventionControl
 

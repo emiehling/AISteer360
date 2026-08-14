@@ -10,12 +10,7 @@ import torch.nn.functional as F
 
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
-from aisteer360.algorithms.core.internals.probes.fitting import (
-    ProbeFitSpec,
-    _fit_direction,
-    calibrate_bias,
-    fit_probe,
-)
+from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec, _fit_direction, calibrate_bias, fit_probe
 from aisteer360.algorithms.core.internals.probes.probe import Probe
 from aisteer360.algorithms.core.internals.stats import ActivationStats
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer

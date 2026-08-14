@@ -5,11 +5,7 @@ import logging
 import os
 
 import torch
-from transformers import (
-    AutoTokenizer,
-    PreTrainedModel,
-    PreTrainedTokenizer,
-)
+from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.output_control._common.candidates import rad_candidate_sizing

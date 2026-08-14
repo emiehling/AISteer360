@@ -127,4 +127,3 @@ class AlwaysOpenGate(BaseGate):
         from ..specs import WireForm
 
         return WireForm(kind="null")
-

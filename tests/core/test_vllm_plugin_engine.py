@@ -84,9 +84,7 @@ def _hf_reference(control_factory, prompt: str, max_new_tokens: int = 8):
 
 
 def _steered_vector(model_ref: str, hidden: int, layers, k: int = 1, seed: int = 5):
-    from aisteer360.algorithms.state_control._common.steering_vector import (
-        SteeringVector,
-    )
+    from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 
     generator = torch.Generator().manual_seed(seed)
     return SteeringVector(
@@ -125,9 +123,7 @@ class TestSpecParityOnEngine:
 
     def test_directional_ablation_parity(self, plugin_backend):
         hidden = plugin_backend._layout.hidden_size
-        from aisteer360.algorithms.state_control.directional_ablation.control import (
-            DirectionalAblation,
-        )
+        from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
         self._parity(
             plugin_backend,
             lambda: DirectionalAblation(
@@ -137,9 +133,7 @@ class TestSpecParityOnEngine:
 
     def test_angular_steering_parity(self, plugin_backend):
         hidden = plugin_backend._layout.hidden_size
-        from aisteer360.algorithms.state_control.angular_steering.control import (
-            AngularSteering,
-        )
+        from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
         self._parity(
             plugin_backend,
             lambda: AngularSteering(
@@ -152,14 +146,8 @@ class TestSpecParityOnEngine:
         """The salting rule's regression alarm: a steered request after a baseline request over
         the same prompt must not reuse KV computed without the intervention."""
         from aisteer360.algorithms.core.execution import InterventionEntry
-        from aisteer360.algorithms.state_control._common.specs import (
-            Intervention,
-            TokenScope,
-            lower_interventions,
-        )
-        from aisteer360.algorithms.state_control._common.transforms import (
-            AdditiveTransform,
-        )
+        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope, lower_interventions
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
 
         hidden = plugin_backend._layout.hidden_size
         vector = _steered_vector(TINY_MODEL, hidden, [1])
@@ -282,9 +270,7 @@ class TestCaptureOnEngine:
 
     def test_vector_fitted_on_engine_steers_in_process(self, plugin_backend):
         from aisteer360.algorithms.core.internals.data import ContrastivePairs
-        from aisteer360.algorithms.state_control._common.estimators import (
-            MeanDifferenceEstimator,
-        )
+        from aisteer360.algorithms.state_control._common.estimators import MeanDifferenceEstimator
         from aisteer360.algorithms.state_control._common.specs import VectorTrainSpec
 
         pairs = ContrastivePairs(
@@ -310,12 +296,8 @@ class TestCaptureOnEngine:
         """A probe-gated adapter fires on the gate-open prompt and stays inert on the
         gate-closed prompt, matching in-process decisions."""
         from aisteer360.algorithms.core.internals.probes import Probe
-        from aisteer360.algorithms.state_control._common.transforms import (
-            AdditiveTransform,
-        )
-        from aisteer360.algorithms.state_control.activation_adapter.control import (
-            ActivationAdapter,
-        )
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
+        from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
 
         layout = plugin_backend._layout
         hidden = layout.hidden_size
@@ -331,9 +313,7 @@ class TestCaptureOnEngine:
         enc_closed = tokenizer(closed_prompt, return_tensors="pt")
 
         # a probe whose weights separate the two prompts at layer 1's input
-        from aisteer360.algorithms.core.internals.capture import (
-            layerwise_tokenwise_hidden,
-        )
+        from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
         hs_open = layerwise_tokenwise_hidden(model, dict(enc_open), location="layer_input")
         hs_closed = layerwise_tokenwise_hidden(model, dict(enc_closed), location="layer_input")
         weight = (hs_open[cond_layer].mean(dim=(0, 1)) - hs_closed[cond_layer].mean(dim=(0, 1))).float()
@@ -381,17 +361,8 @@ class TestCaptureOnEngine:
 
     def test_routed_decoding_end_to_end_on_engine(self, plugin_backend):
         from aisteer360.algorithms.core.internals.data import ContrastivePairs
-        from aisteer360.algorithms.core.internals.probes import (
-            P,
-            ProbeFitSpec,
-            ProbeSetFit,
-            RoutingRules,
-            Rule,
-        )
-        from aisteer360.algorithms.output_control.routed_decoding import (
-            RoutedDecoding,
-            respond,
-        )
+        from aisteer360.algorithms.core.internals.probes import P, ProbeFitSpec, ProbeSetFit, RoutingRules, Rule
+        from aisteer360.algorithms.output_control.routed_decoding import RoutedDecoding, respond
 
         pairs = ContrastivePairs(
             positives=["the committee approved it"],

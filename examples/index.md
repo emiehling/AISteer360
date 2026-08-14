@@ -1,7 +1,7 @@
 # Examples
 
-We have prepared a collection of example notebooks for expressing the toolkit's 
-functionality.  
+We have prepared a collection of example notebooks for expressing the toolkit's
+functionality.
 
 - `algorithms/` contain demonstrations of the toolkit's built-in algorithms, including wrappers around existing libraries (e.g., `trl`, `mergekit`).
 - `generics/` illustrate config-based generic controls and demonstrate how modular controls can be constructed.
@@ -86,8 +86,8 @@ Algorithm notebooks demonstrate how each method (i.e., control) operates. The me
 ## Generic controls
 
 Several of the methods above are specific settings of a smaller number of generic controls. As part
-of the toolkit, we have prepared a collection of such config-based controls, which we call `generics`, 
-to enable custom construction of (modular) controls. 
+of the toolkit, we have prepared a collection of such config-based controls, which we call `generics`,
+to enable custom construction of (modular) controls.
 
 The notebooks below show how to configure each generic and recover named methods from it.
 

@@ -68,10 +68,9 @@ class TestEPRSelector:
             selector.select([{"input": "a", "output": "b"}], query="q", k=1)
 
     def test_subclass_is_dense_retrieval_selector(self):
-        from aisteer360.algorithms.input_control._common.selectors.dense_retrieval import (
-            DenseRetrievalSelector,
-        )
         from inspect import isclass
+
+        from aisteer360.algorithms.input_control._common.selectors.dense_retrieval import DenseRetrievalSelector
         assert issubclass(EPRSelector, DenseRetrievalSelector)
         assert issubclass(EPRSelector, BaseSelector)
         assert isclass(EPRSelector)

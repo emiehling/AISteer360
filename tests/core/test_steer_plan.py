@@ -5,7 +5,7 @@ import torch
 from aisteer360.algorithms.core.execution import BackendSpec, ModelAccess
 from aisteer360.algorithms.core.internals.probes import ProbeSetFit
 from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec
-from aisteer360.algorithms.core.internals.probes.rules import P, Rule, RoutingRules
+from aisteer360.algorithms.core.internals.probes.rules import P, RoutingRules, Rule
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.output_control.routed_decoding import RoutedDecoding

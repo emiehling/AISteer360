@@ -121,11 +121,7 @@ class TestWireAnchorRewrite:
         import pytest
 
         pytest.importorskip("vllm_hook_plugins")
-        from aisteer360.algorithms.state_control._common.specs import (
-            Intervention,
-            TokenScope,
-            lower_interventions,
-        )
+        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope, lower_interventions
         from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
 
         intervention = Intervention(
@@ -136,9 +132,7 @@ class TestWireAnchorRewrite:
         return lower_interventions([intervention], num_layers=LAYERS)
 
     def test_after_prompt_rewrites_to_absolute_anchor(self):
-        from aisteer360.algorithms.core.execution.payloads import (
-            remap_prompt_relative_scopes,
-        )
+        from aisteer360.algorithms.core.execution.payloads import remap_prompt_relative_scopes
 
         spec = self._lowered_spec({"kind": "after_prompt"})
         rewritten = remap_prompt_relative_scopes(spec, anchor=7)
@@ -152,9 +146,7 @@ class TestWireAnchorRewrite:
     def test_last_k_has_no_absolute_rollout_form(self):
         import pytest
 
-        from aisteer360.algorithms.core.execution.payloads import (
-            remap_prompt_relative_scopes,
-        )
+        from aisteer360.algorithms.core.execution.payloads import remap_prompt_relative_scopes
 
         spec = self._lowered_spec({"kind": "last_k", "last_k": 3})
         # in-process last_k is relative to each forwarded pass, which no fixed position
@@ -163,21 +155,19 @@ class TestWireAnchorRewrite:
             remap_prompt_relative_scopes(spec, anchor=7)
 
     def test_absolute_scopes_pass_through_unchanged(self):
-        from aisteer360.algorithms.core.execution.payloads import (
-            remap_prompt_relative_scopes,
-        )
+        from aisteer360.algorithms.core.execution.payloads import remap_prompt_relative_scopes
 
         spec = self._lowered_spec({"kind": "all"})
         assert remap_prompt_relative_scopes(spec, anchor=7) is spec
 
     def test_steered_session_injects_rewritten_entries_per_item(self):
         from aisteer360.algorithms.core.execution import InterventionEntry
+        from aisteer360.algorithms.core.execution.backend import SteeredSession
         from aisteer360.algorithms.core.execution.payloads import (
+            GenerationItem,
+            PreparedPrompt,
             remap_prompt_relative_scopes,
         )
-        from aisteer360.algorithms.core.execution.payloads import GenerationItem
-        from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
-        from aisteer360.algorithms.core.execution.backend import SteeredSession
 
         spec = self._lowered_spec({"kind": "after_prompt"})
         entry = InterventionEntry(spec=remap_prompt_relative_scopes(spec, anchor=5))

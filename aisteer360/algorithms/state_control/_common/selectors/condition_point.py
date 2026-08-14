@@ -13,6 +13,7 @@ from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.encoding import tokenize_texts
 from aisteer360.algorithms.core.internals.pooling import pool_over_spans, select_spans
 from aisteer360.algorithms.core.internals.render import render_contrastive
+
 from ..condition_scorers import projected_cosine_similarity_tensor, rank_one_projector
 from ..specs import Comparator, CompMode, ConditionSearchSpec, VectorTrainSpec
 from .base import BaseSelector

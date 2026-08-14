@@ -121,13 +121,8 @@ class TestEagerLoweringFailure:
             def resolve(self, model, tokenizer, *, session=None):
                 return _vector(k=3)
 
-        from aisteer360.algorithms.state_control._common.specs import (
-            Intervention,
-            TokenScope,
-        )
-        from aisteer360.algorithms.state_control._common.transforms import (
-            AdditiveTransform,
-        )
+        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
+        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
         from aisteer360.algorithms.state_control.base import InterventionControl
         from tests.utils.tiny_models import wordlevel_tokenizer
 

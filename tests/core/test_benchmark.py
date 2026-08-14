@@ -21,18 +21,10 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution.contracts import (
-    Capability,
-    Requirements,
-    needs,
-)
+from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, needs
 from aisteer360.algorithms.core.specs import ControlSpec
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.evaluation.benchmark import (
-    _IDENTITY_META_FIELDS,
-    Benchmark,
-    UnsupportedBenchmarkError,
-)
+from aisteer360.evaluation.benchmark import _IDENTITY_META_FIELDS, Benchmark, UnsupportedBenchmarkError
 from aisteer360.evaluation.use_cases.base import UseCase
 from aisteer360.evaluation.utils.identity import derive_trial_seed
 from tests.conftest import (
@@ -1257,12 +1249,8 @@ class TestSeededTrials:
             )
 
     def test_commonsense_shuffle_determinism(self, monkeypatch):
-        from aisteer360.evaluation.metrics.custom.commonsense_mcqa.mcqa_accuracy import (
-            MCQAAccuracy,
-        )
-        from aisteer360.evaluation.use_cases.commonsense_mcqa.use_case import (
-            CommonsenseMCQA,
-        )
+        from aisteer360.evaluation.metrics.custom.commonsense_mcqa.mcqa_accuracy import MCQAAccuracy
+        from aisteer360.evaluation.use_cases.commonsense_mcqa.use_case import CommonsenseMCQA
 
         recorded_prompts = []
 
