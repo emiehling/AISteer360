@@ -125,7 +125,7 @@ pipeline = SteeringPipeline(
     controls=[few_shot],
     device_map="auto",
 )
-pipeline.steer()  # required once before generate(); heavy work (training, fitting) happens here
+pipeline.steer()  # required once before generate(); heavy work (model loading, training, fitting) happens here
 
 response = pipeline.generate(
     messages=[{"role": "user", "content": "Where is the Eiffel Tower?"}],
@@ -178,7 +178,9 @@ The registered names at the time of writing:
 | `messages=` (batch of chats) | batched chat template | `list[str]` |
 | `input_ids=` (tensor / token id lists) | passed through | `torch.Tensor` |
 
-Positional `str`/`list[str]` behaves like `text=`; any other positional shape raises a `TypeError`.
+Positional `str`/`list[str]` behaves like `text=`; any other positional shape raises a `TypeError`. The
+per-source methods `generate_text`, `generate_messages`, and `generate_tokens` sit alongside `generate()`
+with the same behavior and named parameters for the reserved keys.
 
 Behaviors that differ from bare Hugging Face usage:
 
@@ -199,8 +201,9 @@ Behaviors that differ from bare Hugging Face usage:
 - `generate()` before `steer()` raises `RuntimeError`; a second `steer()` call is a silent no-op.
 - `attention_mask` is valid only with `input_ids=`; it is derived automatically for `text=` and `messages=`, and passing it with either (or with positional text) raises a `TypeError`.
 - `device` and a non-default `device_map` are mutually exclusive on the `SteeringPipeline` constructor.
-- Pass `lazy_init=True` when a structural control produces the final weights itself (e.g. `mergekit`); the base model
-  is then not loaded at construction and the structural control must return one during `steer()`.
+- Construction never loads the model. `steer()` acquires it from `model_name_or_path`, reuses preloaded
+  `model=`/`tokenizer=` objects passed at construction, or receives it from a structural control that produces the
+  final weights itself (e.g. `mergekit`). `lazy_init` is accepted and inert.
 - `pipeline.supports_batching` is `True` only when every enabled control declares batch safety; evaluation utilities
   batch when it is `True` and fall back to per-example generation otherwise.
 - `pipeline.compute_logprobs(input_ids, ref_output_ids=...)` scores reference tokens teacher-forced with the full
@@ -219,7 +222,6 @@ from aisteer360.algorithms.core.execution import BackendSpec
 pipeline = SteeringPipeline(
     controls=[caa],
     backend=BackendSpec(kind="vllm", model="meta-llama/Llama-3.1-8B-Instruct", options={"hook_plugin": True}),
-    lazy_init=True,
 )
 ```
 

@@ -132,9 +132,7 @@ class TestCPOSteer:
             retained_per_round=2,
             proposer_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
         )
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         assert isinstance(cpo.memory, CPOMemory)
@@ -159,9 +157,7 @@ class TestCPOTreeSearchAndCache:
             retained_per_round=2,
             proposer_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
         )
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         # first call populates the cache
@@ -192,9 +188,7 @@ class TestCPOTreeSearchAndCache:
             cache_queries=False,
             proposer_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
         )
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
         cpo.adapt_messages([[{"role": "user", "content": "hello"}]])
         assert cpo.memory.query_cache == {}
@@ -223,9 +217,7 @@ class TestCPOCacheKeyNormalizer:
         model, tokenizer = tiny_lm
         normalize = lambda q: " ".join(q.split()).lower()
         cpo = self._build(normalize, offline_rows)
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         calls = {"n": 0}
@@ -247,9 +239,7 @@ class TestCPOCacheKeyNormalizer:
     def test_default_keeps_near_duplicates_distinct(self, tiny_lm, offline_rows, monkeypatch):
         model, tokenizer = tiny_lm
         cpo = self._build(None, offline_rows)  # default: raw-query hashing
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         calls = {"n": 0}
@@ -339,9 +329,7 @@ class TestCPOMemoryRoundTrip:
             retained_per_round=2,
             proposer_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
         )
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         cpo.adapt_messages([[{"role": "user", "content": "hi"}]])
@@ -377,9 +365,7 @@ class TestCPOBackendPosture:
             retained_per_round=1,
             proposer_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
         )
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[cpo], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         # the proposer bound the model at steer; adaptation consults no pipeline attribute
@@ -398,7 +384,7 @@ class TestCPOBackendPosture:
             embedding_model=TINY_BERT,
         )
         assert cpo.steer_access() is ModelAccess.MODULE
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[cpo])
         report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         (failure,) = report.failures_for("generate")
         assert failure.message == (
@@ -417,7 +403,7 @@ class TestCPOBackendPosture:
             prompt_lm=model,
         )
         assert cpo.steer_access() is ModelAccess.ROLLOUTS
-        pipeline = SteeringPipeline(controls=[cpo], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[cpo])
         report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert report.supported("generate")
         (step,) = report.plan.steps

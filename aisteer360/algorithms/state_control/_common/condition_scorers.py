@@ -27,10 +27,10 @@ import torch.nn.functional as F
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.internals.probes.probe import Probe
 
+from .fit_specs import CompMode
 from .gates.base import BaseGate
 from .gates.cache_once import CacheOnceGate
 from .gates.probe_sum import ProbeSumGate
-from .specs import CompMode
 from .steering_vector import SteeringVector
 
 

@@ -34,9 +34,7 @@ def test_thinking_intervention(model_and_tokenizer, device: torch.device, conf: 
 
     control = ThinkingIntervention(intervention=simple_intervention)
 
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     # prompt

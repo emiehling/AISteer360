@@ -309,10 +309,7 @@ def generate_on_pipeline(
 
 def _as_pipeline(model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase) -> SteeringPipeline:
     """Wrap a bare model as an empty steered pipeline (the benchmark's baseline construction)."""
-    pipeline = SteeringPipeline(model_name_or_path=None, controls=[], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
-    pipeline.device = model.device
+    pipeline = SteeringPipeline(controls=[], model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline
 

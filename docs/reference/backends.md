@@ -65,7 +65,7 @@ process-global with respect to vLLM distributed state, so it assumes no other li
 the process.
 
 ```python
-with SteeringPipeline(controls=[caa], backend="vllm", lazy_init=True) as pipeline:
+with SteeringPipeline(controls=[caa], backend="vllm") as pipeline:
     pipeline.steer()  # fits stage or ride the engine session per the steer plan
     response = pipeline.generate(text="...", max_new_tokens=64)
 # the engine is shut down on exit

@@ -242,7 +242,7 @@ class TestPhasePartition:
     def test_stage_runs_module_steps_first_in_per_phase_global_order(self, fake_engine, model_dir):
         CALLS.clear()
         controls = [_SessionInput(), _ModuleOutput(), _StageStructural()]
-        pipeline = SteeringPipeline(controls=controls, backend=_engine_spec(model_dir), lazy_init=True)
+        pipeline = SteeringPipeline(controls=controls, backend=_engine_spec(model_dir))
         pipeline.steer()
 
         # global order is structural, input, output; the stage phase (structural and the
@@ -260,7 +260,7 @@ class TestPhasePartition:
 
         fake_engine.boot_observer = observer
         pipeline = SteeringPipeline(
-            controls=[_ModuleOutput()], backend=_engine_spec(model_dir), lazy_init=True,
+            controls=[_ModuleOutput()], backend=_engine_spec(model_dir),
         )
         pipeline.steer()
         assert len(fake_engine.instances) == 1
@@ -269,7 +269,7 @@ class TestPhasePartition:
     def test_structural_artifacts_hand_off_to_the_engine(self, fake_engine, model_dir):
         CALLS.clear()
         pipeline = SteeringPipeline(
-            controls=[_StageStructural()], backend=_engine_spec(model_dir), lazy_init=True,
+            controls=[_StageStructural()], backend=_engine_spec(model_dir),
         )
         pipeline.steer()
         (backend,) = fake_engine.instances
@@ -283,7 +283,7 @@ class TestFreeProtocol:
 
     def test_retaining_control_raises_naming_itself(self, fake_engine, model_dir):
         pipeline = SteeringPipeline(
-            controls=[_RetainingModule()], backend=_engine_spec(model_dir), lazy_init=True,
+            controls=[_RetainingModule()], backend=_engine_spec(model_dir),
         )
         with pytest.raises(RuntimeError, match="retained past the steer stage by: _RetainingModule"):
             pipeline.steer()
@@ -300,7 +300,7 @@ class TestSmokeTestDegradation:
         session_input = _SessionInput()
         pipeline = SteeringPipeline(
             controls=[session_input, fitter_a, fitter_b],
-            backend=_engine_spec(model_dir), lazy_init=True,
+            backend=_engine_spec(model_dir),
         )
 
         report = pipeline.check()
@@ -329,7 +329,7 @@ class TestSmokeTestDegradation:
         CALLS.clear()
         fitter = _CaptureFitter("fitter")
         pipeline = SteeringPipeline(
-            controls=[fitter], backend=_engine_spec(model_dir), lazy_init=True,
+            controls=[fitter], backend=_engine_spec(model_dir),
         )
         pipeline.steer()
         assert fitter.steer_count == 1

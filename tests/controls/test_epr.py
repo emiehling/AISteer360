@@ -161,9 +161,7 @@ class TestEPRWithFewShot:
             k_positive=1,
             selector=epr,
         )
-        pipeline = SteeringPipeline(controls=[fewshot], lazy_init=True)
-        pipeline.model = scoring_lm
-        pipeline.tokenizer = scoring_tok
+        pipeline = SteeringPipeline(controls=[fewshot], model=scoring_lm, tokenizer=scoring_tok)
         pipeline.steer()
 
         # capture the actual query passed into the selector during adapt
@@ -205,9 +203,7 @@ class TestEPRWithFewShot:
             k_positive=1,
             selector=epr,
         )
-        pipeline = SteeringPipeline(controls=[fewshot], lazy_init=True)
-        pipeline.model = scoring_lm
-        pipeline.tokenizer = scoring_tok
+        pipeline = SteeringPipeline(controls=[fewshot], model=scoring_lm, tokenizer=scoring_tok)
         pipeline.steer()
 
         # adapt_messages should now use the trained encoder for retrieval

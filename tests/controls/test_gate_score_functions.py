@@ -17,8 +17,8 @@ from aisteer360.algorithms.state_control._common.condition_scorers import (
     projected_cosine_similarity_tensor,
     rank_one_projector,
 )
+from aisteer360.algorithms.state_control._common.fit_specs import ConditionSearchSpec, VectorTrainSpec
 from aisteer360.algorithms.state_control._common.selectors.condition_point import ConditionPointSelector
-from aisteer360.algorithms.state_control._common.specs import ConditionSearchSpec, VectorTrainSpec
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32

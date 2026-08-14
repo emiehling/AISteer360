@@ -188,9 +188,7 @@ class TestGenerate:
 class TestScore:
 
     def test_matches_pipeline_compute_logprobs(self, model, tokenizer, backend):
-        pipeline = SteeringPipeline(controls=[], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         encoded = tokenizer(["the cat sat"], return_tensors="pt", padding=True)

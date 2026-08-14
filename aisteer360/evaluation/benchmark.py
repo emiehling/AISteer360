@@ -524,8 +524,8 @@ class Benchmark:
         """Build and steer the pipeline for one configuration under the configured backend.
 
         The shared-preloaded-model fast path and the fingerprint guard are Hugging Face features; on engine kinds
-        every configuration constructs lazily and core owns model, stage, and engine lifecycle (``device_map`` and
-        ``hf_model_kwargs`` configure the staged steer model through the pipeline's constructor knobs). Which
+        core owns model, stage, and engine lifecycle (``device_map`` and ``hf_model_kwargs`` configure the staged
+        steer model through the pipeline's constructor knobs). Which
         controls run where is core's contract; unsupported arrangements were already refused by the pre-flight
         check.
 
@@ -542,7 +542,7 @@ class Benchmark:
         }
         if self._backend_kind != "huggingface":
             pipeline = SteeringPipeline(
-                model_name_or_path=self.base_model_name_or_path, lazy_init=True,
+                model_name_or_path=self.base_model_name_or_path,
                 device_map=self.device_map, hf_model_kwargs=self.hf_model_kwargs, **common,
             )
             pipeline.steer()
@@ -555,11 +555,7 @@ class Benchmark:
             pipeline.steer()
             return pipeline
         self._ensure_base_model()  # only shared-base configurations load the shared base
-        pipeline = SteeringPipeline(model_name_or_path=None, lazy_init=True, **common)
-        pipeline.model = self._base_model
-        pipeline.tokenizer = self._base_tokenizer
-        if self._base_model is not None:
-            pipeline.device = self._base_model.device
+        pipeline = SteeringPipeline(model=self._base_model, tokenizer=self._base_tokenizer, **common)
         pipeline.steer()
         return pipeline
 
@@ -635,7 +631,7 @@ class Benchmark:
     def _preflight(self) -> None:
         """Check every sweep point's backend support before any model or engine work.
 
-        Probe pipelines are lazy and never load anything; ``check()`` does no work. A string backend kind whose
+        Probe pipelines never load anything (construction is cheap); ``check()`` does no work. A string backend kind whose
         optional dependency is not installed raises `ModuleNotFoundError` here, which is the intended fail-fast.
         Skipped points are not recorded in the checkpoint, so resume re-checks and re-skips (idempotent).
 
@@ -652,7 +648,7 @@ class Benchmark:
                 config_id = self._config_id(specs=specs, params=params, controls=controls)
                 probe = SteeringPipeline(
                     model_name_or_path=self.base_model_name_or_path, controls=controls,
-                    lazy_init=True, backend=self.backend, fit=self.fit,
+                    backend=self.backend, fit=self.fit,
                 )
                 report = probe.check()
                 if report.ok:

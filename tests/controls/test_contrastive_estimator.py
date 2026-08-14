@@ -15,7 +15,7 @@ from aisteer360.algorithms.state_control._common.estimators.contrastive_directio
     _prepare_pca_samples,
 )
 from aisteer360.algorithms.state_control._common.estimators.mean_difference import MeanDifferenceEstimator
-from aisteer360.algorithms.state_control._common.specs import VectorTrainSpec
+from aisteer360.algorithms.state_control._common.fit_specs import VectorTrainSpec
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 

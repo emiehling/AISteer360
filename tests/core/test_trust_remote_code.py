@@ -39,7 +39,7 @@ class TestSteeringPipelineTrustRemoteCode:
         ):
             model_cls.from_pretrained.return_value = _mock_model()
             tokenizer_cls.from_pretrained.return_value = _mock_tokenizer()
-            SteeringPipeline(model_name_or_path="some/model", **kwargs)
+            SteeringPipeline(model_name_or_path="some/model", **kwargs).steer()
         return model_cls, tokenizer_cls
 
     def test_default_false(self):

@@ -61,9 +61,7 @@ def _steered_pipeline(control):
     torch.manual_seed(0)
     model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
     tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline, model, tokenizer
 

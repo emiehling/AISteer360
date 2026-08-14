@@ -7,7 +7,7 @@ from vllm_hook_plugins.core.schema import parse_intervention_spec
 from aisteer360.algorithms.core.execution import Capability, ModelFacts
 from aisteer360.algorithms.core.internals.probes import Probe
 from aisteer360.algorithms.state_control._common.gates import CacheOnceGate, MultiKeyThresholdGate, ProbeSumGate
-from aisteer360.algorithms.state_control._common.specs import artifact_id_for
+from aisteer360.algorithms.state_control._common.lowering import artifact_id_for
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (
     AdditiveTransform,
@@ -265,7 +265,8 @@ class TestAdapterExports:
 class TestExportMechanics:
 
     def test_modifier_order_is_innermost_first(self):
-        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope, lower_interventions
+        from aisteer360.algorithms.state_control._common.lowering import lower_interventions
+        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
 
         vector = _vector(k=2)
         transform = NormPreservingTransform(

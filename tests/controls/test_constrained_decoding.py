@@ -47,7 +47,7 @@ class TestRequirements:
 
     def test_declarative_source_is_portable(self):
         control = ConstrainedDecoding(json_schema='{"type": "object"}', include_in_scoring=False)
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[control])
         report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert report.supported("generate")
 
@@ -60,7 +60,7 @@ class TestRequirements:
                 return torch.tensor([0])
 
         control = ConstrainedDecoding(automaton=_NullAutomaton(), include_in_scoring=False)
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[control])
         report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         (failure,) = report.failures_for("generate")
         assert failure.message == (
@@ -72,12 +72,13 @@ class TestRequirements:
 
     def test_scoring_participation_requires_in_process(self):
         control = ConstrainedDecoding(regex="cat", include_in_scoring=True)
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[control])
         report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert report.supported("generate")
         assert not report.supported("score")
         opted_out = SteeringPipeline(
-            controls=[ConstrainedDecoding(regex="cat", include_in_scoring=False)], lazy_init=True,
+            model_name_or_path="m",
+            controls=[ConstrainedDecoding(regex="cat", include_in_scoring=False)],
         ).check(backend=BackendSpec(kind="vllm", model="m"))
         assert opted_out.supported("score")
 
@@ -100,9 +101,7 @@ class TestInProcessArm:
     def test_choice_constraint_masks_generation(self, model, tokenizer):
         pytest.importorskip("xgrammar")
         control = ConstrainedDecoding(choice=["cat", "dog"], include_in_scoring=False)
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
         pipeline.steer()
         text = pipeline.generate(text="the mat sat on the", max_new_tokens=4, do_sample=False)
         assert text.strip() in ("cat", "dog")
@@ -118,9 +117,7 @@ class TestInProcessArm:
                 return torch.tensor([forced])
 
         control = ConstrainedDecoding(automaton=_ForcedAutomaton(), include_in_scoring=False)
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
         pipeline.steer()
         output = pipeline.generate(
             text="the cat sat", max_new_tokens=3, do_sample=False, return_output=True,

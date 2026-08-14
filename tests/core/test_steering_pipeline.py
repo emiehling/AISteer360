@@ -26,6 +26,7 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.algorithms.core.utils.assembly import _warn_on_provenance_mismatch
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.output_control.base import OutputControl
 from aisteer360.algorithms.structural_control.base import StructuralControl
@@ -66,11 +67,11 @@ def _patch_hf_loaders(monkeypatch):
 
 
 def _tiny_pipeline(controls=()) -> SteeringPipeline:
-    """Build a lazy pipeline over a hub-free tiny Llama model and WordLevel tokenizer."""
+    """Build a pipeline over a hub-free tiny Llama model and WordLevel tokenizer."""
     torch.manual_seed(0)
-    pipeline = SteeringPipeline(controls=list(controls), lazy_init=True)
-    pipeline.model = tiny_llama(num_layers=2, hidden=16, heads=2)
-    pipeline.tokenizer = wordlevel_tokenizer()
+    pipeline = SteeringPipeline(
+        controls=list(controls), model=tiny_llama(num_layers=2, hidden=16, heads=2), tokenizer=wordlevel_tokenizer(),
+    )
     return pipeline
 
 
@@ -78,10 +79,11 @@ def _tiny_pipeline(controls=()) -> SteeringPipeline:
 class TestPipelineInitialization:
     """Tests for `SteeringPipeline` construction."""
 
-    def test_loads_model_and_tokenizer(self, monkeypatch):
+    def test_steer_loads_model_and_tokenizer(self, monkeypatch):
         model_loader, tokenizer_loader, model, tokenizer = _patch_hf_loaders(monkeypatch)
 
         pipeline = SteeringPipeline(model_name_or_path="test-model")
+        pipeline.steer()
 
         model_loader.from_pretrained.assert_called_once()
         assert model_loader.from_pretrained.call_args.args == ("test-model",)
@@ -91,9 +93,9 @@ class TestPipelineInitialization:
         )
         assert pipeline.model is model
         assert pipeline.tokenizer is tokenizer
-        assert not pipeline._is_steered
+        assert pipeline._is_steered
 
-    def test_model_name_required_when_not_lazy(self):
+    def test_model_source_required_without_structural_control(self):
         with pytest.raises(ValueError, match="model_name_or_path"):
             SteeringPipeline()
 
@@ -109,6 +111,7 @@ class TestPipelineInitialization:
         model_loader, _, model, _ = _patch_hf_loaders(monkeypatch)
 
         pipeline = SteeringPipeline(model_name_or_path="test-model", device="cpu")
+        pipeline.steer()
 
         assert "device_map" not in model_loader.from_pretrained.call_args.kwargs
         model.to.assert_called_once_with("cpu")
@@ -120,7 +123,7 @@ class TestPipelineInitialization:
         SteeringPipeline(
             model_name_or_path="test-model",
             hf_model_kwargs={"torch_dtype": "float16"},
-        )
+        ).steer()
 
         kwargs = model_loader.from_pretrained.call_args.kwargs
         assert kwargs["torch_dtype"] == "float16"
@@ -128,41 +131,32 @@ class TestPipelineInitialization:
     def test_trust_remote_code_forwarded_to_tokenizer(self, monkeypatch):
         _, tokenizer_loader, _, _ = _patch_hf_loaders(monkeypatch)
 
-        SteeringPipeline(model_name_or_path="test-model", trust_remote_code=True)
+        SteeringPipeline(model_name_or_path="test-model", trust_remote_code=True).steer()
 
         assert tokenizer_loader.from_pretrained.call_args.kwargs["trust_remote_code"] is True
 
     def test_tokenizer_name_or_path_used(self, monkeypatch):
         _, tokenizer_loader, _, _ = _patch_hf_loaders(monkeypatch)
 
-        SteeringPipeline(model_name_or_path="test-model", tokenizer_name_or_path="test-tokenizer")
+        SteeringPipeline(model_name_or_path="test-model", tokenizer_name_or_path="test-tokenizer").steer()
 
         assert tokenizer_loader.from_pretrained.call_args.args == ("test-tokenizer",)
 
-    def test_lazy_init_defers_loading(self, monkeypatch):
+    def test_construction_defers_loading(self, monkeypatch):
         model_loader, tokenizer_loader, _, _ = _patch_hf_loaders(monkeypatch)
 
-        pipeline = SteeringPipeline(model_name_or_path="test-model", lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="test-model")
 
         model_loader.from_pretrained.assert_not_called()
         tokenizer_loader.from_pretrained.assert_not_called()
         assert pipeline.model is None
         assert pipeline.tokenizer is None
 
-    def test_lazy_init_loads_named_tokenizer(self, monkeypatch):
-        model_loader, tokenizer_loader, _, tokenizer = _patch_hf_loaders(monkeypatch)
-
-        pipeline = SteeringPipeline(lazy_init=True, tokenizer_name_or_path="test-tokenizer")
-
-        model_loader.from_pretrained.assert_not_called()
-        tokenizer_loader.from_pretrained.assert_called_once()
-        assert pipeline.tokenizer is tokenizer
-
     def test_controls_sorted_into_categories(self):
         input_ctrl = MockInputControl()
         state_ctrl = MockStateControl()
 
-        pipeline = SteeringPipeline(controls=[input_ctrl, state_ctrl], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="test-model", controls=[input_ctrl, state_ctrl])
 
         assert pipeline.input_controls == [input_ctrl]
         assert pipeline.state_controls == [state_ctrl]
@@ -177,7 +171,6 @@ class TestPipelineInitialization:
 
         pipeline = SteeringPipeline(
             controls=[input_ctrl, structural_ctrl, state_ctrl, output_ctrl],
-            lazy_init=True,
         )
 
         assert pipeline.input_controls == [input_ctrl]
@@ -189,7 +182,7 @@ class TestPipelineInitialization:
         _, _, _, tokenizer = _patch_hf_loaders(monkeypatch)
         control = MockInputControl()  # class-level `tokenizer` is None
 
-        SteeringPipeline(model_name_or_path="test-model", controls=[control])
+        SteeringPipeline(model_name_or_path="test-model", controls=[control]).steer()
 
         assert control.tokenizer is tokenizer
 
@@ -305,8 +298,12 @@ class TestPipelineSteer:
         assert pipeline.model is replacement
         assert pipeline.model is not original
 
-    def test_lazy_without_model_raises(self):
-        pipeline = SteeringPipeline(lazy_init=True)
+    def test_structural_control_returning_no_model_raises(self):
+        class _NoModelStructural(MockStructuralControl):
+            def steer(self, model=None, tokenizer=None, **kwargs):
+                return None
+
+        pipeline = SteeringPipeline(controls=[_NoModelStructural()])
 
         with pytest.raises(RuntimeError, match="No model is available after steering"):
             pipeline.steer()
@@ -533,9 +530,7 @@ class TestPipelineComputeLogprobs:
         batched = _tiny_pipeline()
         batched.steer()
 
-        sequential = SteeringPipeline(controls=[MockInputControl()], lazy_init=True)
-        sequential.model = batched.model
-        sequential.tokenizer = batched.tokenizer
+        sequential = SteeringPipeline(controls=[MockInputControl()], model=batched.model, tokenizer=batched.tokenizer)
         sequential.steer()
         assert not sequential.supports_batching
 
@@ -568,20 +563,20 @@ class TestPipelineSupportsBatching:
     """Tests for the `supports_batching` property."""
 
     def test_default_controls_support_batching(self):
-        pipeline = SteeringPipeline(controls=[], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="test-model", controls=[])
         assert pipeline.supports_batching
 
     def test_non_batching_control_disables_batching(self):
-        pipeline = SteeringPipeline(controls=[MockInputControl()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="test-model", controls=[MockInputControl()])
         assert not pipeline.supports_batching
 
     def test_all_batching_controls_enables_batching(self):
-        pipeline = SteeringPipeline(controls=[MockStateControl()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="test-model", controls=[MockStateControl()])
         assert pipeline.supports_batching
 
     def test_mixed_batching_support(self):
         pipeline = SteeringPipeline(
-            controls=[MockStateControl(), MockInputControl()], lazy_init=True
+            model_name_or_path="test-model", controls=[MockStateControl(), MockInputControl()]
         )
         assert not pipeline.supports_batching
 
@@ -589,7 +584,7 @@ class TestPipelineSupportsBatching:
         control = MockInputControl()
         control.enabled = False
 
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="test-model", controls=[control])
         assert pipeline.supports_batching
 
 
@@ -601,9 +596,7 @@ class TestDuplicateBosGuard:
         torch.manual_seed(0)
         model = tiny_llama(num_layers=2, hidden=16, heads=2)
         tokenizer = wordlevel_tokenizer()  # bos_token_id == 0
-        pipeline = SteeringPipeline(lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(model=model, tokenizer=tokenizer)
         pipeline.steer()
         return pipeline, tokenizer
 
@@ -776,7 +769,7 @@ class TestProvenanceMismatchWarnings:
     def test_differing_chat_template_fingerprints_warn(self):
         control = self._control_with_meta({"chat_template_fingerprint": "sha256:aaa"})
         with pytest.warns(UserWarning, match="chat_template_fingerprint"):
-            SteeringPipeline._warn_on_provenance_mismatch(
+            _warn_on_provenance_mismatch(
                 control, {"chat_template_fingerprint": "sha256:bbb"},
             )
 
@@ -784,13 +777,13 @@ class TestProvenanceMismatchWarnings:
         control = self._control_with_meta({"chat_template_fingerprint": "sha256:aaa"})
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            SteeringPipeline._warn_on_provenance_mismatch(
+            _warn_on_provenance_mismatch(
                 control, {"chat_template_fingerprint": self._absent_fingerprint()},
             )
 
     def test_differing_config_fingerprints_still_warn(self):
         control = self._control_with_meta({"config_fingerprint": "sha256:aaa"})
         with pytest.warns(UserWarning, match="config_fingerprint"):
-            SteeringPipeline._warn_on_provenance_mismatch(
+            _warn_on_provenance_mismatch(
                 control, {"config_fingerprint": "sha256:bbb"},
             )

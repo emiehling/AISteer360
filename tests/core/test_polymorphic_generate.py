@@ -366,9 +366,7 @@ def tiny_pipeline():
     torch.manual_seed(0)
     model = tiny_llama(num_layers=2, hidden=16, heads=2)
     tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline
 

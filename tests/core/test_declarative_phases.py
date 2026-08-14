@@ -40,7 +40,7 @@ class TestPhaseVerdicts:
 
     def test_fit_template_stages_on_a_capture_less_backend(self):
         """A template carrying a fit source plans a staged fit where capture is absent."""
-        pipeline = SteeringPipeline(controls=[_fit_caa()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_fit_caa()])
         report = pipeline.check(backend=SERVE_SPEC)
         (step,) = report.plan.steps
         assert step.control == "CAA"
@@ -54,7 +54,7 @@ class TestPhaseVerdicts:
     def test_precomputed_template_steers_through_the_session(self):
         """A fully concrete configuration needs only structural facts at steer."""
         pipeline = SteeringPipeline(
-            controls=[CAA(steering_vector=_vector(), layer_id=1)], lazy_init=True,
+            model_name_or_path="m",controls=[CAA(steering_vector=_vector(), layer_id=1)],
         )
         report = pipeline.check(backend=SERVE_SPEC)
         assert report.supported("generate")
@@ -66,7 +66,7 @@ class TestPhaseVerdicts:
     def test_score_phase_rejects_spec_backend_by_name(self):
         """Scoring an intervention control on a spec backend fails at check, naming the control."""
         pipeline = SteeringPipeline(
-            controls=[CAA(steering_vector=_vector(), layer_id=1)], lazy_init=True,
+            model_name_or_path="m",controls=[CAA(steering_vector=_vector(), layer_id=1)],
         )
         report = pipeline.check(backend=SERVE_SPEC)
         failures = report.failures_for("score")
@@ -138,7 +138,7 @@ class TestEagerLoweringFailure:
                 ),)
 
         control = _DeclaredBroadcast()
-        pipeline = SteeringPipeline(controls=[control], backend=SERVE_SPEC, lazy_init=True)
+        pipeline = SteeringPipeline(controls=[control], backend=SERVE_SPEC)
         pipeline.tokenizer = wordlevel_tokenizer()
 
         # check() consults construction-time facts, so the declared kinds pass

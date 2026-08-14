@@ -1355,7 +1355,7 @@ class TestBackendPassthrough:
         for instance in recording_pipeline:
             assert instance.kwargs["backend"] == "vllm"
             assert instance.kwargs["fit"] == "in_process"
-            assert instance.kwargs["lazy_init"] is True
+            assert "lazy_init" not in instance.kwargs
 
     def test_unknown_backend_kind_raises_type_error(self, sample_evaluation_data):
         with pytest.raises(TypeError, match="backend must be a BackendSpec"):

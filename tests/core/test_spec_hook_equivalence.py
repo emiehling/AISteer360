@@ -17,7 +17,7 @@ from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hid
 from aisteer360.algorithms.core.internals.probes import Probe
 from aisteer360.algorithms.state_control._common.condition_scorers import ProbeContributionScorer
 from aisteer360.algorithms.state_control._common.gates import CacheOnceGate, ProbeSumGate
-from aisteer360.algorithms.state_control._common.specs import artifact_id_for
+from aisteer360.algorithms.state_control._common.lowering import artifact_id_for
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (
     AdditiveTransform,

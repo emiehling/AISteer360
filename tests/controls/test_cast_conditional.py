@@ -10,8 +10,8 @@ import torch
 
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.algorithms.state_control._common.fit_specs import ConditionSearchSpec, VectorTrainSpec
 from aisteer360.algorithms.state_control._common.gates import MultiKeyThresholdGate
-from aisteer360.algorithms.state_control._common.specs import ConditionSearchSpec, VectorTrainSpec
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.cast.args import CASTArgs
 from aisteer360.algorithms.state_control.cast.control import CAST
@@ -66,9 +66,7 @@ def _steer_pipeline(control, seed: int = 0):
     torch.manual_seed(seed)  # fixed so a probe run and the graded run share the same model weights
     model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=4)
     tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline, model, tokenizer
 

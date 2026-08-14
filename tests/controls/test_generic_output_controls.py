@@ -46,9 +46,7 @@ def _pipeline(controls, model=None, tokenizer=None):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
     if tokenizer is None:
         tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(controls=controls, lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=controls, model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline, model, tokenizer
 
@@ -563,9 +561,9 @@ class TestStoppingRules:
 
     def test_stop_texts_without_tokenizer_raises(self):
         sr = StoppingRules(stop_texts=["\n"])
-        pipeline = SteeringPipeline(controls=[sr], lazy_init=True)
-        pipeline.model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
-        pipeline.tokenizer = None
+        pipeline = SteeringPipeline(
+            controls=[sr], model=tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB), tokenizer=None,
+        )
         with pytest.raises(RuntimeError, match="tokenizer"):
             pipeline.steer()
 

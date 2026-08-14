@@ -74,9 +74,7 @@ def _hf_reference(control_factory, prompt: str, max_new_tokens: int = 8):
     tokenizer = _tokenizer()
     model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
     control = control_factory()
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
     out = pipeline.generate(text=prompt, max_new_tokens=max_new_tokens, do_sample=False,
                             return_output=True)
@@ -101,7 +99,7 @@ class TestSpecParityOnEngine:
 
         control = control_factory()
         pipeline = SteeringPipeline(
-            controls=[control], lazy_init=True, backend=plugin_backend.spec,
+            controls=[control], backend=plugin_backend.spec,
         )
         pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
         pipeline.tokenizer = _tokenizer()
@@ -146,7 +144,8 @@ class TestSpecParityOnEngine:
         """The salting rule's regression alarm: a steered request after a baseline request over
         the same prompt must not reuse KV computed without the intervention."""
         from aisteer360.algorithms.core.execution import InterventionEntry
-        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope, lower_interventions
+        from aisteer360.algorithms.state_control._common.lowering import lower_interventions
+        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
         from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
 
         hidden = plugin_backend._layout.hidden_size
@@ -187,14 +186,12 @@ class TestSpecParityOnEngine:
         prompt_ids = tokenizer("hello world example", return_tensors="pt")["input_ids"]
         ref_ids = tokenizer(" one two", return_tensors="pt", add_special_tokens=False)["input_ids"]
 
-        hf_pipeline = SteeringPipeline(controls=[factory()], lazy_init=True)
-        hf_pipeline.model = model
-        hf_pipeline.tokenizer = tokenizer
+        hf_pipeline = SteeringPipeline(controls=[factory()], model=model, tokenizer=tokenizer)
         hf_pipeline.steer()
         hf_scores = hf_pipeline.compute_logprobs(prompt_ids, ref_output_ids=ref_ids)
 
         engine_pipeline = SteeringPipeline(
-            controls=[factory()], lazy_init=True, backend=plugin_backend.spec,
+            controls=[factory()], backend=plugin_backend.spec,
         )
         engine_pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
         engine_pipeline.tokenizer = tokenizer
@@ -222,7 +219,7 @@ class TestSpecParityOnEngine:
 
         control = factory()
         pipeline = SteeringPipeline(
-            controls=[control], lazy_init=True, backend=plugin_backend.spec,
+            controls=[control], backend=plugin_backend.spec,
         )
         pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
         pipeline.tokenizer = _tokenizer()
@@ -271,7 +268,7 @@ class TestCaptureOnEngine:
     def test_vector_fitted_on_engine_steers_in_process(self, plugin_backend):
         from aisteer360.algorithms.core.internals.data import ContrastivePairs
         from aisteer360.algorithms.state_control._common.estimators import MeanDifferenceEstimator
-        from aisteer360.algorithms.state_control._common.specs import VectorTrainSpec
+        from aisteer360.algorithms.state_control._common.fit_specs import VectorTrainSpec
 
         pairs = ContrastivePairs(
             positives=["the committee approved it", "they agreed at once"],
@@ -339,10 +336,10 @@ class TestCaptureOnEngine:
 
         def run(backend_spec, backend=None):
             pipeline = SteeringPipeline(
-                controls=[factory()], lazy_init=True, backend=backend_spec,
+                controls=[factory()], backend=backend_spec,
+                model=AutoModelForCausalLM.from_pretrained(TINY_MODEL),
+                tokenizer=tokenizer,
             )
-            pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
-            pipeline.tokenizer = tokenizer
             if backend is not None:
                 pipeline._backends[backend.spec] = backend
             pipeline.steer()
@@ -377,7 +374,7 @@ class TestCaptureOnEngine:
             rules=RoutingRules(rules=[Rule("topic", when=P("topic"), action=respond("ROUTED"))]),
         )
         pipeline = SteeringPipeline(
-            controls=[control], lazy_init=True, backend=plugin_backend.spec,
+            controls=[control], backend=plugin_backend.spec,
         )
         pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
         pipeline.tokenizer = _tokenizer()

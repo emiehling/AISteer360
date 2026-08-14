@@ -7,7 +7,7 @@ from aisteer360.algorithms.core.internals.data import (
 )
 from aisteer360.algorithms.core.internals.stats import measure_residual_norms
 
+from .fit_specs import Comparator, CompMode, ConditionSearchSpec, VectorTrainSpec
 from .runtime import TransformHookRuntime
 from .selectors import FixedLayerSelector, FractionalDepthSelector, TopKHeadSelector
-from .specs import Comparator, CompMode, ConditionSearchSpec, VectorTrainSpec
 from .steering_vector import SteeringVector

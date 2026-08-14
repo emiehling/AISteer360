@@ -6,6 +6,7 @@ import torch
 from vllm_hook_plugins.core.canonical import canonical_bytes, request_salt, spec_hash
 
 from aisteer360.algorithms.core.execution import InterventionSpec
+from aisteer360.algorithms.core.utils.assembly import _lower_control
 
 _VECTOR_ID = "sha256:" + "ab" * 32
 _PROBE_ID = "sha256:" + "cd" * 32
@@ -93,9 +94,9 @@ class TestEntrySelection:
         from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
         from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = tiny_llama(num_layers=4, hidden=16, heads=2)
-        pipeline.tokenizer = wordlevel_tokenizer()
+        pipeline = SteeringPipeline(
+            controls=[control], model=tiny_llama(num_layers=4, hidden=16, heads=2), tokenizer=wordlevel_tokenizer(),
+        )
         pipeline.steer()
         return pipeline
 
@@ -130,7 +131,7 @@ class TestEntrySelection:
 
         pipeline = self._steered_pipeline(self._caa())
         control = pipeline.state_controls[0]
-        entry = pipeline._lower_control(
+        entry = _lower_control(
             control, self._capabilities().intervention_kinds, {}, {},
         )
         assert isinstance(entry, InterventionEntry)
@@ -143,7 +144,7 @@ class TestEntrySelection:
         control = pipeline.state_controls[0]
         narrowed = self._capabilities(transforms=frozenset({"rotation"}))
         with pytest.raises(UnsupportedOperationError, match="additive"):
-            pipeline._lower_control(control, narrowed.intervention_kinds, {}, {})
+            _lower_control(control, narrowed.intervention_kinds, {}, {})
 
     def test_hook_only_control_yields_verdict(self):
         from aisteer360.algorithms.core.execution import UnsupportedOperationError
@@ -157,7 +158,7 @@ class TestEntrySelection:
         pipeline = self._steered_pipeline(positional)
         control = pipeline.state_controls[0]
         with pytest.raises(UnsupportedOperationError, match="no intervention-spec form"):
-            pipeline._lower_control(control, self._capabilities().intervention_kinds, {}, {})
+            _lower_control(control, self._capabilities().intervention_kinds, {}, {})
 
 
 class TestVerdictStrings:
@@ -172,7 +173,7 @@ class TestVerdictStrings:
             steering_vector=SteeringVector(model_type="llama", directions={1: torch.ones(3, 16)}),
             layer_id=1,
         )
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[control])
         report = pipeline.check(backend=BackendSpec(
             kind="vllm", model="m", options={"hook_plugin": True},
         ))
@@ -188,7 +189,7 @@ class TestVerdictStrings:
         from aisteer360.algorithms.state_control.cast.control import CAST
 
         control = CAST(behavior_vector=None, behavior_data={"positives": ["a"], "negatives": ["b"]})
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[control])
         report = pipeline.check(backend=BackendSpec(
             kind="vllm", model="m", options={"hook_plugin": True},
         ))
@@ -205,7 +206,7 @@ class TestVerdictStrings:
             steering_vector=SteeringVector(model_type="llama", directions={1: torch.ones(1, 16)}),
             layer_id=1,
         )
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[control])
         report = pipeline.check(backend=BackendSpec(
             kind="vllm", model="m", options={"hook_plugin": True},
         ))

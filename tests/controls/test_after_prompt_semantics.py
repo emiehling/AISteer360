@@ -143,9 +143,7 @@ def test_after_prompt_steers_every_generated_position(control_name, prompt_len):
     tokenizer = wordlevel_tokenizer()
 
     control = CONTROL_FACTORIES[control_name]()
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     # count model forward passes via a pre-hook, and steered passes via a recording transform

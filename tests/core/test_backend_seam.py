@@ -272,7 +272,7 @@ class TestGenerationParamsNormalization:
 class TestCheck:
 
     def test_defaults_only_pipeline_supported_on_vllm(self):
-        pipeline = SteeringPipeline(lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m")
         report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert report.ok
         assert report.supported("generate", "score")
@@ -280,7 +280,7 @@ class TestCheck:
         assert report.plan.stages is False
 
     def test_enabled_control_unsupported_on_vllm_with_stable_message(self):
-        pipeline = SteeringPipeline(controls=[_TokenPassthroughControl()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_TokenPassthroughControl()])
         report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
         assert not report.ok
         assert len(report.failures) == 1
@@ -293,13 +293,13 @@ class TestCheck:
         )
 
     def test_default_hf_backend_supported(self):
-        pipeline = SteeringPipeline(controls=[_TokenPassthroughControl()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_TokenPassthroughControl()])
         assert pipeline.check().ok
 
     def test_steer_raises_before_any_control_runs(self):
         control = _TokenPassthroughControl()
         pipeline = SteeringPipeline(
-            controls=[control], lazy_init=True, backend=BackendSpec(kind="vllm", model="m"),
+            controls=[control], backend=BackendSpec(kind="vllm", model="m"),
         )
         with pytest.raises(UnsupportedPipelineError, match="IN_PROCESS_TORCH"):
             pipeline.steer()
@@ -310,14 +310,14 @@ class TestCheck:
         reason="vLLM installed; steer() would boot an engine instead of raising.",
     )
     def test_steer_on_vllm_backend_requires_vllm_extra(self):
-        pipeline = SteeringPipeline(lazy_init=True, backend=BackendSpec(kind="vllm", model="m"))
+        pipeline = SteeringPipeline(backend=BackendSpec(kind="vllm", model="m"))
         with pytest.raises(ModuleNotFoundError, match=r"aisteer360\[vllm\]"):
             pipeline.steer()
 
     def test_compute_logprobs_raises_on_score_failure(self):
-        pipeline = SteeringPipeline(controls=[], lazy_init=True)
-        pipeline.model = tiny_llama(num_layers=2, hidden=16, heads=2)
-        pipeline.tokenizer = wordlevel_tokenizer()
+        pipeline = SteeringPipeline(
+            controls=[], model=tiny_llama(num_layers=2, hidden=16, heads=2), tokenizer=wordlevel_tokenizer(),
+        )
         pipeline.steer()
         pipeline._support_report = dataclasses.replace(
             pipeline._support_report,
@@ -329,14 +329,14 @@ class TestCheck:
             pipeline.compute_logprobs(input_ids=[3, 4], ref_output_ids=[5])
 
     def test_invalid_backend_value_rejected(self):
-        pipeline = SteeringPipeline(lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m")
         with pytest.raises(TypeError, match="backend must be"):
             pipeline.check(backend=3.14)
 
     def test_removed_constructor_parameters_rejected(self):
         for removed in ("steer" + "_backend", "inference" + "_backend"):
             with pytest.raises(TypeError):
-                SteeringPipeline(lazy_init=True, **{removed: "huggingface"})
+                SteeringPipeline(**{removed: "huggingface"})
 
 
 class TestPastaSpecConstraint:
@@ -346,8 +346,8 @@ class TestPastaSpecConstraint:
             {"attn_implementation": attn_implementation} if attn_implementation else {}
         )
         return SteeringPipeline(
+            model_name_or_path="m",
             controls=[PASTA(head_config=[0])],
-            lazy_init=True,
             hf_model_kwargs=hf_model_kwargs,
         )
 
@@ -380,9 +380,9 @@ class TestPastaSpecConstraint:
 class TestSteerSessionPlumbing:
 
     def _steered_pipeline(self, controls, **steer_kwargs):
-        pipeline = SteeringPipeline(controls=controls, lazy_init=True)
-        pipeline.model = tiny_llama(num_layers=2, hidden=16, heads=2)
-        pipeline.tokenizer = wordlevel_tokenizer()
+        pipeline = SteeringPipeline(
+            controls=controls, model=tiny_llama(num_layers=2, hidden=16, heads=2), tokenizer=wordlevel_tokenizer(),
+        )
         pipeline.steer(**steer_kwargs)
         return pipeline
 

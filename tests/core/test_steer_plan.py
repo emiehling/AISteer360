@@ -57,27 +57,27 @@ class TestVenueMatrix:
         (ModelAccess.MODULE, "stage"),
     ])
     def test_engine_venues_below_and_above_capture(self, access, expected):
-        pipeline = SteeringPipeline(controls=[_access_control(access)], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_access_control(access)])
         (step,) = pipeline.check(backend=VLLM_PLUGIN_SPEC).plan.steps
         assert step.access is access
         assert step.venue == expected
 
     def test_capture_rides_the_session_where_advertised(self):
-        pipeline = SteeringPipeline(controls=[_fit_caa()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_fit_caa()])
         (step,) = pipeline.check(backend=VLLM_PLUGIN_SPEC).plan.steps
         assert step.access is ModelAccess.CAPTURE
         assert step.venue == "session"
 
     @pytest.mark.parametrize("spec", [VLLM_BARE_SPEC, SERVE_PLUGIN_SPEC])
     def test_capture_stages_where_capture_is_statically_absent(self, spec):
-        pipeline = SteeringPipeline(controls=[_fit_caa()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_fit_caa()])
         report = pipeline.check(backend=spec)
         (step,) = report.plan.steps
         assert step.venue == "stage"
         assert report.plan.stages is True
 
     def test_fit_in_process_forces_capture_to_the_stage(self):
-        pipeline = SteeringPipeline(controls=[_fit_caa()], lazy_init=True, fit="in_process")
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_fit_caa()], fit="in_process")
         report = pipeline.check(backend=VLLM_PLUGIN_SPEC)
         (step,) = report.plan.steps
         assert step.venue == "stage"
@@ -87,7 +87,7 @@ class TestVenueMatrix:
 
     def test_hugging_face_plan_is_all_live(self):
         pipeline = SteeringPipeline(
-            controls=[_fit_caa(), _access_control(ModelAccess.MODULE)], lazy_init=True,
+            model_name_or_path="m",controls=[_fit_caa(), _access_control(ModelAccess.MODULE)],
         )
         plan = pipeline.check(backend=HF_SPEC).plan
         assert all(step.venue == "live" for step in plan.steps)
@@ -99,7 +99,7 @@ class TestVenueMatrix:
 class TestFitsAndNotices:
 
     def test_direction_fit_venue_follows_its_step(self):
-        pipeline = SteeringPipeline(controls=[_fit_caa()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_fit_caa()])
         plan = pipeline.check(backend=VLLM_PLUGIN_SPEC).plan
         (fit,) = plan.fits
         assert fit.control == "CAA"
@@ -108,7 +108,7 @@ class TestFitsAndNotices:
         assert fit.venue == "session"
 
     def test_calibrated_fit_on_serve_emits_the_crossing_notice(self):
-        pipeline = SteeringPipeline(controls=[_routed_fit()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_routed_fit()])
         plan = pipeline.check(backend=SERVE_PLUGIN_SPEC).plan
         (fit,) = plan.fits
         assert fit.artifact_class == "calibrated"
@@ -120,7 +120,7 @@ class TestFitsAndNotices:
         )
 
     def test_fit_in_process_flag_names_itself_in_the_notice(self):
-        pipeline = SteeringPipeline(controls=[_routed_fit()], lazy_init=True, fit="in_process")
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_routed_fit()], fit="in_process")
         plan = pipeline.check(backend=VLLM_PLUGIN_SPEC).plan
         assert plan.notices == (
             "ProbeSetFit for RoutedDecoding is scale-calibrated and will be read on backend "
@@ -129,7 +129,7 @@ class TestFitsAndNotices:
         )
 
     def test_session_calibrated_fit_carries_no_notice(self):
-        pipeline = SteeringPipeline(controls=[_routed_fit()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_routed_fit()])
         plan = pipeline.check(backend=VLLM_PLUGIN_SPEC).plan
         (fit,) = plan.fits
         assert fit.venue == "session"
@@ -141,7 +141,7 @@ class TestDeterminism:
     def test_same_configuration_yields_the_same_plan_and_verdicts(self):
         def build():
             return SteeringPipeline(
-                controls=[_precomputed_caa(), _routed_fit()], lazy_init=True, fit="in_process",
+                model_name_or_path="m",controls=[_precomputed_caa(), _routed_fit()], fit="in_process",
             )
 
         first = build().check(backend=SERVE_PLUGIN_SPEC)
@@ -151,10 +151,10 @@ class TestDeterminism:
 
     def test_plan_is_independent_of_sibling_controls(self):
         """A control's venue never moves because an unrelated control was added."""
-        alone = SteeringPipeline(controls=[_fit_caa()], lazy_init=True)
+        alone = SteeringPipeline(model_name_or_path="m", controls=[_fit_caa()])
         (step_alone,) = alone.check(backend=VLLM_PLUGIN_SPEC).plan.steps
         with_module_sibling = SteeringPipeline(
-            controls=[_fit_caa(), _access_control(ModelAccess.MODULE)], lazy_init=True,
+            model_name_or_path="m",controls=[_fit_caa(), _access_control(ModelAccess.MODULE)],
         )
         plan = with_module_sibling.check(backend=VLLM_PLUGIN_SPEC).plan
         (step_with,) = [step for step in plan.steps if step.control == "CAA"]

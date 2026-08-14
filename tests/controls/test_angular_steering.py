@@ -220,9 +220,7 @@ def test_angular_precomputed_vector(model_and_tokenizer, device: torch.device, c
         adaptive=conf["adaptive"],
         layer_range=(0, min(2, num_layers)),
     )
-    pipeline = SteeringPipeline(controls=[angular], lazy_init=True, device_map=device)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[angular],  device_map=device, model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     prompt_ids = tokenizer(PROMPT_TEXT, return_tensors="pt").input_ids.to(device)
@@ -253,9 +251,7 @@ def test_steer_does_not_mutate_caller_vector(model_and_tokenizer, device: torch.
     original_dtype = steering_vector.directions[0].dtype
 
     angular = AngularSteering(steering_vector=steering_vector, target_degree=90.0, layer_range=(0, 1))
-    pipeline = SteeringPipeline(controls=[angular], lazy_init=True, device_map=device)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[angular],  device_map=device, model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     # caller's vector keeps every layer and its original dtype; the control uses a private copy
@@ -290,9 +286,7 @@ def test_angular_estimation_path(model_and_tokenizer, device: torch.device):
         target_degree=180.0,
         layer_range=(0, min(2, num_layers)),
     )
-    pipeline = SteeringPipeline(controls=[angular], lazy_init=True, device_map=device)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[angular],  device_map=device, model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     assert angular._steering_vector is not None

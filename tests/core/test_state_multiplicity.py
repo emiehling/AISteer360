@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.algorithms.core.utils.assembly import collect_state_entries
 from aisteer360.algorithms.core.utils.controls import merge_controls
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.state_control.base import HookControl
@@ -107,9 +108,7 @@ def _pipeline(controls, model=None):
     if model is None:
         model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
     tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(controls=controls, lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=controls, model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline, model
 
@@ -162,7 +161,10 @@ class TestHookComposition:
 
         def _final_hidden(controls):
             pipeline, model = _pipeline(controls)
-            entries = pipeline._collect_state_entries(input_ids, {})
+            entries = collect_state_entries(
+                pipeline.state_controls, input_ids, {},
+                hooks_in_process=True, lowered_state=pipeline._lowered_state, model=pipeline.model,
+            )
             backend = pipeline._backend_for(pipeline._resolve_backend_spec(None))
             captured = {}
 
@@ -214,12 +216,12 @@ class TestSupportsBatching:
             supports_batching = False
 
         pipeline_all_ok = SteeringPipeline(
-            controls=[_ConstantAddControl(1, 1.0), _ConstantAddControl(2, 1.0)], lazy_init=True
+            model_name_or_path="m",controls=[_ConstantAddControl(1, 1.0), _ConstantAddControl(2, 1.0)]
         )
         assert pipeline_all_ok.supports_batching is True
 
         pipeline_mixed = SteeringPipeline(
-            controls=[_ConstantAddControl(1, 1.0), _NonBatch(2, 1.0)], lazy_init=True
+            model_name_or_path="m",controls=[_ConstantAddControl(1, 1.0), _NonBatch(2, 1.0)]
         )
         assert pipeline_mixed.supports_batching is False
 

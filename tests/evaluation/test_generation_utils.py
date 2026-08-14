@@ -500,7 +500,7 @@ class _ScriptedPipeline(SteeringPipeline):
     supports_batching = True
 
     def __init__(self, script: list[str]):
-        super().__init__(model_name_or_path=None, controls=[], lazy_init=True)
+        super().__init__(model_name_or_path="scripted-double", controls=[])
         self.model = None
         self.tokenizer = _ScriptedTokenizer(script)
         self._cursor = 0

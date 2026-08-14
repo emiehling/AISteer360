@@ -26,8 +26,8 @@ The above chains the two controls into a single operation on the model.
 
 !!! note
     Some structural controls (e.g., model merging methods) produce a model as output rather than modifying/tuning an
-    existing model. In these cases, the steering pipeline must be initialized with the argument `lazy_init=True` ,
-    rather than with the `model_name_or_path` argument. This defers loading of the base model until the steer step.
+    existing model. In these cases, the steering pipeline is initialized without the `model_name_or_path` argument;
+    the structural control supplies the model during the steer step.
 
 !!! note
     A pipeline may contain **any number of controls in every category**, each applied in list order. When multiple
@@ -115,7 +115,6 @@ pipeline = SteeringPipeline(
         model="meta-llama/Llama-3.1-8B-Instruct",
         options={"hook_plugin": True},
     ),
-    lazy_init=True,
 )
 report = pipeline.check()  # optional standalone check; steer() runs it and raises on failures
 report.plan               # where each control's steer step and each fit will run

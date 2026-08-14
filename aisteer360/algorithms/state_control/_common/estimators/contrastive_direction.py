@@ -14,7 +14,7 @@ from aisteer360.algorithms.core.internals.fingerprint import artifact_provenance
 from aisteer360.algorithms.core.internals.pooling import pool_over_spans, select_spans
 from aisteer360.algorithms.core.internals.render import render_contrastive
 
-from ..specs import VectorTrainSpec
+from ..fit_specs import VectorTrainSpec
 from ..steering_vector import SteeringVector
 from .base import BaseEstimator
 

@@ -201,16 +201,16 @@ class TestModelGating:
     @pytest.mark.parametrize("access", [ModelAccess.FACTS, ModelAccess.ROLLOUTS, ModelAccess.CAPTURE])
     def test_model_is_none_below_module(self, access):
         control = self._recording_control(access)
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = tiny_llama(num_layers=2, hidden=16, heads=2)
-        pipeline.tokenizer = wordlevel_tokenizer()
+        pipeline = SteeringPipeline(
+            controls=[control], model=tiny_llama(num_layers=2, hidden=16, heads=2), tokenizer=wordlevel_tokenizer(),
+        )
         pipeline.steer()
         assert control.seen_model is None
 
     def test_model_passes_at_module(self):
         control = self._recording_control(ModelAccess.MODULE)
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = tiny_llama(num_layers=2, hidden=16, heads=2)
-        pipeline.tokenizer = wordlevel_tokenizer()
+        pipeline = SteeringPipeline(
+            controls=[control], model=tiny_llama(num_layers=2, hidden=16, heads=2), tokenizer=wordlevel_tokenizer(),
+        )
         pipeline.steer()
         assert control.seen_model is pipeline.model

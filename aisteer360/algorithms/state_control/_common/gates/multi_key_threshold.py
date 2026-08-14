@@ -5,7 +5,7 @@ from typing import ClassVar, Literal
 
 import torch
 
-from ..specs import ComparatorInput, normalize_comparator
+from ..fit_specs import ComparatorInput, normalize_comparator
 from .base import BaseGate
 
 

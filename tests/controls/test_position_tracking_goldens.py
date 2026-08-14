@@ -109,9 +109,7 @@ def _generate(control_name: str, prompt_len: int, strip: bool = False) -> list[i
     control = CONTROL_FACTORIES[control_name]()
     if strip:
         _strip_clock_from_hooks(control)
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     input_ids = torch.arange(3, 3 + prompt_len, dtype=torch.long).unsqueeze(0)

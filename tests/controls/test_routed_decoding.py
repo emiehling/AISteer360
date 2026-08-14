@@ -62,9 +62,7 @@ def _make_pipeline(probes, rules, seed: int = 0):
     model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=4)
     tokenizer = wordlevel_tokenizer()
     router = RoutedDecoding(probes=probes, rules=rules)
-    pipeline = SteeringPipeline(controls=[router], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[router], model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline, router, model, tokenizer
 
@@ -137,9 +135,7 @@ class TestDefaultParity:
         )
         pipeline, router, model, tokenizer = _make_pipeline(_forced_probes(), rules)
 
-        plain = SteeringPipeline(controls=[], lazy_init=True)
-        plain.model = model
-        plain.tokenizer = tokenizer
+        plain = SteeringPipeline(controls=[], model=model, tokenizer=tokenizer)
         plain.steer()
 
         prompt = torch.tensor([[3, 4, 5, 6]])
@@ -368,7 +364,7 @@ class TestValidation:
         )
         router = RoutedDecoding(probes=recipe, rules=rules)
         pipeline = SteeringPipeline(
-            controls=[_SwapModelControl(model_b), router], lazy_init=True
+            controls=[_SwapModelControl(model_b), router]
         )
         pipeline.model = model_a
         pipeline.tokenizer = tokenizer
@@ -404,9 +400,7 @@ class TestValidation:
         model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=4)
         tokenizer = wordlevel_tokenizer()
         router = RoutedDecoding(probes=probes, rules=rules, allow_model_mismatch=True)
-        pipeline = SteeringPipeline(controls=[router], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[router], model=model, tokenizer=tokenizer)
         pipeline.steer()
         out = pipeline.generate(input_ids=torch.tensor([[3, 4, 5]]), max_new_tokens=2)
         assert out[0].tolist() == _text_ids(tokenizer, "the mat")

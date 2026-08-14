@@ -134,10 +134,10 @@ class TestConstraintParityOnEngine:
         def run(backend_spec, backend=None):
             control = ConstrainedDecoding(json_schema=schema, include_in_scoring=False)
             pipeline = SteeringPipeline(
-                controls=[control], lazy_init=True, backend=backend_spec,
+                controls=[control], backend=backend_spec,
+                model=AutoModelForCausalLM.from_pretrained(TINY_MODEL),
+                tokenizer=_tokenizer(),
             )
-            pipeline.model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
-            pipeline.tokenizer = _tokenizer()
             if backend is not None:
                 pipeline._backends[backend.spec] = backend
             pipeline.steer()

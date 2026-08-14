@@ -93,7 +93,6 @@ def test_pipeline_release_on_vllm():
 
     pipeline = SteeringPipeline(
         controls=[StoppingRules(budget=6)],
-        lazy_init=True,
         backend=_spec(),
     )
     try:
@@ -121,7 +120,6 @@ def test_pipeline_end_to_end_with_stopping_rules():
 
     pipeline = SteeringPipeline(
         controls=[StoppingRules(budget=6)],
-        lazy_init=True,
         backend=_spec(),
     )
     try:

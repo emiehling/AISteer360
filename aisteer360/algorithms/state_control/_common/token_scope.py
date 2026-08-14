@@ -1,9 +1,7 @@
 """Token scope utilities for computing position masks."""
-from typing import Literal
-
 import torch
 
-ScopeKind = Literal["all", "after_prompt", "last_k", "from_position"]
+from .specs import ScopeKind
 
 
 def compute_prompt_lens(

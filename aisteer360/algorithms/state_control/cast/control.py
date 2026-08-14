@@ -11,16 +11,11 @@ from aisteer360.algorithms.state_control._common.estimators import (
     ContrastiveDirectionEstimator,
     MeanDifferenceEstimator,
 )
+from aisteer360.algorithms.state_control._common.fit_specs import Comparator, CompMode, VectorTrainSpec
 from aisteer360.algorithms.state_control._common.gates import CacheOnceGate, MultiKeyThresholdGate
 from aisteer360.algorithms.state_control._common.selectors import LateThirdSelector
 from aisteer360.algorithms.state_control._common.sources import ConditionPointSearch, _Precomputed
-from aisteer360.algorithms.state_control._common.specs import (
-    Comparator,
-    CompMode,
-    Intervention,
-    TokenScope,
-    VectorTrainSpec,
-)
+from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
 from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, NormPreservingTransform
 from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform
 from aisteer360.algorithms.state_control.base import InterventionControl

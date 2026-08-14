@@ -51,10 +51,10 @@ class _TwoLegDriver(DecodingDriver):
 
 def _steered_pipeline(control, model):
     pipeline = SteeringPipeline(
-        controls=[control] if not isinstance(control, list) else control, lazy_init=True,
+        controls=[control] if not isinstance(control, list) else control,
+        model=model,
+        tokenizer=wordlevel_tokenizer(),
     )
-    pipeline.model = model
-    pipeline.tokenizer = wordlevel_tokenizer()
     pipeline.steer()
     return pipeline
 
@@ -121,7 +121,8 @@ class TestWireAnchorRewrite:
         import pytest
 
         pytest.importorskip("vllm_hook_plugins")
-        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope, lower_interventions
+        from aisteer360.algorithms.state_control._common.lowering import lower_interventions
+        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
         from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
 
         intervention = Intervention(

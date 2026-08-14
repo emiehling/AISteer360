@@ -305,9 +305,7 @@ class TestBeamExpansionMask:
         applied = {"count": 0, "batches": []}
         control = CAA(steering_vector=sv, layer_id=1, multiplier=1.0, token_scope="after_prompt")
 
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         inner = control._transform
@@ -347,9 +345,7 @@ class TestBeamExpansionMask:
             directions={lid: torch.randn(1, hidden, generator=g) for lid in range(layers)},
         )
         control = CAA(steering_vector=sv, layer_id=1, token_scope="after_prompt")
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         input_ids = torch.tensor([[3, 4, 5, 6], [7, 8, 9, 3]], dtype=torch.long)

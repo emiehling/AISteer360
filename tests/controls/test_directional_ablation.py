@@ -214,9 +214,7 @@ def test_ablation_precomputed_vector(model_and_tokenizer, device: torch.device, 
         alpha=conf["alpha"],
         layer_ids=list(range(min(2, num_layers))),
     )
-    pipeline = SteeringPipeline(controls=[ablation], lazy_init=True, device_map=device)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[ablation],  device_map=device, model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     prompt_ids = tokenizer(PROMPT_TEXT, return_tensors="pt").input_ids.to(device)
@@ -247,9 +245,7 @@ def test_steer_does_not_mutate_caller_vector(model_and_tokenizer, device: torch.
     original_dtype = steering_vector.directions[0].dtype
 
     ablation = DirectionalAblation(steering_vector=steering_vector, alpha=1.0, layer_range=(0, 1))
-    pipeline = SteeringPipeline(controls=[ablation], lazy_init=True, device_map=device)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[ablation],  device_map=device, model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     assert set(steering_vector.directions.keys()) == original_layers
@@ -283,9 +279,7 @@ def test_ablation_estimation_path(model_and_tokenizer, device: torch.device):
         alpha=1.0,
         layer_ids=list(range(min(2, num_layers))),
     )
-    pipeline = SteeringPipeline(controls=[ablation], lazy_init=True, device_map=device)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[ablation],  device_map=device, model=model, tokenizer=tokenizer)
     pipeline.steer()
 
     assert ablation._steering_vector is not None

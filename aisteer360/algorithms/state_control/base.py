@@ -273,7 +273,7 @@ class InterventionControl(StateControl):
 
         Must be called after `steer()`. Returns None when the configuration has no wire form.
         """
-        from aisteer360.algorithms.state_control._common.specs import lower_interventions
+        from aisteer360.algorithms.state_control._common.lowering import lower_interventions
 
         if not self.interventions or getattr(self, "_num_layers", None) is None:
             return None

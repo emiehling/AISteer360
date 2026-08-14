@@ -52,9 +52,7 @@ def _model_and_tokenizer(seed: int = 0):
 
 
 def _steered_pipeline(model, tokenizer, controls) -> SteeringPipeline:
-    pipeline = SteeringPipeline(controls=controls, lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=controls, model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline
 

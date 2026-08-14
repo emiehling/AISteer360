@@ -469,9 +469,7 @@ class TestCandidateForward:
                 },
             )
             from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-            pipeline = SteeringPipeline(controls=[sasa], lazy_init=True)
-            pipeline.model = model
-            pipeline.tokenizer = tokenizer
+            pipeline = SteeringPipeline(controls=[sasa], model=model, tokenizer=tokenizer)
             pipeline.steer()
             prompt = tokenizer("the cat", return_tensors="pt").input_ids
             with _ForwardCounter(model) as counter:
@@ -524,7 +522,7 @@ class TestCandidateForward:
                   use_cache=True, cache_position=positions, return_dict=True)
 
     def test_scoring_replay_takes_incremental_path(self):
-        # position-by-position teacher-forced replay (mimics _apply_scoring_processors): each step
+        # position-by-position teacher-forced replay (mimics apply_scoring_processors): each step
         # grows the prefix by one, so it hits the incremental path and matches fresh-per-call.
         torch.manual_seed(0)
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
@@ -623,9 +621,7 @@ class TestValueGuidedMaxCandidates:
             "neg": ["mat on fast", "span attention", "fast mat sat"],
         })
         from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-        pipeline = SteeringPipeline(controls=[sasa], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[sasa], model=model, tokenizer=tokenizer)
         pipeline.steer()
         proc = sasa.get_logits_processors(torch.tensor([[0, 3]]), {})[0]
         assert proc.max_candidates == 4

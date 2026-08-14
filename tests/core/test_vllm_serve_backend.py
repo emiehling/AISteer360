@@ -397,7 +397,7 @@ def _discovery_payload(**engine_overrides):
 
 
 def _mini_spec(scope=None, kind="additive"):
-    from aisteer360.algorithms.state_control._common.specs import artifact_id_for
+    from aisteer360.algorithms.state_control._common.lowering import artifact_id_for
 
     params = {"strength": 1.0} if kind in ("additive", "head_additive") else {}
     artifact_id, prepared = artifact_id_for({"vector": torch.ones(4)})
@@ -622,7 +622,7 @@ class TestServeConstraintLowering:
 
         control = ConstrainedDecoding(regex="cat|dog", include_in_scoring=False)
         pipeline = SteeringPipeline(
-            controls=[control], lazy_init=True, backend=_serve_spec(),
+            controls=[control], backend=_serve_spec(),
         )
         pipeline.model = tiny_llama(num_layers=2, hidden=16, heads=2)
         pipeline.tokenizer = wordlevel_tokenizer()

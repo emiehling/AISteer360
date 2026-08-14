@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from aisteer360.algorithms.core.utils.assembly import collect_state_entries
 from aisteer360.algorithms.state_control._common.condition_scorers import CosineDirectionScorer
 from aisteer360.algorithms.state_control._common.gates import AlwaysOpenGate, CacheOnceGate, MultiKeyThresholdGate
 from aisteer360.algorithms.state_control._common.sources import ArtifactSource, ContrastiveFit
@@ -61,16 +62,17 @@ class _StubSource:
 
 def _pipe(control, model):
     tok = wordlevel_tokenizer()
-    p = SteeringPipeline(controls=[control] if not isinstance(control, list) else control, lazy_init=True)
-    p.model = model
-    p.tokenizer = tok
+    p = SteeringPipeline(controls=[control] if not isinstance(control, list) else control, model=model, tokenizer=tok)
     p.steer()
     return p
 
 
 def _hidden_at(model, layer_id, pipeline, input_ids):
     """Capture the (steered) output of `layer_id` under the pipeline's state controls, single pass."""
-    entries = pipeline._collect_state_entries(input_ids, {})
+    entries = collect_state_entries(
+        pipeline.state_controls, input_ids, {},
+        hooks_in_process=True, lowered_state=pipeline._lowered_state, model=pipeline.model,
+    )
     backend = pipeline._backend_for(pipeline._resolve_backend_spec(None))
     captured = {}
 

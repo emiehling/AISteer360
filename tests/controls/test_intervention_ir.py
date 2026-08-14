@@ -20,6 +20,7 @@ from aisteer360.algorithms.state_control._common.gates import (
     MultiKeyThresholdGate,
     ProbeSumGate,
 )
+from aisteer360.algorithms.state_control._common.lowering import lower_interventions
 from aisteer360.algorithms.state_control._common.selectors import FractionalDepthSelector
 from aisteer360.algorithms.state_control._common.specs import (
     Condition,
@@ -27,7 +28,6 @@ from aisteer360.algorithms.state_control._common.specs import (
     TokenScope,
     WireForm,
     combine_kinds,
-    lower_interventions,
 )
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (

@@ -101,9 +101,7 @@ class TestPRewriteInferenceStrategy:
             strategy="inference",
             rewriter_gen_kwargs={"max_new_tokens": 4, "do_sample": False},
         )
-        pipeline = SteeringPipeline(controls=[prewrite], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[prewrite], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         assert prewrite.memory is not None
@@ -125,9 +123,7 @@ class TestPRewriteSearchStrategy:
             rewriter_gen_kwargs={"max_new_tokens": 4, "do_sample": True, "temperature": 0.9},
             eval_gen_kwargs={"max_new_tokens": 2, "do_sample": False},
         )
-        pipeline = SteeringPipeline(controls=[prewrite], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[prewrite], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         assert prewrite.memory is not None
@@ -146,9 +142,7 @@ class TestPRewriteAdaptMessages:
             strategy="inference",
             rewriter_gen_kwargs={"max_new_tokens": 2, "do_sample": False},
         )
-        pipeline = SteeringPipeline(controls=[prewrite], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[prewrite], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         adapted = prewrite.adapt_messages([[{"role": "user", "content": "?"}]])
@@ -165,9 +159,7 @@ class TestPRewriteAdaptMessages:
             strategy="inference",
             rewriter_gen_kwargs={"max_new_tokens": 2, "do_sample": False},
         )
-        pipeline = SteeringPipeline(controls=[prewrite], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[prewrite], model=model, tokenizer=tokenizer)
         pipeline.steer()
 
         chat = [

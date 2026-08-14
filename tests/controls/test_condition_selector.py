@@ -14,13 +14,13 @@ from aisteer360.algorithms.state_control._common.condition_scorers import (
 )
 from aisteer360.algorithms.state_control._common.estimators import MeanDifferenceEstimator
 from aisteer360.algorithms.state_control._common.estimators.contrastive_direction import ContrastiveDirectionEstimator
+from aisteer360.algorithms.state_control._common.fit_specs import ConditionSearchSpec, VectorTrainSpec
 from aisteer360.algorithms.state_control._common.selectors import condition_point
 from aisteer360.algorithms.state_control._common.selectors.condition_point import (
     ConditionPointSelector,
     _best_point_for_layer,
     _threshold_grid,
 )
-from aisteer360.algorithms.state_control._common.specs import ConditionSearchSpec, VectorTrainSpec
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 

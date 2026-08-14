@@ -65,9 +65,7 @@ def backend(model, tokenizer):
 
 
 def _pipeline(model, tokenizer, controls=()):
-    pipeline = SteeringPipeline(controls=list(controls), lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=list(controls), model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline
 
@@ -461,7 +459,7 @@ class TestDriversOverSessions:
 class TestPortableRequirements:
 
     def _generate_ok_on_vllm(self, control) -> bool:
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[control])
         report = pipeline.check(backend=VLLM_SPEC)
         return report.supported("generate")
 
@@ -485,7 +483,7 @@ class TestPortableRequirements:
         beam = SearchDecoding(scorer=scorer, num_candidates=2, propose_mode="beam")
         assert not self._generate_ok_on_vllm(beam)
         deal = DeAL(reward_func=scorer)
-        report = SteeringPipeline(controls=[deal], lazy_init=True).check(backend=VLLM_SPEC)
+        report = SteeringPipeline(model_name_or_path="m", controls=[deal]).check(backend=VLLM_SPEC)
         assert not report.supported("generate")
         assert any("BEAM_PROPOSALS" in failure.message for failure in report.failures)
 
@@ -528,7 +526,7 @@ class TestStructuralArtifacts:
         assert Capability.SERVE_CHECKPOINT in requirements.generate[1].atoms
 
     def test_check_passes_with_staged_steer_and_vllm_serving(self):
-        pipeline = SteeringPipeline(controls=[_CheckpointProducingControl()], lazy_init=True)
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_CheckpointProducingControl()])
         report = pipeline.check(backend=VLLM_SPEC)
         assert report.supported("generate")
         assert report.ok
@@ -537,9 +535,7 @@ class TestStructuralArtifacts:
 
     def test_pipeline_collects_and_stamps_artifacts(self, model, tokenizer):
         control = _CheckpointProducingControl()
-        pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-        pipeline.model = model
-        pipeline.tokenizer = tokenizer
+        pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
         pipeline.steer()
         artifacts = pipeline._structural_artifacts
         assert len(artifacts) == 1

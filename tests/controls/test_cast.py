@@ -56,11 +56,10 @@ def test_cast(model_and_tokenizer, device: torch.device, conf: dict):
     )
     pipeline = SteeringPipeline(
         controls=[cast],
-        lazy_init=True,
         device_map=device,
+        model=model,
+        tokenizer=tokenizer,
     )
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
     pipeline.steer()
 
     # prepare prompt & runtime kwargs
@@ -104,9 +103,7 @@ def _tiny_pipeline(control, seed: int = 0):
     torch.manual_seed(seed)
     model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=4)
     tokenizer = wordlevel_tokenizer()
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline, model, tokenizer
 
@@ -175,7 +172,7 @@ class TestBehaviorTransformValidation:
 
     def test_nondefault_behavior_fit_is_inert(self):
         # behavior_fit is only read when fitting from behavior_data (absent here), so it does not raise
-        from aisteer360.algorithms.state_control._common.specs import VectorTrainSpec
+        from aisteer360.algorithms.state_control._common.fit_specs import VectorTrainSpec
 
         args = self._base(
             behavior_transform=self._ablation(),
@@ -281,9 +278,7 @@ def _conditional_cast() -> CAST:
 
 
 def _cast_pipeline(control: CAST, model, tokenizer) -> SteeringPipeline:
-    pipeline = SteeringPipeline(controls=[control], lazy_init=True)
-    pipeline.model = model
-    pipeline.tokenizer = tokenizer
+    pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
     pipeline.steer()
     return pipeline
 

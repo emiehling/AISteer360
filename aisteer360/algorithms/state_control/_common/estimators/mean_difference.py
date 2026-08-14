@@ -15,7 +15,7 @@ from aisteer360.algorithms.core.internals.pooling import masked_mean as _masked_
 from aisteer360.algorithms.core.internals.pooling import select_at_positions
 from aisteer360.algorithms.core.internals.render import render_contrastive
 from aisteer360.algorithms.state_control._common.estimators.base import BaseEstimator
-from aisteer360.algorithms.state_control._common.specs import VectorTrainSpec
+from aisteer360.algorithms.state_control._common.fit_specs import VectorTrainSpec
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 
 logger = logging.getLogger(__name__)

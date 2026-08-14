@@ -19,20 +19,20 @@ import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
+from aisteer360.algorithms.core.internals.capture import HiddenStateLocation
 from aisteer360.algorithms.core.internals.data import ContrastivePairs, as_contrastive_pairs
 from aisteer360.algorithms.state_control._common.estimators import (
     ContrastiveDirectionEstimator,
     MeanDifferenceEstimator,
 )
 from aisteer360.algorithms.state_control._common.estimators.base import BaseEstimator
-from aisteer360.algorithms.state_control._common.specs import (
+from aisteer360.algorithms.state_control._common.fit_specs import (
     Comparator,
     CompMode,
-    Condition,
     ConditionSearchSpec,
-    HiddenStateLocation,
     VectorTrainSpec,
 )
+from aisteer360.algorithms.state_control._common.specs import Condition
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.utils.rendering import PromptFormat
 
