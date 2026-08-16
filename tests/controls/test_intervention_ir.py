@@ -13,29 +13,27 @@ import torch
 from aisteer360.algorithms.core.execution.contracts import InterventionKinds
 from aisteer360.algorithms.core.execution.payloads import ModelFacts
 from aisteer360.algorithms.core.internals.probes.probe import Probe
-from aisteer360.algorithms.state_control._common.condition_scorers import ProbeContributionScorer, ProjectedCosineScorer
-from aisteer360.algorithms.state_control._common.gates import (
-    AlwaysOpenGate,
-    CacheOnceGate,
-    MultiKeyThresholdGate,
-    ProbeSumGate,
+from aisteer360.algorithms.state_control._common.gating import (
+    AffineReadout,
+    CallableReadout,
+    CosineReadout,
+    Evidence,
+    Gate,
+    PerKeyThreshold,
+    ProjectedCosineReadout,
+    SumThreshold,
+    gate_from_probe,
 )
 from aisteer360.algorithms.state_control._common.lowering import lower_interventions
 from aisteer360.algorithms.state_control._common.selectors import FractionalDepthSelector
-from aisteer360.algorithms.state_control._common.specs import (
-    Condition,
-    Intervention,
-    TokenScope,
-    WireForm,
-    combine_kinds,
-)
+from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope, WireForm, combine_kinds
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (
     AdditiveTransform,
     AlignmentAdaptiveTransform,
-    DirectionalAblationTransform,
     HeadAdditiveTransform,
     NormPreservingTransform,
+    ProjectionTransform,
     RotationTransform,
 )
 from aisteer360.algorithms.state_control._common.transforms.base import unwrap_modifiers
@@ -69,15 +67,17 @@ class TestWireKindTables:
 
     def test_component_wire_kinds_match_plugin_tables(self):
         assert AdditiveTransform.wire_kind in plugin_kinds.TRANSFORM_KINDS
-        assert DirectionalAblationTransform.wire_kind in plugin_kinds.TRANSFORM_KINDS
+        assert ProjectionTransform.wire_kind in plugin_kinds.TRANSFORM_KINDS
         assert RotationTransform.wire_kind in plugin_kinds.TRANSFORM_KINDS
         assert HeadAdditiveTransform.wire_kind in plugin_kinds.TRANSFORM_KINDS
         assert NormPreservingTransform.wire_kind in plugin_kinds.MODIFIER_KINDS
         assert AlignmentAdaptiveTransform.wire_kind in plugin_kinds.MODIFIER_KINDS
-        assert AlwaysOpenGate.wire_kind in plugin_kinds.GATE_KINDS
-        assert CacheOnceGate.wire_kind in plugin_kinds.GATE_KINDS
-        assert MultiKeyThresholdGate.wire_kind in plugin_kinds.GATE_KINDS
-        assert ProbeSumGate.wire_kind in plugin_kinds.GATE_KINDS
+        assert AffineReadout.wire_kind in plugin_kinds.READOUT_KINDS
+        assert CosineReadout.wire_kind in plugin_kinds.READOUT_KINDS
+        assert ProjectedCosineReadout.wire_kind in plugin_kinds.READOUT_KINDS
+        assert SumThreshold.wire_kind in plugin_kinds.RULE_KINDS
+        assert PerKeyThreshold.wire_kind in plugin_kinds.RULE_KINDS
+        assert CallableReadout.wire_kind is None
 
     def test_backend_seed_advertisement_matches_plugin_tables(self):
         from aisteer360.backends.vllm import _PLUGIN_INTERVENTION_KINDS as seed
@@ -85,7 +85,8 @@ class TestWireKindTables:
         assert seed.transforms == plugin_kinds.TRANSFORM_KINDS
         assert seed.modifiers == plugin_kinds.MODIFIER_KINDS
         assert seed.scopes == plugin_kinds.SCOPE_KINDS
-        assert seed.gates == plugin_kinds.GATE_KINDS
+        assert seed.readouts == plugin_kinds.READOUT_KINDS
+        assert seed.rules == plugin_kinds.RULE_KINDS
         assert dict(seed.constraints) == dict(plugin_kinds.CONSTRAINTS)
 
     def test_scope_kinds_are_total_on_the_wire(self):
@@ -113,10 +114,10 @@ class TestNumericalParity:
         theirs = TRANSFORMS["additive"](self.stream, vector=self.vector, strength=3.5)
         torch.testing.assert_close(ours, theirs)
 
-    def test_directional_ablation(self):
-        transform = DirectionalAblationTransform({0: self.vector.unsqueeze(0)})
+    def test_projection(self):
+        transform = ProjectionTransform({0: self.vector.unsqueeze(0)})
         ours = transform.apply(self.hidden, layer_id=0, token_mask=self.mask)[0]
-        theirs = TRANSFORMS["directional_ablation"](self.stream, vector=self.vector)
+        theirs = TRANSFORMS["projection"](self.stream, vector=self.vector)
         torch.testing.assert_close(ours, theirs)
 
     @pytest.mark.parametrize("mode", ["target", "offset"])
@@ -170,10 +171,11 @@ class TestGateResetIdempotence:
     """Shared-gate composition double-resets one instance; the second reset must be a no-op."""
 
     @pytest.mark.parametrize("make_gate", [
-        lambda: AlwaysOpenGate(),
-        lambda: MultiKeyThresholdGate(threshold=0.1, comparator="score_above", expected_keys={2}),
-        lambda: ProbeSumGate(_probe()),
-        lambda: CacheOnceGate(MultiKeyThresholdGate(threshold=0.1, comparator="score_above", expected_keys={2})),
+        lambda: Gate(
+            Evidence((2,), AffineReadout({2: torch.ones(H)})),
+            PerKeyThreshold(threshold=0.1, comparator="ge"),
+        ),
+        lambda: gate_from_probe(_probe()),
     ])
     def test_double_reset_equals_single_reset(self, make_gate):
         single = make_gate()
@@ -181,15 +183,18 @@ class TestGateResetIdempotence:
         double = make_gate()
         double.reset(3)
         double.reset(3)
-        scores = torch.tensor([0.3, 0.05, 0.2])
-        single.update(scores, key=2)
-        double.update(scores, key=2)
+        values = torch.tensor([0.3, 0.05, 0.2])
+        single.update(values, key=2)
+        double.update(values, key=2)
         assert torch.equal(single.open_rows(), double.open_rows())
         assert single.is_ready() == double.is_ready()
         assert single.num_rows == double.num_rows == 3
 
     def test_reset_after_evidence_clears_decision(self):
-        gate = CacheOnceGate(MultiKeyThresholdGate(threshold=0.1, comparator="score_above", expected_keys={2}))
+        gate = Gate(
+            Evidence((2,), AffineReadout({2: torch.ones(H)})),
+            PerKeyThreshold(threshold=0.1, comparator="ge"),
+        )
         gate.reset(2)
         gate.update(torch.tensor([0.5, 0.0]), key=2)
         assert gate.is_ready()
@@ -201,7 +206,7 @@ class TestGateResetIdempotence:
 class TestNoInstanceDefaults:
     """IR dataclasses never use instance defaults for object-valued fields."""
 
-    @pytest.mark.parametrize("cls", [Intervention, TokenScope, Condition, WireForm])
+    @pytest.mark.parametrize("cls", [Intervention, TokenScope, WireForm])
     def test_object_defaults_use_default_factory(self, cls):
         for field_info in dataclasses.fields(cls):
             if field_info.default is dataclasses.MISSING:
@@ -211,11 +216,11 @@ class TestNoInstanceDefaults:
                 f"{field_info.default!r}; use default_factory."
             )
 
-    def test_default_gates_are_not_shared(self):
+    def test_default_gate_is_absent_and_scopes_are_not_shared(self):
         transform = AdditiveTransform({0: torch.ones(1, H)})
         first = Intervention(layers=(0,), transform=transform)
         second = Intervention(layers=(0,), transform=transform)
-        assert first.gate is not second.gate
+        assert first.gate is None and second.gate is None
         assert first.scope is not second.scope
 
 
@@ -245,7 +250,8 @@ class TestInterventionWireKinds:
             transforms=frozenset({"additive"}),
             modifiers=frozenset({"norm_preserving"}),
             scopes=frozenset({"after_prompt"}),
-            gates=frozenset(),
+            readouts=frozenset(),
+            rules=frozenset(),
         )
 
     def test_positional_direction_is_hook_only(self):
@@ -271,23 +277,34 @@ class TestInterventionWireKinds:
         )
         assert Intervention(layers=(0,), transform=transform).wire_kinds() is None
 
-    def test_threshold_gate_is_hook_only(self):
+    def test_callable_readout_gate_is_hook_only(self):
         transform = AdditiveTransform({3: torch.ones(1, H)})
-        gate = CacheOnceGate(MultiKeyThresholdGate(threshold=0.1, comparator="score_above", expected_keys={1}))
-        condition = Condition(layer_ids=(1,), scorer=ProjectedCosineScorer({1: torch.ones(1, H)}))
-        intervention = Intervention(layers=(3,), transform=transform, gate=gate, condition=condition)
+        gate = Gate(
+            Evidence((1,), CallableReadout(lambda pooled, lid: pooled.mean(-1))),
+            PerKeyThreshold(threshold=0.1, comparator="ge"),
+        )
+        intervention = Intervention(layers=(3,), transform=transform, gate=gate)
         assert intervention.wire_kinds() is None
 
-    def test_probe_gate_plans_cache_once(self):
+    def test_projected_cosine_gate_declares_wire_kinds(self):
+        transform = AdditiveTransform({3: torch.ones(1, H)})
+        gate = Gate(
+            Evidence((1,), ProjectedCosineReadout({1: torch.ones(1, H)})),
+            PerKeyThreshold(threshold=0.1, comparator="ge"),
+        )
+        kinds = Intervention(layers=(3,), transform=transform, gate=gate).wire_kinds()
+        assert kinds is not None
+        assert kinds.readouts == frozenset({"projected_cosine"})
+        assert kinds.rules == frozenset({"per_key_threshold"})
+
+    def test_probe_gate_declares_affine_sum(self):
         probe = _probe(layer_ids=(2,))
         transform = AdditiveTransform({3: torch.ones(1, H)})
-        condition = Condition(layer_ids=(2,), scorer=ProbeContributionScorer(probe))
-        intervention = Intervention(
-            layers=(3,), transform=transform, gate=ProbeSumGate(probe), condition=condition,
-        )
+        intervention = Intervention(layers=(3,), transform=transform, gate=gate_from_probe(probe))
         kinds = intervention.wire_kinds()
         assert kinds is not None
-        assert kinds.gates == frozenset({"cache_once", "probe_sum"})
+        assert kinds.readouts == frozenset({"affine"})
+        assert kinds.rules == frozenset({"sum_threshold"})
 
     def test_combine_kinds_propagates_none(self):
         transform = AdditiveTransform({3: torch.ones(1, H)})
@@ -325,38 +342,38 @@ class TestBind:
         with pytest.raises(ValueError, match="out of range"):
             intervention.bind(None, None, layout=_layout(num_layers=8))
 
-    def test_scorer_boundary_mismatch_rejected(self):
-        probe = _probe(layer_ids=(2,))
+    def test_readout_boundary_mismatch_rejected(self):
+        probe = _probe(layer_ids=(2,))  # fitted at layer_output
         transform = AdditiveTransform({3: torch.ones(1, H)})
-        condition = Condition(layer_ids=(2,), scorer=ProbeContributionScorer(probe))
         intervention = Intervention(
-            layers=(3,), transform=transform, gate=ProbeSumGate(probe), condition=condition,
+            layers=(3,), transform=transform, gate=gate_from_probe(probe),
             boundary="layer_input",
         )
         with pytest.raises(ValueError, match="expects features at"):
             intervention.bind(None, None, layout=_layout())
 
-    def test_gate_source_fills_gate_and_condition(self):
+    def test_gate_source_resolves_to_gate(self):
         from aisteer360.algorithms.state_control._common.sources import ConditionPointSearch
 
         source = ConditionPointSearch(
             condition_vector=SteeringVector(model_type="test", directions={2: torch.ones(1, H)}),
             layer_ids=[2],
             threshold=0.05,
-            comparator="larger",
+            comparator="ge",
         )
         transform = AdditiveTransform({3: torch.ones(1, H)})
         intervention = Intervention(layers=(3,), transform=transform, gate=source, boundary="layer_input")
         bound = intervention.bind(None, None, layout=_layout())
-        assert isinstance(bound.gate, CacheOnceGate)
-        assert isinstance(bound.gate.inner, MultiKeyThresholdGate)
-        assert bound.condition is not None and bound.condition.layer_ids == (2,)
+        assert isinstance(bound.gate, Gate)
+        assert isinstance(bound.gate.rule, PerKeyThreshold)
+        assert bound.gate.evidence.layer_ids == (2,)
         assert source.resolved_point == {
-            "layer_ids": [2], "threshold": 0.05, "comparator": "larger", "comparison_mode": "mean",
+            "layer_ids": [2], "threshold": 0.05, "comparator": "ge", "comparison_mode": "mean",
         }
-        # the projected-cosine condition has no wire form, before or after binding
-        assert intervention.wire_kinds() is None
-        assert bound.wire_kinds() is None
+        # the projected-cosine gate declares wire kinds before and after binding
+        expected = (frozenset({"projected_cosine"}), frozenset({"per_key_threshold"}))
+        assert (intervention.wire_kinds().readouts, intervention.wire_kinds().rules) == expected
+        assert (bound.wire_kinds().readouts, bound.wire_kinds().rules) == expected
 
 
 class TestLowerInterventions:
@@ -411,102 +428,69 @@ class TestLowerInterventions:
         )
         assert spec is None
 
-    def test_probe_gate_merges_condition_and_wraps_cache_once(self):
+    def test_probe_gate_lowers_to_structured_gate(self):
         probe = _probe(layer_ids=(2,))
         transform = AdditiveTransform({3: torch.ones(1, H)})
-        condition = Condition(layer_ids=(2,), scorer=ProbeContributionScorer(probe))
-        intervention = Intervention(
-            layers=(3,), transform=transform, gate=ProbeSumGate(probe), condition=condition,
-        )
+        intervention = Intervention(layers=(3,), transform=transform, gate=gate_from_probe(probe))
         spec = lower_interventions([intervention], num_layers=8)
         gate = spec.ops[0]["gate"]
-        assert gate["kind"] == "cache_once"
-        inner = gate["inner"]
-        assert inner["kind"] == "probe_sum"
-        assert inner["condition_layers"] == [3]  # layer_output reads shift to l + 1
-        assert inner["pooling"] == "mean"
-        assert inner["artifact"] in spec.artifacts
-        tensors = spec.artifacts[inner["artifact"]]
-        assert set(tensors) == {"weights", "bias"}
-
-    def test_explicit_cache_once_wrapper_is_preserved(self):
-        probe = _probe(layer_ids=(2,))
-        transform = AdditiveTransform({3: torch.ones(1, H)})
-        condition = Condition(layer_ids=(2,), scorer=ProbeContributionScorer(probe))
-        intervention = Intervention(
-            layers=(3,), transform=transform, gate=CacheOnceGate(ProbeSumGate(probe)),
-            condition=condition,
-        )
-        spec = lower_interventions([intervention], num_layers=8)
-        gate = spec.ops[0]["gate"]
-        assert gate["kind"] == "cache_once"
-        assert gate["inner"]["kind"] == "probe_sum"
+        assert gate["layers"] == [3]  # layer_output reads shift to l + 1
+        assert gate["pooling"] == "mean"
+        assert gate["readout"]["kind"] == "affine"
+        assert gate["readout"]["artifact"] in spec.artifacts
+        assert gate["rule"] == {"kind": "sum_threshold", "bias": -0.25}
+        tensors = spec.artifacts[gate["readout"]["artifact"]]
+        assert set(tensors) == {"weights"}
+        assert tensors["weights"].shape == (1, H)
 
     def test_multi_intervention_op_order_follows_list_order(self):
         first = Intervention(
             layers=(3,), transform=AdditiveTransform({3: torch.ones(1, H)}, strength=1.0),
         )
         second = Intervention(
-            layers=(2,), transform=DirectionalAblationTransform({2: torch.ones(1, H)}),
+            layers=(2,), transform=ProjectionTransform({2: torch.ones(1, H)}),
         )
         spec = lower_interventions([first, second], num_layers=8)
-        assert [op["transform"]["kind"] for op in spec.ops] == ["additive", "directional_ablation"]
+        assert [op["transform"]["kind"] for op in spec.ops] == ["additive", "projection"]
 
-    def test_gate_and_scorer_both_exporting_tensors_is_an_error(self):
-        probe = _probe(layer_ids=(2,))
-
-        class _TensorExportingScorer(ProbeContributionScorer):
-            def export(self):
-                from aisteer360.algorithms.state_control._common.specs import WireForm
-
-                return WireForm(kind="probe_sum", params={"pooling": "mean"},
-                                tensors={"weights": torch.ones(1, H)})
-
-        condition = Condition(layer_ids=(2,), scorer=_TensorExportingScorer(probe))
-        intervention = Intervention(
-            layers=(3,), transform=AdditiveTransform({3: torch.ones(1, H)}),
-            gate=ProbeSumGate(probe), condition=condition,
-        )
-        with pytest.raises(ValueError, match="exactly one may own"):
-            lower_interventions([intervention], num_layers=8)
-
-    def test_condition_layers_follow_probe_order_on_the_wire(self):
-        """The exported weight rows align with the probe's layer order, so the wire
-        condition_layers follow the probe regardless of the condition's declaration order."""
+    def test_readout_rows_follow_evidence_layer_order_on_the_wire(self):
+        """The exported weight rows align with the gate's evidence layer order, so the wire
+        gate layers follow the probe's layer order."""
         probe = _probe(layer_ids=(4, 2))
-        condition = Condition(layer_ids=(2, 4), scorer=ProbeContributionScorer(probe))
         intervention = Intervention(
             layers=(3,), transform=AdditiveTransform({3: torch.ones(1, H)}),
-            gate=ProbeSumGate(probe), condition=condition,
+            gate=gate_from_probe(probe),
         )
         spec = lower_interventions([intervention], num_layers=8)
-        inner = spec.ops[0]["gate"]["inner"]
-        assert inner["condition_layers"] == [5, 3]  # probe order, mapped to wire indices
+        gate = spec.ops[0]["gate"]
+        assert gate["layers"] == [5, 3]  # probe order, mapped to wire indices
+        weights = spec.artifacts[gate["readout"]["artifact"]]["weights"]
+        assert torch.equal(weights[0], probe.weights[4])
+        assert torch.equal(weights[1], probe.weights[2])
 
-    def test_follower_probe_gate_lowers_without_a_condition(self):
-        """The follower half of a shared-gate composition (probe gate, no condition) lowers;
-        the probe supplies the evidence layers itself."""
+    def test_follower_gate_lowers_like_the_driver(self):
+        """A follower intervention (shared gate, gate_driven_externally) lowers with the same
+        wire gate; the gate itself supplies the evidence layers."""
         probe = _probe(layer_ids=(2,))
-        intervention = Intervention(
+        shared = gate_from_probe(probe)
+        follower = Intervention(
             layers=(3,), transform=AdditiveTransform({3: torch.ones(1, H)}),
-            gate=ProbeSumGate(probe),
+            gate=shared, gate_driven_externally=True,
         )
-        assert intervention.wire_kinds() is not None
-        spec = lower_interventions([intervention], num_layers=8)
-        inner = spec.ops[0]["gate"]["inner"]
-        assert inner["kind"] == "probe_sum"
-        assert inner["condition_layers"] == [3]
+        assert follower.wire_kinds() is not None
+        spec = lower_interventions([follower], num_layers=8)
+        gate = spec.ops[0]["gate"]
+        assert gate["readout"]["kind"] == "affine"
+        assert gate["layers"] == [3]
 
     def test_round_trip_through_plugin_parser(self):
         from vllm_hook_plugins.core.schema import parse_intervention_spec
 
         probe = _probe(layer_ids=(2,))
-        condition = Condition(layer_ids=(2,), scorer=ProbeContributionScorer(probe))
         intervention = Intervention(
             layers=(3, 4),
             transform=NormPreservingTransform(AdditiveTransform({3: torch.ones(1, H), 4: torch.ones(1, H)})),
-            gate=ProbeSumGate(probe),
-            condition=condition,
+            gate=gate_from_probe(probe),
             scope=TokenScope("last_k", last_k=2),
         )
         spec = lower_interventions([intervention], num_layers=8)

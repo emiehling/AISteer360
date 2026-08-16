@@ -105,7 +105,7 @@ Some examples of state control methods include: activation addition/steering, at
 patching. The toolkit implements:
 
 - [`ActAdd`](../reference/algorithms/state_control/act_add.md) — activation addition[@turner2023activation]; adds a positional steering vector from a single contrast pair to the residual stream at one layer. See the notebook: [ActAdd](../examples/notebooks/algorithms/act_add.ipynb).
-- [`ActivationAdapter`](../reference/algorithms/state_control/activation_adapter.md) — the composable activation-steering atom; wires together the shared `_common` components (a transform that carries its own artifact, selector, gate, condition path, token scope) so a recipe is assembled without writing a new control class. See the notebook: [ActivationAdapter](../examples/notebooks/generics/activation_adapter.ipynb).
+- [`ActivationAdapter`](../reference/algorithms/state_control/activation_adapter.md) — the composable activation-steering atom; wires together the shared `_common` components (a transform that carries its own artifact, selector, gate, token scope) so a recipe is assembled without writing a new control class. See the notebook: [ActivationAdapter](../examples/notebooks/generics/activation_adapter.ipynb).
 - [`AngularSteering`](../reference/algorithms/state_control/angular_steering.md) — angular steering[@vu2025angular]; rotates the hidden state within a per-layer 2D plane (feature axis + companion axis) to a target angle, leaving the orthogonal complement untouched. Norm-preserving by construction; vector addition and directional ablation are special cases. See the notebook: [AngularSteering](../examples/notebooks/algorithms/angular_steering.ipynb).
 - [`CAA`](../reference/algorithms/state_control/caa.md) — contrastive activation addition[@panickssery2023steering]; adds a learned mean-difference direction to the residual stream at a single layer. See the notebook: [CAA](../examples/notebooks/algorithms/caa.ipynb).
 - [`CAST`](../reference/algorithms/state_control/cast.md) — conditional activation steering[@lee2025programming]; applies behavior steering only when a learned condition direction crosses a threshold. The applied behavior transform is pluggable (additive by default; any `BaseTransform` via `behavior_transform`, e.g. directional ablation for conditional abliteration). See the notebook: [CAST](../examples/notebooks/algorithms/cast.ipynb).
@@ -113,7 +113,7 @@ patching. The toolkit implements:
 - [`ITI`](../reference/algorithms/state_control/iti.md) — inference-time intervention[@li2023inference]; shifts activations at a sparse set of probe-selected attention heads during generation. See the notebook: [ITI](../examples/notebooks/algorithms/iti.ipynb).
 - [`PASTA`](../reference/algorithms/state_control/pasta.md) — post-hoc attention steering[@zhang2024tell]; rescales attention to targeted prompt substrings at selected layers and heads. See the notebook: [PASTA](../examples/notebooks/algorithms/pasta.ipynb).
 
-Reusable building blocks shared across the residual-stream methods (estimators, gates, selectors, transforms,
+Reusable building blocks shared across the residual-stream methods (estimators, gating, selectors, transforms,
 steering vectors, hook utilities) live in
 [`state_control._common`](../reference/algorithms/state_control/_common.md).
 
@@ -124,20 +124,26 @@ receive the kwarg assume the plain single-`generate` decode pattern. The variant
 detached sequence and runs unsteered by design.
 
 A residual-stream state control is a declarative tuple of interventions (layers, a transform, a token scope, an
-optional gate and condition), stated once and compiled per backend: to torch hooks on the in-process backend, and to
-an intervention spec for engines that host activation edits, so the same steered configuration generates on vLLM. A
+optional gate), stated once and compiled per backend: to torch hooks on the in-process backend, and to an
+intervention spec for engines that host activation edits, so the same steered configuration generates on vLLM. A
 configuration either serializes exactly or stays in-process only; the pipeline's `check()` reports which, with a
 verdict naming the gap and the fix. The per-control support boundary is recorded in the
 [backend compatibility matrix](../reference/backends.md).
+
+A gate makes an intervention conditional, and it factors into three parts: evidence (which layers are read and how
+their hidden states are pooled), a readout (how each pooled state becomes a per-prompt value, e.g. an affine score,
+a cosine similarity, or CAST's projected cosine), and a rule (the decision over those values, e.g. a summed score
+against a calibrated bias, or per-layer thresholds). The decision is made on the prompt and holds for the
+generation, independently per row of a batch. An unconditional intervention simply has no gate.
 
 `ActivationAdapter` is the **composition surface** for these building blocks: each adapter is a single-behavior atom
 (one transform chain — which carries its own artifact — one gate, one token scope), and steering with several behaviors
 is simply several adapters listed together in a pipeline's `controls`. Because a pipeline accepts
 [multiple state controls](steering_pipelines.md) applied in list order, composition across behaviors is owned by that
 ordered list — no separate composite abstraction is needed. Joint conditioning across adapters uses one shared gate
-instance: a driver declares the condition path and updates the gate; followers pass the same instance with
-`gate_driven_externally=True` and read its decision. A fitted [`Probe`](probes.md) can also drive an adapter's
-condition path through `Probe.as_condition()`, which returns the adapter's condition-port kwargs.
+instance: a driver carries the gate and feeds it through its condition hooks; followers pass the same instance with
+`gate_driven_externally=True` and read its decision. A fitted [`Probe`](probes.md) can also gate an adapter through
+`Probe.as_gate()`, which returns a gate reproducing the probe's decision.
 
 
 
@@ -185,7 +191,7 @@ and the following decoding drivers:
 - [`BestOfN`](../reference/algorithms/output_control/best_of_n.md) — best-of-N sampling / re-ranking[@nakano2021webgpt]; samples N full continuations and returns the highest-scoring one under a sequence scorer (pairing with a majority-vote scorer recovers self-consistency). See the notebook: [BestOfN](../examples/notebooks/algorithms/best_of_n.ipynb).
 - [`BudgetForcing`](../reference/algorithms/output_control/budget_forcing.md) — test-time thinking-length control[@muennighoff2025s1]; caps each thinking segment, optionally appends extensions ("Wait") to prolong reasoning, then forces the closing think tag before answering. See the notebook: [BudgetForcing](../examples/notebooks/algorithms/budget_forcing.ipynb).
 - [`ThinkingIntervention`](../reference/algorithms/output_control/thinking_intervention.md) — thinking intervention[@wu2025effectively]; injects structured reasoning instructions into the chain of thought, then extracts the post-thinking output. See the notebook: [ThinkingIntervention](../examples/notebooks/algorithms/thinking_intervention.ipynb).
-- [`RoutedDecoding`](../reference/algorithms/output_control/routed_decoding.md) — a decoding driver that routes each row to a response plan via `RoutingRules` over a [`ProbeSet`](probes.md) readout, and executes the matched plan (canned response, disclaimer prefix, or plain generation); sits beside `PhasedDecoding` and `SearchDecoding`. See the notebook: [Routed decoding](../examples/notebooks/recipes/routed_decoding.ipynb).
+- [`RoutedDecoding`](../reference/algorithms/output_control/routed_decoding.md) — a decoding driver that routes each row to a response plan via a `Router` over a [`ProbeSet`](probes.md)'s readings, and executes the matched plan (canned response, disclaimer prefix, or plain generation); sits beside `PhasedDecoding` and `SearchDecoding`. See the notebook: [Routed decoding](../examples/notebooks/recipes/routed_decoding.ipynb).
 - [`SearchDecoding`](../reference/algorithms/output_control/search_decoding.md) — the config-first generic over the segment shape (propose → score → keep → iterate; defaults are best-of-N); best-of-N, self-consistency, blockwise controlled decoding, and DeAL are assignments of its config. See the notebook: [SearchDecoding](../examples/notebooks/generics/search_decoding.ipynb).
 - [`PhasedDecoding`](../reference/algorithms/output_control/phased_decoding.md) — the config-first generic over the phase shape (forced / generated segments via a declarative plan grammar); budget forcing, response prefill, and thinking intervention are assignments of its config. See the notebook: [PhasedDecoding](../examples/notebooks/generics/phased_decoding.ipynb).
 

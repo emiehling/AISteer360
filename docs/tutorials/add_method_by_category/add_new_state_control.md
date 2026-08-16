@@ -85,8 +85,8 @@ class ActivationBias(InterventionControl):
 There is no hook code, no per-generation state, and no backend knowledge in the control. The shipped residual-stream
 methods (`caa`, `act_add`, `directional_ablation`, `angular_steering`, `cast`, `iti`, and the composable
 `activation_adapter`) all follow this pattern; read them for templates that fit artifacts from data
-(`ContrastiveFit`), select layers at steer time (`FractionalDepthSelector`, `CoveredLayers`), or gate on a
-condition (`ConditionPointSearch`, `probe_condition`).
+(`ContrastiveFit`), select layers at steer time (`FractionalDepthSelector`, `CoveredLayers`), or gate
+conditionally (`ConditionPointSearch`, `gate_from_probe`).
 
 ## Custom hook controls
 

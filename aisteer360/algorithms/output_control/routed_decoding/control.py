@@ -22,13 +22,13 @@ class RoutedDecoding(PhasedDriver):
     """Decoding driver that routes each prompt to a response strategy via probe decisions.
 
     `RoutedDecoding` pairs a `ProbeSet` (named calibrated probes scored in one read-only
-    forward) with a `RoutingRules` set (ordered boolean rules over the probe names, first match
-    wins, evaluated per row). Decoding proceeds in three steps:
+    forward) with a `Router` (ordered routes over the probe names, first match wins, evaluated
+    per row). Decoding proceeds in three steps:
 
     1. **Probe pass**: one read-only forward of the prompt, issued by `ProbeSet.read()`, yields
        each probe's per-row signed score and decision (`score >= 0`).
     2. **Routing**: the decisions feed `rules.route()`, matching each row to its first
-       satisfied rule (or the default).
+       satisfied route (or the default).
     3. **Execution**: each row's action is lowered to a phase plan and executed by the
        inherited plan runner. `Respond(text)` splices the canned tokens with no generation;
        `Prefix(text)` splices the prefix then generates; `Generate()` delegates the row to
@@ -62,15 +62,15 @@ class RoutedDecoding(PhasedDriver):
     execution, and each returned row is the original padded prompt plus its continuation, so
     the pipeline's prompt-length slicing stays exact.
 
-    The most recent routing outcome is retained on `latest_routes` (one rule name per row,
+    The most recent routing outcome is retained on `latest_routes` (one route name per row,
     `"default"` for unmatched rows); per-probe decisions and scores are available on the probe
-    set's `latest` readout.
+    set's `latest` readings.
 
     `runtime_kwargs`:
 
-    - `"canned_responses"`: dict mapping rule names to replacement text, overriding the
-      `Respond`/`Prefix` text of matching rules for this call only. Keys that do not name a
-      `Respond`/`Prefix` rule are ignored with a warning.
+    - `"canned_responses"`: dict mapping route names to replacement text, overriding the
+      `Respond`/`Prefix` text of matching routes for this call only. Keys that do not name a
+      `Respond`/`Prefix` route are ignored with a warning.
     """
 
     Args = RoutedDecodingArgs
@@ -82,7 +82,7 @@ class RoutedDecoding(PhasedDriver):
         {
             "name": "canned_responses",
             "type": "dict[str, str]",
-            "description": "Per-call override of Respond/Prefix text, keyed by rule name.",
+            "description": "Per-call override of Respond/Prefix text, keyed by route name.",
         },
     ]
 
@@ -161,7 +161,7 @@ class RoutedDecoding(PhasedDriver):
 
         Raises:
             ValueError: If a fitted set's recorded identity differs from the venue's, or a
-                rule references a probe name the set does not define.
+                route references a probe name the set does not define.
         """
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
 
@@ -250,7 +250,7 @@ class RoutedDecoding(PhasedDriver):
 
         Warns:
             UserWarning: If `canned_responses` carries keys that do not name a
-                `Respond`/`Prefix` rule.
+                `Respond`/`Prefix` route.
         """
         if self.tokenizer is None:
             raise RuntimeError("RoutedDecoding requires a tokenizer; steer() must run first.")
@@ -265,20 +265,20 @@ class RoutedDecoding(PhasedDriver):
             attention_mask = attention_mask.unsqueeze(0)
         batch_size = input_ids.size(0)
 
-        readout = self.probes.read(model, input_ids, attention_mask, session=session)
-        matched = self.rules.route(readout.decisions)
-        self.latest_routes = [rule.name if rule is not None else "default" for rule in matched]
+        readings = self.probes.read(model, input_ids, attention_mask, session=session)
+        matched = self.rules.route(readings.decisions)
+        self.latest_routes = [route.name if route is not None else "default" for route in matched]
 
         if overrides:
-            rules_by_name = {rule.name: rule for rule in self.rules.rules}
+            routes_by_name = {route.name: route for route in self.rules.routes}
             unusable = [
                 key for key in overrides
-                if key not in rules_by_name
-                or not isinstance(rules_by_name[key].action, (Respond, Prefix))
+                if key not in routes_by_name
+                or not isinstance(routes_by_name[key].action, (Respond, Prefix))
             ]
             if unusable:
                 warnings.warn(
-                    f"canned_responses keys {unusable} do not name a Respond/Prefix rule and "
+                    f"canned_responses keys {unusable} do not name a Respond/Prefix route and "
                     "are ignored.",
                     UserWarning,
                 )
@@ -287,11 +287,11 @@ class RoutedDecoding(PhasedDriver):
 
         final_sequences: list[torch.Tensor] = []
         for i in range(batch_size):
-            rule = matched[i]
-            if rule is not None:
-                action = rule.action
-                if rule.name in overrides and isinstance(action, (Respond, Prefix)):
-                    action = replace(action, text=overrides[rule.name])
+            route = matched[i]
+            if route is not None:
+                action = route.action
+                if route.name in overrides and isinstance(action, (Respond, Prefix)):
+                    action = replace(action, text=overrides[route.name])
             else:
                 action = self.rules.default_action if self.rules.default_action is not None else Generate()
             plan = self._lower(action)

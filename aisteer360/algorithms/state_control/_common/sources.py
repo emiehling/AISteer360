@@ -1,12 +1,11 @@
 """Sources: recipes that resolve to concrete steering elements for a given model.
 
 This module provides the `ArtifactSource` protocol with its fit recipes (`ContrastiveFit`,
-`SinglePairFit`) and the gate/condition source `ConditionPointSearch`. A transform holds either
-a concrete artifact (a `SteeringVector` or a per-layer directions mapping) or a source; an
-`Intervention`'s gate slot holds either a concrete gate or a gate/condition source.
-`Intervention.bind` resolves sources, so steer-time computations (fits, searches) have a
-declarative home. `resolve` returns a defensive clone, and the underlying fit is memoized per
-model.
+`SinglePairFit`) and the gate source `ConditionPointSearch`. A transform holds either a
+concrete artifact (a `SteeringVector` or a per-layer directions mapping) or a source; an
+`Intervention`'s gate slot holds either a concrete gate or a gate source. `Intervention.bind`
+resolves sources, so steer-time computations (fits, searches) have a declarative home.
+`resolve` returns a defensive clone, and the underlying fit is memoized per model.
 """
 from __future__ import annotations
 
@@ -32,12 +31,11 @@ from aisteer360.algorithms.state_control._common.fit_specs import (
     ConditionSearchSpec,
     VectorTrainSpec,
 )
-from aisteer360.algorithms.state_control._common.specs import Condition
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.utils.rendering import PromptFormat
 
 if TYPE_CHECKING:
-    from aisteer360.algorithms.state_control._common.gates.base import BaseGate
+    from aisteer360.algorithms.state_control._common.gating import Gate
 
 
 @runtime_checkable
@@ -293,19 +291,17 @@ class SinglePairFit:
 
 @dataclass
 class ConditionPointSearch:
-    """A gate/condition recipe: contrastive condition data plus how to find the gate point.
+    """A gate recipe: contrastive condition data plus how to find the gate point.
 
-    Occupies an `Intervention`'s gate and condition slots. `resolve_gate_condition` fits (or
-    clones) the condition vector, resolves the condition point by grid search when `search`
-    enables it and no manual layers are given, and assembles the runtime pieces: a
-    `ProjectedCosineScorer` over the condition directions, a `MultiKeyThresholdGate` at the
-    resolved threshold, wrapped in `CacheOnceGate` so the prompt is scored once. An
-    unconditional configuration (no condition vector or no resolved point) yields an
-    `AlwaysOpenGate` and no condition.
+    Occupies an `Intervention`'s gate slot. `resolve_gate` fits (or clones) the condition
+    vector, resolves the condition point by grid search when `search` enables it and no manual
+    layers are given, and assembles the gate: projected-cosine evidence over the condition
+    directions at the resolved layers, decided by a per-layer threshold rule. An unconditional
+    configuration (no condition vector or no resolved point) resolves to None.
 
-    The projected-cosine condition has no wire gate form, so `wire_gate_kinds` is None and any
-    intervention gated this way runs in process, where the read venue and the fit venue
-    coincide by construction.
+    The projected-cosine readout and the per-layer threshold rule both have wire forms, so an
+    intervention gated this way lowers to intervention-capable backends
+    (`wire_readouts`/`wire_rules` declare the kinds for pre-steer support checks).
 
     Attributes:
         condition_vector: Precomputed condition directions, cloned rather than refit.
@@ -315,13 +311,15 @@ class ConditionPointSearch:
         search: Condition point search configuration.
         layer_ids: Manual condition layers; disables the search when set.
         threshold: Manual gate threshold, required with `layer_ids`.
-        comparator: Gate comparator for the manual point (canonical semantics).
+        comparator: Gate comparator for the manual point (`"ge"` opens when score >= threshold,
+            `"le"` when score <= threshold).
         comparison_mode: Runtime token aggregation for condition scoring.
         resolved_point: The `(layer_ids, threshold, comparator)` the last resolve produced, or
             None before resolution or for unconditional configurations.
     """
 
-    wire_gate_kinds: ClassVar[frozenset[str] | None] = None
+    wire_readouts: ClassVar[frozenset[str] | None] = frozenset({"projected_cosine"})
+    wire_rules: ClassVar[frozenset[str] | None] = frozenset({"per_key_threshold"})
     access: ClassVar[ModelAccess] = ModelAccess.MODULE
     artifact_class: ClassVar[str] = "calibrated"
 
@@ -333,7 +331,7 @@ class ConditionPointSearch:
     search: ConditionSearchSpec = field(default_factory=ConditionSearchSpec)
     layer_ids: Sequence[int] | None = None
     threshold: float | None = None
-    comparator: Comparator = "larger"
+    comparator: Comparator = "ge"
     comparison_mode: CompMode = "mean"
 
     resolved_point: dict | None = field(default=None, init=False, repr=False, compare=False)
@@ -341,11 +339,11 @@ class ConditionPointSearch:
     def __post_init__(self):
         if self.condition_data is not None and not isinstance(self.condition_data, ContrastivePairs):
             self.condition_data = as_contrastive_pairs(self.condition_data)
+        if self.comparator not in ("ge", "le"):
+            raise ValueError(f"comparator must be 'ge' or 'le'; got {self.comparator!r}.")
 
-    def resolve_gate_condition(
-        self, model, tokenizer, *, layout=None, session=None
-    ) -> tuple["BaseGate", Condition | None]:
-        """Resolve the gate and condition for `model`.
+    def resolve_gate(self, model, tokenizer, *, layout=None, session=None) -> "Gate | None":
+        """Resolve the gate for `model`.
 
         Args:
             model: The model to search against; required when the search runs or the condition
@@ -355,24 +353,23 @@ class ConditionPointSearch:
             session: Optional `SteeringSession` for capture-backed fitting and calibration.
 
         Returns:
-            The gate and condition, or `(AlwaysOpenGate(), None)` for unconditional
-            configurations.
+            The gate, or None for unconditional configurations.
 
         Raises:
             ValueError: If a manual threshold is set without a condition vector, or a condition
                 layer lacks a direction.
         """
-        from aisteer360.algorithms.state_control._common.condition_scorers import ProjectedCosineScorer
-        from aisteer360.algorithms.state_control._common.gates import (
-            AlwaysOpenGate,
-            CacheOnceGate,
-            MultiKeyThresholdGate,
+        from aisteer360.algorithms.state_control._common.gating import (
+            Evidence,
+            Gate,
+            PerKeyThreshold,
+            ProjectedCosineReadout,
         )
         from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
 
         condition_vec = self.condition_vector.clone() if self.condition_vector is not None else None
-        has_condition = condition_vec is not None or self.condition_data is not None
-        if has_condition and condition_vec is None:
+        condition_supplied = condition_vec is not None or self.condition_data is not None
+        if condition_supplied and condition_vec is None:
             if self.condition_fit.method == "mean_diff" and self.condition_fit.accumulate == "suffix-only":
                 raise ValueError(
                     "method='mean_diff' does not support accumulate='suffix-only'; "
@@ -394,7 +391,7 @@ class ConditionPointSearch:
         threshold = self.threshold
         comparator = self.comparator
 
-        if has_condition and condition_vec is not None:
+        if condition_supplied and condition_vec is not None:
             if self.search.auto_find and layer_ids is None and self.condition_data is not None:
                 result = ConditionPointSelector().select(
                     model=model,
@@ -416,30 +413,26 @@ class ConditionPointSearch:
             raise ValueError("Conditional gating requires a condition vector.")
         if not conditional:
             self.resolved_point = None
-            return AlwaysOpenGate(), None
+            return None
 
         missing = [lid for lid in layer_set if lid not in condition_vec.directions]
         if missing:
             raise ValueError(f"Condition vector has no direction for condition layer(s) {missing}.")
 
-        scorer = ProjectedCosineScorer(
+        readout = ProjectedCosineReadout(
             {lid: condition_vec.directions[lid] for lid in layer_set},
-            comparison_mode=self.comparison_mode,
         )
-        threshold_gate = MultiKeyThresholdGate(
-            threshold=threshold,
-            comparator=comparator,
-            expected_keys=set(layer_set),
-            aggregate="any",
-        )
-        gate = CacheOnceGate(threshold_gate)
+        rule = PerKeyThreshold(threshold=threshold, comparator=comparator, aggregate="any")
         self.resolved_point = {
             "layer_ids": layer_set,
             "threshold": threshold,
-            "comparator": threshold_gate.comparator,
+            "comparator": comparator,
             "comparison_mode": self.comparison_mode,
         }
-        return gate, Condition(layer_ids=tuple(layer_set), scorer=scorer)
+        return Gate(
+            Evidence(tuple(layer_set), readout, pooling=self.comparison_mode),
+            rule,
+        )
 
 
 @dataclass

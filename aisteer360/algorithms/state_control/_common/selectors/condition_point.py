@@ -14,8 +14,8 @@ from aisteer360.algorithms.core.internals.encoding import tokenize_texts
 from aisteer360.algorithms.core.internals.pooling import pool_over_spans, select_spans
 from aisteer360.algorithms.core.internals.render import render_contrastive
 
-from ..condition_scorers import projected_cosine_similarity_tensor, rank_one_projector
 from ..fit_specs import Comparator, CompMode, ConditionSearchSpec, VectorTrainSpec
+from ..gating import projected_cosine_similarity_tensor, rank_one_projector
 from .base import BaseSelector
 
 logger = logging.getLogger(__name__)
@@ -33,8 +33,8 @@ class ConditionPoint:
     Attributes:
         layer_id: The condition layer (0-based).
         threshold: The gate threshold.
-        comparator: The canonical gate comparator ("larger" opens when score >= threshold; "smaller"
-            when score <= threshold).
+        comparator: The gate comparator ("ge" opens when score >= threshold; "le" when
+            score <= threshold).
         f1: F1 of the class separation achieved by the search at this point.
         margin: Geometric margin: distance from the decision boundary to the nearest calibration
             point. Positive means the calibration classes are cleanly separated at this threshold.
@@ -50,13 +50,13 @@ class ConditionPoint:
     comparison_mode: CompMode | None = None
 
     def flipped(self) -> "ConditionPoint":
-        """Return a copy with the comparator inverted ("larger" <-> "smaller").
+        """Return a copy with the comparator inverted ("ge" <-> "le").
 
         Conditions on the complement of this point (e.g. gate on scores at or below the threshold
         instead of at or above it). All other fields are preserved: `f1` and `margin` describe the
         original search and are carried over unchanged.
         """
-        flipped_comparator: Comparator = "smaller" if self.comparator == "larger" else "larger"
+        flipped_comparator: Comparator = "le" if self.comparator == "ge" else "ge"
         return ConditionPoint(
             layer_id=self.layer_id,
             threshold=self.threshold,
@@ -106,13 +106,13 @@ def _best_point_for_layer(
     Returns:
         dict with keys "f1", "margin", "thr", "comparator".
     """
-    best = {"f1": -1.0, "margin": float("-inf"), "thr": 0.0, "comparator": "larger"}
+    best = {"f1": -1.0, "margin": float("-inf"), "thr": 0.0, "comparator": "ge"}
 
-    for cmp in ("larger", "smaller"):
+    for cmp in ("ge", "le"):
         for thr in grid:
             thr_f = float(thr)
 
-            if cmp == "larger":  # gate opens when score >= threshold
+            if cmp == "ge":  # gate opens when score >= threshold
                 tp = int((sims_p >= thr_f).sum().item())
                 fp = int((sims_n >= thr_f).sum().item())
                 margin = min(
@@ -147,10 +147,8 @@ class ConditionPointSelector(BaseSelector[ConditionPoint]):
     `fit_spec.prompt_format` and tokenized with `add_special_tokens=False` for
     chat-templated text (matching the inference rendering of the condition gate).
 
-    The returned `comparator` is always one of the canonical values "larger"/"smaller" (this
-    toolkit's semantics: "larger" opens the gate when score >= threshold), consumed directly by
-    `MultiKeyThresholdGate` with no normalization needed. These are NOT the reference
-    implementation's semantics; see `normalize_comparator` and `MultiKeyThresholdGate`.
+    The returned `comparator` is one of "ge"/"le" ("ge" opens the gate when
+    score >= threshold), consumed directly by the `PerKeyThreshold` gate rule.
     """
 
     def select(
@@ -259,7 +257,7 @@ class ConditionPointSelector(BaseSelector[ConditionPoint]):
 
         grid = _threshold_grid(search_spec.threshold_range, search_spec.threshold_step)
 
-        best = {"f1": -1.0, "margin": float("-inf"), "layer": 0, "thr": 0.0, "direction": "larger"}
+        best = {"f1": -1.0, "margin": float("-inf"), "layer": 0, "thr": 0.0, "direction": "ge"}
 
         logger.debug("Searching %d layers with %d threshold values", len(layers), len(grid))
 
@@ -297,9 +295,9 @@ class ConditionPointSelector(BaseSelector[ConditionPoint]):
             best["layer"], best["thr"], best["direction"], best["f1"], best["margin"],
         )
 
-        if fit_spec.method == "mean_diff" and best["direction"] == "smaller":
+        if fit_spec.method == "mean_diff" and best["direction"] == "le":
             warnings.warn(
-                f"Condition search selected comparator 'smaller' at layer {best['layer']} "
+                f"Condition search selected comparator 'le' at layer {best['layer']} "
                 f"(margin {best['margin']:.4f}). The direction was fit as mean(positives) - "
                 "mean(negatives), so positives are expected to score HIGHER. An inverted "
                 "comparator usually means the calibration set is too small or this layer carries "

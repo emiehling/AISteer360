@@ -1,25 +1,24 @@
 """The intervention IR for state control components.
 
-The intervention IR (`TokenScope`, `Condition`, `Intervention`) is the single declarative
-statement of a residual-stream state control's behavior. Both compilers read it:
-`runtime.build_hooks` turns a bound intervention tuple into torch hooks for one generation,
-and `lowering.lower_interventions` turns it into an `InterventionSpec` for
-intervention-capable backends. Components describe their own wire form (`WireForm` via each
-component's `export`), so no layer of the system re-derives another layer's configuration by
-introspection.
+The intervention IR (`TokenScope`, `Intervention`) is the single declarative statement of a
+residual-stream state control's behavior. Both compilers read it: `runtime.build_hooks` turns
+a bound intervention tuple into torch hooks for one generation, and
+`lowering.lower_interventions` turns it into an `InterventionSpec` for intervention-capable
+backends. Components describe their own wire form (`WireForm` via each component's `export`),
+so no layer of the system re-derives another layer's configuration by introspection.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, ClassVar, Literal, Mapping, Protocol, Sequence, get_args, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Mapping, Sequence, get_args
 
 import torch
 
 from aisteer360.algorithms.core.execution.contracts import InterventionKinds
 
+from .gating import Gate, GateSource
+
 if TYPE_CHECKING:
-    from .condition_scorers import ConditionScorer
-    from .gates.base import BaseGate
     from .selectors.base import BaseSelector
     from .transforms.base import BaseTransform
 
@@ -78,47 +77,6 @@ class TokenScope:
         return WireForm(kind=self.kind)
 
 
-@dataclass(frozen=True, slots=True)
-class Condition:
-    """Where a gated intervention reads evidence and how the evidence is scored.
-
-    In process, the scorer runs in condition hooks at `layer_ids`; on the wire, its
-    exportable content merges into the gate's wire form.
-
-    Attributes:
-        layer_ids: Condition layers (0-based decoder-layer indices at the intervention's
-            boundary).
-        scorer: Per-row condition scorer feeding the intervention's gate.
-    """
-
-    layer_ids: tuple[int, ...]
-    scorer: "ConditionScorer"
-
-    def __post_init__(self):
-        object.__setattr__(self, "layer_ids", tuple(int(lid) for lid in self.layer_ids))
-        if not self.layer_ids:
-            raise ValueError("Condition requires at least one condition layer.")
-
-
-@runtime_checkable
-class GateConditionSource(Protocol):
-    """A recipe that resolves to a gate (and optionally a condition) for a given model.
-
-    Occupies an `Intervention`'s gate slot (and, when it also produces a condition, its
-    condition slot as the same object). `Intervention.bind` resolves it once. The declared
-    wire gate kinds are a class-level fact so `Intervention.wire_kinds()` can run before
-    binding; None marks the resolved gating hook-only.
-    """
-
-    wire_gate_kinds: ClassVar[frozenset[str] | None]
-
-    def resolve_gate_condition(
-        self, model, tokenizer, *, layout=None, session=None
-    ) -> tuple["BaseGate", Condition | None]:
-        """Return the resolved gate and condition (None when unconditional)."""
-        ...
-
-
 class CoveredLayers:
     """Layer selector resolving to the bound transform's covered layers.
 
@@ -163,12 +121,6 @@ class CoveredLayers:
         return tuple(sorted(layer_ids))
 
 
-def _default_gate() -> "BaseGate":
-    from .gates.base import AlwaysOpenGate
-
-    return AlwaysOpenGate()
-
-
 def _default_scope() -> TokenScope:
     return TokenScope("after_prompt")
 
@@ -179,28 +131,29 @@ class Intervention:
     `boundary` side of the layer, whenever `gate` is open.
 
     Declared unbound at control construction: `layers` may be a layer selector, the transform
-    may carry an `ArtifactSource` (or be a factory over a `TransformContext`), and the gate or
-    condition may be given as a `GateConditionSource`. `bind(model, tokenizer, layout=...)`
-    returns the resolved form with layer coverage validated. Kind identity (`wire_kinds`) is
-    readable on the unbound form, which is what lets `check()` run before `steer()`.
+    may carry an `ArtifactSource` (or be a factory over a `TransformContext`), and the gate may
+    be given as a `GateSource`. `bind(model, tokenizer, layout=...)` returns the resolved form
+    with layer coverage validated. Kind identity (`wire_kinds`) is readable on the unbound
+    form, which is what lets `check()` run before `steer()`.
 
     Interventions are generation-invariant: prompt lengths, pad masks, and position offsets
     are runtime facts consumed by `build_hooks` in process and resolved per request by the
     worker on the wire. Nothing prompt-dependent appears here.
 
-    IR dataclasses never use instance defaults for object-valued fields, since a shared
-    default gate would carry sized state across every intervention in the process;
-    object-valued defaults use `default_factory` only.
+    IR dataclasses never use instance defaults for object-valued fields; object-valued
+    defaults use `default_factory` only.
 
     Attributes:
         layers: Behavior layers (0-based decoder-layer indices), a selector resolved at bind
             time, or `CoveredLayers` to take the bound transform's covered layers.
         transform: The transform applied at masked positions of open rows.
         scope: Token positions to steer.
-        gate: Per-row gate consulted at apply time, or a source resolving to one.
-        condition: Where and how gate evidence is computed, or None for unconditional gates.
-            When the gate slot holds a `GateConditionSource` producing a condition, this slot
-            holds the same source object or None.
+        gate: The gate consulted at apply time, a source resolving to one, or None for
+            unconditional application.
+        gate_driven_externally: Follower mode for shared-gate composition. When True, another
+            intervention's condition hooks feed the shared `Gate` instance, so binding skips
+            the readout compatibility checks and hook compilation builds no condition hooks
+            for this intervention; its behavior hooks only read the shared decision.
         boundary: Which side of the hooked module the edit applies at. `"layer_output"`
             builds forward hooks; `"layer_input"` builds forward pre-hooks.
         site: The hooked module family. None derives it from the transform kind
@@ -215,8 +168,8 @@ class Intervention:
     layers: tuple[int, ...] | "BaseSelector" | CoveredLayers
     transform: "BaseTransform"
     scope: TokenScope = field(default_factory=_default_scope)
-    gate: "BaseGate | GateConditionSource" = field(default_factory=_default_gate)
-    condition: "Condition | GateConditionSource | None" = None
+    gate: "Gate | GateSource | None" = None
+    gate_driven_externally: bool = False
     boundary: Boundary = "layer_output"
     site: Site | None = None
     require_coverage: bool = True
@@ -232,14 +185,14 @@ class Intervention:
     @property
     def is_unbound(self) -> bool:
         """True when binding must run model-side work: a layer selector to resolve, a
-        transform source or factory to fit, or a gate/condition source to search."""
+        transform source or factory to fit, or a gate source to search."""
         from .transforms.base import BaseTransform
 
         if not isinstance(self.layers, tuple):
             return True
         if not isinstance(self.transform, BaseTransform) or not self.transform.is_bound:
             return True
-        if isinstance(self.gate, GateConditionSource) and not _is_gate(self.gate):
+        if self.gate is not None and not isinstance(self.gate, Gate):
             return True
         return False
 
@@ -259,8 +212,8 @@ class Intervention:
         """Resolve every declared element against `model` (or a session `layout`).
 
         Resolves the layer selector, binds the transform (fitting artifact sources and
-        invoking factories), resolves gate/condition sources, validates layer coverage and
-        scorer compatibility, and returns the bound intervention. Never mutates `self`.
+        invoking factories), resolves gate sources, validates layer coverage and readout
+        compatibility, and returns the bound intervention. Never mutates `self`.
 
         Args:
             model: The live model, or None for concrete-artifact configurations bound
@@ -275,7 +228,7 @@ class Intervention:
 
         Raises:
             ValueError: If a layer is out of range, the transform lacks coverage for a
-                behavior layer, or a condition scorer is incompatible with the boundary or
+                behavior layer, or the gate's readout is incompatible with the boundary or
                 model.
         """
         from .layout_facts import resolve_layout
@@ -307,25 +260,18 @@ class Intervention:
                 raise ValueError(f"layer_id {lid} out of range [0, {num_layers}).")
 
         gate = self.gate
-        condition = self.condition
-        if isinstance(gate, GateConditionSource) and not _is_gate(gate):
-            if condition is not None and condition is not gate:
+        if gate is not None and not isinstance(gate, Gate):
+            gate = gate.resolve_gate(model, tokenizer, layout=layout, session=session)
+        if gate is not None:
+            if not isinstance(gate, Gate):
                 raise ValueError(
-                    "When the gate slot holds a GateConditionSource, the condition slot must "
-                    "be None or the same source object."
+                    f"gate must resolve to a Gate or None; got {type(gate).__name__}."
                 )
-            gate, condition = gate.resolve_gate_condition(
-                model, tokenizer, layout=layout, session=session,
-            )
-        if condition is not None and not isinstance(condition, Condition):
-            raise ValueError(
-                f"condition must resolve to a Condition or None; got {type(condition).__name__}."
-            )
-        if condition is not None:
-            for lid in condition.layer_ids:
+            for lid in gate.evidence.layer_ids:
                 if not 0 <= lid < num_layers:
                     raise ValueError(f"condition_layer_id {lid} out of range [0, {num_layers}).")
-            self._validate_scorer(condition.scorer, layout)
+            if not self.gate_driven_externally:
+                self._validate_readout(gate.evidence.readout, layout)
 
         if not isinstance(self.layers, CoveredLayers):
             transform = resolve_transform_slot(
@@ -333,38 +279,36 @@ class Intervention:
                 require_coverage=self.require_coverage, session=session,
             )
 
-        bound = replace(
-            self, layers=layer_ids, transform=transform, gate=gate, condition=condition,
-        )
+        bound = replace(self, layers=layer_ids, transform=transform, gate=gate)
         unbound_kinds = self.wire_kinds()
         bound_kinds = bound.wire_kinds()
-        # binding may replace parameter values and tensors, never kinds; narrowing to None is
-        # the artifact-dependent case caught by eager steer-time lowering
-        assert unbound_kinds is None or bound_kinds is None or bound_kinds == unbound_kinds, (
+        # binding may replace parameter values and tensors and may shrink the kind set (a gate
+        # source resolving to unconditional drops its readout and rule kinds), never add kinds;
+        # narrowing to None is the artifact-dependent case caught by eager steer-time lowering
+        assert unbound_kinds is None or bound_kinds is None or unbound_kinds.contains(bound_kinds), (
             f"binding changed wire kinds from {unbound_kinds} to {bound_kinds}"
         )
         return bound
 
-    def _validate_scorer(self, scorer, layout) -> None:
-        """Check an optional scorer's declared boundary and model identity against this
-        intervention."""
-        scorer_location = getattr(scorer, "location", None)
-        if scorer_location is not None and scorer_location != self.boundary:
+    def _validate_readout(self, readout, layout) -> None:
+        """Check a readout's declared boundary and model identity against this intervention."""
+        readout_location = getattr(readout, "location", None)
+        if readout_location is not None and readout_location != self.boundary:
             raise ValueError(
-                f"Condition scorer expects features at '{scorer_location}' but this "
+                f"Gate readout expects features at '{readout_location}' but this "
                 f"intervention hooks '{self.boundary}'. Declare the intervention with "
-                f"boundary='{scorer_location}', or refit the probe with "
+                f"boundary='{readout_location}', or refit the artifact with "
                 f"location='{self.boundary}'."
             )
-        scorer_fingerprint = getattr(scorer, "model_fingerprint", None)
-        if scorer_fingerprint is not None and layout is not None:
+        readout_fingerprint = getattr(readout, "model_fingerprint", None)
+        if readout_fingerprint is not None and layout is not None:
             live_fingerprint = getattr(layout, "model_fingerprint", None)
-            if live_fingerprint is not None and scorer_fingerprint != live_fingerprint:
+            if live_fingerprint is not None and readout_fingerprint != live_fingerprint:
                 raise ValueError(
-                    f"Condition scorer was fitted on a different model (fingerprint "
-                    f"{scorer_fingerprint!r} vs {live_fingerprint!r}). Refit the probe on "
+                    f"Gate readout was fitted on a different model (fingerprint "
+                    f"{readout_fingerprint!r} vs {live_fingerprint!r}). Refit the probe on "
                     "this model, or disarm the check with allow_model_mismatch=True on "
-                    "probe_condition() or Probe.as_condition()."
+                    "gate_from_probe() or Probe.as_gate()."
                 )
 
     def wire_kinds(self) -> InterventionKinds | None:
@@ -379,18 +323,28 @@ class Intervention:
 
         if self.resolved_site() == "norm_input":
             return None
-        if not isinstance(self.transform, BaseTransform):
-            return None  # a factory slot is unknown before binding
-        core, wrappers = unwrap_modifiers(self.transform)
-        kind = core.wire_plan()
-        if kind is None:
-            return None
         modifiers: set[str] = set()
-        for wrapper in wrappers:
-            modifier_kind = wrapper.modifier_wire_kind(kind)
-            if modifier_kind is None:
+        if isinstance(self.transform, BaseTransform):
+            core, wrappers = unwrap_modifiers(self.transform)
+            kind = core.wire_plan()
+            if kind is None:
                 return None
-            modifiers.add(modifier_kind)
+            for wrapper in wrappers:
+                modifier_kind = wrapper.modifier_wire_kind(kind)
+                if modifier_kind is None:
+                    return None
+                modifiers.add(modifier_kind)
+        else:
+            # a factory slot may declare its plan (wire_plan / wire_modifiers); an undeclared
+            # factory is unknown before binding
+            plan = getattr(self.transform, "wire_plan", None)
+            if not callable(plan):
+                return None
+            kind = plan()
+            if kind is None:
+                return None
+            declared = getattr(self.transform, "wire_modifiers", ())
+            modifiers = set(declared() if callable(declared) else declared)
         if (
             self.boundary == "layer_input"
             and self.resolved_site() == "decoder_layer"
@@ -400,55 +354,27 @@ class Intervention:
             # layer 0 input edits precede the first wire boundary; the o_proj site keeps its
             # layer index on the wire, so layer 0 stays expressible there
             return None
-        gates = _gate_wire_kinds(self.gate, self.condition)
-        if gates is None:
-            return None
+        gate = self.gate
+        if gate is None:
+            readouts: frozenset[str] = frozenset()
+            rules: frozenset[str] = frozenset()
+        elif isinstance(gate, Gate):
+            pair = gate.wire_kinds()
+            if pair is None:
+                return None
+            readouts, rules = pair
+        else:
+            readouts = getattr(type(gate), "wire_readouts", None)
+            rules = getattr(type(gate), "wire_rules", None)
+            if readouts is None or rules is None:
+                return None
         return InterventionKinds(
             transforms=frozenset({kind}),
             modifiers=frozenset(modifiers),
             scopes=frozenset({self.scope.kind}),
-            gates=gates,
+            readouts=readouts,
+            rules=rules,
         )
-
-
-def _is_gate(obj) -> bool:
-    from .gates.base import BaseGate
-
-    return isinstance(obj, BaseGate)
-
-
-def _gate_wire_kinds(gate, condition) -> frozenset[str] | None:
-    """Wire gate kinds for a gate/condition pair; None marks the gating hook-only.
-
-    Probe-backed gating is the only conditional configuration with a wire form: the gate must
-    be a `ProbeSumGate` (bare or `cache_once`-wrapped), since the wire gate computes the
-    scorer's affine evidence from the probe weights itself. With a condition, its scorer must
-    be the `ProbeContributionScorer` over the same probe with condition layers matching the
-    probe's layers. Without a condition (the follower half of a shared-gate composition), the
-    probe itself supplies the evidence layers, so the gating still lowers. A bare probe gate
-    plans `cache_once`, the wire form of the prompt-scored-once convention.
-    """
-    from .condition_scorers import ProbeContributionScorer
-    from .gates.base import AlwaysOpenGate, BaseGate
-    from .gates.cache_once import CacheOnceGate
-    from .gates.probe_sum import ProbeSumGate
-
-    if not isinstance(gate, BaseGate):
-        return getattr(type(gate), "wire_gate_kinds", None)
-    if isinstance(gate, AlwaysOpenGate):
-        return frozenset()
-    inner = gate.inner if isinstance(gate, CacheOnceGate) else gate
-    if not isinstance(inner, ProbeSumGate):
-        return None
-    if condition is not None:
-        scorer = condition.scorer
-        if not isinstance(scorer, ProbeContributionScorer):
-            return None
-        if scorer.probe is not inner.probe:
-            return None
-        if set(condition.layer_ids) != set(inner.probe.layer_ids):
-            return None
-    return frozenset({"cache_once", "probe_sum"})
 
 
 def combine_kinds(kind_sets) -> InterventionKinds | None:
@@ -456,7 +382,8 @@ def combine_kinds(kind_sets) -> InterventionKinds | None:
     transforms: set[str] = set()
     modifiers: set[str] = set()
     scopes: set[str] = set()
-    gates: set[str] = set()
+    readouts: set[str] = set()
+    rules: set[str] = set()
     empty = True
     for kinds in kind_sets:
         if kinds is None:
@@ -465,12 +392,14 @@ def combine_kinds(kind_sets) -> InterventionKinds | None:
         transforms |= kinds.transforms
         modifiers |= kinds.modifiers
         scopes |= kinds.scopes
-        gates |= kinds.gates
+        readouts |= kinds.readouts
+        rules |= kinds.rules
     if empty:
         return InterventionKinds()
     return InterventionKinds(
         transforms=frozenset(transforms),
         modifiers=frozenset(modifiers),
         scopes=frozenset(scopes),
-        gates=frozenset(gates),
+        readouts=frozenset(readouts),
+        rules=frozenset(rules),
     )

@@ -21,6 +21,28 @@ class RecordingTransform(BaseTransform):
         return hidden_states + self.value
 
 
+class NeverCompleteRule:
+    """A gate rule whose `is_complete` never reports True, so the gate re-scores every pass.
+
+    `decide` returns all rows open or all closed per the constructor flag, regardless of
+    evidence, keeping the gate's live decision constant while its readout keeps running.
+    """
+
+    wire_kind = None
+
+    def __init__(self, open: bool = True):
+        self._open = open
+
+    def decide(self, values, num_rows):
+        return torch.full((num_rows,), self._open, dtype=torch.bool)
+
+    def is_complete(self, seen, expected):
+        return False
+
+    def export(self):
+        return None
+
+
 def strip_clock(hook):
     """Wrap a runtime hook so it never sees `cache_position`, forcing the pass-counting fallback.
 

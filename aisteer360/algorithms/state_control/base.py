@@ -117,10 +117,10 @@ class StateControl(BaseControl):
         return None
 
 def _is_concrete_gate(gate) -> bool:
-    """True when `gate` is a resolved gate rather than a gate/condition source."""
-    from aisteer360.algorithms.state_control._common.gates.base import BaseGate
+    """True when `gate` is a resolved gate rather than a gate source."""
+    from aisteer360.algorithms.state_control._common.gating import Gate
 
-    return isinstance(gate, BaseGate)
+    return isinstance(gate, Gate)
 
 
 class HookControl(StateControl):
@@ -209,7 +209,7 @@ class InterventionControl(StateControl):
 
     @property
     def _gate(self):
-        """The first intervention's gate (None before `steer()`)."""
+        """The first intervention's gate (None before `steer()` or when unconditional)."""
         return self.interventions[0].gate if self.interventions else None
 
     def _resolve_module_layout(self, model=None):
@@ -238,7 +238,7 @@ class InterventionControl(StateControl):
             input_ids: Prompt token ids of shape `[B, T]` or `[T]`.
             runtime_kwargs: Unused.
             attention_mask: The prompt attention mask matching `input_ids`, forwarded to
-                condition scorers on the prefill pass. When None and the tokenizer defines a
+                gate evidence pooling on the prefill pass. When None and the tokenizer defines a
                 pad token, a mask is inferred from leading and trailing pad runs.
             **kwargs: Generation-time context; `model` is consulted to resolve hook module
                 names when steering ran without a live model.
@@ -295,7 +295,7 @@ class InterventionControl(StateControl):
 
         Yields the transform sources of unbound transform elements, factory transform slots
         themselves (which declare their own `access` or default to the live model), and
-        unresolved gate/condition sources, in template order.
+        unresolved gate sources, in template order.
         """
         from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform, unwrap_modifiers
 
@@ -309,7 +309,7 @@ class InterventionControl(StateControl):
             else:
                 yield transform
             gate = intervention.gate
-            if not _is_concrete_gate(gate):
+            if gate is not None and not _is_concrete_gate(gate):
                 yield gate
 
     def steer_access(self) -> ModelAccess:

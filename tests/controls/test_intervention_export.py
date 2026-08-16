@@ -6,7 +6,7 @@ from vllm_hook_plugins.core.schema import parse_intervention_spec
 
 from aisteer360.algorithms.core.execution import Capability, ModelFacts
 from aisteer360.algorithms.core.internals.probes import Probe
-from aisteer360.algorithms.state_control._common.gates import CacheOnceGate, MultiKeyThresholdGate, ProbeSumGate
+from aisteer360.algorithms.state_control._common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
 from aisteer360.algorithms.state_control._common.lowering import artifact_id_for
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (
@@ -196,30 +196,27 @@ class TestFamilyExports:
 
 class TestAdapterExports:
 
-    def test_probe_gated_adapter_lowers_via_cache_once_probe_sum(self, session):
+    def test_probe_gated_adapter_lowers_to_structured_gate(self, session):
         probe = _probe(layers=(1, 2), location="layer_input")
-        condition = probe.as_condition()
         control = ActivationAdapter(
             transform=AdditiveTransform(_vector().directions, strength=2.0),
             layer_ids=[3],
             hook_point="layer_input",
             token_scope="after_prompt",
-            **condition,
+            gate=probe.as_gate(),
         )
         control.steer(model=None, session=session)
         spec = control.export_intervention_spec()
         (op,) = spec.ops
         assert op["layers"] == [2]  # layer_input placement maps behavior layer 3 to wire layer 2
         gate = op["gate"]
-        assert gate["kind"] == "cache_once"
-        assert gate["inner"]["kind"] == "probe_sum"
-        assert gate["inner"]["condition_layers"] == [1, 2]  # layer_input probes map directly
-        assert gate["inner"]["pooling"] == "mean"
-        weights = spec.artifacts[gate["inner"]["artifact"]]["weights"]
+        assert gate["layers"] == [1, 2]  # layer_input probes map directly
+        assert gate["pooling"] == "mean"
+        assert gate["readout"]["kind"] == "affine"
+        assert gate["rule"] == {"kind": "sum_threshold", "bias": 0.5}
+        weights = spec.artifacts[gate["readout"]["artifact"]]["weights"]
         assert weights.shape == (2, HIDDEN)
         assert torch.equal(weights[0], probe.weights[1])
-        bias = spec.artifacts[gate["inner"]["artifact"]]["bias"]
-        assert float(bias) == 0.5
         assert _supports_specs(control)
 
     def test_layer_output_probe_shifts_condition_layers(self, session):
@@ -228,38 +225,43 @@ class TestAdapterExports:
             transform=AdditiveTransform(_vector().directions),
             layer_ids=[3],
             hook_point="layer_output",
-            **probe.as_condition(),
+            gate=probe.as_gate(),
         )
         control.steer(model=None, session=session)
         spec = control.export_intervention_spec()
         gate = spec.ops[0]["gate"]
-        assert gate["inner"]["condition_layers"] == [2, 3]
+        assert gate["layers"] == [2, 3]
 
-    def test_threshold_gated_adapter_is_hook_only(self, session):
-        gate = CacheOnceGate(MultiKeyThresholdGate(threshold=0.4, comparator="larger", expected_keys={1}))
+    def test_callable_readout_gated_adapter_is_hook_only(self, session):
+        gate = Gate(
+            Evidence((1,), CallableReadout(lambda pooled, layer_id: pooled.mean(dim=-1))),
+            PerKeyThreshold(threshold=0.4, comparator="ge"),
+        )
         control = ActivationAdapter(
             transform=AdditiveTransform(_vector().directions),
             layer_ids=[3],
             gate=gate,
-            condition_layer_ids=[1],
-            score_fn=lambda hidden, layer_id, prompt_mask=None: hidden.mean(dim=(1, 2)),
         )
         assert not _supports_specs(control)
         control.steer(model=None, session=session)
         assert control.export_intervention_spec() is None
 
-    def test_foreign_scorer_with_probe_gate_is_hook_only(self, session):
-        probe = _probe(layers=(1,), location="layer_output")
+    def test_gate_source_declares_kinds_before_binding(self):
+        from aisteer360.algorithms.state_control._common.sources import ConditionPointSearch
+
+        source = ConditionPointSearch(
+            condition_vector=SteeringVector(model_type="llama", directions={1: torch.ones(1, HIDDEN)}),
+            layer_ids=[1],
+            threshold=0.05,
+            comparator="ge",
+        )
         control = ActivationAdapter(
             transform=AdditiveTransform(_vector().directions),
             layer_ids=[3],
-            gate=CacheOnceGate(ProbeSumGate(probe)),
-            condition_layer_ids=[1],
-            score_fn=lambda hidden, layer_id, prompt_mask=None: hidden.mean(dim=(1, 2)),
+            hook_point="layer_input",
+            gate=source,
         )
-        assert not _supports_specs(control)
-        control.steer(model=None, session=session)
-        assert control.export_intervention_spec() is None
+        assert _supports_specs(control)
 
 
 class TestExportMechanics:
@@ -318,7 +320,14 @@ class TestExportMechanics:
             ActivationAdapter(transform=AdditiveTransform(_vector().directions), layer_ids=[3]),
             ActivationAdapter(
                 transform=AdditiveTransform(_vector().directions), layer_ids=[3],
-                hook_point="layer_input", **_probe(location="layer_input").as_condition(),
+                hook_point="layer_input", gate=_probe(location="layer_input").as_gate(),
+            ),
+            ActivationAdapter(
+                transform=AdditiveTransform(_vector().directions), layer_ids=[3],
+                gate=Gate(
+                    Evidence((1,), CallableReadout(lambda pooled, layer_id: pooled.mean(dim=-1))),
+                    PerKeyThreshold(threshold=0.4, comparator="ge"),
+                ),
             ),
         ]
         session = _LayoutOnlySession(ModelFacts(

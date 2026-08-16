@@ -28,9 +28,10 @@ The four control categories, defined by what a method touches:
 Vocabulary used throughout the codebase:
 
 - **control**: one steering method, subclassing the base class of its category.
-- **generic**: a reusable building block in a category's `_common/` library (transforms, gates, drivers, selectors,
+- **generic**: a reusable building block in a category's `_common/` library (transforms, gating, drivers, selectors,
   formatters, ...). Named methods are often thin presets over generics.
-- **probe**: a calibrated linear readout over hidden states used for detection and routing (reads, never edits).
+- **probe**: a calibrated linear readout over hidden states used for detection (reads, never edits); gating and
+  routing consume its decisions.
 
 ## Repository map
 
@@ -39,13 +40,13 @@ aisteer360/
 ├── algorithms/
 │   ├── core/                    # SteeringPipeline, registry, ControlSpec, BaseArgs, shared types
 │   │   ├── execution/           # backend seam: spec, contracts, payloads, backend/session/registry, params, fanout
-│   │   ├── internals/           # activation capture, pooling, stats; probes/ (detection + routing rules)
+│   │   ├── internals/           # activation capture, pooling, stats; probes/ (detection)
 │   │   └── utils/               # control merging, generation helpers, auxiliary_pass
 │   ├── input_control/           # each category: base.py + one folder per method (triplet layout below)
 │   │   └── _common/             # generics: memory, formatters, proposers, scorers, selectors
 │   ├── state_control/
-│   │   └── _common/             # generics: transforms, estimators, gates, selectors, hook runtime
-│   ├── output_control/
+│   │   └── _common/             # generics: transforms, estimators, gating, selectors, hook runtime
+│   ├── output_control/          # methods incl. routed_decoding/ (control, routing.py, actions.py)
 │   │   └── _common/             # generics: drivers, processors, scorers, values, criteria
 │   └── structural_control/
 │       └── wrappers/            # trl/ (sft, dpo, ppo, grpo, apo) and mergekit/
@@ -379,7 +380,7 @@ own in the common case. Required hooks per category:
 - **structural**: `steer(model, tokenizer, **kwargs) -> PreTrainedModel`; return the new or modified model.
 - **state**: residual-stream methods subclass `InterventionControl` and declare an unbound intervention template
   in `_configure()` (a tuple of `Intervention` objects from `state_control/_common/specs.py`: layers or a selector,
-  a transform possibly carrying an `ArtifactSource`, a `TokenScope`, an optional gate/condition); the base `steer()`
+  a transform possibly carrying an `ArtifactSource`, a `TokenScope`, an optional gate); the base `steer()`
   binds it, `build_hooks` compiles it to torch hooks per generation, and `lower_interventions` compiles it to an
   `InterventionSpec` per steer, so the control contains no hook code, no per-generation state, and no backend
   knowledge. Methods hooking other mechanisms subclass `HookControl` and implement
@@ -441,20 +442,22 @@ when the dependency is absent instead of failing.
 
 Before writing new components, check the category's `_common/` library and compose from it:
 
-- **state**: transforms (`AdditiveTransform`, `DirectionalAblationTransform`, `RotationTransform`,
+- **state**: transforms (`AdditiveTransform`, `ProjectionTransform`, `RotationTransform`,
   `HeadAdditiveTransform`, `NormPreservingTransform`, `AlignmentAdaptiveTransform`), estimators
   (`MeanDifferenceEstimator`, `ContrastiveDirectionEstimator`, `SinglePairEstimator`, `SteeringPlaneEstimator`),
-  gates (`AlwaysOpenGate`, `CacheOnceGate`, `MultiKeyThresholdGate`, `ProbeSumGate`), selectors
-  (`FixedLayerSelector`, `FractionalDepthSelector`, `TopKHeadSelector`, `ConditionPointSelector`), condition
-  scorers, token scopes, `SteeringVector`, and `TransformHookRuntime`.
+  gating (`Gate` over an `Evidence` and a rule; readouts `AffineReadout`, `CosineReadout`,
+  `ProjectedCosineReadout`, `CallableReadout`; rules `SumThreshold`, `PerKeyThreshold`; `gate_from_probe`),
+  selectors (`FixedLayerSelector`, `FractionalDepthSelector`, `TopKHeadSelector`, `ConditionPointSelector`),
+  token scopes, `SteeringVector`, and `TransformHookRuntime`.
 - **output**: `SearchDriver` (propose, score, keep, iterate) and `PhasedDriver` (`Fixed` / `Generated` phase plans),
   processors (`PrefixKeyedProcessor` base, constraint, contrastive mixture, value-guided), scorers (reward model,
   metric, majority vote), value functions, criteria (`StopOnSubstring`, `BudgetTokens`), and KV-cache utilities.
 - **input**: memories (text, pool), formatters (system prompt, few-shot block, prepend, chat-template slot),
   proposers (LLM meta-prompt, retrieval), scorers, selectors (random, top-k, MMR, dense retrieval), and
   budget/Pareto utilities.
-- **detection**: probes live in `core/internals/probes` (`fit_probe`, `calibrate_bias`, `ProbeSet`, `RoutingRules`);
-  prefer these over ad hoc classifiers for gating and routing.
+- **detection**: probes live in `core/internals/probes` (`fit_probe`, `calibrate_bias`, `ProbeSet`); prefer these
+  over ad hoc classifiers, and consume their decisions through `Probe.as_gate()` for gated interventions or
+  `routed_decoding`'s `Router` (ordered `Route`s with `P(name)` predicates) for routing.
 
 Published methods are frequently presets over generics (`deal` presets `SearchDriver`; `thinking_intervention`
 presets `PhasedDriver`; `caa` composes an estimator with `AdditiveTransform`). Driver presets map their `Args` onto

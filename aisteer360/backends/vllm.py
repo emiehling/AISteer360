@@ -65,10 +65,11 @@ from aisteer360.utils.tokenization import ensure_pad_token
 logger = logging.getLogger(__name__)
 
 _PLUGIN_INTERVENTION_KINDS = InterventionKinds(
-    transforms=frozenset({"additive", "directional_ablation", "rotation", "head_additive"}),
+    transforms=frozenset({"additive", "projection", "rotation", "head_additive"}),
     modifiers=frozenset({"norm_preserving", "alignment_adaptive"}),
     scopes=frozenset({"all", "after_prompt", "last_k", "from_position"}),
-    gates=frozenset({"null", "cache_once", "probe_sum", "multi_key_threshold"}),
+    readouts=frozenset({"affine", "cosine", "projected_cosine"}),
+    rules=frozenset({"per_key_threshold", "sum_threshold"}),
     constraints={"head_additive": "tensor_parallel_size==1"},
 )
 
@@ -136,7 +137,8 @@ def _intersect_with_discovery(capabilities: BackendCapabilities, payload: dict) 
             transforms=intervention_kinds.transforms & frozenset(remote_interventions.get("transforms", ())),
             modifiers=intervention_kinds.modifiers & frozenset(remote_interventions.get("modifiers", ())),
             scopes=intervention_kinds.scopes & frozenset(remote_interventions.get("scopes", ())),
-            gates=intervention_kinds.gates & frozenset(remote_interventions.get("gates", ())),
+            readouts=intervention_kinds.readouts & frozenset(remote_interventions.get("readouts", ())),
+            rules=intervention_kinds.rules & frozenset(remote_interventions.get("rules", ())),
             constraints=dict(remote_interventions.get("constraints", {}) or intervention_kinds.constraints),
         )
     remote_processors = payload.get("processor_kinds") or {}
@@ -591,7 +593,8 @@ def _reconcile_discovery(spec: BackendSpec, static: BackendCapabilities, payload
             ("transforms", static_kinds.transforms),
             ("modifiers", static_kinds.modifiers),
             ("scopes", static_kinds.scopes),
-            ("gates", static_kinds.gates),
+            ("readouts", static_kinds.readouts),
+            ("rules", static_kinds.rules),
         ):
             remote = set(discovered.get(field_name, []))
             missing = advertised - remote

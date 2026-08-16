@@ -9,7 +9,7 @@ from aisteer360.algorithms.state_control._common.selectors import FractionalDept
 from aisteer360.algorithms.state_control._common.sources import ContrastiveFit, LayerFilteredFit, _Precomputed
 from aisteer360.algorithms.state_control._common.specs import CoveredLayers, Intervention, TokenScope
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import DirectionalAblationTransform, NormPreservingTransform
+from aisteer360.algorithms.state_control._common.transforms import NormPreservingTransform, ProjectionTransform
 from aisteer360.algorithms.state_control._common.transforms.base import unwrap_modifiers
 from aisteer360.algorithms.state_control.base import InterventionControl
 
@@ -65,7 +65,7 @@ class DirectionalAblation(InterventionControl):
             )
         source = LayerFilteredFit(inner, layer_range=self.layer_range)
 
-        transform = DirectionalAblationTransform(source, alpha=self.alpha)
+        transform = ProjectionTransform(source, alpha=self.alpha)
         if self.use_norm_preservation:
             transform = NormPreservingTransform(transform)
 

@@ -12,7 +12,7 @@ from aisteer360.algorithms.state_control._common.estimators import (
     MeanDifferenceEstimator,
 )
 from aisteer360.algorithms.state_control._common.fit_specs import Comparator, CompMode, VectorTrainSpec
-from aisteer360.algorithms.state_control._common.gates import CacheOnceGate, MultiKeyThresholdGate
+from aisteer360.algorithms.state_control._common.gating import Gate, PerKeyThreshold
 from aisteer360.algorithms.state_control._common.selectors import LateThirdSelector
 from aisteer360.algorithms.state_control._common.sources import ConditionPointSearch, _Precomputed
 from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
@@ -117,7 +117,8 @@ class _BehaviorBuild:
     Resolves the behavior artifact, squeezes each covered layer's direction, applies the
     explained-variance scaling when enabled, and builds the additive transform (optionally
     norm-preserving). Behavior layers without a fitted direction are skipped, so their hooks
-    pass through unchanged.
+    pass through unchanged. The factory declares its wire plan (`wire_plan`,
+    `wire_modifiers`), so kind identity is readable before binding.
     """
 
     def __init__(self, source, strength: float, use_explained_variance: bool, norm_preserving: bool):
@@ -133,6 +134,16 @@ class _BehaviorBuild:
     @property
     def artifact_class(self) -> str | None:
         return getattr(self._source, "artifact_class", None)
+
+    def wire_plan(self) -> str | None:
+        """`"additive"` for broadcast behavior directions; None when the source is positional."""
+        if getattr(self._source, "produces_positional", False):
+            return None
+        return "additive"
+
+    def wire_modifiers(self) -> tuple[str, ...]:
+        """The planned wrapper kinds: `norm_preserving` when OOI normalization is enabled."""
+        return ("norm_preserving",) if self._norm_preserving else ()
 
     def __call__(self, ctx) -> BaseTransform:
         behavior_vec = ctx.resolve(self._source)
@@ -166,24 +177,23 @@ class CAST(InterventionControl):
        transform to hidden states at the behavior layers.
 
     The control is declarative: `_configure` maps the validated args onto one `Intervention`
-    at the layer-input boundary whose gate and condition come from a `ConditionPointSearch`
-    source (fitting the condition vector and grid-searching the gate point at bind time), and
-    whose transform comes from the default additive build or the `behavior_transform` slot.
-    The runtime pieces it resolves to are the `_common` component families:
+    at the layer-input boundary whose gate comes from a `ConditionPointSearch` source (fitting
+    the condition vector and grid-searching the gate point at bind time), and whose transform
+    comes from the default additive build or the `behavior_transform` slot. The runtime pieces
+    it resolves to are the `_common` component families:
 
     - `ContrastiveDirectionEstimator` / `MeanDifferenceEstimator`: learn per-layer direction
       vectors from contrastive text pairs.
     - `ConditionPointSelector`: grid-searches the (layer, threshold, comparator) that best
       separates positive from negative calibration examples.
-    - `ProjectedCosineScorer`: the runtime condition scorer, applying pad-aware aggregation of
-      prompt hidden states ("mean" or "last"), scored per row via projected cosine similarity.
-    - `CacheOnceGate(MultiKeyThresholdGate)`: row-vectorized gating. Each prompt in a batch is
-      gated independently; beam-expanded rows of one prompt share that prompt's decision; the
-      decision freezes after the prefill pass (the runtime stops condition scoring once the gate
-      reports ready).
+    - `Gate(Evidence(..., ProjectedCosineReadout(...)), PerKeyThreshold(...))`: row-vectorized
+      gating. Evidence pooling is pad-aware ("mean" or "last") and each pooled state is scored
+      per row via projected cosine similarity. Each prompt in a batch is gated independently;
+      beam-expanded rows of one prompt share that prompt's decision; the decision freezes after
+      the prefill pass (the runtime stops condition scoring once the gate reports ready).
     - The behavior transform: `AdditiveTransform` (scaled direction addition, optionally wrapped
       in `NormPreservingTransform`) by default, or any `BaseTransform` supplied via
-      `behavior_transform` (e.g. `DirectionalAblationTransform` for conditional ablation).
+      `behavior_transform` (e.g. `ProjectionTransform` for conditional ablation).
 
     The intervention applies at the layer-input boundary. Behavior directions are estimated at
     the output of layer l (`hidden_states[l+1]`) and applied at the input of layer l (the
@@ -212,10 +222,6 @@ class CAST(InterventionControl):
 
     Args = CASTArgs
     supports_batching = True
-    hook_only_hint = (
-        "CAST's projected-cosine condition has no intervention-spec gate kind; "
-        "run this pipeline on the huggingface backend"
-    )
 
     def _configure(self):
         if self.behavior_transform is not None:
@@ -261,11 +267,11 @@ class CAST(InterventionControl):
         return list(self.interventions[0].layers) if self.interventions else []
 
     @property
-    def _threshold_gate(self) -> MultiKeyThresholdGate | None:
-        """The inner threshold gate, for diagnostics; None when unconditional or unbound."""
+    def _threshold_rule(self) -> PerKeyThreshold | None:
+        """The gate's threshold rule, for diagnostics; None when unconditional or unbound."""
         gate = self._gate
-        if isinstance(gate, CacheOnceGate) and isinstance(gate.inner, MultiKeyThresholdGate):
-            return gate.inner
+        if isinstance(gate, Gate) and isinstance(gate.rule, PerKeyThreshold):
+            return gate.rule
         return None
 
     @property
@@ -297,19 +303,19 @@ class CAST(InterventionControl):
         Assembled on demand from the gate's retained evidence; cleared when the next
         generation's hooks are built.
         """
-        inner = self._threshold_gate
+        rule = self._threshold_rule
         gate = self._gate
-        if inner is None or gate is None or not gate.is_ready():
+        if rule is None or gate is None or not gate.is_ready():
             return None
-        evidence = inner.evidence()
+        evidence = gate.evidence_values()
         if not evidence:
             return None
         open_rows = gate.open_rows()
         return CASTDecision(
             scores={lid: float(rows[0]) for lid, rows in evidence.items()},
             scores_per_row={lid: tuple(float(x) for x in rows) for lid, rows in evidence.items()},
-            threshold=inner.threshold,
-            comparator=inner.comparator,
+            threshold=rule.threshold,
+            comparator=rule.comparator,
             open_per_row=tuple(bool(x) for x in open_rows.tolist()),
         )
 

@@ -25,13 +25,10 @@ def _spec() -> InterventionSpec:
             },
             "scope": {"kind": "after_prompt"},
             "gate": {
-                "kind": "cache_once",
-                "inner": {
-                    "kind": "probe_sum",
-                    "condition_layers": (6,),
-                    "pooling": "mean",
-                    "artifact": _PROBE_ID,
-                },
+                "layers": (6,),
+                "pooling": "mean",
+                "readout": {"kind": "affine", "artifact": _PROBE_ID},
+                "rule": {"kind": "sum_threshold", "bias": -0.25},
             },
         },
     ))
@@ -66,7 +63,7 @@ class TestCanonicalAlignment:
         bare = InterventionSpec(ops=spec.ops)
         assert bare.salt() == spec.salt()
 
-    def test_artifact_ids_collects_transform_modifier_and_nested_gate(self):
+    def test_artifact_ids_collects_transform_modifier_and_gate_readout(self):
         assert _spec().artifact_ids() == tuple(sorted({_VECTOR_ID, _PROBE_ID, _MODIFIER_ID}))
 
     def test_inline_tensor_raises_type_error(self):
@@ -79,12 +76,13 @@ class TestCanonicalAlignment:
 
 class TestRequiredKinds:
 
-    def test_collects_kinds_across_ops_and_nested_gates(self):
+    def test_collects_kinds_across_ops_and_gates(self):
         required = _spec().required_kinds()
         assert required.transforms == frozenset({"additive"})
         assert required.modifiers == frozenset({"alignment_adaptive"})
         assert required.scopes == frozenset({"after_prompt"})
-        assert required.gates == frozenset({"cache_once", "probe_sum"})
+        assert required.readouts == frozenset({"affine"})
+        assert required.rules == frozenset({"sum_threshold"})
 
 
 class TestEntrySelection:
@@ -115,10 +113,11 @@ class TestEntrySelection:
         from aisteer360.algorithms.core.execution import BackendCapabilities, Capability, InterventionKinds
 
         kinds = {
-            "transforms": frozenset({"additive", "directional_ablation", "rotation", "head_additive"}),
+            "transforms": frozenset({"additive", "projection", "rotation", "head_additive"}),
             "modifiers": frozenset({"norm_preserving", "alignment_adaptive"}),
             "scopes": frozenset({"all", "after_prompt", "last_k", "from_position"}),
-            "gates": frozenset({"null", "cache_once", "probe_sum", "multi_key_threshold"}),
+            "readouts": frozenset({"affine", "cosine", "projected_cosine"}),
+            "rules": frozenset({"per_key_threshold", "sum_threshold"}),
         }
         kinds.update(kind_overrides)
         return BackendCapabilities(
@@ -183,7 +182,7 @@ class TestVerdictStrings:
             "positional directions have no intervention-spec form; run on the huggingface backend."
         )
 
-    def test_cast_names_the_missing_gate_kind(self):
+    def test_cast_is_generate_supported_on_plugin_backend(self):
         from aisteer360.algorithms.core.execution import BackendSpec
         from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
         from aisteer360.algorithms.state_control.cast.control import CAST
@@ -193,8 +192,7 @@ class TestVerdictStrings:
         report = pipeline.check(backend=BackendSpec(
             kind="vllm", model="m", options={"hook_plugin": True},
         ))
-        messages = [failure.message for failure in report.failures_for("generate")]
-        assert any("projected-cosine condition has no intervention-spec gate kind" in m for m in messages)
+        assert report.supported("generate")
 
     def test_exportable_caa_is_supported_on_plugin_backend(self):
         from aisteer360.algorithms.core.execution import BackendSpec
@@ -227,10 +225,11 @@ class TestDiscoveryIntersection:
 
         payload = {
             "intervention_kinds": {
-                "transforms": ["additive", "directional_ablation", "head_additive"],
+                "transforms": ["additive", "projection", "head_additive"],
                 "modifiers": ["norm_preserving", "alignment_adaptive"],
                 "scopes": ["all", "after_prompt", "last_k", "from_position"],
-                "gates": ["null", "cache_once", "probe_sum", "multi_key_threshold"],
+                "readouts": ["affine", "cosine"],
+                "rules": ["sum_threshold"],
                 "constraints": {"head_additive": "tensor_parallel_size==1"},
             },
             "processor_kinds": {"processors": []},
@@ -241,8 +240,35 @@ class TestDiscoveryIntersection:
             negotiated = capabilities_for_spec(spec)
             assert "rotation" not in negotiated.intervention_kinds.transforms
             assert "additive" in negotiated.intervention_kinds.transforms
+            assert negotiated.intervention_kinds.readouts == frozenset({"affine", "cosine"})
+            assert negotiated.intervention_kinds.rules == frozenset({"sum_threshold"})
             assert negotiated.processor_kinds is None
             assert negotiated.capture_kinds.locations == frozenset({"layer_output"})
             assert negotiated.atoms == static.atoms
+        finally:
+            vllm_backend._DISCOVERY_CACHE.pop(spec.spec_hash, None)
+
+    def test_gates_shaped_payload_yields_empty_readout_and_rule_sets(self):
+        """A discovery payload from a pre-redesign plugin (a `gates` list, no `readouts`/`rules`
+        keys) negotiates empty readout and rule sets, so gated interventions get an honest
+        unsupported verdict."""
+        from aisteer360.algorithms.core.execution import BackendSpec, capabilities_for_spec
+        from aisteer360.backends import vllm as vllm_backend
+
+        spec = BackendSpec(kind="vllm", model="old-plugin-test", options={"hook_plugin": True})
+        payload = {
+            "intervention_kinds": {
+                "transforms": ["additive"],
+                "modifiers": [],
+                "scopes": ["all"],
+                "gates": ["null", "cache_once", "probe_sum"],
+            },
+        }
+        vllm_backend._DISCOVERY_CACHE[spec.spec_hash] = payload
+        try:
+            negotiated = capabilities_for_spec(spec)
+            assert negotiated.intervention_kinds.readouts == frozenset()
+            assert negotiated.intervention_kinds.rules == frozenset()
+            assert "additive" in negotiated.intervention_kinds.transforms
         finally:
             vllm_backend._DISCOVERY_CACHE.pop(spec.spec_hash, None)

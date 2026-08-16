@@ -367,14 +367,15 @@ class TestEncoderDecoderSpecRejection:
 
 def _discovery_payload(**engine_overrides):
     return {
-        "plugin_version": "0.3.0",
+        "plugin_version": "0.4.0",
         "vllm_version": "0.10.0",
         "active_worker": "unified",
         "intervention_kinds": {
-            "transforms": ["additive", "directional_ablation", "rotation", "head_additive"],
+            "transforms": ["additive", "projection", "rotation", "head_additive"],
             "modifiers": ["norm_preserving", "alignment_adaptive"],
             "scopes": ["all", "after_prompt", "last_k", "from_position"],
-            "gates": ["null", "cache_once", "probe_sum", "multi_key_threshold"],
+            "readouts": ["affine", "cosine", "projected_cosine"],
+            "rules": ["per_key_threshold", "sum_threshold"],
             "constraints": {"head_additive": "tensor_parallel_size==1"},
         },
         "processor_kinds": {"processors": []},

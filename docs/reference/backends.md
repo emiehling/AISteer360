@@ -15,11 +15,11 @@ steer plan (see the ladder below). The generate-phase matrix by control:
 | `sft`, `dpo`, `ppo`, `grpo`, `apo`, `mergekit` | yes | serve artifact | staged steer; `CheckpointArtifact` / `LoRAArtifact` |
 | `caa` | yes | yes | `additive` spec; norm-preserving configurations add the `norm_preserving` modifier |
 | `act_add` | yes | broadcast (`T = 1`) only | `additive` carries one `[H]` vector per op; positional (`T > 1`) configurations are hook-only and the verdict says so |
-| `directional_ablation` | yes | `K = 1`, `alpha = 1` | `directional_ablation` spec; graded and subspace ablation are hook-only |
+| `directional_ablation` | yes | `K = 1`, `alpha = 1` | `projection` spec; graded and subspace ablation are hook-only |
 | `angular_steering` | yes | `intervention_point="layer_output"` | `rotation`; `adaptive=True` adds the `alignment_adaptive` modifier; the default norm-input placement is hook-only |
-| `activation_adapter` | yes | kind-conditional | verdict follows the configured transform, modifier chain, and gate against the negotiated kinds |
+| `activation_adapter` | yes | kind-conditional | verdict follows the configured transform, modifier chain, and gate readout/rule against the negotiated kinds; a `CallableReadout` gate is hook-only |
 | `iti` | yes | `tensor_parallel_size == 1` | `head_additive` under its constraint; fitting from data runs on the staged model (no head-level capture kind) |
-| `cast` | yes | no | the projected-cosine condition has no intervention-spec gate kind |
+| `cast` | yes | yes | additive behavior op gated by `projected_cosine` evidence under a `per_key_threshold` rule |
 | `pasta` | yes (eager/sdpa) | no | attention-map writes |
 | `stopping_rules`, `budget_forcing` | yes | yes | sampling params / `min_tokens` + phased splicing |
 | `best_of_n`, `search_decoding`, `phased_decoding`, `thinking_intervention` | yes | yes | drivers over `session.generate` |

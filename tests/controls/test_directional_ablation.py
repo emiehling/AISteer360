@@ -11,7 +11,7 @@ import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import DirectionalAblationTransform
+from aisteer360.algorithms.state_control._common.transforms import ProjectionTransform
 from aisteer360.algorithms.state_control.directional_ablation.args import DirectionalAblationArgs
 from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
 from tests.utils.sweep import build_param_grid
@@ -35,13 +35,13 @@ def _sv(hidden_size, num_layers, k=1, seed=0):
     return SteeringVector(model_type="test", directions=dirs)
 
 
-# DirectionalAblationTransform unit tests
+# ProjectionTransform unit tests
 
-class TestDirectionalAblationTransform:
+class TestProjectionTransform:
     def test_single_direction_removed(self):
         """At alpha=1, the feature component is annihilated (out . d_hat == 0)."""
         sv = _sv(16, 1, k=1, seed=1)
-        t = DirectionalAblationTransform(sv.directions, alpha=1.0)
+        t = ProjectionTransform(sv.directions, alpha=1.0)
         hidden = torch.randn(2, 5, 16) * 3.0
         out = t.apply(hidden, layer_id=0, token_mask=torch.ones(2, 5, dtype=torch.bool))
         dhat = sv.directions[0][0] / sv.directions[0][0].norm()
@@ -50,7 +50,7 @@ class TestDirectionalAblationTransform:
     def test_idempotent(self):
         """Applying ablation twice equals applying it once (P^2 = P) at alpha=1."""
         sv = _sv(12, 1, k=1, seed=2)
-        t = DirectionalAblationTransform(sv.directions, alpha=1.0)
+        t = ProjectionTransform(sv.directions, alpha=1.0)
         hidden = torch.randn(1, 4, 12) * 2.0
         m = torch.ones(1, 4, dtype=torch.bool)
         once = t.apply(hidden, layer_id=0, token_mask=m)
@@ -64,12 +64,12 @@ class TestDirectionalAblationTransform:
         m = torch.ones(1, 4, dtype=torch.bool)
         dhat = sv.directions[0][0] / sv.directions[0][0].norm()
 
-        identity = DirectionalAblationTransform(sv.directions, alpha=0.0).apply(hidden, layer_id=0, token_mask=m)
+        identity = ProjectionTransform(sv.directions, alpha=0.0).apply(hidden, layer_id=0, token_mask=m)
         torch.testing.assert_close(identity, hidden, atol=1e-6, rtol=1e-6)
 
         prev = None
         for alpha in (0.0, 0.25, 0.5, 0.75, 1.0):
-            out = DirectionalAblationTransform(sv.directions, alpha=alpha).apply(hidden, layer_id=0, token_mask=m)
+            out = ProjectionTransform(sv.directions, alpha=alpha).apply(hidden, layer_id=0, token_mask=m)
             comp = (out @ dhat).abs().max().item()
             if prev is not None:
                 assert comp <= prev + 1e-5, f"|out.d_hat| increased with alpha at alpha={alpha}"
@@ -78,7 +78,7 @@ class TestDirectionalAblationTransform:
     def test_subspace_removes_all_and_shrinks_norm(self):
         """K=3 subspace ablation removes every basis row and never increases the norm."""
         sv = _sv(16, 1, k=3, seed=4)
-        t = DirectionalAblationTransform(sv.directions, alpha=1.0)
+        t = ProjectionTransform(sv.directions, alpha=1.0)
         hidden = torch.randn(2, 6, 16) * 2.0
         out = t.apply(hidden, layer_id=0, token_mask=torch.ones(2, 6, dtype=torch.bool))
         basis = t._basis(0, hidden.device, hidden.dtype)
@@ -89,8 +89,8 @@ class TestDirectionalAblationTransform:
     def test_subspace_order_independent(self):
         """Ablation is order-independent once the basis is orthonormalized (K=3, reversed rows)."""
         raw = torch.randn(3, 16, generator=torch.Generator().manual_seed(5))
-        t = DirectionalAblationTransform({0: raw}, alpha=1.0)
-        t_rev = DirectionalAblationTransform({0: raw.flip(0)}, alpha=1.0)
+        t = ProjectionTransform({0: raw}, alpha=1.0)
+        t_rev = ProjectionTransform({0: raw.flip(0)}, alpha=1.0)
         hidden = torch.randn(2, 4, 16) * 2.0
         m = torch.ones(2, 4, dtype=torch.bool)
         out = t.apply(hidden, layer_id=0, token_mask=m)
@@ -100,7 +100,7 @@ class TestDirectionalAblationTransform:
     def test_norm_strictly_shrinks_with_component(self):
         """Norm strictly decreases when the hidden state has a non-zero component along d."""
         d = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
-        t = DirectionalAblationTransform({0: d}, alpha=1.0)
+        t = ProjectionTransform({0: d}, alpha=1.0)
         hidden = torch.tensor([[[3.0, 1.0, 0.0, 0.0]]])  # component along d is 3.0
         out = t.apply(hidden, layer_id=0, token_mask=torch.ones(1, 1, dtype=torch.bool))
         assert out.norm(dim=-1).item() < hidden.norm(dim=-1).item()
@@ -108,7 +108,7 @@ class TestDirectionalAblationTransform:
     def test_masked_positions_unchanged_and_masked_in_changes(self):
         """Masked-out positions are byte-identical; a masked-in position changes."""
         sv = _sv(16, 1, k=1, seed=6)
-        t = DirectionalAblationTransform(sv.directions, alpha=1.0)
+        t = ProjectionTransform(sv.directions, alpha=1.0)
         hidden = torch.randn(1, 4, 16) * 2.0
         mask = torch.tensor([[False, True, False, False]])
         out = t.apply(hidden, layer_id=0, token_mask=mask)
@@ -120,7 +120,7 @@ class TestDirectionalAblationTransform:
     def test_missing_layer_returns_unchanged(self):
         """A layer_id absent from the directions returns the input untouched."""
         sv = _sv(16, 1, k=1, seed=7)
-        t = DirectionalAblationTransform(sv.directions, alpha=1.0)
+        t = ProjectionTransform(sv.directions, alpha=1.0)
         hidden = torch.randn(2, 3, 16)
         out = t.apply(hidden, layer_id=99, token_mask=torch.ones(2, 3, dtype=torch.bool))
         assert torch.equal(out, hidden)
@@ -128,7 +128,7 @@ class TestDirectionalAblationTransform:
     def test_1d_direction_treated_as_k1(self):
         """A plain [H] direction (CAA-style) is treated as K=1 and ablated correctly."""
         d = torch.randn(16, generator=torch.Generator().manual_seed(8))
-        t = DirectionalAblationTransform({0: d}, alpha=1.0)
+        t = ProjectionTransform({0: d}, alpha=1.0)
         hidden = torch.randn(1, 3, 16) * 2.0
         out = t.apply(hidden, layer_id=0, token_mask=torch.ones(1, 3, dtype=torch.bool))
         dhat = d / d.norm()

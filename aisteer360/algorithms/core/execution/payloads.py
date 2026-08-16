@@ -331,7 +331,7 @@ class InterventionSpec:
 
     def artifact_ids(self) -> tuple[str, ...]:
         """Sorted unique artifact ids referenced anywhere in the ops (transform payloads,
-        modifiers, and gates, including nested inner gates)."""
+        modifiers, and gate readouts)."""
         found: set[str] = set()
         _collect_artifact_ids(self.to_wire(), found)
         return tuple(sorted(found))
@@ -339,14 +339,14 @@ class InterventionSpec:
     def required_kinds(self) -> InterventionKinds:
         """The kind names this spec requires a backend to serve, as an `InterventionKinds`.
 
-        Collects transform, modifier, scope, and gate kind names (including nested inner
-        gates) from the ops; a backend whose negotiated kinds contain them can execute the
-        spec.
+        Collects transform, modifier, scope, and gate readout/rule kind names from the ops; a
+        backend whose negotiated kinds contain them can execute the spec.
         """
         transforms: set[str] = set()
         modifiers: set[str] = set()
         scopes: set[str] = set()
-        gates: set[str] = set()
+        readouts: set[str] = set()
+        rules: set[str] = set()
         for op in self.to_wire()["ops"]:
             transform = op.get("transform", {})
             if "kind" in transform:
@@ -358,15 +358,19 @@ class InterventionSpec:
             if "kind" in scope:
                 scopes.add(scope["kind"])
             gate = op.get("gate")
-            while gate is not None:
-                if "kind" in gate:
-                    gates.add(gate["kind"])
-                gate = gate.get("inner")
+            if gate is not None:
+                readout = gate.get("readout", {})
+                if "kind" in readout:
+                    readouts.add(readout["kind"])
+                rule = gate.get("rule", {})
+                if "kind" in rule:
+                    rules.add(rule["kind"])
         return InterventionKinds(
             transforms=frozenset(transforms),
             modifiers=frozenset(modifiers),
             scopes=frozenset(scopes),
-            gates=frozenset(gates),
+            readouts=frozenset(readouts),
+            rules=frozenset(rules),
         )
 
     def canonical(self) -> str:

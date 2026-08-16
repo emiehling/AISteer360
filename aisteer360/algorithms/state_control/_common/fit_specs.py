@@ -2,10 +2,10 @@
 
 Holds the fit-time vocabulary shared by state control components: `VectorTrainSpec` describes
 how direction vectors are extracted, `ConditionSearchSpec` describes how condition points are
-searched, and the comparator vocabulary (`Comparator`, `ComparatorInput`, `CompMode`,
-`normalize_comparator`) carries the canonical gate-comparison semantics. These specs describe
-how artifacts are produced; the intervention IR in `specs.py` describes how bound artifacts
-are applied.
+searched, and the comparator vocabulary (`Comparator`, `CompMode`) carries the gate-comparison
+semantics (`"ge"` opens when score >= threshold, `"le"` when score <= threshold). These specs
+describe how artifacts are produced; the intervention IR in `specs.py` describes how bound
+artifacts are applied.
 """
 from __future__ import annotations
 
@@ -15,42 +15,8 @@ from typing import Literal, Sequence
 from aisteer360.algorithms.core.internals.capture import HiddenStateLocation
 from aisteer360.utils.rendering import PromptFormat
 
-Comparator = Literal["larger", "smaller"]
-ComparatorInput = Literal["larger", "smaller", "score_above", "score_below"]
+Comparator = Literal["ge", "le"]
 CompMode = Literal["mean", "last"]
-
-_COMPARATOR_ALIASES: dict[str, Comparator] = {
-    "larger": "larger", "score_above": "larger",
-    "smaller": "smaller", "score_below": "smaller",
-}
-
-
-def normalize_comparator(value: str) -> Comparator:
-    """Map user-facing comparator names to the canonical internal values.
-
-    Canonical semantics in this toolkit: "larger" opens the gate when score >= threshold, and
-    "smaller" opens it when score <= threshold.
-
-    This convention is inverted relative to the CAST reference implementation
-    (github.com/IBM/activation-steering), where "larger" means the threshold is larger and fires
-    when similarity < threshold. Settings copied from the paper or reference repo must flip the
-    comparator. Prefer the unambiguous aliases "score_above" / "score_below".
-
-    Args:
-        value: One of "larger", "smaller", "score_above", "score_below".
-
-    Returns:
-        The canonical comparator ("larger" or "smaller").
-
-    Raises:
-        ValueError: If `value` is not a recognized comparator name.
-    """
-    try:
-        return _COMPARATOR_ALIASES[value]
-    except KeyError:
-        raise ValueError(
-            f"Unknown comparator {value!r}; expected one of {sorted(_COMPARATOR_ALIASES)}."
-        ) from None
 
 
 @dataclass(frozen=True)

@@ -331,7 +331,7 @@ class TestCaptureOnEngine:
             return ActivationAdapter(
                 transform=AdditiveTransform(vector, strength=1.0),
                 layer_ids=[intv_layer], hook_point="layer_input", token_scope="all",
-                **probe.as_condition(allow_model_mismatch=True),
+                gate=probe.as_gate(allow_model_mismatch=True),
             )
 
         def run(backend_spec, backend=None):
@@ -358,8 +358,8 @@ class TestCaptureOnEngine:
 
     def test_routed_decoding_end_to_end_on_engine(self, plugin_backend):
         from aisteer360.algorithms.core.internals.data import ContrastivePairs
-        from aisteer360.algorithms.core.internals.probes import P, ProbeFitSpec, ProbeSetFit, RoutingRules, Rule
-        from aisteer360.algorithms.output_control.routed_decoding import RoutedDecoding, respond
+        from aisteer360.algorithms.core.internals.probes import ProbeFitSpec, ProbeSetFit
+        from aisteer360.algorithms.output_control.routed_decoding import P, Route, RoutedDecoding, Router, respond
 
         pairs = ContrastivePairs(
             positives=["the committee approved it"],
@@ -371,7 +371,7 @@ class TestCaptureOnEngine:
                 spec=ProbeFitSpec(method="mean_diff", pooling="mean", location="layer_input",
                                   prompt_format="raw", candidate_layers=[1]),
             ),
-            rules=RoutingRules(rules=[Rule("topic", when=P("topic"), action=respond("ROUTED"))]),
+            rules=Router(routes=[Route("topic", when=P("topic"), action=respond("ROUTED"))]),
         )
         pipeline = SteeringPipeline(
             controls=[control], backend=plugin_backend.spec,

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class Readout:
+class ProbeReadings:
     """One `ProbeSet.read()` call's result.
 
     Attributes:
@@ -145,8 +145,8 @@ class ProbeSet:
         probes: The probes, keyed by name.
         names: The probe names, in mapping order.
         layer_ids: Sorted union of the probes' layers.
-        latest: The most recent `Readout`, overwritten by each `read()` call; None before the
-            first. Diagnostics only.
+        latest: The most recent `ProbeReadings`, overwritten by each `read()` call; None
+            before the first. Diagnostics only.
 
     Raises:
         ValueError: If `probes` is empty, the probes disagree on `model_type` or `location`, or
@@ -184,7 +184,7 @@ class ProbeSet:
 
         self.names: tuple[str, ...] = tuple(self.probes)
         self.layer_ids: list[int] = sorted({lid for probe in self.probes.values() for lid in probe.layer_ids})
-        self.latest: Readout | None = None
+        self.latest: ProbeReadings | None = None
 
     @property
     def model_type(self) -> str:
@@ -253,7 +253,7 @@ class ProbeSet:
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         session=None,
-    ) -> Readout:
+    ) -> ProbeReadings:
         """Score a batch of prompts against every probe in one read-only forward.
 
         Registers one forward pre-hook per layer in the union (the `layer_input` boundary, the
@@ -274,7 +274,7 @@ class ProbeSet:
                 None, every position is treated as real.
 
         Returns:
-            A `Readout` with per-probe signed scores and decisions, also stashed on `latest`.
+            A `ProbeReadings` with per-probe signed scores and decisions, also stashed on `latest`.
 
         Raises:
             ValueError: If the model's `model_type` does not match the probes', the set's
@@ -353,11 +353,11 @@ class ProbeSet:
             scores[name] = probe_scores
             decisions[name] = probe_scores >= 0
 
-        readout = Readout(scores=scores, decisions=decisions)
-        self.latest = readout
-        return readout
+        readings = ProbeReadings(scores=scores, decisions=decisions)
+        self.latest = readings
+        return readings
 
-    def _read_via_session(self, session, ids: torch.Tensor, mask: torch.Tensor) -> Readout:
+    def _read_via_session(self, session, ids: torch.Tensor, mask: torch.Tensor) -> ProbeReadings:
         """Score through a capture-capable session's `capture` at the layer-input boundary."""
         from aisteer360.algorithms.core.execution.payloads import PreparedPrompt
 
@@ -381,9 +381,9 @@ class ProbeSet:
             probe_scores = probe.decision_function(features)
             scores[name] = probe_scores
             decisions[name] = probe_scores >= 0
-        readout = Readout(scores=scores, decisions=decisions)
-        self.latest = readout
-        return readout
+        readings = ProbeReadings(scores=scores, decisions=decisions)
+        self.latest = readings
+        return readings
 
     def summary(self) -> dict[str, dict]:
         """Per-probe diagnostic table.

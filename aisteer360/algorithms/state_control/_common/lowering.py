@@ -8,12 +8,12 @@ compiles the same IR into torch hooks for one generation.
 from __future__ import annotations
 
 import hashlib
-from types import EllipsisType
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import torch
 
-from .specs import Boundary, Condition, Intervention, Site
+from .gating import Gate
+from .specs import Boundary, Intervention, Site
 
 if TYPE_CHECKING:
     from aisteer360.algorithms.core.execution.payloads import InterventionSpec
@@ -76,94 +76,22 @@ def _map_condition_layers(
     return None
 
 
-def _merge_gate_condition(
-    gate,
-    condition: Condition | None,
-    boundary: Boundary,
-    num_layers: int,
-    register,
-) -> "dict[str, Any] | None | EllipsisType":
-    """The wire gate for a gate/condition pair, folding the toolkit's gate/scorer/condition
-    split into the wire `GateSpec`.
+def _lower_gate(gate: Gate | None, boundary: Boundary, num_layers: int, register) -> dict[str, Any] | None:
+    """The wire gate for one intervention, or None (raised to the caller as hook-only).
 
-    The wire gate's params are the gate's exported params plus `condition_layers` plus the
-    scorer form's params; the wire gate's artifact is the gate's exported tensors if any, else
-    the scorer form's tensors. Both sides exporting tensors, or exporting conflicting param
-    values, is a compile error. A probe gate's evidence layers follow the probe's own layer
-    order (the exported weight rows align with it) at the probe's fitted boundary; a
-    condition, when present, must cover the same layer set. Without a condition (the follower
-    half of a shared-gate composition), the probe alone supplies the evidence layers. Returns
-    the Ellipsis sentinel for an ungated op (always-open), None when the configuration has no
-    wire form.
+    A None gate lowers to an ungated op (the caller omits the gate field). The gate's evidence
+    layers are mapped to wire indices at the readout's declared boundary (falling back to the
+    intervention's boundary when the readout declares none), preserving the readout tensor's
+    row alignment since the mapping is order-preserving.
     """
-    from .gates.base import AlwaysOpenGate, BaseGate
-    from .gates.cache_once import CacheOnceGate
-    from .gates.probe_sum import ProbeSumGate
-
-    if gate is None or not isinstance(gate, BaseGate):
+    wire = gate.export(register)
+    if wire is None:
         return None
-    if isinstance(gate, AlwaysOpenGate):
-        return ...
-    if isinstance(gate, CacheOnceGate):
-        inner = _merge_gate_condition(gate.inner, condition, boundary, num_layers, register)
-        if inner is None or inner is ...:
-            return None
-        return {"kind": "cache_once", "inner": inner}
-
-    form = gate.export()
-    if form is None:
-        return None
-    if form.kind == "null":
-        return ...
-
-    params = dict(form.params)
-    tensors = dict(form.tensors)
-
-    if isinstance(gate, ProbeSumGate):
-        if condition is not None and set(condition.layer_ids) != set(gate.probe.layer_ids):
-            raise ValueError(
-                "Condition layers must cover the probe's layers exactly; the wire gate's "
-                f"weight rows align with the probe. Got {tuple(condition.layer_ids)} vs "
-                f"probe layers {tuple(gate.probe.layer_ids)}."
-            )
-        # the probe owns the evidence layers and their order (weight rows align with them),
-        # read at the probe's fitted boundary
-        condition_layers = [int(layer_id) for layer_id in gate.probe.layer_ids]
-        condition_boundary = gate.probe.location
-    elif condition is not None:
-        condition_layers = list(condition.layer_ids)
-        condition_boundary = boundary
-    else:
-        return None  # a conditional wire gate reads evidence at declared condition layers
-
-    mapped = _map_condition_layers(condition_layers, condition_boundary, num_layers)
+    condition_boundary = gate.evidence.readout.location or boundary
+    mapped = _map_condition_layers(wire["layers"], condition_boundary, num_layers)
     if mapped is None:
         return None
-    params["condition_layers"] = mapped
-
-    if condition is not None:
-        scorer_export = getattr(condition.scorer, "export", None)
-        scorer_form = scorer_export() if callable(scorer_export) else None
-        if scorer_form is None:
-            return None
-        for name, value in scorer_form.params.items():
-            if name in params and params[name] != value:
-                raise ValueError(
-                    f"Gate and scorer disagree on wire param {name!r}: "
-                    f"{params[name]!r} vs {value!r}."
-                )
-            params[name] = value
-        if scorer_form.tensors:
-            if tensors:
-                raise ValueError(
-                    "Both the gate and the condition scorer export tensors; exactly one may "
-                    "own the wire artifact."
-                )
-            tensors = dict(scorer_form.tensors)
-
-    wire: dict[str, Any] = {"kind": form.kind, **params}
-    if tensors:
-        wire["artifact"] = register(tensors)
+    wire["layers"] = mapped
     return wire
 
 
@@ -171,41 +99,34 @@ def lower_interventions(
     interventions: Sequence[Intervention],
     *,
     num_layers: int,
-    allowed_gates: frozenset[str] | None = None,
 ) -> "InterventionSpec | None":
     """Lower bound interventions to an `InterventionSpec`, or None when any element has no
     wire form.
 
-    Folds each component's `export`, `unwrap_modifiers`, the scope export, and the
-    gate/condition merge. One wire op is emitted per (intervention, layer), in intervention
-    order then ascending layer order; artifact ids are content hashes, so layers sharing a
-    tensor share one artifact. Bare probe gates are wrapped in `cache_once`, the wire form of
-    the prompt-scored-once convention. The assembled spec is pre-flight validated with the
-    plugin's `parse_intervention_spec`, so a malformed spec fails here with the same `E_*`
-    code and JSON path the server would return.
+    Folds each component's `export`, `unwrap_modifiers`, the scope export, and the gate's
+    `export`. One wire op is emitted per (intervention, layer), in intervention order then
+    ascending layer order; artifact ids are content hashes, so layers sharing a tensor share
+    one artifact. The assembled spec is pre-flight validated with the plugin's
+    `parse_intervention_spec`, so a malformed spec fails here with the same `E_*` code and
+    JSON path the server would return.
 
     Args:
         interventions: Bound interventions, in application order.
         num_layers: Decoder layer count from the model layout.
-        allowed_gates: Gate kinds negotiated with the serving backend; defaults to the full
-            wire gate table.
 
     Returns:
         The validated spec with tensor payloads attached, or None.
 
     Raises:
         ValueError: If the assembled spec fails pre-flight validation (a toolkit-side
-            serialization bug; the message carries the `E_*` code and JSON path), or the
-            gate/condition merge is ambiguous.
+            serialization bug; the message carries the `E_*` code and JSON path).
         ModuleNotFoundError: If `vllm_hook_plugins` is not installed.
     """
     from aisteer360.algorithms.core.execution.payloads import InterventionSpec
     from aisteer360.utils.optional import require
 
-    from .gates.probe_sum import ProbeSumGate
     from .transforms.base import unwrap_modifiers
 
-    kinds = require("vllm_hook_plugins.core.kinds")
     schema = require("vllm_hook_plugins.core.schema")
 
     artifacts: dict[str, dict[str, torch.Tensor]] = {}
@@ -226,17 +147,13 @@ def lower_interventions(
         scope: dict[str, Any] = {"kind": scope_wire.kind, **scope_wire.params}
 
         gate = intervention.gate
-        merged = _merge_gate_condition(
-            gate, intervention.condition, intervention.boundary, num_layers, register,
-        )
-        if merged is None:
-            return None
-        if merged is ...:
-            gate_wire = None
-        elif isinstance(gate, ProbeSumGate):
-            gate_wire = {"kind": "cache_once", "inner": merged}
-        else:
-            gate_wire = merged
+        if gate is not None and not isinstance(gate, Gate):
+            raise ValueError("lower_interventions requires a resolved gate; call bind() first.")
+        gate_wire: dict[str, Any] | None = None
+        if gate is not None:
+            gate_wire = _lower_gate(gate, intervention.boundary, num_layers, register)
+            if gate_wire is None:
+                return None
 
         core, wrappers = unwrap_modifiers(intervention.transform)
         for layer_id in sorted(intervention.layers):
@@ -265,16 +182,12 @@ def lower_interventions(
                 "layers": [wire_layer],
                 "transform": transform_wire,
                 "scope": dict(scope),
-                "gate": gate_wire,
+                "gate": dict(gate_wire) if gate_wire is not None else None,
             })
 
     if not ops:
         return None
 
     spec = InterventionSpec(ops=tuple(ops), artifacts=artifacts)
-    schema.parse_intervention_spec(
-        spec.to_wire(),
-        num_layers=num_layers,
-        allowed_gates=allowed_gates if allowed_gates is not None else kinds.GATE_KINDS,
-    )
+    schema.parse_intervention_spec(spec.to_wire(), num_layers=num_layers)
     return spec

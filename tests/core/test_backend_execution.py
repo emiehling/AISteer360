@@ -652,9 +652,21 @@ class TestSerialSeedStateHooks:
         assert all(mask.size(0) == 1 for mask in transform.masks)
 
     def test_clone_for_call_isolates_gate_state(self, model, tokenizer):
-        control = ActivationAdapter(transform=RecordingTransform(), layer_ids=[1])
+        from aisteer360.algorithms.state_control._common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
+
+        gate = Gate(
+            Evidence((0,), CallableReadout(lambda pooled, layer_id: pooled.mean(dim=-1))),
+            PerKeyThreshold(threshold=0.0, comparator="ge"),
+        )
+        control = ActivationAdapter(transform=RecordingTransform(), layer_ids=[1], gate=gate)
         control.steer(model, tokenizer)
         clone = control.clone_for_call()
         assert clone._gate is not control._gate  # per-row gate state never shared across clones
         assert type(clone._gate) is type(control._gate)
         assert clone.interventions[0].transform is control.interventions[0].transform  # artifacts shared
+
+    def test_clone_for_call_keeps_ungated_interventions_ungated(self, model, tokenizer):
+        control = ActivationAdapter(transform=RecordingTransform(), layer_ids=[1])
+        control.steer(model, tokenizer)
+        clone = control.clone_for_call()
+        assert control._gate is None and clone._gate is None

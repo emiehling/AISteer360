@@ -11,7 +11,6 @@ import torch
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.state_control._common.fit_specs import ConditionSearchSpec, VectorTrainSpec
-from aisteer360.algorithms.state_control._common.gates import MultiKeyThresholdGate
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.cast.args import CASTArgs
 from aisteer360.algorithms.state_control.cast.control import CAST
@@ -47,7 +46,7 @@ class _RecordingTransform:
         return self._inner.apply(hidden_states, layer_id=layer_id, token_mask=token_mask, **kwargs)
 
 
-def _build_cast(condition_threshold, comparator="larger", comparison_mode="mean"):
+def _build_cast(condition_threshold, comparator="ge", comparison_mode="mean"):
     behavior_vec = _steering_vector(seed=100, layers=[0, 1])
     condition_vec = _steering_vector(seed=200, layers=[1])
     return CAST(
@@ -153,7 +152,7 @@ class TestPerRowGating:
         return recorder.masks[-1]
 
     def test_gate_mask_matches_open_rows(self):
-        control = _build_cast(condition_threshold=0.0, comparator="larger")
+        control = _build_cast(condition_threshold=0.0, comparator="ge")
         input_ids = torch.tensor([[3, 4, 5, 6], [7, 8, 9, 10]])
         control, recorder = self._generate_capture(control, input_ids)
 
@@ -177,13 +176,13 @@ class TestPerRowGating:
 
     def test_rows_gated_independently(self):
         input_ids = torch.tensor([[3, 4, 5, 6], [11, 12, 13, 14]])
-        probe = _build_cast(condition_threshold=-1.0, comparator="larger")
+        probe = _build_cast(condition_threshold=-1.0, comparator="ge")
         lo, hi = self._separating_threshold(probe, input_ids)
         if hi - lo < 1e-5:
             pytest.skip("tiny-model condition scores not separable for this seed")
         sep = (lo + hi) / 2
 
-        control = _build_cast(condition_threshold=sep, comparator="larger")
+        control = _build_cast(condition_threshold=sep, comparator="ge")
         control, recorder = self._generate_capture(control, input_ids)
         decision = control.latest_decision
 
@@ -195,13 +194,13 @@ class TestPerRowGating:
     def test_row_zero_closed_row_one_open(self):
         # regression guard: scoring only row 0 (the old behavior) would gate the whole batch on row 0
         input_ids = torch.tensor([[3, 4, 5, 6], [11, 12, 13, 14]])
-        probe = _build_cast(condition_threshold=-1.0, comparator="larger")
+        probe = _build_cast(condition_threshold=-1.0, comparator="ge")
         lo, hi = self._separating_threshold(probe, input_ids)
         if hi - lo < 1e-5:
             pytest.skip("tiny-model condition scores not separable for this seed")
         sep = (lo + hi) / 2
 
-        control = _build_cast(condition_threshold=sep, comparator="larger")
+        control = _build_cast(condition_threshold=sep, comparator="ge")
         control, recorder = self._generate_capture(control, input_ids)
         row_scores = control.latest_decision.scores_per_row[next(iter(control._cond_config.layer_ids))]
 
@@ -284,52 +283,29 @@ class TestConditionMaskThreading:
         assert prompt_mask.tolist() == [[True, True, True, False, False]]
 
 
-class TestComparatorAliases:
-    """WS4: score_above/score_below aliases and CASTArgs normalization."""
+class TestComparatorVocabulary:
+    """Comparators are `ge`/`le`; the retired aliases and names are rejected."""
 
-    def test_score_above_equals_larger(self):
-        alias = MultiKeyThresholdGate(threshold=0.5, comparator="score_above", expected_keys={0})
-        canonical = MultiKeyThresholdGate(threshold=0.5, comparator="larger", expected_keys={0})
-        assert alias.comparator == canonical.comparator == "larger"
-        for gate in (alias, canonical):
-            gate.update(0.7, key=0)
-            assert gate.is_open() is True  # opens at score >= thr
-            gate.reset()
-            gate.update(0.3, key=0)
-            assert gate.is_open() is False
+    @pytest.mark.parametrize("stale", ["larger", "smaller", "score_above", "score_below", "bogus"])
+    def test_castargs_rejects_non_canonical_comparators(self, stale):
+        with pytest.raises(ValueError, match="'ge' or 'le'"):
+            CASTArgs(
+                behavior_vector=_steering_vector(1, [0]),
+                condition_vector=_steering_vector(2, [1]),
+                condition_layer_ids=[1],
+                condition_vector_threshold=0.1,
+                condition_comparator_threshold_is=stale,
+                search=ConditionSearchSpec(auto_find=False),
+            )
 
-    def test_score_below_equals_smaller(self):
-        alias = MultiKeyThresholdGate(threshold=0.5, comparator="score_below", expected_keys={0})
-        assert alias.comparator == "smaller"
-        alias.update(0.3, key=0)
-        assert alias.is_open() is True  # opens at score <= thr
-        alias.reset()
-        alias.update(0.7, key=0)
-        assert alias.is_open() is False
-
-    def test_unknown_comparator_raises(self):
-        with pytest.raises(ValueError, match="Unknown comparator"):
-            MultiKeyThresholdGate(threshold=0.5, comparator="bogus", expected_keys={0})
-
-    def test_castargs_normalizes_score_below(self):
-        args = CASTArgs(
-            behavior_vector=_steering_vector(1, [0]),
-            condition_vector=_steering_vector(2, [1]),
-            condition_layer_ids=[1],
-            condition_vector_threshold=0.1,
-            condition_comparator_threshold_is="score_below",
-            search=ConditionSearchSpec(auto_find=False),
-        )
-        assert args.condition_comparator_threshold_is == "smaller"
-
-    def test_castargs_score_below_round_trips_to_below_threshold_gate(self):
-        # a CAST configured with score_below fires when the runtime score is below threshold
-        control = _build_cast(condition_threshold=1e9, comparator="score_below")
+    def test_le_round_trips_to_below_threshold_gate(self):
+        # a CAST configured with "le" fires when the runtime score is at or below threshold
+        control = _build_cast(condition_threshold=1e9, comparator="le")
         pipeline, _, _ = _steer_pipeline(control)
         pipeline.generate(input_ids=torch.tensor([[3, 4, 5]]), max_new_tokens=1)
         decision = control.latest_decision
         assert decision is not None
-        assert decision.comparator == "smaller"
+        assert decision.comparator == "le"
         # every realistic cosine score is < 1e9, so the gate opens
         assert all(decision.open_per_row)
 
@@ -354,13 +330,13 @@ class TestConditionalBehaviorTransform:
     def _direction(self, layer_id):
         return _unit_vector(self.DIRECTION_SEED + layer_id)
 
-    def _build_ablation_cast(self, condition_threshold, comparator="larger"):
-        from aisteer360.algorithms.state_control._common.transforms import DirectionalAblationTransform
+    def _build_ablation_cast(self, condition_threshold, comparator="ge"):
+        from aisteer360.algorithms.state_control._common.transforms import ProjectionTransform
 
         directions = {l: self._direction(l).unsqueeze(0) for l in (0, 1)}
         condition_vec = _steering_vector(seed=200, layers=[1])
         return CAST(
-            behavior_transform=DirectionalAblationTransform(directions, alpha=1.0),
+            behavior_transform=ProjectionTransform(directions, alpha=1.0),
             behavior_layer_ids=[0, 1],
             condition_vector=condition_vec,
             condition_layer_ids=[1],
@@ -384,7 +360,7 @@ class TestConditionalBehaviorTransform:
             pytest.skip("tiny-model condition scores not separable for this seed")
         sep = (lo + hi) / 2
 
-        control = self._build_ablation_cast(condition_threshold=sep, comparator="larger")
+        control = self._build_ablation_cast(condition_threshold=sep, comparator="ge")
         pipeline, _, _ = _steer_pipeline(control)
         recorder = _RecordingTransform(control._transform)
         control._transform = recorder
@@ -401,11 +377,11 @@ class TestConditionalBehaviorTransform:
 
     def test_unconditional_ablation_applies_to_all_rows(self):
         # no condition -> gate always open -> ablation applied everywhere it is masked
-        from aisteer360.algorithms.state_control._common.transforms import DirectionalAblationTransform
+        from aisteer360.algorithms.state_control._common.transforms import ProjectionTransform
 
         directions = {l: self._direction(l).unsqueeze(0) for l in (0, 1)}
         control = CAST(
-            behavior_transform=DirectionalAblationTransform(directions, alpha=1.0),
+            behavior_transform=ProjectionTransform(directions, alpha=1.0),
             behavior_layer_ids=[0, 1],
         )
         pipeline, _, _ = _steer_pipeline(control)
@@ -454,13 +430,13 @@ class TestConditionPointProperty:
         assert control.condition_point is None
 
     def test_conditional_returns_resolved_dict(self):
-        control = _build_cast(condition_threshold=0.25, comparator="larger", comparison_mode="last")
+        control = _build_cast(condition_threshold=0.25, comparator="ge", comparison_mode="last")
         _steer_pipeline(control)
         point = control.condition_point
         assert point == {
             "layer_ids": [1],
             "threshold": 0.25,
-            "comparator": "larger",
+            "comparator": "ge",
             "comparison_mode": "last",
         }
 

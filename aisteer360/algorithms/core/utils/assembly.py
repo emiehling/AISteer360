@@ -205,7 +205,8 @@ def _lower_control(state_control, advertised, served_model, payloads) -> Interve
             (required.transforms - (advertised.transforms if advertised else frozenset()))
             | (required.modifiers - (advertised.modifiers if advertised else frozenset()))
             | (required.scopes - (advertised.scopes if advertised else frozenset()))
-            | (required.gates - (advertised.gates if advertised else frozenset()))
+            | (required.readouts - (advertised.readouts if advertised else frozenset()))
+            | (required.rules - (advertised.rules if advertised else frozenset()))
         )
         raise UnsupportedOperationError(
             f"{type(state_control).__name__} requires intervention kind(s) "

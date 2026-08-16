@@ -5,10 +5,9 @@ import torch
 from aisteer360.algorithms.core.execution import BackendSpec, ModelAccess
 from aisteer360.algorithms.core.internals.probes import ProbeSetFit
 from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec
-from aisteer360.algorithms.core.internals.probes.rules import P, RoutingRules, Rule
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.output_control.routed_decoding import RoutedDecoding
+from aisteer360.algorithms.output_control.routed_decoding import P, Route, RoutedDecoding, Router
 from aisteer360.algorithms.output_control.routed_decoding.actions import respond
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.caa.control import CAA
@@ -45,7 +44,7 @@ def _precomputed_caa() -> CAA:
 def _routed_fit() -> RoutedDecoding:
     return RoutedDecoding(
         probes=ProbeSetFit(data={"p": PAIRS}, spec=ProbeFitSpec(method="mean_diff")),
-        rules=RoutingRules(rules=[Rule("r", when=P("p"), action=respond("x"))]),
+        rules=Router(routes=[Route("r", when=P("p"), action=respond("x"))]),
     )
 
 

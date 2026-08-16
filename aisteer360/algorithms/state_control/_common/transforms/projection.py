@@ -1,4 +1,4 @@
-"""Directional ablation transform: projects learned directions out of the residual stream."""
+"""Projection transform: projects learned directions out of the residual stream."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar, Mapping
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .context import TransformContext
 
 
-class DirectionalAblationTransform(BaseTransform):
+class ProjectionTransform(BaseTransform):
     """Removes one or more learned directions from hidden states by projection.
 
     For an orthonormal set of directions `{d_1..d_k}` at a layer (rows of a `[K, H]` tensor):
@@ -48,7 +48,7 @@ class DirectionalAblationTransform(BaseTransform):
       [https://arxiv.org/abs/2406.11717](https://arxiv.org/abs/2406.11717)
     """
 
-    wire_kind: ClassVar[str | None] = "directional_ablation"
+    wire_kind: ClassVar[str | None] = "projection"
 
     def __init__(
         self,
@@ -70,7 +70,7 @@ class DirectionalAblationTransform(BaseTransform):
             self.directions = dict(artifact)
         else:
             raise TypeError(
-                f"DirectionalAblationTransform artifact must be a SteeringVector, a "
+                f"ProjectionTransform artifact must be a SteeringVector, a "
                 f"Mapping[int, Tensor], or an ArtifactSource; got {type(artifact).__name__} "
                 f"(did you mean alpha={artifact!r}?)."
             )
@@ -83,10 +83,10 @@ class DirectionalAblationTransform(BaseTransform):
     def artifact_meta(self) -> dict | None:
         return self._artifact_meta
 
-    def bind(self, ctx: "TransformContext") -> "DirectionalAblationTransform":
+    def bind(self, ctx: "TransformContext") -> "ProjectionTransform":
         if self.is_bound:
             return self
-        return DirectionalAblationTransform(ctx.resolve(self._source), alpha=self.alpha)
+        return ProjectionTransform(ctx.resolve(self._source), alpha=self.alpha)
 
     @property
     def covered_layer_ids(self) -> set[int] | None:
@@ -94,7 +94,7 @@ class DirectionalAblationTransform(BaseTransform):
 
 
     def wire_plan(self) -> str | None:
-        """`"directional_ablation"` for single-direction full removal; None otherwise.
+        """`"projection"` for single-direction full removal; None otherwise.
 
         The wire kind removes a single direction's component in full, so only `K == 1`
         directions at `alpha == 1.0` serialize; subspace ablation (`K > 1`) and graded
@@ -106,11 +106,11 @@ class DirectionalAblationTransform(BaseTransform):
             direction.ndim == 2 and direction.size(0) > 1 for direction in self.directions.values()
         ):
             return None
-        return "directional_ablation"
+        return "projection"
 
     def export(self, layer_id: int) -> "WireForm | None":
-        """The `directional_ablation` wire form for `layer_id`, or None when the
-        configuration is hook-only (`K > 1` or `alpha != 1.0`)."""
+        """The `projection` wire form for `layer_id`, or None when the configuration is
+        hook-only (`K > 1` or `alpha != 1.0`)."""
         from ..specs import WireForm
 
         if self.directions is None or self.alpha != 1.0:
@@ -122,7 +122,7 @@ class DirectionalAblationTransform(BaseTransform):
             if direction.size(0) != 1:
                 return None
             direction = direction.squeeze(0)
-        return WireForm(kind="directional_ablation", tensors={"vector": direction})
+        return WireForm(kind="projection", tensors={"vector": direction})
 
 
     def _basis(self, layer_id: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:

@@ -2,7 +2,7 @@
 import torch
 
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden, masked_mean
-from aisteer360.algorithms.state_control._common.condition_scorers import (
+from aisteer360.algorithms.state_control._common.gating import (
     projected_cosine_similarity,
     projected_cosine_similarity_tensor,
     rank_one_projector,

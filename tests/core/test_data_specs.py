@@ -111,9 +111,7 @@ class TestCommonSpecsSplit:
         fit_specs = importlib.import_module("aisteer360.algorithms.state_control._common.fit_specs")
         for name in (
             "Comparator",
-            "ComparatorInput",
             "CompMode",
-            "normalize_comparator",
             "VectorTrainSpec",
             "ConditionSearchSpec",
         ):

@@ -23,9 +23,9 @@ transform application. Four behaviors define the runtime's contract:
     hidden batch before masking hidden states. Beam siblings of one prompt share that
     prompt's decision, and each prompt in a batch is gated independently.
 
-3. **Condition scoring**: A condition hook computes scores only while its gate still expects
-    evidence. Scoring stops for the remainder of the generation once `gate.is_ready()`
-    returns True.
+3. **Condition scoring**: A condition hook computes evidence values only while its gate has
+    not frozen its decision. Scoring stops for the remainder of the generation once
+    `gate.is_ready()` returns True.
 
 4. **Auxiliary passes**: Forwards marked via `auxiliary_pass()` (same-model candidate scoring,
     variant-prompt branches) never feed condition scorers or gates and never advance the
@@ -39,10 +39,10 @@ from typing import Callable, Literal
 
 import torch
 
+from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.utils.auxiliary_pass import current_auxiliary_pass
 
-from .condition_scorers import ConditionScorer
-from .gates.base import BaseGate
+from .gating import Gate
 from .hook_utils import extract_hidden_states, replace_hidden_states
 from .token_scope import ScopeKind, align_mask_to_batch, make_token_mask
 from .transforms.base import BaseTransform
@@ -222,22 +222,22 @@ class TransformHookRuntime:
             )
         return self._pass_offset
 
-    def _collapse_to_rows(self, scores: torch.Tensor | float, hidden_batch: int) -> torch.Tensor | float:
-        """Collapse per-hidden-row scores down to the logical rows the gate holds.
+    def _collapse_to_rows(self, values: torch.Tensor | float, hidden_batch: int) -> torch.Tensor | float:
+        """Collapse per-hidden-row evidence values down to the logical rows the gate holds.
 
         Beam search expands the batch via `repeat_interleave` (`[i0, i0, i1, i1]`), so the first
         member of each group represents its logical row, and that row is taken as the group's
-        score. Scores already at logical size pass through; a bare float passes through for the
+        value. Values already at logical size pass through; a bare float passes through for the
         gate to validate (accepted only when `num_rows == 1`).
         """
-        if isinstance(scores, (int, float)):
-            return scores
+        if isinstance(values, (int, float)):
+            return values
         rows = self.num_logical_rows
-        t = torch.as_tensor(scores).squeeze()
+        t = torch.as_tensor(values).squeeze()
         if t.ndim > 1:
             raise ValueError(
-                f"Condition scorer returned a tensor of shape {tuple(torch.as_tensor(scores).shape)}; "
-                f"expected per-row scores of shape [B] (extra dimensions must be size 1)."
+                f"Gate readout returned a tensor of shape {tuple(torch.as_tensor(values).shape)}; "
+                f"expected per-row values of shape [B] (extra dimensions must be size 1)."
             )
         flat = t.reshape(-1)
         if flat.numel() == rows:
@@ -246,12 +246,12 @@ class TransformHookRuntime:
             factor = hidden_batch // rows
             return flat[::factor]
         raise ValueError(
-            f"Condition scorer returned {flat.numel()} scores for a hidden batch of "
-            f"{hidden_batch} and {rows} logical row(s); return one score per hidden row or per "
+            f"Gate readout returned {flat.numel()} values for a hidden batch of "
+            f"{hidden_batch} and {rows} logical row(s); return one value per hidden row or per "
             f"logical row."
         )
 
-    def _row_mask_for(self, gate: BaseGate, hidden: torch.Tensor) -> torch.BoolTensor | None:
+    def _row_mask_for(self, gate: Gate, hidden: torch.Tensor) -> torch.BoolTensor | None:
         """Per-row gate decision expanded to the hidden batch as a `[B_hidden, 1]` mask.
 
         Returns None when every row is closed (caller short-circuits). `align_mask_to_batch`
@@ -292,7 +292,7 @@ class TransformHookRuntime:
         *,
         layer_id: int,
         transform: BaseTransform,
-        gate: BaseGate,
+        gate: Gate | None,
         token_scope: ScopeKind,
         last_k: int | None = None,
         from_position: int | None = None,
@@ -302,13 +302,15 @@ class TransformHookRuntime:
         """Build a hook that applies `transform` to the residual stream at `layer_id`, gated by `gate`.
 
         The transform fires at the intersection of the token-scope mask and the gate's per-row
-        decision (expanded across beams); a fully closed gate is a no-op.
+        decision (expanded across beams); a fully closed gate is a no-op, and a None gate
+        leaves every row open.
 
         Args:
             layer_id: Index of the hooked layer (used to index per-layer transform artifacts).
             transform: The transform to apply at masked positions of open rows.
-            gate: Gate consulted per call; row `r` of the hidden batch fires only when the gate's
-                logical row `r // beam_factor` is open.
+            gate: Gate consulted per call, or None for unconditional application; row `r` of
+                the hidden batch fires only when the gate's logical row `r // beam_factor` is
+                open.
             token_scope: Which positions to steer (see `make_token_mask`).
             last_k: Required when `token_scope == "last_k"`.
             from_position: Required when `token_scope == "from_position"`.
@@ -347,25 +349,25 @@ class TransformHookRuntime:
         self,
         *,
         layer_id: int,
-        scorer: ConditionScorer,
-        gate: BaseGate,
+        gate: Gate,
         is_pass_opener: bool = False,
         hook_point: HookPoint | None = None,
     ) -> Callable:
         """Build a read-only hook that scores the residual stream at `layer_id` and updates `gate`.
 
-        The hook never modifies hidden states. On each pass where the gate still wants evidence
-        (`not gate.is_ready()`), it computes per-row scores via `scorer`, passing the pad-aware
-        prompt mask on the prefill pass, collapses beam-expanded scores to logical rows, and
-        calls `gate.update(rows, key=layer_id)`. Once the gate is ready, scoring is skipped
-        entirely, and a gate that never reports ready keeps re-scoring every pass. The hook still
-        participates in pass-opener bookkeeping when the lowest hooked layer is a condition layer.
-        Auxiliary passes are ignored entirely: no scoring, no gate update, no accounting.
+        The hook never modifies hidden states. On each pass where the gate has not frozen its
+        decision (`not gate.is_ready()`), it pools the hidden states per the gate's evidence
+        (passing the pad-aware prompt mask on the prefill pass), computes per-row values via
+        the evidence readout, collapses beam-expanded values to logical rows, and calls
+        `gate.update(rows, key=layer_id)`. Once the gate is ready, scoring is skipped
+        entirely, and a gate whose rule never reports complete keeps re-scoring every pass.
+        The hook still participates in pass-opener bookkeeping when the lowest hooked layer is
+        a condition layer. Auxiliary passes are ignored entirely: no scoring, no gate update,
+        no accounting.
 
         Args:
             layer_id: Index of the hooked layer.
-            scorer: Per-row condition scorer (see `ConditionScorer`).
-            gate: Gate to feed the per-row scores to.
+            gate: Gate whose evidence is read at this layer and fed the per-row values.
             is_pass_opener: Whether this hook advances the shared position offset.
             hook_point: Per-hook boundary override; defaults to the runtime's constructor
                 value.
@@ -383,8 +385,11 @@ class TransformHookRuntime:
             if gate.is_ready():
                 return
             prompt_mask = self._prefill_prompt_mask(hidden, pass_offset)
-            scores = scorer(hidden, layer_id, prompt_mask=prompt_mask)
-            gate.update(self._collapse_to_rows(scores, hidden.size(0)), key=layer_id)
+            pooled = aggregate_condition_hidden(
+                hidden, gate.evidence.pooling, attention_mask=prompt_mask
+            )
+            values = gate.evidence.readout(pooled, layer_id)
+            gate.update(self._collapse_to_rows(values, hidden.size(0)), key=layer_id)
 
         if (hook_point or self.hook_point) == "layer_output":
 
@@ -411,7 +416,7 @@ class TransformHookRuntime:
         hidden: torch.Tensor,
         layer_id: int,
         transform: BaseTransform,
-        gate: BaseGate,
+        gate: Gate | None,
         token_scope: ScopeKind,
         last_k: int | None,
         from_position: int | None,
@@ -420,7 +425,8 @@ class TransformHookRuntime:
     ) -> torch.Tensor:
         """Mask the current pass by token scope and per-row gate decision, then apply the transform.
 
-        Auxiliary passes without a resolvable position are returned unchanged.
+        A None gate leaves every row open. Auxiliary passes without a resolvable position are
+        returned unchanged.
         """
         seq_len = hidden.size(1)
         cache_position = self._extract_cache_position(forward_kwargs)
@@ -428,9 +434,11 @@ class TransformHookRuntime:
         if pass_offset is None:
             return hidden
 
-        row_mask = self._row_mask_for(gate, hidden)  # [B_hidden, 1] or None (all closed)
-        if row_mask is None:
-            return hidden
+        row_mask = None
+        if gate is not None:
+            row_mask = self._row_mask_for(gate, hidden)  # [B_hidden, 1] or None (all closed)
+            if row_mask is None:
+                return hidden
 
         mask = make_token_mask(
             token_scope,
@@ -441,7 +449,8 @@ class TransformHookRuntime:
             position_offset=pass_offset,
         )
         mask = align_mask_to_batch(mask, hidden.size(0))  # beam search expands the batch
-        mask = mask & row_mask
+        if row_mask is not None:
+            mask = mask & row_mask
         if not bool(mask.any()):
             return hidden
         return transform.apply(hidden, layer_id=layer_id, token_mask=mask)
@@ -459,10 +468,13 @@ def build_hooks(
     Creates a fresh `TransformHookRuntime` (per-generation position state is born here), resets
     every intervention's gate to the logical batch size (gate reset is idempotent, so a gate
     instance shared across interventions is reset harmlessly more than once), and emits one
-    behavior hook per (intervention, layer) plus one condition hook per (intervention.condition,
-    layer). Condition hooks precede behavior hooks so a gate update runs before the transform at
-    a shared layer. Exactly one hook opens each pass: the first-firing hook of the lowest hooked
-    layer across the tuple.
+    behavior hook per (intervention, layer) plus one condition hook per
+    (intervention.gate.evidence, layer). An intervention whose gate is None builds no condition
+    hooks and its behavior hooks apply with every row open; an intervention marked
+    `gate_driven_externally` builds no condition hooks either, since another intervention's
+    hooks feed its shared gate. Condition hooks precede behavior hooks so a gate update runs
+    before the transform at a shared layer. Exactly one hook opens each pass: the first-firing
+    hook of the lowest hooked layer across the tuple.
 
     Module paths derive from each intervention's resolved site: decoder layers for residual
     transforms, the attention output projection for `head_additive`, and each layer's
@@ -477,7 +489,7 @@ def build_hooks(
         prompt_lens: Per-row prompt lengths of shape `[B_logical]` (from
             `compute_prompt_lens`); defines the logical batch size for row gating.
         prompt_mask: Optional pad-aware prompt attention mask of shape `[B_logical, T_prompt]`,
-            forwarded to condition scorers on the prefill pass.
+            forwarded to evidence pooling on the prefill pass.
         model: Optional live model, consulted only to skip norm sub-modules a layer does not
             define at the `"norm_input"` site.
 
@@ -488,8 +500,7 @@ def build_hooks(
     Raises:
         ValueError: If an intervention is unbound, or a layer has no module path in `layout`.
     """
-    from .gates.base import BaseGate
-    from .specs import Condition, Intervention
+    from .specs import Intervention
 
     runtime = TransformHookRuntime()
     runtime.reset(prompt_lens, prompt_mask)
@@ -503,22 +514,22 @@ def build_hooks(
         if not isinstance(intervention, Intervention) or not isinstance(intervention.layers, tuple):
             raise ValueError("build_hooks requires bound interventions; call bind() first.")
         gate = intervention.gate
-        if not isinstance(gate, BaseGate):
+        if gate is not None and not isinstance(gate, Gate):
             raise ValueError("build_hooks requires a resolved gate; call bind() first.")
-        gate.reset(num_rows)
+        if gate is not None:
+            gate.reset(num_rows)
 
         site = intervention.resolved_site()
         boundary = intervention.boundary
-        condition = intervention.condition
 
-        if condition is not None:
-            for layer_id in condition.layer_ids:
+        if gate is not None and not intervention.gate_driven_externally:
+            for layer_id in gate.evidence.layer_ids:
                 phase = "forward" if boundary == "layer_output" else "pre"
                 units.append((
                     (layer_id, site_rank[phase if phase == "pre" else "forward"], 0),
                     {
                         "kind": "condition", "phase": phase, "layer_id": layer_id,
-                        "module": layout.layer_names[layer_id], "scorer": condition.scorer,
+                        "module": layout.layer_names[layer_id],
                         "gate": gate, "hook_point": boundary,
                     },
                 ))
@@ -569,7 +580,6 @@ def build_hooks(
         if unit["kind"] == "condition":
             hook_func = runtime.build_condition_hook(
                 layer_id=unit["layer_id"],
-                scorer=unit["scorer"],
                 gate=unit["gate"],
                 is_pass_opener=is_opener,
                 hook_point=unit["hook_point"],

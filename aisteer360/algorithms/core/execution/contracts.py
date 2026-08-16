@@ -53,16 +53,18 @@ class InterventionKinds:
     """Activation-intervention kinds a backend executes, by permanent wire name.
 
     Wire names mirror toolkit class names (`AdditiveTransform` serializes as `"additive"`,
-    `CacheOnceGate` as `"cache_once"`), so the mapping is definitional rather than maintained.
-    Kind names are permanent and their meanings never change; new behavior is a new kind.
-    Compatibility is set containment on kind names.
+    `SumThreshold` as `"sum_threshold"`), so the mapping is definitional rather than
+    maintained. Kind names are permanent and their meanings never change; new behavior is a
+    new kind. Compatibility is set containment on kind names.
 
     Attributes:
-        transforms: Transform kinds, e.g. `{"additive", "directional_ablation", "rotation",
+        transforms: Transform kinds, e.g. `{"additive", "projection", "rotation",
             "head_additive"}`.
         modifiers: Wrapper-transform kinds, e.g. `{"norm_preserving", "alignment_adaptive"}`.
         scopes: Token-scope kinds, e.g. `{"all", "after_prompt", "last_k", "from_position"}`.
-        gates: Gate kinds; an always-open gate is the `"null"` kind.
+        readouts: Gate readout kinds, e.g. `{"affine", "cosine", "projected_cosine"}`; an
+            ungated op needs none.
+        rules: Gate rule kinds, e.g. `{"sum_threshold", "per_key_threshold"}`.
         constraints: Per-kind execution constraints, e.g.
             `{"head_additive": "tensor_parallel_size==1"}`. Informational; containment checks
             ignore this field.
@@ -71,7 +73,8 @@ class InterventionKinds:
     transforms: frozenset[str] = frozenset()
     modifiers: frozenset[str] = frozenset()
     scopes: frozenset[str] = frozenset()
-    gates: frozenset[str] = frozenset()
+    readouts: frozenset[str] = frozenset()
+    rules: frozenset[str] = frozenset()
     constraints: Mapping[str, str] = field(default_factory=dict)
 
     def contains(self, required: "InterventionKinds") -> bool:
@@ -80,7 +83,8 @@ class InterventionKinds:
             required.transforms <= self.transforms
             and required.modifiers <= self.modifiers
             and required.scopes <= self.scopes
-            and required.gates <= self.gates
+            and required.readouts <= self.readouts
+            and required.rules <= self.rules
         )
 
 
@@ -224,7 +228,7 @@ def _advertised_for(kind_set: KindSet, capabilities: BackendCapabilities) -> Kin
 def _kind_names(kind_set: KindSet) -> str:
     """Comma-joined sorted kind names across the set's name-bearing fields."""
     if isinstance(kind_set, InterventionKinds):
-        names = kind_set.transforms | kind_set.modifiers | kind_set.scopes | kind_set.gates
+        names = kind_set.transforms | kind_set.modifiers | kind_set.scopes | kind_set.readouts | kind_set.rules
     elif isinstance(kind_set, ProcessorKinds):
         names = kind_set.processors
     elif isinstance(kind_set, ConstraintKinds):

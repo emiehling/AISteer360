@@ -177,7 +177,8 @@ class TestCapabilityTables:
         assert Capability.HIDDEN_CAPTURE in capabilities.atoms
         assert Capability.IN_PROCESS_TORCH not in capabilities.atoms
         assert "additive" in capabilities.intervention_kinds.transforms
-        assert "cache_once" in capabilities.intervention_kinds.gates
+        assert "affine" in capabilities.intervention_kinds.readouts
+        assert "sum_threshold" in capabilities.intervention_kinds.rules
         # no processor kinds are advertised until a control exports a ProcessorSpec
         assert Capability.PER_STEP_LOGIT_SPECS not in capabilities.atoms
         assert capabilities.processor_kinds is None

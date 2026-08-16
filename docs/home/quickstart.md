@@ -88,7 +88,7 @@ messages, and `input_ids=` for a pre-tokenized tensor. A positional `str`/`list[
 The return shape matches the source (decoded text for text and chat input, a tensor for token input). Pass
 `return_output=True` to get an `Output` object instead.
 
-Swapping the transform for a projection (`DirectionalAblationTransform`), the explicit `layer_ids` for a
+Swapping the transform for a projection (`ProjectionTransform`), the explicit `layer_ids` for a
 `layer_selector`, or adding a gate turns this same adapter into other steering methods without writing a new control
 class. And there you
 have it, a simple activation-steering control. For a full walkthrough of the adapter's slots, as well as examples on

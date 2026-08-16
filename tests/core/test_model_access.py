@@ -70,11 +70,10 @@ class TestDeclarations:
         from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec
         from aisteer360.algorithms.core.internals.probes.probe import Probe
         from aisteer360.algorithms.core.internals.probes.probe_set import ProbeSet
-        from aisteer360.algorithms.core.internals.probes.rules import P, RoutingRules, Rule
-        from aisteer360.algorithms.output_control.routed_decoding import RoutedDecoding
+        from aisteer360.algorithms.output_control.routed_decoding import P, Route, RoutedDecoding, Router
         from aisteer360.algorithms.output_control.routed_decoding.actions import respond
 
-        rules = RoutingRules(rules=[Rule("r", when=P("p"), action=respond("x"))])
+        rules = Router(routes=[Route("r", when=P("p"), action=respond("x"))])
         fit = RoutedDecoding(
             probes=ProbeSetFit(data={"p": PAIRS}, spec=ProbeFitSpec(method="mean_diff")),
             rules=rules,

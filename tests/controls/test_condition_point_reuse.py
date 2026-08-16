@@ -1,7 +1,7 @@
 """Reuse of a searched CAST condition point as a single object.
 
 Covers `ConditionPoint.comparison_mode` / `flipped()`, `CASTArgs.condition_point` expansion (object
-and dict shapes, alias normalization, conflict errors), and the precedence of a supplied point over
+and dict shapes, comparator validation, conflict errors), and the precedence of a supplied point over
 `search.auto_find`. Hub-free on a tiny Llama.
 """
 import pytest
@@ -45,15 +45,15 @@ def _steer(control, seed: int = 0):
 
 class TestConditionPointObject:
     def test_flipped_inverts_only_comparator(self):
-        cp = ConditionPoint(layer_id=2, threshold=0.3, comparator="larger", f1=0.8, margin=0.05,
+        cp = ConditionPoint(layer_id=2, threshold=0.3, comparator="ge", f1=0.8, margin=0.05,
                             comparison_mode="last")
         flipped = cp.flipped()
-        assert flipped.comparator == "smaller"
+        assert flipped.comparator == "le"
         assert flipped.layer_id == 2
         assert flipped.threshold == 0.3
         assert flipped.f1 == 0.8 and flipped.margin == 0.05  # search stats carried over unchanged
         assert flipped.comparison_mode == "last"
-        assert flipped.flipped().comparator == "larger"  # round trip
+        assert flipped.flipped().comparator == "ge"  # round trip
 
     def test_selector_populates_comparison_mode(self):
         torch.manual_seed(0)
@@ -87,7 +87,7 @@ class TestConditionPointExpansion:
         )
 
     def test_object_matches_manual_triple(self):
-        cp = ConditionPoint(layer_id=1, threshold=0.25, comparator="larger", f1=0.9,
+        cp = ConditionPoint(layer_id=1, threshold=0.25, comparator="ge", f1=0.9,
                             comparison_mode="mean")
         from_point, _, _ = _steer(self._cast(cp))
         manual = CAST(
@@ -96,7 +96,7 @@ class TestConditionPointExpansion:
             condition_vector=_steering_vector(200, [1]),
             condition_layer_ids=[1],
             condition_vector_threshold=0.25,
-            condition_comparator_threshold_is="larger",
+            condition_comparator_threshold_is="ge",
             condition_threshold_comparison_mode="mean",
             search=ConditionSearchSpec(auto_find=False),
         )
@@ -147,13 +147,14 @@ class TestConditionPointExpansion:
             pipe_b.generate(prompt, max_new_tokens=2, do_sample=False)
             assert search_control.latest_decision.open_per_row == reuse_control.latest_decision.open_per_row
 
-    def test_alias_comparator_normalizes(self):
-        point = {"layer_ids": [1], "threshold": 0.3, "comparator": "score_below"}
-        control = self._cast(point)
-        assert control.args.condition_comparator_threshold_is == "smaller"
+    @pytest.mark.parametrize("stale", ["score_below", "larger", "smaller"])
+    def test_non_canonical_comparator_raises(self, stale):
+        point = {"layer_ids": [1], "threshold": 0.3, "comparator": stale}
+        with pytest.raises(ValueError, match="'ge' or 'le'"):
+            self._cast(point)
 
     def test_conflict_with_condition_layer_ids_raises(self):
-        cp = ConditionPoint(layer_id=1, threshold=0.25, comparator="larger", f1=0.9)
+        cp = ConditionPoint(layer_id=1, threshold=0.25, comparator="ge", f1=0.9)
         with pytest.raises(ValueError, match="drop"):
             CAST(
                 behavior_vector=_steering_vector(100, [0, 1]),
@@ -163,7 +164,7 @@ class TestConditionPointExpansion:
             )
 
     def test_conflict_with_threshold_raises(self):
-        cp = ConditionPoint(layer_id=1, threshold=0.25, comparator="larger", f1=0.9)
+        cp = ConditionPoint(layer_id=1, threshold=0.25, comparator="ge", f1=0.9)
         with pytest.raises(ValueError, match="drop"):
             CAST(
                 behavior_vector=_steering_vector(100, [0, 1]),
@@ -179,12 +180,12 @@ class TestConditionPointExpansion:
     def test_empty_layer_ids_raises(self):
         """An empty layer list must raise rather than silently degrade to unconditional steering."""
         with pytest.raises(ValueError, match="no condition layers"):
-            self._cast({"layer_ids": [], "threshold": 0.3, "comparator": "larger"})
+            self._cast({"layer_ids": [], "threshold": 0.3, "comparator": "ge"})
 
     def test_bad_comparison_mode_raises_at_construction(self):
         """A typo'd comparison_mode is rejected at construction, not deferred to generation."""
         with pytest.raises(ValueError, match="comparison_mode must be"):
-            self._cast({"layer_ids": [1], "threshold": 0.3, "comparator": "larger",
+            self._cast({"layer_ids": [1], "threshold": 0.3, "comparator": "ge",
                         "comparison_mode": "LAST_TYPO"})
 
 
@@ -197,7 +198,7 @@ class TestConditionPointSupersedesSearch:
 
         monkeypatch.setattr(ConditionPointSelector, "select", _boom)
 
-        cp = ConditionPoint(layer_id=1, threshold=0.2, comparator="larger", f1=0.9,
+        cp = ConditionPoint(layer_id=1, threshold=0.2, comparator="ge", f1=0.9,
                             comparison_mode="mean")
         control = CAST(
             behavior_vector=_steering_vector(100, [2, 3]),

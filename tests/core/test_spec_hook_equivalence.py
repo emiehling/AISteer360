@@ -4,27 +4,37 @@ one tuple, proven against the plugin's own interpreter (the code the worker exec
 Per-transform equality applies the toolkit transform to synthetic masked rows and the plugin's
 `apply_op` to the scoped rows and asserts exact equality in float32 (documented-tolerance
 closeness in bfloat16); modifier chains must compose innermost-first and a reordered chain must
-change the result; gate decision traces must coincide across single-pass, chunked-prefill, and
-restart-replay evidence orderings."""
+change the result; gate decision traces must coincide per readout-rule pair across single-pass,
+chunked-prefill, and restart-replay evidence orderings, including batched rows with divergent
+decisions."""
 import pytest
 import torch
 from vllm_hook_plugins.core.interpreter import apply_op, build_gate
-from vllm_hook_plugins.core.interpreter.gates import CacheOnceGate as WireCacheOnceGate
+from vllm_hook_plugins.core.interpreter.gates import GateState
 from vllm_hook_plugins.core.schema import parse_intervention_spec
 
 from aisteer360.algorithms.core.execution import ModelFacts
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.internals.probes import Probe
-from aisteer360.algorithms.state_control._common.condition_scorers import ProbeContributionScorer
-from aisteer360.algorithms.state_control._common.gates import CacheOnceGate, ProbeSumGate
-from aisteer360.algorithms.state_control._common.lowering import artifact_id_for
+from aisteer360.algorithms.state_control._common.gating import (
+    AffineReadout,
+    CosineReadout,
+    Evidence,
+    Gate,
+    PerKeyThreshold,
+    ProjectedCosineReadout,
+    SumThreshold,
+    gate_from_probe,
+)
+from aisteer360.algorithms.state_control._common.lowering import artifact_id_for, lower_interventions
+from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
 from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control._common.transforms import (
     AdditiveTransform,
     AlignmentAdaptiveTransform,
-    DirectionalAblationTransform,
     HeadAdditiveTransform,
     NormPreservingTransform,
+    ProjectionTransform,
     RotationTransform,
 )
 from aisteer360.algorithms.state_control.act_add.control import ActAdd
@@ -131,7 +141,7 @@ CONFIGS = [
     pytest.param(
         lambda: ActivationAdapter(
             transform=NormPreservingTransform(
-                DirectionalAblationTransform(_vector().directions)
+                ProjectionTransform(_vector().directions)
             ),
             layer_ids=[2], token_scope="all",
         ),
@@ -269,47 +279,79 @@ def _probe(pooling: str = "mean", bias: float = 0.0) -> Probe:
     )
 
 
-def _wire_probe_gate(probe: Probe) -> WireCacheOnceGate:
-    """The worker's gate state machine built from the exported probe form."""
-    gate_form = ProbeSumGate(probe).export()
-    artifact_id, prepared = artifact_id_for(gate_form.tensors)
-    wire = {"ops": [{
-        "layers": [3],
-        "transform": {"kind": "directional_ablation", "modifiers": [], "artifact": artifact_id},
-        "scope": {"kind": "all"},
-        "gate": {
-            "kind": "cache_once",
-            "inner": {
-                "kind": gate_form.kind, **gate_form.params,
-                "condition_layers": [int(lid) for lid in probe.layer_ids],
-                "artifact": artifact_id,
-            },
-        },
-    }]}
-    # the vector artifact reuses the probe weights id slot only for schema validation; gates
-    # read their own tensors from the same registry mapping
-    parsed = parse_intervention_spec(wire, num_layers=LAYERS)
-    return build_gate(parsed.ops[0].gate, {artifact_id: prepared})
+def _directions(seed: int, layers=(1, 2)) -> dict[int, torch.Tensor]:
+    generator = torch.Generator().manual_seed(seed)
+    return {lid: torch.randn(HIDDEN, generator=generator) for lid in layers}
 
 
-def _toolkit_decision(probe: Probe, prompt_rows: dict[int, torch.Tensor]) -> bool:
+def _gate_cases():
+    """One client gate per readout-rule pair the wire serves, at the layer-input boundary."""
+    probe = _probe(bias=0.05)
+    return [
+        pytest.param(lambda: gate_from_probe(probe), id="affine-sum"),
+        pytest.param(
+            lambda: Gate(
+                Evidence((1, 2), AffineReadout(_directions(31))),
+                PerKeyThreshold(threshold=0.0, comparator="ge", aggregate="all"),
+            ),
+            id="affine-per-key",
+        ),
+        pytest.param(
+            lambda: Gate(
+                Evidence((1, 2), CosineReadout(_directions(32)), pooling="last"),
+                PerKeyThreshold(threshold=0.0, comparator="ge", aggregate="any"),
+            ),
+            id="cosine-per-key",
+        ),
+        pytest.param(
+            lambda: Gate(
+                Evidence((1, 2), ProjectedCosineReadout(_directions(33))),
+                PerKeyThreshold(threshold=0.4, comparator="le", aggregate="any"),
+            ),
+            id="projected-cosine-per-key",
+        ),
+    ]
+
+
+def _lowered_gate(gate: Gate) -> tuple[GateState, dict[int, int]]:
+    """The worker's gate state machine built from the client lowering of `gate`.
+
+    Returns the `GateState` and the client-to-wire condition-layer mapping (identity at the
+    layer-input boundary the cases use).
+    """
+    intervention = Intervention(
+        layers=(3,),
+        transform=AdditiveTransform({3: torch.ones(1, HIDDEN)}),
+        scope=TokenScope("all"),
+        gate=gate,
+        boundary="layer_input",
+    )
+    spec = lower_interventions([intervention], num_layers=LAYERS)
+    assert spec is not None
+    parsed = parse_intervention_spec(spec.to_wire(), num_layers=LAYERS)
+    gate_spec = parsed.ops[0].gate
+    layer_map = dict(zip(gate.evidence.layer_ids, gate_spec.layers))
+    return build_gate(gate_spec, dict(spec.artifacts)), layer_map
+
+
+def _toolkit_decision(gate: Gate, prompt_rows: dict[int, torch.Tensor]) -> bool:
     """The frozen toolkit decision for one prompt's evidence."""
-    scorer = ProbeContributionScorer(probe)
-    gate = CacheOnceGate(ProbeSumGate(probe))
     gate.reset(1)
     for layer_id, rows in prompt_rows.items():
-        scores = scorer(rows.unsqueeze(0), layer_id, prompt_mask=torch.ones(1, rows.size(0)))
-        gate.update(scores, key=layer_id)
+        pooled = aggregate_condition_hidden(rows.unsqueeze(0), gate.evidence.pooling)
+        gate.update(gate.evidence.readout(pooled, layer_id), key=layer_id)
     assert gate.is_ready()
     return bool(gate.open_rows()[0])
 
 
-def _wire_decision(gate, prompt_rows: dict[int, torch.Tensor], chunks: list[range]) -> bool | None:
+def _wire_decision(
+    gate: GateState, layer_map: dict[int, int], prompt_rows: dict[int, torch.Tensor], chunks: list[range]
+) -> bool | None:
     """The worker gate's frozen decision after feeding the prompt in the given pass chunks."""
     prompt_len = next(iter(prompt_rows.values())).size(0)
     for positions in chunks:
         for layer_id, rows in prompt_rows.items():
-            gate.observe(layer_id, positions, rows[positions.start:positions.stop])
+            gate.observe(layer_map[layer_id], positions, rows[positions.start:positions.stop])
         gate.note_pass(positions, prompt_len)
     # first decode pass triggers the deferred freeze when the trigger pass lacked evidence
     gate.note_pass(range(prompt_len, prompt_len + 1), prompt_len)
@@ -318,10 +360,29 @@ def _wire_decision(gate, prompt_rows: dict[int, torch.Tensor], chunks: list[rang
 
 class TestGateDecisionTraces:
 
+    @pytest.mark.parametrize("make_gate", _gate_cases())
+    @pytest.mark.parametrize("seed", [41, 42])
+    def test_single_pass_prefill_traces_coincide(self, make_gate, seed):
+        generator = torch.Generator().manual_seed(seed)
+        prompt_rows = {lid: torch.randn(SEQ, HIDDEN, generator=generator) for lid in (1, 2)}
+        gate = make_gate()
+        expected = _toolkit_decision(gate, prompt_rows)
+        wire_gate, layer_map = _lowered_gate(make_gate())
+        assert _wire_decision(wire_gate, layer_map, prompt_rows, [range(0, SEQ)]) is expected
+
+    @pytest.mark.parametrize("make_gate", _gate_cases())
+    def test_chunked_prefill_traces_coincide(self, make_gate):
+        generator = torch.Generator().manual_seed(43)
+        prompt_rows = {lid: torch.randn(SEQ, HIDDEN, generator=generator) for lid in (1, 2)}
+        expected = _toolkit_decision(make_gate(), prompt_rows)
+        wire_gate, layer_map = _lowered_gate(make_gate())
+        assert _wire_decision(
+            wire_gate, layer_map, prompt_rows, [range(0, 2), range(2, 4), range(4, SEQ)]
+        ) is expected
+
     @pytest.mark.parametrize("pooling", ["mean", "last"])
-    @pytest.mark.parametrize("bias_offset", [1.5, -1.5])
-    def test_single_pass_prefill_traces_coincide(self, pooling, bias_offset):
-        generator = torch.Generator().manual_seed(41)
+    def test_probe_pooling_modes_coincide(self, pooling):
+        generator = torch.Generator().manual_seed(44)
         prompt_rows = {lid: torch.randn(SEQ, HIDDEN, generator=generator) for lid in (1, 2)}
         raw = _probe(pooling=pooling, bias=0.0)
         centered = float(sum(
@@ -329,46 +390,87 @@ class TestGateDecisionTraces:
             @ raw.weights[lid]
             for lid in (1, 2)
         ))
-        probe = _probe(pooling=pooling, bias=-centered + bias_offset)
-
-        expected = _toolkit_decision(probe, prompt_rows)
-        assert expected == (bias_offset > 0)
-        wire_gate = _wire_probe_gate(probe)
-        assert _wire_decision(wire_gate, prompt_rows, [range(0, SEQ)]) is expected
-
-    @pytest.mark.parametrize("pooling", ["mean", "last"])
-    def test_chunked_prefill_traces_coincide(self, pooling):
-        generator = torch.Generator().manual_seed(42)
-        prompt_rows = {lid: torch.randn(SEQ, HIDDEN, generator=generator) for lid in (1, 2)}
-        probe = _probe(pooling=pooling, bias=0.05)
-        expected = _toolkit_decision(probe, prompt_rows)
-
-        chunked = _wire_probe_gate(probe)
-        assert _wire_decision(chunked, prompt_rows, [range(0, 2), range(2, 4), range(4, SEQ)]) is expected
+        for bias_offset in (1.5, -1.5):
+            probe = _probe(pooling=pooling, bias=-centered + bias_offset)
+            expected = _toolkit_decision(gate_from_probe(probe), prompt_rows)
+            assert expected == (bias_offset > 0)
+            wire_gate, layer_map = _lowered_gate(gate_from_probe(probe))
+            assert _wire_decision(wire_gate, layer_map, prompt_rows, [range(0, SEQ)]) is expected
 
     def test_restart_replay_is_idempotent(self):
-        generator = torch.Generator().manual_seed(43)
+        generator = torch.Generator().manual_seed(45)
         prompt_rows = {lid: torch.randn(SEQ, HIDDEN, generator=generator) for lid in (1, 2)}
         probe = _probe(bias=0.05)
-        expected = _toolkit_decision(probe, prompt_rows)
+        expected = _toolkit_decision(gate_from_probe(probe), prompt_rows)
 
-        gate = _wire_probe_gate(probe)
+        gate, layer_map = _lowered_gate(gate_from_probe(probe))
         # partial prefill, then a preemption restart clears evidence and replays from zero
         for layer_id, rows in prompt_rows.items():
-            gate.observe(layer_id, range(0, 3), rows[:3])
+            gate.observe(layer_map[layer_id], range(0, 3), rows[:3])
         gate.note_pass(range(0, 3), SEQ)
         gate.reset()
-        assert _wire_decision(gate, prompt_rows, [range(0, SEQ)]) is expected
+        assert _wire_decision(gate, layer_map, prompt_rows, [range(0, SEQ)]) is expected
 
     def test_undecided_freezes_closed_and_holds(self):
         probe = _probe(bias=1e9)
-        gate = _wire_probe_gate(probe)
+        gate, layer_map = _lowered_gate(gate_from_probe(probe))
         gate.note_pass(range(0, SEQ), SEQ)  # no evidence ever arrives
         gate.note_pass(range(SEQ, SEQ + 1), SEQ)
         assert gate.decision() is False
-        generator = torch.Generator().manual_seed(44)
-        gate.observe(1, range(SEQ, SEQ + 1), torch.randn(1, HIDDEN, generator=generator))
+        generator = torch.Generator().manual_seed(46)
+        gate.observe(layer_map[1], range(SEQ, SEQ + 1), torch.randn(1, HIDDEN, generator=generator))
         assert gate.decision() is False
+
+    def test_batched_rows_with_divergent_decisions_and_steered_outputs(self):
+        """A batch whose rows decide differently: per-row decisions and the steered stream
+        coincide between the toolkit's row-vectorized gate and one worker gate per request."""
+        generator = torch.Generator().manual_seed(47)
+        batch = 3
+        prompt_rows = {lid: torch.randn(batch, SEQ, HIDDEN, generator=generator) for lid in (1, 2)}
+
+        # center the threshold between row scores so the batch splits
+        probe_gate = gate_from_probe(_probe(bias=0.0))
+        scores = torch.zeros(batch)
+        for lid in (1, 2):
+            pooled = aggregate_condition_hidden(prompt_rows[lid], "mean")
+            scores += probe_gate.evidence.readout(pooled, lid)
+        ordered = scores.sort().values
+        bias = -float((ordered[0] + ordered[1]) / 2)
+        probe = _probe(bias=bias)
+
+        toolkit_gate = gate_from_probe(probe)
+        toolkit_gate.reset(batch)
+        for lid in (1, 2):
+            pooled = aggregate_condition_hidden(prompt_rows[lid], probe.pooling)
+            toolkit_gate.update(toolkit_gate.evidence.readout(pooled, lid), key=lid)
+        toolkit_open = toolkit_gate.open_rows()
+        assert toolkit_open.any() and not toolkit_open.all()
+
+        intervention = Intervention(
+            layers=(3,),
+            transform=AdditiveTransform({3: torch.ones(1, HIDDEN)}, strength=2.0),
+            scope=TokenScope("all"),
+            gate=gate_from_probe(probe),
+            boundary="layer_input",
+        )
+        spec = lower_interventions([intervention], num_layers=LAYERS)
+        parsed = parse_intervention_spec(spec.to_wire(), num_layers=LAYERS)
+        (op,) = parsed.ops
+        layer_map = dict(zip((1, 2), op.gate.layers))
+
+        stream = torch.randn(batch, SEQ, HIDDEN, generator=generator)
+        for row in range(batch):
+            wire_gate = build_gate(op.gate, dict(spec.artifacts))
+            row_rows = {lid: prompt_rows[lid][row] for lid in (1, 2)}
+            decision = _wire_decision(wire_gate, layer_map, row_rows, [range(0, SEQ)])
+            assert decision is bool(toolkit_open[row])
+            # the op applies exactly on open rows, matching the toolkit's row mask
+            wire_out = apply_op(op, stream[row], dict(spec.artifacts)) if decision else stream[row]
+            mask = torch.full((1, SEQ), bool(toolkit_open[row]))
+            toolkit_out = intervention.transform.apply(
+                stream[row].unsqueeze(0), layer_id=3, token_mask=mask
+            )[0]
+            assert torch.equal(toolkit_out, wire_out)
 
 
 class TestArtifactStability:

@@ -5,8 +5,7 @@ import torch
 from aisteer360.algorithms.core.execution import ModelFacts
 from aisteer360.algorithms.core.internals.probes.probe import Probe
 from aisteer360.algorithms.core.internals.probes.probe_set import ProbeSet
-from aisteer360.algorithms.core.internals.probes.rules import P, RoutingRules, Rule
-from aisteer360.algorithms.output_control.routed_decoding import RoutedDecoding
+from aisteer360.algorithms.output_control.routed_decoding import P, Route, RoutedDecoding, Router
 from aisteer360.algorithms.output_control.routed_decoding.actions import respond
 from tests.utils.tiny_models import wordlevel_tokenizer
 
@@ -39,7 +38,7 @@ def _probe(meta=None, model_type="llama") -> Probe:
 def _routed(probe) -> RoutedDecoding:
     return RoutedDecoding(
         probes=ProbeSet({"p": probe}),
-        rules=RoutingRules(rules=[Rule("r", when=P("p"), action=respond("x"))]),
+        rules=Router(routes=[Route("r", when=P("p"), action=respond("x"))]),
     )
 
 
