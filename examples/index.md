@@ -78,8 +78,6 @@ Algorithm notebooks demonstrate how each method (i.e., control) operates. The me
 
     :octicons-arrow-right-24: [SASA](./notebooks/algorithms/sasa.ipynb)
 
-    :octicons-arrow-right-24: [ThinkingIntervention](./notebooks/algorithms/thinking_intervention.ipynb)
-
 </div>
 
 

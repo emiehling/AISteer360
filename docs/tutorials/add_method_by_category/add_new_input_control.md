@@ -59,9 +59,8 @@ Lastly, the `control.py` file implements the method by overriding the `adapt` me
 - Returns a new `input_ids` tensor/list after applying the desired transformation.
 
 For methods whose work is more naturally expressed at the message level (e.g. setting/replacing a system prompt),
-override `adapt_messages` instead. The pipeline calls `adapt_messages` *before* chat-template tokenization when the
-caller passes chat-shaped input; when `adapt_messages` returns a non-None result, that control's token-level `adapt`
-is *not* called for that generation, so each control is applied exactly once.
+override `adapt_messages` instead. The pipeline calls `adapt_messages` before chat-template tokenization when the
+caller passes chat-shaped input; when `adapt_messages` returns a non-None result, that control's token-level `adapt`is not called for that generation, so each control is applied exactly once.
 
 The control implementation for `PromptCensor` is as follows:
 
@@ -167,7 +166,7 @@ print(
 
 If your method modifies chat structure (sets/replaces a system prompt, inserts example turns, etc.), override
 `adapt_messages`. The pipeline calls `adapt_messages` before chat-template tokenization when the caller passes
-chat-shaped input; when it returns a non-None result, that control's token-level `adapt` is *not* called for that
+chat-shaped input; when it returns a non-None result, that control's token-level `adapt` is not called for that
 generation, so each control is applied exactly once.
 
 ```python
@@ -189,14 +188,14 @@ If users call `pipeline.generate(input_ids=input_ids_tensor, ...)` (or pass text
 `adapt_messages` is skipped and a warning is emitted; the control is then applied through `adapt` (the token-level
 fallback). Because the two entry points serve different input modalities, a control may implement both without being
 applied twice. Token-level methods can supply a best-effort fallback in `adapt`; see
-[`SystemPromptFormatter.apply_to_ids`](../../reference/algorithms/input_control/_common.md) for one approach.
+[`SystemPromptFormatter.apply_to_ids`](../../reference/algorithms/input_control/common.md) for one approach.
 
 ## Reusable building blocks
 
-The `aisteer360.algorithms.input_control._common` package collects components shared across input controls:
+The `aisteer360.algorithms.input_control.common` package collects components shared across input controls:
 
 - `memory/`: `TextMemory` (named JSON-serializable text slots) and `PoolMemory[T]` (typed pool with parallel
-  metadata). Place persistent state on `self.memory`; the framework treats it as opaque but recognises it for
+  metadata). Place persistent state on `self.memory`; the framework treats it as opaque but recognizes it for
   serialization.
 - `formatters/`: token-level and message-level renderers for memory content (`SystemPromptFormatter`,
   `FewShotBlockFormatter`, `ChatTemplateSlotFormatter`, `PrependTextFormatter`).

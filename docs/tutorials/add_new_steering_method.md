@@ -94,7 +94,7 @@ them into class attributes.
 [^1]: This is intended to minimize boilerplate code (parameter/argument parsing and validation) that would otherwise need to live in each control's `__init__` method.
 
 Any one-time preparation of the steering method is done in the `.steer()` method of the control. This is optional for all
-control categories *except* structural control methods; the `.steer()` method in a structural control method contains
+control categories except structural control methods; the `.steer()` method in a structural control method contains
 the necessary logic for modifying the model's weights/architecture. Note that while including a steer method is optional
 in every control type other than structural, it is often useful to include one for attaching necessary objects to the
 control for later use (e.g., the tokenizer). This is illustrated in the tutorials below.
@@ -102,9 +102,9 @@ control for later use (e.g., the tokenizer). This is illustrated in the tutorial
 A control's steer step declares one of four access levels via `steer_access()`: `facts` (layout and tokenizer),
 `rollouts` (generate and score through the session), `capture` (hidden states), or `module` (the model as a live
 `torch.nn.Module`). Declare the highest rung your steer touches; intervention templates derive it from their sources,
-and structural controls are `module` by definition. The pipeline hands your `steer()` a session scoped to that rung —
-and the model itself only at `module` — and it arranges residency: on an engine backend, module-level steps run on a
-temporary in-process model that is freed before the engine starts, with exported artifacts as the handoff. Do not hold
+and structural controls are `module` by definition. The pipeline hands your `steer()` a session scoped to that rung
+(and the model itself only at `module`), and arranges residency so that on an engine backend, module-level steps run on
+a temporary in-process model that is freed before the engine starts, with exported artifacts as the handoff. Do not hold
 the model past `steer()` unless your generate phase requires `IN_PROCESS_TORCH`. Generate- and score-phase
 requirements are unchanged.
 
@@ -119,7 +119,7 @@ under each of the four categories, via a simple example implementation, is detai
 
     Input control methods adapt the input (prompt) before the model is called.
 
-    *Required override*: `adapt`
+    **Required override**: `adapt`
 
     [:octicons-arrow-right-24: Add your own input control method](./add_method_by_category/add_new_input_control.md)
 
@@ -129,7 +129,7 @@ under each of the four categories, via a simple example implementation, is detai
 
     Structural control methods adapt the model's weights/architecture.
 
-    *Required override*: `steer`
+    **Required override**: `steer`
 
     [:octicons-arrow-right-24: Add your own structural control method](./add_method_by_category/add_new_structural_control.md)
 
@@ -139,7 +139,7 @@ under each of the four categories, via a simple example implementation, is detai
 
     State control methods influence the model's internal states (activation, attentions, etc.) at inference time.
 
-    *Required override*: `get_hooks`
+    **Required override**: `get_hooks`
 
     [:octicons-arrow-right-24: Add your own state control method](./add_method_by_category/add_new_state_control.md)
 
@@ -149,14 +149,14 @@ under each of the four categories, via a simple example implementation, is detai
 
     Output control methods influence the model's generations via the decoding process.
 
-    *Required override*: `get_logits_processors` and/or `get_stopping_criteria` (step-level), or `decode` (decoding driver)
+    **Required override**: `get_logits_processors` and/or `get_stopping_criteria` (step-level), or `decode` (decoding driver)
 
     [:octicons-arrow-right-24: Add your own output control method](./add_method_by_category/add_new_output_control.md)
 
 </div>
 
 !!! note
-    If your steering method requires two distinct control knobs, e.g., both tweaks the prompt *and* constrains
+    If your steering method requires two distinct control knobs, e.g., both tweaks the prompt and constrains
     decoding, split it into two small controls and chain them together in `controls=[...]`.
 
 
@@ -218,7 +218,7 @@ https://arxiv.org/abs/2402.06147
 ```
 
 
-Show off how cool your method is by writing a notebook (in `../examples/notebooks/algorithms/`). A good notebook
+Demonstrate your method by writing a notebook (in `../examples/notebooks/algorithms/`). A good notebook
 should contain the following:
 
 - A description of what the method does and how it works

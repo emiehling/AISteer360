@@ -118,7 +118,7 @@ class StateControl(BaseControl):
 
 def _is_concrete_gate(gate) -> bool:
     """True when `gate` is a resolved gate rather than a gate source."""
-    from aisteer360.algorithms.state_control._common.gating import Gate
+    from aisteer360.algorithms.state_control.common.gating import Gate
 
     return isinstance(gate, Gate)
 
@@ -175,8 +175,8 @@ class InterventionControl(StateControl):
         Returns:
             The input model, unchanged.
         """
-        from aisteer360.algorithms.state_control._common.layout_facts import resolve_layout
-        from aisteer360.algorithms.state_control._common.model_layout import resolve_model_layout
+        from aisteer360.algorithms.state_control.common.layout_facts import resolve_layout
+        from aisteer360.algorithms.state_control.common.model_layout import resolve_model_layout
 
         layout = resolve_layout(model, session)
         self._num_layers = layout.num_layers
@@ -216,7 +216,7 @@ class InterventionControl(StateControl):
         """The module-path layout, resolved from the module tree on first use."""
         layout = getattr(self, "_module_layout", None)
         if layout is None:
-            from aisteer360.algorithms.state_control._common.model_layout import resolve_model_layout
+            from aisteer360.algorithms.state_control.common.model_layout import resolve_model_layout
 
             if model is None:
                 raise RuntimeError(
@@ -246,8 +246,8 @@ class InterventionControl(StateControl):
         Returns:
             Hook specifications with `"pre"`, `"forward"`, `"backward"` keys.
         """
-        from aisteer360.algorithms.state_control._common.runtime import build_hooks
-        from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
+        from aisteer360.algorithms.state_control.common.runtime import build_hooks
+        from aisteer360.algorithms.state_control.common.token_scope import compute_prompt_lens
         from aisteer360.utils.tokenization import infer_attention_mask_from_ids
 
         ids = input_ids if isinstance(input_ids, torch.Tensor) else input_ids["input_ids"]
@@ -273,7 +273,7 @@ class InterventionControl(StateControl):
 
         Must be called after `steer()`. Returns None when the configuration has no wire form.
         """
-        from aisteer360.algorithms.state_control._common.lowering import lower_interventions
+        from aisteer360.algorithms.state_control.common.lowering import lower_interventions
 
         if not self.interventions or getattr(self, "_num_layers", None) is None:
             return None
@@ -285,7 +285,7 @@ class InterventionControl(StateControl):
     def wire_kinds(self):
         """The combined wire kinds of the bound interventions (or the template before
         `steer()`), or None when any intervention is hook-only."""
-        from aisteer360.algorithms.state_control._common.specs import combine_kinds
+        from aisteer360.algorithms.state_control.common.specs import combine_kinds
 
         source = self.interventions or self._template
         return combine_kinds(intervention.wire_kinds() for intervention in source)
@@ -297,7 +297,7 @@ class InterventionControl(StateControl):
         themselves (which declare their own `access` or default to the live model), and
         unresolved gate sources, in template order.
         """
-        from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform, unwrap_modifiers
+        from aisteer360.algorithms.state_control.common.transforms.base import BaseTransform, unwrap_modifiers
 
         for intervention in self._template:
             transform = intervention.transform

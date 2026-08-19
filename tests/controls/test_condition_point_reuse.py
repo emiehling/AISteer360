@@ -9,11 +9,11 @@ import torch
 
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control._common.fit_specs import ConditionSearchSpec, VectorTrainSpec
-from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
-from aisteer360.algorithms.state_control._common.selectors.condition_point import ConditionPoint
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.cast.control import CAST
+from aisteer360.algorithms.state_control.common.fit_specs import ConditionSearchSpec, VectorTrainSpec
+from aisteer360.algorithms.state_control.common.selectors import ConditionPointSelector
+from aisteer360.algorithms.state_control.common.selectors.condition_point import ConditionPoint
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32

@@ -10,8 +10,8 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, SpecConstraint, needs
 from aisteer360.algorithms.core.execution.spec import BackendSpec
-from aisteer360.algorithms.state_control._common.model_layout import resolve_model_layout
 from aisteer360.algorithms.state_control.base import HookControl
+from aisteer360.algorithms.state_control.common.model_layout import resolve_model_layout
 from aisteer360.algorithms.state_control.pasta.args import PASTAArgs
 
 logger = logging.getLogger(__name__)

@@ -1,4 +1,4 @@
-"""Tests for the `output_control/_common` component library (output multiplicity design, P2).
+"""Tests for the `output_control/common` component library (output multiplicity design, P2).
 
 Hub-free: uses tiny randomly-initialized models and scripted values/scorers/automata. Covers the
 statefulness contract, candidate policies, the value-guided step shape, the contrastive-mixture
@@ -12,21 +12,21 @@ import torch
 from transformers import LogitsProcessorList, StoppingCriteriaList
 
 from aisteer360.algorithms.core.internals.data import LabeledExamples
-from aisteer360.algorithms.output_control._common.candidate_forward import CandidateForward
-from aisteer360.algorithms.output_control._common.candidates import rad_candidate_sizing, select_candidates
-from aisteer360.algorithms.output_control._common.criteria import BudgetTokens, StopOnSubstring, StopOnTokens
-from aisteer360.algorithms.output_control._common.drivers.frontier import Frontier
-from aisteer360.algorithms.output_control._common.drivers.phased import Fixed, Generated, PhasedDriver
-from aisteer360.algorithms.output_control._common.drivers.search import SearchDriver
-from aisteer360.algorithms.output_control._common.estimators.linear_probe import LinearProbe, LinearProbeEstimator
-from aisteer360.algorithms.output_control._common.kv_cache import repeat_cache, select_cache
-from aisteer360.algorithms.output_control._common.logit_sources import BaseLogitSource
-from aisteer360.algorithms.output_control._common.processors.base import PrefixKeyedProcessor
-from aisteer360.algorithms.output_control._common.processors.constraint import ConstraintProcessor
-from aisteer360.algorithms.output_control._common.processors.contrastive_mixture import ContrastiveMixtureProcessor
-from aisteer360.algorithms.output_control._common.processors.value_guided import ValueGuidedProcessor, _normalize
-from aisteer360.algorithms.output_control._common.values.base import BaseCandidateValue, StepContext
-from aisteer360.algorithms.output_control._common.values.subspace_margin import SubspaceMarginValue
+from aisteer360.algorithms.output_control.common.candidate_forward import CandidateForward
+from aisteer360.algorithms.output_control.common.candidates import rad_candidate_sizing, select_candidates
+from aisteer360.algorithms.output_control.common.criteria import BudgetTokens, StopOnSubstring, StopOnTokens
+from aisteer360.algorithms.output_control.common.drivers.frontier import Frontier
+from aisteer360.algorithms.output_control.common.drivers.phased import Fixed, Generated, PhasedDriver
+from aisteer360.algorithms.output_control.common.drivers.search import SearchDriver
+from aisteer360.algorithms.output_control.common.estimators.linear_probe import LinearProbe, LinearProbeEstimator
+from aisteer360.algorithms.output_control.common.kv_cache import repeat_cache, select_cache
+from aisteer360.algorithms.output_control.common.logit_sources import BaseLogitSource
+from aisteer360.algorithms.output_control.common.processors.base import PrefixKeyedProcessor
+from aisteer360.algorithms.output_control.common.processors.constraint import ConstraintProcessor
+from aisteer360.algorithms.output_control.common.processors.contrastive_mixture import ContrastiveMixtureProcessor
+from aisteer360.algorithms.output_control.common.processors.value_guided import ValueGuidedProcessor, _normalize
+from aisteer360.algorithms.output_control.common.values.base import BaseCandidateValue, StepContext
+from aisteer360.algorithms.output_control.common.values.subspace_margin import SubspaceMarginValue
 from tests.utils.runtime_helpers import ScriptedSession, script_session_generate
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
@@ -581,7 +581,7 @@ class TestValueGuidedMaxCandidates:
         assert value.seen_k[-1] == 3
 
     def test_warn_once_for_model_forward_value(self, monkeypatch):
-        import aisteer360.algorithms.output_control._common.processors.value_guided as vg
+        import aisteer360.algorithms.output_control.common.processors.value_guided as vg
         monkeypatch.setattr(vg, "LARGE_CANDIDATE_SET_WARN_THRESHOLD", 8)
         value = _ModelForwardScriptedValue()
         proc = vg.ValueGuidedProcessor(
@@ -597,7 +597,7 @@ class TestValueGuidedMaxCandidates:
             proc(torch.tensor([[0]]), scores.clone())  # would raise if it warned
 
     def test_no_warn_for_aux_forward_value(self, monkeypatch):
-        import aisteer360.algorithms.output_control._common.processors.value_guided as vg
+        import aisteer360.algorithms.output_control.common.processors.value_guided as vg
         monkeypatch.setattr(vg, "LARGE_CANDIDATE_SET_WARN_THRESHOLD", 8)
 
         class _AuxValue(_CheapScriptedValue):
@@ -628,7 +628,7 @@ class TestValueGuidedMaxCandidates:
 
 
 # AuxModelSource / PromptVariantSource mask correctness (P3.5 F4)
-from aisteer360.algorithms.output_control._common.logit_sources import AuxModelSource, PromptVariantSource
+from aisteer360.algorithms.output_control.common.logit_sources import AuxModelSource, PromptVariantSource
 
 
 class TestAuxSourceMaskCorrectness:

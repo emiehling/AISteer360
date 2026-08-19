@@ -7,7 +7,7 @@ loop is exclusive and owned by at most one `DecodingDriver` (default: the pipeli
 criteria do not.
 
 Runs hub-free on a tiny randomly-initialized Llama with module-local fixture controls (no
-`output_control/_common` dependency).
+`output_control/common` dependency).
 """
 import math
 
@@ -26,7 +26,7 @@ LAYERS = 4
 VOCAB = 100
 
 
-# fixture controls (module-local; no _common)
+# fixture controls (module-local; no common)
 class _ForceTokenControl(OutputControl):
     """Contributes a processor that masks all logits to -inf except token `k`."""
 

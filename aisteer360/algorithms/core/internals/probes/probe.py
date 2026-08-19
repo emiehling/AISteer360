@@ -235,6 +235,6 @@ class Probe:
             A `Gate` for an `Intervention`'s gate slot (e.g. `ActivationAdapter`'s `gate=`).
         """
         # the single sanctioned function-local import from core/internals into a category package
-        from aisteer360.algorithms.state_control._common.gating import gate_from_probe
+        from aisteer360.algorithms.state_control.common.gating import gate_from_probe
 
         return gate_from_probe(self, allow_model_mismatch=allow_model_mismatch)

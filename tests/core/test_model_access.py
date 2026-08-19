@@ -7,13 +7,13 @@ from aisteer360.algorithms.core.execution import BackendSpec, ModelAccess, Unsup
 from aisteer360.algorithms.core.execution.session_utils import ScopedSession
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.state_control._common.sources import (
+from aisteer360.algorithms.state_control.common.sources import (
     ContrastiveFit,
     LayerFilteredFit,
     SinglePairFit,
     _Precomputed,
 )
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from aisteer360.backends.huggingface import HFBackend
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

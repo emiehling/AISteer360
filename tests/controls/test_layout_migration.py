@@ -12,12 +12,12 @@ from aisteer360.algorithms.core.execution import (
     ModelFacts,
     PreparedPrompt,
 )
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
 from aisteer360.algorithms.state_control.act_add.control import ActAdd
 from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
 from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
 from aisteer360.algorithms.state_control.caa.control import CAA
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
 from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
 from aisteer360.algorithms.state_control.iti.control import ITI
 from aisteer360.backends.huggingface import HFBackend

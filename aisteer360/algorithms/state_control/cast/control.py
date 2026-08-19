@@ -1,4 +1,4 @@
-"""CAST control: conditional activation steering, composed from `_common` components."""
+"""CAST control: conditional activation steering, composed from `common` components."""
 from __future__ import annotations
 
 import logging
@@ -7,18 +7,15 @@ from dataclasses import dataclass
 import torch
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
-from aisteer360.algorithms.state_control._common.estimators import (
-    ContrastiveDirectionEstimator,
-    MeanDifferenceEstimator,
-)
-from aisteer360.algorithms.state_control._common.fit_specs import Comparator, CompMode, VectorTrainSpec
-from aisteer360.algorithms.state_control._common.gating import Gate, PerKeyThreshold
-from aisteer360.algorithms.state_control._common.selectors import LateThirdSelector
-from aisteer360.algorithms.state_control._common.sources import ConditionPointSearch, _Precomputed
-from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
-from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, NormPreservingTransform
-from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform
 from aisteer360.algorithms.state_control.base import InterventionControl
+from aisteer360.algorithms.state_control.common.estimators import ContrastiveDirectionEstimator, MeanDifferenceEstimator
+from aisteer360.algorithms.state_control.common.fit_specs import Comparator, CompMode, VectorTrainSpec
+from aisteer360.algorithms.state_control.common.gating import Gate, PerKeyThreshold
+from aisteer360.algorithms.state_control.common.selectors import LateThirdSelector
+from aisteer360.algorithms.state_control.common.sources import ConditionPointSearch, _Precomputed
+from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
+from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
+from aisteer360.algorithms.state_control.common.transforms.base import BaseTransform
 
 from .args import CASTArgs
 
@@ -180,7 +177,7 @@ class CAST(InterventionControl):
     at the layer-input boundary whose gate comes from a `ConditionPointSearch` source (fitting
     the condition vector and grid-searching the gate point at bind time), and whose transform
     comes from the default additive build or the `behavior_transform` slot. The runtime pieces
-    it resolves to are the `_common` component families:
+    it resolves to are the `common` component families:
 
     - `ContrastiveDirectionEstimator` / `MeanDifferenceEstimator`: learn per-layer direction
       vectors from contrastive text pairs.

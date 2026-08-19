@@ -32,12 +32,12 @@ from aisteer360.algorithms.output_control.base import DecodingDriver, stack_gene
 from aisteer360.algorithms.output_control.best_of_n.control import BestOfN
 from aisteer360.algorithms.output_control.budget_forcing.control import BudgetForcing
 from aisteer360.algorithms.output_control.deal.control import DeAL
+from aisteer360.algorithms.output_control.phased_decoding.control import PhasedDecoding
 from aisteer360.algorithms.output_control.search_decoding.control import SearchDecoding
 from aisteer360.algorithms.output_control.stopping_rules.control import StoppingRules
-from aisteer360.algorithms.output_control.thinking_intervention.control import ThinkingIntervention
-from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
 from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
 from aisteer360.algorithms.state_control.base import StateControl
+from aisteer360.algorithms.state_control.common.runtime import TransformHookRuntime
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.backends.huggingface import HFBackend
 from aisteer360.backends.vllm import extract_ref_logprobs, map_vllm_finish_reason, render_vllm_sampling_args
@@ -409,6 +409,50 @@ class TestPipelineStopRules:
         assert len(out.finish_reasons) == 3
         assert out.finish_reason == out.finish_reasons[0]
 
+    def test_output_return_exposes_every_candidate(self, model, tokenizer):
+        pipeline = _pipeline(model, tokenizer)
+        out = pipeline.generate(
+            text="the cat", max_new_tokens=3, do_sample=True, num_return_sequences=3,
+            seed=11, return_output=True,
+        )
+        assert out.output_ids.size(0) == 3
+        assert len(out.decode(tokenizer)) == 3
+
+    def test_decoded_single_with_multiple_candidates_rejected(self, model, tokenizer):
+        pipeline = _pipeline(model, tokenizer)
+        with pytest.raises(ValueError, match="exactly one candidate per prompt"):
+            pipeline.generate(
+                text="the cat", max_new_tokens=3, do_sample=True, num_return_sequences=3,
+            )
+
+    def test_decoded_batched_with_multiple_candidates_rejected(self, model, tokenizer):
+        pipeline = _pipeline(model, tokenizer)
+        with pytest.raises(ValueError, match="return_output=True"):
+            pipeline.generate(
+                text=["the cat", "the dog"], max_new_tokens=3, do_sample=True,
+                num_return_sequences=2,
+            )
+
+    def test_decoded_n_alias_with_multiple_candidates_rejected(self, model, tokenizer):
+        pipeline = _pipeline(model, tokenizer)
+        with pytest.raises(ValueError, match="exactly one candidate per prompt"):
+            pipeline.generate(text="the cat", max_new_tokens=3, do_sample=True, n=2)
+
+    def test_decoded_single_candidate_allowed(self, model, tokenizer):
+        pipeline = _pipeline(model, tokenizer)
+        text = pipeline.generate(
+            text="the cat", max_new_tokens=3, do_sample=True, num_return_sequences=1, seed=11,
+        )
+        assert isinstance(text, str)
+
+    def test_token_return_carries_candidates_in_shape(self, model, tokenizer):
+        pipeline = _pipeline(model, tokenizer)
+        ids = pipeline.generate(
+            input_ids=torch.tensor([3, 4]), max_new_tokens=3, do_sample=True,
+            num_return_sequences=3, seed=11,
+        )
+        assert ids.size(0) == 3
+
     def test_seeded_pipeline_generation_is_repeatable(self, model, tokenizer):
         pipeline = _pipeline(model, tokenizer)
         first = pipeline.generate(
@@ -471,7 +515,11 @@ class TestPortableRequirements:
     def test_phase_drivers_supported_on_vllm(self):
         assert self._generate_ok_on_vllm(BudgetForcing(max_thinking_tokens=4))
         assert self._generate_ok_on_vllm(
-            ThinkingIntervention(intervention=lambda prompt, params: prompt)
+            PhasedDecoding(
+                plan=[{"fixed": lambda prompt, params: prompt, "replace": True, "add_special_tokens": True},
+                      {"generate": {}}],
+                extract_after="</think>",
+            )
         )
 
     def test_sampled_search_supported_beam_not(self):
@@ -652,7 +700,7 @@ class TestSerialSeedStateHooks:
         assert all(mask.size(0) == 1 for mask in transform.masks)
 
     def test_clone_for_call_isolates_gate_state(self, model, tokenizer):
-        from aisteer360.algorithms.state_control._common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
+        from aisteer360.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
 
         gate = Gate(
             Evidence((0,), CallableReadout(lambda pooled, layer_id: pooled.mean(dim=-1))),

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.output_control._common.drivers.search import SearchDriver
-from aisteer360.algorithms.output_control._common.resolve import resolve_scorer
 from aisteer360.algorithms.output_control.base import OutputControl
+from aisteer360.algorithms.output_control.common.drivers.search import SearchDriver
+from aisteer360.algorithms.output_control.common.resolve import resolve_scorer
 from aisteer360.algorithms.output_control.search_decoding.args import SearchDecodingArgs
 
 
@@ -12,7 +12,7 @@ class SearchDecoding(SearchDriver):
     """Config-first segment-shape driver: propose -> score -> keep -> iterate.
 
     `SearchDecoding` is the generic over the segment shape, a thin `Args`-configured preset of the
-    `_common` `SearchDriver`. Its defaults are best-of-N: with no arguments beyond a scorer, it
+    `common` `SearchDriver`. Its defaults are best-of-N: with no arguments beyond a scorer, it
     samples `num_candidates` full-budget continuations once and returns the scorer's argmax. A
     method from the literature is an assignment of a config:
 

@@ -16,7 +16,10 @@ from vllm_hook_plugins.core.schema import parse_intervention_spec
 from aisteer360.algorithms.core.execution import ModelFacts
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.internals.probes import Probe
-from aisteer360.algorithms.state_control._common.gating import (
+from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
+from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
+from aisteer360.algorithms.state_control.caa.control import CAA
+from aisteer360.algorithms.state_control.common.gating import (
     AffineReadout,
     CosineReadout,
     Evidence,
@@ -26,10 +29,10 @@ from aisteer360.algorithms.state_control._common.gating import (
     SumThreshold,
     gate_from_probe,
 )
-from aisteer360.algorithms.state_control._common.lowering import artifact_id_for, lower_interventions
-from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import (
+from aisteer360.algorithms.state_control.common.lowering import artifact_id_for, lower_interventions
+from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.transforms import (
     AdditiveTransform,
     AlignmentAdaptiveTransform,
     HeadAdditiveTransform,
@@ -37,10 +40,6 @@ from aisteer360.algorithms.state_control._common.transforms import (
     ProjectionTransform,
     RotationTransform,
 )
-from aisteer360.algorithms.state_control.act_add.control import ActAdd
-from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
-from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
-from aisteer360.algorithms.state_control.caa.control import CAA
 from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
 from aisteer360.algorithms.state_control.iti.control import ITI
 
@@ -101,10 +100,6 @@ CONFIGS = [
     pytest.param(
         lambda: CAA(steering_vector=_vector(), layer_id=2, multiplier=-2.0, use_norm_preservation=True),
         2, 2, id="caa-norm-preserving",
-    ),
-    pytest.param(
-        lambda: ActAdd(steering_vector=_vector(), layer_id=2, multiplier=2.0),
-        2, 1, id="act-add-broadcast",
     ),
     pytest.param(
         lambda: DirectionalAblation(steering_vector=_vector(), layer_ids=[1]),
@@ -204,7 +199,7 @@ class TestPerTransformEquality:
 class TestModifierChain:
 
     def _forms(self):
-        from aisteer360.algorithms.state_control._common.transforms.base import unwrap_modifiers
+        from aisteer360.algorithms.state_control.common.transforms.base import unwrap_modifiers
 
         vector = _vector(k=2)
         transform = NormPreservingTransform(

@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
 from aisteer360.algorithms.core.base_args import BaseArgs
-from aisteer360.algorithms.state_control._common.gating import Gate, GateSource
-from aisteer360.algorithms.state_control._common.selectors.base import BaseSelector
-from aisteer360.algorithms.state_control._common.token_scope import ScopeKind
-from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform
-from aisteer360.algorithms.state_control._common.transforms.context import TransformContext
+from aisteer360.algorithms.state_control.common.gating import Gate, GateSource
+from aisteer360.algorithms.state_control.common.selectors.base import BaseSelector
+from aisteer360.algorithms.state_control.common.token_scope import ScopeKind
+from aisteer360.algorithms.state_control.common.transforms.base import BaseTransform
+from aisteer360.algorithms.state_control.common.transforms.context import TransformContext
 
 _ARTIFACT_KWARG_HINTS = {
     "steering_vector": "pass it to the transform, e.g. AdditiveTransform(sv, strength=...) "
@@ -30,7 +30,7 @@ class ActivationAdapterArgs(BaseArgs):
     """Arguments for `ActivationAdapter`.
 
     The adapter is the single-behavior atom for activation steering: one transform (which carries
-    its own artifact), one selector, one gate, one token scope. It exposes the `_common` component
+    its own artifact), one selector, one gate, one token scope. It exposes the `common` component
     families as constructor slots so a recipe can be assembled without writing a new control class.
 
     The transform is the sole artifact carrier. It holds a concrete `SteeringVector`/directions

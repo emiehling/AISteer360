@@ -1,21 +1,21 @@
 """Parity / behavior tests for the four ported output-control methods (output multiplicity design, P3).
 
 Hub-free. RAD and SASA had no prior test coverage; their steering math is pinned here directly. DeAL
-and ThinkingIntervention behavior is exercised against the port classes (the shape/content
-assertions of the existing hub tests are covered separately in test_deal.py / test_thinking_intervention.py).
+and PhasedDecoding tail-extraction behavior is exercised against the port classes (the shape/content
+assertions of the existing hub tests are covered separately in test_deal.py / test_generic_output_controls.py).
 """
 import pytest
 import torch
 from transformers import LlamaConfig, LlamaForSequenceClassification
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.output_control._common.estimators.linear_probe import LinearProbe
-from aisteer360.algorithms.output_control._common.values.base import StepContext
-from aisteer360.algorithms.output_control._common.values.subspace_margin import SubspaceMarginValue
+from aisteer360.algorithms.output_control.common.estimators.linear_probe import LinearProbe
+from aisteer360.algorithms.output_control.common.values.base import StepContext
+from aisteer360.algorithms.output_control.common.values.subspace_margin import SubspaceMarginValue
 from aisteer360.algorithms.output_control.deal.control import DeAL
+from aisteer360.algorithms.output_control.phased_decoding.control import PhasedDecoding
 from aisteer360.algorithms.output_control.rad.control import RAD
 from aisteer360.algorithms.output_control.sasa.control import SASA
-from aisteer360.algorithms.output_control.thinking_intervention.control import ThinkingIntervention
 from tests.utils.runtime_helpers import script_session_generate
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
@@ -230,8 +230,8 @@ class TestDeALPort:
         assert torch.all(continuation == 7)
 
 
-# ThinkingIntervention
-class TestThinkingInterventionPort:
+# PhasedDecoding (tail extraction)
+class TestPhasedTailExtractionPort:
     def test_extract_after_and_prefix_splice(self, monkeypatch):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         tokenizer = wordlevel_tokenizer()
@@ -240,7 +240,10 @@ class TestThinkingInterventionPort:
             plan = params.get("plan", "steps")
             return f"the {plan} </think> {prompt}"
 
-        ti = ThinkingIntervention(intervention=intervention)
+        ti = PhasedDecoding(
+            plan=[{"fixed": intervention, "replace": True, "add_special_tokens": True}, {"generate": {}}],
+            extract_after="</think>",
+        )
         pipeline, model, tokenizer = _pipeline([ti], model=model, tokenizer=tokenizer)
 
         prompt = tokenizer("the cat", return_tensors="pt").input_ids
@@ -269,7 +272,10 @@ class TestThinkingInterventionPort:
             seen_params.append(params.get("tag"))
             return f"{params.get('tag', 'x')} </think> {prompt}"
 
-        ti = ThinkingIntervention(intervention=intervention)
+        ti = PhasedDecoding(
+            plan=[{"fixed": intervention, "replace": True, "add_special_tokens": True}, {"generate": {}}],
+            extract_after="</think>",
+        )
         pipeline, model, tokenizer = _pipeline([ti], model=model, tokenizer=tokenizer)
 
         prompts = tokenizer(["the cat", "the dog"], return_tensors="pt", padding=True).input_ids

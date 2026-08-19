@@ -1,17 +1,17 @@
 """Angular Steering control: rotational activation steering in a learned 2D subspace."""
 from __future__ import annotations
 
-from aisteer360.algorithms.state_control._common.estimators import SteeringPlaneEstimator
-from aisteer360.algorithms.state_control._common.sources import ContrastiveFit, LayerFilteredFit, _Precomputed
-from aisteer360.algorithms.state_control._common.specs import CoveredLayers, Intervention, TokenScope
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import (
+from aisteer360.algorithms.state_control.base import InterventionControl
+from aisteer360.algorithms.state_control.common.estimators import SteeringPlaneEstimator
+from aisteer360.algorithms.state_control.common.sources import ContrastiveFit, LayerFilteredFit, _Precomputed
+from aisteer360.algorithms.state_control.common.specs import CoveredLayers, Intervention, TokenScope
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.transforms import (
     AlignmentAdaptiveTransform,
     NormPreservingTransform,
     RotationTransform,
 )
-from aisteer360.algorithms.state_control._common.transforms.base import unwrap_modifiers
-from aisteer360.algorithms.state_control.base import InterventionControl
+from aisteer360.algorithms.state_control.common.transforms.base import unwrap_modifiers
 
 from .args import AngularSteeringArgs
 

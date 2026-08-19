@@ -11,8 +11,8 @@ import torch
 
 from aisteer360.algorithms.core.execution import BackendSpec, Capability, ModelAccess, ModelFacts
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.caa.control import CAA
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
 HIDDEN = 16
 LAYERS = 4
@@ -75,8 +75,10 @@ class TestPhaseVerdicts:
         assert "prompt" in failures[0].message
 
     def test_generate_offers_spec_alternative_only_with_a_wire_form(self):
+        from aisteer360.algorithms.state_control.act_add.control import ActAdd
+
         exportable = CAA(steering_vector=_vector(), layer_id=1)
-        positional = CAA(steering_vector=_vector(k=3), layer_id=1)
+        positional = ActAdd(steering_vector=_vector(k=3), layer_id=1)
 
         def offers_specs(control) -> bool:
             return any(
@@ -112,29 +114,33 @@ class TestEagerLoweringFailure:
         fails at the eager steer-time lowering with the intervention named."""
         from aisteer360.algorithms.core.execution import UnsupportedOperationError
 
-        class _LyingSource:
-            """Declares a broadcast fit but resolves a positional vector."""
+        class _UncoveredSource:
+            """Resolves a vector with no direction for the behavior layer."""
 
             access = ModelAccess.FACTS
-            produces_positional = False
 
             def resolve(self, model, tokenizer, *, session=None):
-                return _vector(k=3)
+                generator = torch.Generator().manual_seed(3)
+                return SteeringVector(
+                    model_type="llama",
+                    directions={0: torch.randn(1, HIDDEN, generator=generator)},
+                )
 
-        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
-        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
         from aisteer360.algorithms.state_control.base import InterventionControl
+        from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
+        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
         from tests.utils.tiny_models import wordlevel_tokenizer
 
         class _DeclaredBroadcast(InterventionControl):
             Args = None
-            hook_only_hint = "positional directions have no intervention-spec form"
+            hook_only_hint = "the behavior layer has no direction; run on the huggingface backend"
 
             def _configure(self):
                 self._template = (Intervention(
                     layers=(1,),
-                    transform=AdditiveTransform(_LyingSource()),
+                    transform=AdditiveTransform(_UncoveredSource()),
                     scope=TokenScope("all"),
+                    require_coverage=False,
                 ),)
 
         control = _DeclaredBroadcast()

@@ -100,8 +100,8 @@ class TestEntrySelection:
 
     @staticmethod
     def _caa(**kwargs):
-        from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
         from aisteer360.algorithms.state_control.caa.control import CAA
+        from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
         vector = SteeringVector(
             model_type="llama", directions={1: torch.ones(1, 16)},
@@ -147,10 +147,10 @@ class TestEntrySelection:
 
     def test_hook_only_control_yields_verdict(self):
         from aisteer360.algorithms.core.execution import UnsupportedOperationError
-        from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-        from aisteer360.algorithms.state_control.caa.control import CAA
+        from aisteer360.algorithms.state_control.act_add.control import ActAdd
+        from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
-        positional = CAA(
+        positional = ActAdd(
             steering_vector=SteeringVector(model_type="llama", directions={1: torch.ones(3, 16)}),
             layer_id=1,
         )
@@ -162,13 +162,13 @@ class TestEntrySelection:
 
 class TestVerdictStrings:
 
-    def test_positional_caa_names_the_gap(self):
+    def test_positional_act_add_names_the_gap(self):
         from aisteer360.algorithms.core.execution import BackendSpec
         from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-        from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-        from aisteer360.algorithms.state_control.caa.control import CAA
+        from aisteer360.algorithms.state_control.act_add.control import ActAdd
+        from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
-        control = CAA(
+        control = ActAdd(
             steering_vector=SteeringVector(model_type="llama", directions={1: torch.ones(3, 16)}),
             layer_id=1,
         )
@@ -178,7 +178,7 @@ class TestVerdictStrings:
         ))
         (failure,) = report.failures_for("generate")
         assert failure.message == (
-            "CAA is unsupported at generate on backend kind 'vllm': missing IN_PROCESS_TORCH; "
+            "ActAdd is unsupported at generate on backend kind 'vllm': missing IN_PROCESS_TORCH; "
             "positional directions have no intervention-spec form; run on the huggingface backend."
         )
 
@@ -197,8 +197,8 @@ class TestVerdictStrings:
     def test_exportable_caa_is_supported_on_plugin_backend(self):
         from aisteer360.algorithms.core.execution import BackendSpec
         from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-        from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
         from aisteer360.algorithms.state_control.caa.control import CAA
+        from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
         control = CAA(
             steering_vector=SteeringVector(model_type="llama", directions={1: torch.ones(1, 16)}),
@@ -217,7 +217,7 @@ class TestDiscoveryIntersection:
 
     def test_negotiated_kinds_narrow_static_tables(self):
         from aisteer360.algorithms.core.execution import BackendSpec, capabilities_for_spec
-        from aisteer360.backends import vllm as vllm_backend
+        from aisteer360.backends.vllm import capabilities as vllm_capabilities
 
         spec = BackendSpec(kind="vllm", model="intersect-test", options={"hook_plugin": True})
         static = capabilities_for_spec(spec)
@@ -235,7 +235,7 @@ class TestDiscoveryIntersection:
             "processor_kinds": {"processors": []},
             "capture_kinds": {"kinds": ["residual"], "locations": ["layer_output"], "modes": ["all_tokens"]},
         }
-        vllm_backend._DISCOVERY_CACHE[spec.spec_hash] = payload
+        vllm_capabilities._DISCOVERY_CACHE[spec.spec_hash] = payload
         try:
             negotiated = capabilities_for_spec(spec)
             assert "rotation" not in negotiated.intervention_kinds.transforms
@@ -246,14 +246,14 @@ class TestDiscoveryIntersection:
             assert negotiated.capture_kinds.locations == frozenset({"layer_output"})
             assert negotiated.atoms == static.atoms
         finally:
-            vllm_backend._DISCOVERY_CACHE.pop(spec.spec_hash, None)
+            vllm_capabilities._DISCOVERY_CACHE.pop(spec.spec_hash, None)
 
     def test_gates_shaped_payload_yields_empty_readout_and_rule_sets(self):
         """A discovery payload from a pre-redesign plugin (a `gates` list, no `readouts`/`rules`
         keys) negotiates empty readout and rule sets, so gated interventions get an honest
         unsupported verdict."""
         from aisteer360.algorithms.core.execution import BackendSpec, capabilities_for_spec
-        from aisteer360.backends import vllm as vllm_backend
+        from aisteer360.backends.vllm import capabilities as vllm_capabilities
 
         spec = BackendSpec(kind="vllm", model="old-plugin-test", options={"hook_plugin": True})
         payload = {
@@ -264,11 +264,11 @@ class TestDiscoveryIntersection:
                 "gates": ["null", "cache_once", "probe_sum"],
             },
         }
-        vllm_backend._DISCOVERY_CACHE[spec.spec_hash] = payload
+        vllm_capabilities._DISCOVERY_CACHE[spec.spec_hash] = payload
         try:
             negotiated = capabilities_for_spec(spec)
             assert negotiated.intervention_kinds.readouts == frozenset()
             assert negotiated.intervention_kinds.rules == frozenset()
             assert "additive" in negotiated.intervention_kinds.transforms
         finally:
-            vllm_backend._DISCOVERY_CACHE.pop(spec.spec_hash, None)
+            vllm_capabilities._DISCOVERY_CACHE.pop(spec.spec_hash, None)

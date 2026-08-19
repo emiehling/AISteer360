@@ -189,9 +189,9 @@ class TestCoexistence:
     `"all"`-scoped behavior transforms apply to it."""
 
     def test_read_skips_condition_scoring_and_applies_behavior(self, model):
-        from aisteer360.algorithms.state_control._common.gating import CallableReadout, Evidence, Gate
-        from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
-        from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
+        from aisteer360.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate
+        from aisteer360.algorithms.state_control.common.runtime import TransformHookRuntime
+        from aisteer360.algorithms.state_control.common.token_scope import compute_prompt_lens
         from tests.utils.runtime_helpers import NeverCompleteRule, RecordingTransform
 
         ids = torch.tensor([[3, 4, 5, 6]])
@@ -233,8 +233,8 @@ class TestCoexistence:
         assert not torch.allclose(steered, baseline)  # scores measure the stream as deployed
 
     def test_read_leaves_live_cast_counters_and_gates_untouched(self, model, tokenizer, monkeypatch):
-        from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
         from aisteer360.algorithms.state_control.cast.control import CAST
+        from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
         def steering_vector(seed, layers):
             return SteeringVector(

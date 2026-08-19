@@ -11,8 +11,8 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.iti.control import ITI
 from tests.utils.runtime_helpers import capture_built_runtimes
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer

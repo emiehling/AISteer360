@@ -7,16 +7,16 @@ import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
-from aisteer360.algorithms.output_control._common.processors.value_guided import ValueGuidedProcessor
-from aisteer360.algorithms.output_control._common.resolve import resolve_value
 from aisteer360.algorithms.output_control.base import OutputControl
+from aisteer360.algorithms.output_control.common.processors.value_guided import ValueGuidedProcessor
+from aisteer360.algorithms.output_control.common.resolve import resolve_value
 from aisteer360.algorithms.output_control.value_guidance.args import ValueGuidanceArgs
 
 
 class ValueGuidance(OutputControl):
     """Value-guided decoding as configuration: score candidate tokens with a value function and shift their logits.
 
-    `ValueGuidance` is the generic over the step shape. It exposes the `_common` value slot through
+    `ValueGuidance` is the generic over the step shape. It exposes the `common` value slot through
     flat `Args`: a candidate policy selects a small set of next tokens, a per-candidate value scores
     them, the values are normalized per row, and the selected candidates' logits are shifted by
     `beta * value` (optionally masking non-candidates to `-inf`). A method from the literature is an

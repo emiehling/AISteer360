@@ -9,11 +9,11 @@ import torch
 
 from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control._common import measure_residual_norms
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
 from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
 from aisteer360.algorithms.state_control.cast.control import CAST
+from aisteer360.algorithms.state_control.common import measure_residual_norms
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
 from aisteer360.utils.rendering import render_for_model
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

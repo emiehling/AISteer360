@@ -82,7 +82,7 @@ def _hf_reference(control_factory, prompt: str, max_new_tokens: int = 8):
 
 
 def _steered_vector(model_ref: str, hidden: int, layers, k: int = 1, seed: int = 5):
-    from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
+    from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
     generator = torch.Generator().manual_seed(seed)
     return SteeringVector(
@@ -144,9 +144,9 @@ class TestSpecParityOnEngine:
         """The salting rule's regression alarm: a steered request after a baseline request over
         the same prompt must not reuse KV computed without the intervention."""
         from aisteer360.algorithms.core.execution import InterventionEntry
-        from aisteer360.algorithms.state_control._common.lowering import lower_interventions
-        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
-        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
+        from aisteer360.algorithms.state_control.common.lowering import lower_interventions
+        from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
+        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
 
         hidden = plugin_backend._layout.hidden_size
         vector = _steered_vector(TINY_MODEL, hidden, [1])
@@ -267,8 +267,8 @@ class TestCaptureOnEngine:
 
     def test_vector_fitted_on_engine_steers_in_process(self, plugin_backend):
         from aisteer360.algorithms.core.internals.data import ContrastivePairs
-        from aisteer360.algorithms.state_control._common.estimators import MeanDifferenceEstimator
-        from aisteer360.algorithms.state_control._common.fit_specs import VectorTrainSpec
+        from aisteer360.algorithms.state_control.common.estimators import MeanDifferenceEstimator
+        from aisteer360.algorithms.state_control.common.fit_specs import VectorTrainSpec
 
         pairs = ContrastivePairs(
             positives=["the committee approved it", "they agreed at once"],
@@ -293,8 +293,8 @@ class TestCaptureOnEngine:
         """A probe-gated adapter fires on the gate-open prompt and stays inert on the
         gate-closed prompt, matching in-process decisions."""
         from aisteer360.algorithms.core.internals.probes import Probe
-        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
         from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
+        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
 
         layout = plugin_backend._layout
         hidden = layout.hidden_size

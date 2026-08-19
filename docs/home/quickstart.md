@@ -6,7 +6,7 @@ This guide will walk you through how to run a simple control in AISteer360.
     By default, AISteer360 runs the model inside your process. For efficient inference on more complex steering
     operations, please run the toolkit from a machine that has enough GPU memory for both the base checkpoint and the
     extra overhead your steering method/pipeline adds. Inference through vLLM (offline engine or server) is available
-    via the execution backends; see the [backends reference](../reference/backends.md).
+    via the [execution backends](../concepts/steering_pipelines.md#execution-backends).
 
 The first step in steering any model is to define how you want to steer, i.e., the control. For this guide, we will use
 an `ActivationAdapter`, a state control that edits the model's internal activations at inference time. The desired
@@ -21,7 +21,7 @@ The transform's artifact is a steering direction. We obtain it from a contrast b
 extraction settings, and fits one direction per layer when the adapter steers:
 
 ```python
-from aisteer360.algorithms.state_control._common.sources import ContrastiveFit
+from aisteer360.algorithms.state_control.common.sources import ContrastiveFit
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 
 pairs = ContrastivePairs(
@@ -48,7 +48,7 @@ transform, placed at a single layer, defines the control:
 
 ```python
 from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
-from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
+from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
 
 activation_adapter = ActivationAdapter(
     transform=AdditiveTransform(positivity, strength=1.0),

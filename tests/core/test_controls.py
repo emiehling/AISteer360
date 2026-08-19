@@ -17,9 +17,9 @@ from transformers import LogitsProcessorList, StoppingCriteriaList
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.output_control.base import DecodingDriver, OutputControl
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.base import StateControl
 from aisteer360.algorithms.state_control.caa.control import CAA
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from tests.conftest import MockInputArgs, MockInputControl, MockOutputControl, MockStateControl, MockStructuralControl
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer

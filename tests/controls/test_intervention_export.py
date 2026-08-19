@@ -6,19 +6,19 @@ from vllm_hook_plugins.core.schema import parse_intervention_spec
 
 from aisteer360.algorithms.core.execution import Capability, ModelFacts
 from aisteer360.algorithms.core.internals.probes import Probe
-from aisteer360.algorithms.state_control._common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
-from aisteer360.algorithms.state_control._common.lowering import artifact_id_for
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import (
+from aisteer360.algorithms.state_control.act_add.control import ActAdd
+from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
+from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
+from aisteer360.algorithms.state_control.caa.control import CAA
+from aisteer360.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
+from aisteer360.algorithms.state_control.common.lowering import artifact_id_for
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.transforms import (
     AdditiveTransform,
     AlignmentAdaptiveTransform,
     NormPreservingTransform,
     RotationTransform,
 )
-from aisteer360.algorithms.state_control.act_add.control import ActAdd
-from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
-from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
-from aisteer360.algorithms.state_control.caa.control import CAA
 from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
 from aisteer360.algorithms.state_control.iti.control import ITI
 
@@ -91,19 +91,16 @@ class TestFamilyExports:
         (op,) = control.export_intervention_spec().ops
         assert op["transform"]["modifiers"] == [{"kind": "norm_preserving"}]
 
-    def test_positional_caa_is_hook_only(self, session):
+    def test_multi_row_vector_under_caa_raises_at_steer(self, session):
         control = CAA(steering_vector=_vector(k=3, layers=[2]), layer_id=2)
+        with pytest.raises(ValueError, match="positional=True"):
+            control.steer(model=None, session=session)
+
+    def test_act_add_is_hook_only(self, session):
+        control = ActAdd(steering_vector=_vector(), layer_id=2, multiplier=2.0)
         assert not _supports_specs(control)
         control.steer(model=None, session=session)
         assert control.export_intervention_spec() is None
-
-    def test_act_add_maps_layer_input_to_previous_wire_layer(self, session):
-        control = ActAdd(steering_vector=_vector(), layer_id=2, multiplier=2.0)
-        control.steer(model=None, session=session)
-        (op,) = control.export_intervention_spec().ops
-        assert op["layers"] == [1]
-        assert op["scope"] == {"kind": "all"}
-        assert _supports_specs(control)
 
     def test_act_add_layer_zero_is_hook_only(self, session):
         control = ActAdd(steering_vector=_vector(), layer_id=0)
@@ -247,7 +244,7 @@ class TestAdapterExports:
         assert control.export_intervention_spec() is None
 
     def test_gate_source_declares_kinds_before_binding(self):
-        from aisteer360.algorithms.state_control._common.sources import ConditionPointSearch
+        from aisteer360.algorithms.state_control.common.sources import ConditionPointSearch
 
         source = ConditionPointSearch(
             condition_vector=SteeringVector(model_type="llama", directions={1: torch.ones(1, HIDDEN)}),
@@ -267,8 +264,8 @@ class TestAdapterExports:
 class TestExportMechanics:
 
     def test_modifier_order_is_innermost_first(self):
-        from aisteer360.algorithms.state_control._common.lowering import lower_interventions
-        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
+        from aisteer360.algorithms.state_control.common.lowering import lower_interventions
+        from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
 
         vector = _vector(k=2)
         transform = NormPreservingTransform(
@@ -307,7 +304,6 @@ class TestExportMechanics:
         )
         configurations = [
             CAA(steering_vector=_vector(), layer_id=2),
-            CAA(steering_vector=_vector(k=3, layers=[2]), layer_id=2),
             CAA(steering_vector=_vector(), layer_id=2, use_norm_preservation=True),
             ActAdd(steering_vector=_vector(), layer_id=2),
             ActAdd(steering_vector=_vector(), layer_id=0),

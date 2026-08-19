@@ -28,8 +28,11 @@ The four control categories, defined by what a method touches:
 Vocabulary used throughout the codebase:
 
 - **control**: one steering method, subclassing the base class of its category.
-- **generic**: a reusable building block in a category's `_common/` library (transforms, gating, drivers, selectors,
-  formatters, ...). Named methods are often thin presets over generics.
+- **generic**: a dedicated recipe control class (`activation_adapter`, `value_guidance`, `search_decoding`, ...) that
+  exposes common component slots through flat, sweepable `Args`, so a method from the literature is a configuration
+  rather than a new class; named methods are siblings of generics, not children.
+- **common library**: the per-category building blocks in `common/` (transforms, gating, drivers, selectors,
+  formatters, ...) from which generics and named methods alike are assembled.
 - **probe**: a calibrated linear readout over hidden states used for detection (reads, never edits); gating and
   routing consume its decisions.
 
@@ -43,14 +46,14 @@ aisteer360/
 │   │   ├── internals/           # activation capture, pooling, stats; probes/ (detection)
 │   │   └── utils/               # control merging, generation helpers, auxiliary_pass
 │   ├── input_control/           # each category: base.py + one folder per method (triplet layout below)
-│   │   └── _common/             # generics: memory, formatters, proposers, scorers, selectors
+│   │   └── common/             # building blocks: memory, formatters, proposers, scorers, selectors
 │   ├── state_control/
-│   │   └── _common/             # generics: transforms, estimators, gating, selectors, hook runtime
+│   │   └── common/             # building blocks: transforms, estimators, gating, selectors, hook runtime
 │   ├── output_control/          # methods incl. routed_decoding/ (control, routing.py, actions.py)
-│   │   └── _common/             # generics: drivers, processors, scorers, values, criteria
+│   │   └── common/             # building blocks: drivers, processors, scorers, values, criteria
 │   └── structural_control/
 │       └── wrappers/            # trl/ (sft, dpo, ppo, grpo, apo) and mergekit/
-├── backends/                    # HFBackend/ExclusiveSession (in-process), VLLMBackend, VLLMServeBackend
+├── backends/                    # huggingface/ (HFBackend, ExclusiveSession); vllm/ (VLLMBackend, VLLMServeBackend)
 ├── evaluation/
 │   ├── benchmark.py             # Benchmark runner (trials, sweeps, checkpoint/resume)
 │   ├── metrics/                 # base.py, base_judge.py; generic/ and custom/<use_case>/
@@ -164,7 +167,7 @@ The registered names at the time of writing:
 - state: `act_add`, `activation_adapter`, `angular_steering`, `caa`, `cast`, `directional_ablation`, `iti`, `pasta`
 - output: `best_of_n`, `budget_forcing`, `constrained_decoding`, `contrastive_decoding`, `contrastive_guidance`,
   `deal`, `dexperts`, `phased_decoding`, `rad`, `routed_decoding`, `sasa`, `search_decoding`, `stopping_rules`,
-  `thinking_intervention`, `value_guidance`
+  `value_guidance`
 - structural: `mergekit`, `sft`, `dpo`, `ppo`, `grpo`, `apo` (MergeKit and TRL wrappers)
 
 ### Pipeline semantics
@@ -181,7 +184,10 @@ The registered names at the time of writing:
 
 Positional `str`/`list[str]` behaves like `text=`; any other positional shape raises a `TypeError`. The
 per-source methods `generate_text`, `generate_messages`, and `generate_tokens` sit alongside `generate()`
-with the same behavior and named parameters for the reserved keys.
+with the same behavior and named parameters for the reserved keys. Decoded text returns carry exactly one
+candidate per prompt: `num_return_sequences`/`n` greater than 1 with `text=`/`messages=` raises `ValueError`
+unless `return_output=True` (one `output_ids` row and one finish reason per candidate); the token return is
+`[batch * n, gen_len]` with each prompt's candidates contiguous, as in `model.generate`.
 
 Behaviors that differ from bare Hugging Face usage:
 
@@ -230,7 +236,7 @@ pipeline = SteeringPipeline(
   `UnsupportedPipelineError` for unsupported control/backend combinations at generate. Verdict messages are
   stable tested strings naming the gap and the fix. The report also carries `plan`, the deterministic steer
   plan (per-control access and venue, per-fit venue, whether a stage runs, and the warnings that will fire).
-  The per-control support boundary is the compatibility matrix in `docs/reference/backends.md`.
+  The per-control support boundary is recorded on each control's `Backends` line in `docs/concepts/controls.md`.
 - The steer phase satisfies each control's declared `steer_access()` by venue: `facts` and `rollouts` run
   through the backend's session on every kind, `capture` runs through session capture where the spec
   advertises it (the offline plugin engine) and on a staged in-process model where not (serve, or
@@ -379,7 +385,7 @@ own in the common case. Required hooks per category:
   that control's token-level `adapt` for the call, so implementing both does not double-apply.
 - **structural**: `steer(model, tokenizer, **kwargs) -> PreTrainedModel`; return the new or modified model.
 - **state**: residual-stream methods subclass `InterventionControl` and declare an unbound intervention template
-  in `_configure()` (a tuple of `Intervention` objects from `state_control/_common/specs.py`: layers or a selector,
+  in `_configure()` (a tuple of `Intervention` objects from `state_control/common/specs.py`: layers or a selector,
   a transform possibly carrying an `ArtifactSource`, a `TokenScope`, an optional gate); the base `steer()`
   binds it, `build_hooks` compiles it to torch hooks per generation, and `lower_interventions` compiles it to an
   `InterventionSpec` per steer, so the control contains no hook code, no per-generation state, and no backend
@@ -440,7 +446,7 @@ when the dependency is absent instead of failing.
 
 ### Generics before new machinery
 
-Before writing new components, check the category's `_common/` library and compose from it:
+Before writing new components, check the category's `common/` library and compose from it:
 
 - **state**: transforms (`AdditiveTransform`, `ProjectionTransform`, `RotationTransform`,
   `HeadAdditiveTransform`, `NormPreservingTransform`, `AlignmentAdaptiveTransform`), estimators
@@ -459,7 +465,7 @@ Before writing new components, check the category's `_common/` library and compo
   over ad hoc classifiers, and consume their decisions through `Probe.as_gate()` for gated interventions or
   `routed_decoding`'s `Router` (ordered `Route`s with `P(name)` predicates) for routing.
 
-Published methods are frequently presets over generics (`deal` presets `SearchDriver`; `thinking_intervention`
+Published methods are frequently presets over generics (`deal` presets `SearchDriver`; `budget_forcing`
 presets `PhasedDriver`; `caa` composes an estimator with `AdditiveTransform`). Driver presets map their `Args` onto
 the generic base's fields in `_configure()` rather than overriding `__init__`; follow that pattern for new decoding
 methods. Before writing a new state control, check whether an `ActivationAdapter` configuration (transform, layer

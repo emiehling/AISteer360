@@ -7,19 +7,19 @@ from typing import TYPE_CHECKING, Callable, Sequence
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.internals.data import ContrastivePairs, as_contrastive_pairs
-from aisteer360.algorithms.state_control._common.fit_specs import (
+from aisteer360.algorithms.state_control.common.fit_specs import (
     Comparator,
     CompMode,
     ConditionSearchSpec,
     VectorTrainSpec,
 )
-from aisteer360.algorithms.state_control._common.selectors.condition_point import ConditionPoint
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.token_scope import ScopeKind
-from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform
+from aisteer360.algorithms.state_control.common.selectors.condition_point import ConditionPoint
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.token_scope import ScopeKind
+from aisteer360.algorithms.state_control.common.transforms.base import BaseTransform
 
 if TYPE_CHECKING:
-    from aisteer360.algorithms.state_control._common.transforms.context import TransformContext
+    from aisteer360.algorithms.state_control.common.transforms.context import TransformContext
 
 
 @dataclass

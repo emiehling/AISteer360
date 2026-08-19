@@ -36,7 +36,7 @@ from aisteer360.algorithms.core.base_control import BaseControl
 from aisteer360.algorithms.core.execution.contracts import Requirements
 
 if TYPE_CHECKING:
-    from aisteer360.algorithms.input_control._common.memory.base import Memory
+    from aisteer360.algorithms.input_control.common.memory.base import Memory
 
 
 class InputControl(BaseControl):

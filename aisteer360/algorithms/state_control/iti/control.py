@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
-from aisteer360.algorithms.state_control._common.selectors import TopKHeadSelector
-from aisteer360.algorithms.state_control._common.sources import _Precomputed
-from aisteer360.algorithms.state_control._common.specs import CoveredLayers, Intervention, TokenScope
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import HeadAdditiveTransform, NormPreservingTransform
-from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform, unwrap_modifiers
 from aisteer360.algorithms.state_control.base import InterventionControl
+from aisteer360.algorithms.state_control.common.selectors import TopKHeadSelector
+from aisteer360.algorithms.state_control.common.sources import _Precomputed
+from aisteer360.algorithms.state_control.common.specs import CoveredLayers, Intervention, TokenScope
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.transforms import HeadAdditiveTransform, NormPreservingTransform
+from aisteer360.algorithms.state_control.common.transforms.base import BaseTransform, unwrap_modifiers
 
 from .args import ITIArgs
 from .utils import ProbeMassShiftEstimator
@@ -149,7 +149,7 @@ class ITI(InterventionControl):
         stream).
         """
         from aisteer360.algorithms.core.execution.contracts import InterventionKinds
-        from aisteer360.algorithms.state_control._common.specs import combine_kinds
+        from aisteer360.algorithms.state_control.common.specs import combine_kinds
 
         if self.interventions:
             return combine_kinds(intervention.wire_kinds() for intervention in self.interventions)

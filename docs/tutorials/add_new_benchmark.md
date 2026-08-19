@@ -174,7 +174,7 @@ A benchmark can also optionally accept
 - `checkpoint_every`: `"trial"` (default) writes the checkpoint after every trial; `"config"` writes once per
   configuration.
 
-When `save_dir` is set, the run is checkpointed to an envelope and resume is trial-granular: a subsequent
+When `save_dir` is set, the run is checkpointed to an envelope and resume is trial-granular, i.e., a subsequent
 call with the same `save_dir` completes only the trials still missing from each configuration (and raising
 `num_trials` runs only the delta). Resume accepts only a checkpoint whose identity metadata matches the
 current configuration; a well-shaped checkpoint produced under a different configuration or an earlier format is
@@ -239,7 +239,7 @@ pasta = PASTA(
     scale_position="exclude",
 )
 ```
-The `ThinkingIntervention` control requires specification of an intervention function:
+The thinking-intervention configuration of `PhasedDecoding` requires specification of an intervention function:
 ```python
 def instruction_following_intervention(prompt: str, params: dict) -> str:
     intervention = (
@@ -252,13 +252,17 @@ def instruction_following_intervention(prompt: str, params: dict) -> str:
 ```
 which is then used when instantiating the control:
 ```python
-from aisteer360.algorithms.output_control.thinking_intervention.control import ThinkingIntervention
+from aisteer360.algorithms.output_control.phased_decoding.control import PhasedDecoding
 
-thinking_intervention = ThinkingIntervention(
-    intervention=instruction_following_intervention
+thinking_intervention = PhasedDecoding(
+    plan=[
+        {"fixed": instruction_following_intervention, "replace": True, "add_special_tokens": True},
+        {"generate": {}},
+    ],
+    extract_after="</think>",
 )
 ```
-Note that both `PASTA` and `ThinkingIntervention` require the specific instructions within a given prompt to be passed
+Note that both `PASTA` and the thinking-intervention configuration require the specific instructions within a given prompt to be passed
 to the control. This is facilitated through the `runtime_overrides` argument in the `Benchmark` class, i.e., a
 dictionary of dictionaries each which is keyed by the control name and take values mapping the control's variable, e.g.,
 `substrings` in `PASTA`, to the relevant column of the evaluation dataset, e.g., `instructions`. The full benchmark call
@@ -274,7 +278,7 @@ benchmark = Benchmark(
     },
     runtime_overrides={
         "PASTA": {"substrings": "instructions"},
-        "ThinkingIntervention": {"params": {"instructions": "instructions"}},
+        "PhasedDecoding": {"params": {"instructions": "instructions"}},
     },
     gen_kwargs={
         "max_new_tokens": 100,

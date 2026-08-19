@@ -10,10 +10,10 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.internals.data import LabeledExamples
-from aisteer360.algorithms.output_control._common.estimators.linear_probe import LinearProbe, LinearProbeEstimator
-from aisteer360.algorithms.output_control._common.processors.value_guided import ValueGuidedProcessor
-from aisteer360.algorithms.output_control._common.values.subspace_margin import SubspaceMarginValue
 from aisteer360.algorithms.output_control.base import OutputControl
+from aisteer360.algorithms.output_control.common.estimators.linear_probe import LinearProbe, LinearProbeEstimator
+from aisteer360.algorithms.output_control.common.processors.value_guided import ValueGuidedProcessor
+from aisteer360.algorithms.output_control.common.values.subspace_margin import SubspaceMarginValue
 from aisteer360.algorithms.output_control.sasa.args import SASAArgs
 from aisteer360.utils.tokenization import ensure_pad_token
 

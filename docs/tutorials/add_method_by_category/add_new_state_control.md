@@ -3,7 +3,7 @@
 **Required override**: an intervention template in `_configure` (declarative methods) or `get_hooks` (custom hooks)
 
 State control methods steer by editing the model's internal states during the forward pass. Most methods are
-declarative: the control states its behavior once, as a tuple of interventions, and the toolkit compiles that
+declarative, i.e., the control states its behavior once, as a tuple of interventions, and the toolkit compiles that
 statement for whichever backend runs it (torch hooks in process, intervention specs on engine backends). As part of
 this tutorial, we'll implement an `ActivationBias` method that adds a fixed bias vector, scaled by `alpha`, to the
 hidden state output at a specified transformer layer.
@@ -60,8 +60,8 @@ have a wire form run on vLLM backends through the vLLM-Hook plugin with no extra
 ```python
 import torch
 
-from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
-from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
+from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
+from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
 from aisteer360.algorithms.state_control.base import InterventionControl
 from aisteer360.algorithms.state_control.activation_bias.args import ActivationBiasArgs
 
@@ -149,16 +149,16 @@ class ActivationBiasHooks(HookControl):
 
 ## Position tracking in hooks
 
-Scoped intervention controls get position tracking for free: `build_hooks` compiles every intervention through the
+Scoped intervention controls get position tracking for free. `build_hooks` compiles every intervention through the
 shared `TransformHookRuntime`, which reads each pass's absolute offset from the `cache_position` kwarg when the
 hooked module receives it and falls back to pass counting otherwise, with exactly one designated pass-opener hook
 advancing the shared offset per forward pass.
 
 A custom `HookControl` honoring `token_scope="after_prompt"` or `"from_position"` needs the same care. During
 prefill the hook sees the whole prompt (`seq_len == prompt_len`); during KV-cached decode it sees only the newly
-generated token(s) (`seq_len == 1`). Do **not** infer the phase by comparing `seq_len` to the prompt length — a
-length-1 prompt makes prefill and decode indistinguishable, so steering silently never fires. Track the phase in
-state the hook closures own, created fresh inside `get_hooks` so every generation starts clean:
+generated token(s) (`seq_len == 1`). Do **not** infer the phase by comparing `seq_len` to the prompt length, since a
+length-1 prompt makes prefill and decode indistinguishable and steering would then silently never fire. Track the phase
+in state the hook closures own, created fresh inside `get_hooks` so every generation starts clean:
 
 ```python
 # inside get_hooks(), before building the hook closures:

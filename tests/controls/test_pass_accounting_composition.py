@@ -15,16 +15,16 @@ import torch
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.output_control._common.candidate_forward import CandidateForward
-from aisteer360.algorithms.output_control._common.logit_sources import PromptVariantSource
 from aisteer360.algorithms.output_control.base import OutputControl
+from aisteer360.algorithms.output_control.common.candidate_forward import CandidateForward
+from aisteer360.algorithms.output_control.common.logit_sources import PromptVariantSource
 from aisteer360.algorithms.output_control.contrastive_guidance.control import ContrastiveGuidance
 from aisteer360.algorithms.output_control.phased_decoding.control import PhasedDecoding
 from aisteer360.algorithms.output_control.search_decoding.control import SearchDecoding
-from aisteer360.algorithms.state_control._common.gating import CallableReadout, Evidence, Gate
-from aisteer360.algorithms.state_control._common.runtime import TransformHookRuntime
-from aisteer360.algorithms.state_control._common.token_scope import compute_prompt_lens
 from aisteer360.algorithms.state_control.base import StateControl
+from aisteer360.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate
+from aisteer360.algorithms.state_control.common.runtime import TransformHookRuntime
+from aisteer360.algorithms.state_control.common.token_scope import compute_prompt_lens
 from tests.utils.runtime_helpers import NeverCompleteRule, RecordingTransform
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

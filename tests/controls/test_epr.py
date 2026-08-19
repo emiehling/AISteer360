@@ -8,8 +8,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control._common.memory.pool import PoolMemory
-from aisteer360.algorithms.input_control._common.selectors.base import BaseSelector
+from aisteer360.algorithms.input_control.common.memory.pool import PoolMemory
+from aisteer360.algorithms.input_control.common.selectors.base import BaseSelector
 from aisteer360.algorithms.input_control.few_shot import FewShot
 from aisteer360.algorithms.input_control.few_shot.selectors.epr import EPRSelector
 from aisteer360.algorithms.input_control.few_shot.selectors.epr.utils import bm25_index
@@ -70,7 +70,7 @@ class TestEPRSelector:
     def test_subclass_is_dense_retrieval_selector(self):
         from inspect import isclass
 
-        from aisteer360.algorithms.input_control._common.selectors.dense_retrieval import DenseRetrievalSelector
+        from aisteer360.algorithms.input_control.common.selectors.dense_retrieval import DenseRetrievalSelector
         assert issubclass(EPRSelector, DenseRetrievalSelector)
         assert issubclass(EPRSelector, BaseSelector)
         assert isclass(EPRSelector)

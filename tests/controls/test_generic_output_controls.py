@@ -3,7 +3,7 @@
 
 Covers the shared spec resolver and the five generics (`ValueGuidance`, `ContrastiveGuidance`,
 `SearchDecoding`, `PhasedDecoding`, `StoppingRules`), including equivalence with the named methods
-they generalize (RAD, SASA, DeAL, ThinkingIntervention).
+they generalize (RAD, SASA, DeAL).
 
 Hub-free: tiny classifier / aux LMs are built via config classes saved to `tmp_path`, on the shared
 `tests/utils/tiny_models.py` fixtures.
@@ -15,18 +15,18 @@ import torch
 from transformers import LlamaConfig, LlamaForSequenceClassification
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.output_control._common.estimators.linear_probe import LinearProbe
-from aisteer360.algorithms.output_control._common.logit_sources import AuxModelSource, CallableSource
-from aisteer360.algorithms.output_control._common.processors.contrastive_mixture import ContrastiveMixtureProcessor
-from aisteer360.algorithms.output_control._common.processors.value_guided import ValueGuidedProcessor
-from aisteer360.algorithms.output_control._common.resolve import resolve_scorer, resolve_source, resolve_value
-from aisteer360.algorithms.output_control._common.scorers.majority_vote import MajorityVoteScorer
-from aisteer360.algorithms.output_control._common.scorers.reward_model import RewardModelScorer
-from aisteer360.algorithms.output_control._common.values.base import BaseCandidateValue, StepContext
-from aisteer360.algorithms.output_control._common.values.callable import CallableValue
-from aisteer360.algorithms.output_control._common.values.classifier import ClassifierValue
-from aisteer360.algorithms.output_control._common.values.reward_model import RewardModelValue
-from aisteer360.algorithms.output_control._common.values.subspace_margin import SubspaceMarginValue
+from aisteer360.algorithms.output_control.common.estimators.linear_probe import LinearProbe
+from aisteer360.algorithms.output_control.common.logit_sources import AuxModelSource, CallableSource
+from aisteer360.algorithms.output_control.common.processors.contrastive_mixture import ContrastiveMixtureProcessor
+from aisteer360.algorithms.output_control.common.processors.value_guided import ValueGuidedProcessor
+from aisteer360.algorithms.output_control.common.resolve import resolve_scorer, resolve_source, resolve_value
+from aisteer360.algorithms.output_control.common.scorers.majority_vote import MajorityVoteScorer
+from aisteer360.algorithms.output_control.common.scorers.reward_model import RewardModelScorer
+from aisteer360.algorithms.output_control.common.values.base import BaseCandidateValue, StepContext
+from aisteer360.algorithms.output_control.common.values.callable import CallableValue
+from aisteer360.algorithms.output_control.common.values.classifier import ClassifierValue
+from aisteer360.algorithms.output_control.common.values.reward_model import RewardModelValue
+from aisteer360.algorithms.output_control.common.values.subspace_margin import SubspaceMarginValue
 from aisteer360.algorithms.output_control.contrastive_guidance.control import ContrastiveGuidance
 from aisteer360.algorithms.output_control.deal.control import DeAL
 from aisteer360.algorithms.output_control.phased_decoding.control import PhasedDecoding
@@ -34,7 +34,6 @@ from aisteer360.algorithms.output_control.rad.control import RAD
 from aisteer360.algorithms.output_control.sasa.control import SASA
 from aisteer360.algorithms.output_control.search_decoding.control import SearchDecoding
 from aisteer360.algorithms.output_control.stopping_rules.control import StoppingRules
-from aisteer360.algorithms.output_control.thinking_intervention.control import ThinkingIntervention
 from aisteer360.algorithms.output_control.value_guidance.control import ValueGuidance
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
@@ -512,8 +511,9 @@ class TestPhasedDecodingBehavior:
         # prompt(2 or 3) + <=3 generated + 1 fixed ("sat") + <=2 generated: bounded well under 50
         assert out.size(1) <= prompt.size(1) + 3 + 2 + 2
 
-    def test_ti_equivalence(self):
-        """ThinkingIntervention and the TI-equivalent PhasedDecoding produce identical ids."""
+    def test_replacing_fixed_with_tail_extraction(self):
+        """The thinking-intervention config: a replacing Fixed rewrite + Generated, with
+        extract_after stripping the reasoning span (Wu et al., 2025, arXiv:2503.24370)."""
         def intervention(prompt, params):
             return f"the dog </think> {prompt}"
 
@@ -521,21 +521,17 @@ class TestPhasedDecodingBehavior:
         tokenizer = wordlevel_tokenizer()
         prompt = tokenizer("the cat", return_tensors="pt").input_ids
 
-        ti = ThinkingIntervention(intervention=intervention)
-        p_ti, _, _ = _pipeline([ti], model=model, tokenizer=tokenizer)
-        torch.manual_seed(0)
-        out_ti = p_ti.generate(input_ids=prompt, max_new_tokens=6, do_sample=False, eos_token_id=None)
-
         pd = PhasedDecoding(
             plan=[{"fixed": intervention, "replace": True, "add_special_tokens": True}, {"generate": {}}],
             extract_after="</think>",
         )
-        p_pd, _, _ = _pipeline([pd], model=model, tokenizer=tokenizer)
+        pipeline, model, tokenizer = _pipeline([pd], model=model, tokenizer=tokenizer)
         torch.manual_seed(0)
-        out_pd = p_pd.generate(input_ids=prompt, max_new_tokens=6, do_sample=False, eos_token_id=None)
+        out = pipeline.generate(input_ids=prompt, max_new_tokens=6, do_sample=False, eos_token_id=None)
 
-        assert out_ti.shape == out_pd.shape
-        assert torch.equal(out_ti, out_pd)
+        decoded = tokenizer.decode(out[0])
+        assert "</think>" not in decoded  # reasoning span stripped by the tail rule
+        assert "the cat" in decoded       # extract_after keeps the post-marker remainder
 
     def test_serializable_plan_round_trips(self):
         plan = [

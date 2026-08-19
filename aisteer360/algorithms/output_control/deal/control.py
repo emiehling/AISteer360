@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.output_control._common.drivers.search import SearchDriver
 from aisteer360.algorithms.output_control.base import OutputControl
+from aisteer360.algorithms.output_control.common.drivers.search import SearchDriver
 from aisteer360.algorithms.output_control.deal.args import DeALArgs
 
 

@@ -501,7 +501,8 @@ class SteeringPipeline:
         per-phase global order preserves the composition semantics of the single-phase order.
 
         A failed steer releases any backends it constructed before re-raising, so it does not
-        leave an engine behind and a retried steer re-boots.
+        leave an engine behind and a retried steer re-boots. A repeated call on an
+        already-steered pipeline is a no-op.
 
         Args:
             **steer_kwargs: Keyword arguments passed to all control steer() methods
@@ -513,8 +514,8 @@ class SteeringPipeline:
                 fitting degrades to a staged in-process model.
 
         Raises:
-            RuntimeError: If called more than once, no model is available after steering, or
-                the staged in-process model was retained past the steer stage.
+            RuntimeError: If no model is available after steering, or the staged in-process
+                model was retained past the steer stage.
             UnsupportedPipelineError: If any enabled control is unsupported at the generate
                 phase on the configured backend.
             ModuleNotFoundError: If a configured backend kind requires an optional dependency
@@ -904,6 +905,13 @@ class SteeringPipeline:
         methods `generate_text`, `generate_messages`, and `generate_tokens` expose the same behavior
         with source-specific signatures and document each source's rules.
 
+        The decoded text returns carry exactly one candidate per prompt. Requesting multiple
+        candidates (`num_return_sequences` or `n` greater than 1) with `text=` or `messages=`
+        raises `ValueError` unless `return_output=True`, where `Output.output_ids` holds one row
+        per candidate and `Output.finish_reasons` one reason per candidate. The token return
+        (`input_ids=`) carries candidates in its shape, `[batch * n, gen_len]` with each prompt's
+        candidates contiguous, matching `model.generate`.
+
         Args:
             inputs: Positional convenience for text prompts (`str` or `list[str]`), behaving like
                 `text=`. Any other positional shape raises `TypeError`; use the keywords below.
@@ -940,8 +948,9 @@ class SteeringPipeline:
                 `chat_template_kwargs` is paired with `text=`/`input_ids=`, or if
                 `chat_template_kwargs` is not a mapping.
             ValueError: If a token tensor is not 1-D/2-D, nested token lists are ragged, a text/
-                chat sequence is empty, or `chat_template_kwargs` names a pipeline-owned template
-                argument.
+                chat sequence is empty, `chat_template_kwargs` names a pipeline-owned template
+                argument, or multiple candidates per prompt (`num_return_sequences`/`n` greater
+                than 1) are requested on a decoded text return without `return_output=True`.
         """
         if not self._is_steered:
             raise RuntimeError("Must call `.steer()` before `.generate()`.")
@@ -979,6 +988,19 @@ class SteeringPipeline:
                 "chat_template_kwargs is only valid with chat input (messages=); text= and input_ids= "
                 "are already templated or template-free."
             )
+
+        # candidate-count pairing: the decoded text return carries exactly one candidate per
+        # prompt, so multiple candidates require the Output return or the token return
+        if kind != "tokens" and not return_output:
+            requested_n = gen_kwargs.get("n", gen_kwargs.get("num_return_sequences"))
+            if isinstance(requested_n, int) and requested_n > 1:
+                raise ValueError(
+                    f"num_return_sequences={requested_n} requests multiple candidates per prompt, "
+                    "but the decoded text return carries exactly one candidate per prompt; pass "
+                    "return_output=True to receive every candidate (Output.output_ids holds one "
+                    "row per candidate and Output.decode() decodes them all), or generate with "
+                    "input_ids= for a [batch * n, gen_len] token return."
+                )
 
         # resolve the prompt tensors per modality
         message_handled: set[int] = set()
@@ -1071,7 +1093,9 @@ class SteeringPipeline:
 
         A `str` returns `str`; a sequence of `str` returns `list[str]` (`Output` or
         `list[Output]` with `return_output=True`). Input controls apply at token level only;
-        `adapt_messages` does not fire on text input.
+        `adapt_messages` does not fire on text input. The decoded return carries exactly one
+        candidate per prompt; `num_return_sequences`/`n` greater than 1 raises `ValueError`
+        unless `return_output=True`.
 
         Args:
             text: Text prompt as a `str` or a sequence of `str`.
@@ -1151,7 +1175,9 @@ class SteeringPipeline:
         sequences of mappings) returns `list[str]` (`Output` or `list[Output]` with
         `return_output=True`). Every input control's `adapt_messages` runs before templating;
         controls whose `adapt_messages` returns None run their token-level `adapt` after
-        tokenization, so each control applies exactly once per call.
+        tokenization, so each control applies exactly once per call. The decoded return
+        carries exactly one candidate per prompt; `num_return_sequences`/`n` greater than 1
+        raises `ValueError` unless `return_output=True`.
 
         Args:
             messages: One conversation or a batch of conversations.
@@ -1226,7 +1252,9 @@ class SteeringPipeline:
 
         Returns a `torch.Tensor` of continuation ids (`Output` or `list[Output]` with
         `return_output=True`). Input controls apply at token level only; `adapt_messages`
-        does not fire on token input.
+        does not fire on token input. With `num_return_sequences`/`n` greater than 1 the
+        returned tensor is `[batch * n, gen_len]` with each prompt's candidates contiguous,
+        matching `model.generate`.
 
         Args:
             input_ids: Token prompt as a 1-D/2-D integer tensor, `list[int]`, or

@@ -260,7 +260,7 @@ def rollout_entries(state_entries, steered_input_ids, steered_attention_mask) ->
 
 def _lowering_failure_reason(state_control) -> str:
     """Name the intervention (and hint) behind a lowering failure, for the raised error."""
-    from aisteer360.algorithms.state_control._common.lowering import lower_interventions
+    from aisteer360.algorithms.state_control.common.lowering import lower_interventions
 
     interventions = getattr(state_control, "interventions", ())
     num_layers = getattr(state_control, "_num_layers", None)

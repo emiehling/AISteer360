@@ -6,9 +6,9 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.output_control._common.scorers.majority_vote import MajorityVoteScorer
 from aisteer360.algorithms.output_control.base import OutputControl
 from aisteer360.algorithms.output_control.best_of_n.control import BestOfN
+from aisteer360.algorithms.output_control.common.scorers.majority_vote import MajorityVoteScorer
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 VOCAB = 100

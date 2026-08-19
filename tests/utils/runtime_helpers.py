@@ -6,7 +6,7 @@ runtime hook to drop the `cache_position` kwarg, forcing the pass-counting fallb
 """
 import torch
 
-from aisteer360.algorithms.state_control._common.transforms.base import BaseTransform
+from aisteer360.algorithms.state_control.common.transforms.base import BaseTransform
 
 
 class RecordingTransform(BaseTransform):
@@ -85,7 +85,7 @@ class RuntimeCapture:
 
 def capture_built_runtimes(monkeypatch) -> RuntimeCapture:
     """Patch the runtime module so every runtime built by `build_hooks` is recorded."""
-    import aisteer360.algorithms.state_control._common.runtime as runtime_module
+    import aisteer360.algorithms.state_control.common.runtime as runtime_module
 
     capture = RuntimeCapture()
     original = runtime_module.TransformHookRuntime

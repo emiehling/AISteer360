@@ -3,9 +3,9 @@ from __future__ import annotations
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.output_control._common.drivers.search import SearchDriver
 from aisteer360.algorithms.output_control.base import OutputControl
 from aisteer360.algorithms.output_control.best_of_n.args import BestOfNArgs
+from aisteer360.algorithms.output_control.common.drivers.search import SearchDriver
 
 
 class BestOfN(SearchDriver):

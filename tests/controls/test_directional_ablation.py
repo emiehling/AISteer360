@@ -10,8 +10,8 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import ProjectionTransform
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform
 from aisteer360.algorithms.state_control.directional_ablation.args import DirectionalAblationArgs
 from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
 from tests.utils.sweep import build_param_grid

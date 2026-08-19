@@ -1,12 +1,12 @@
-"""ActivationAdapter: assemble an activation-steering recipe from `_common` components."""
+"""ActivationAdapter: assemble an activation-steering recipe from `common` components."""
 from __future__ import annotations
 
 import logging
 
-from aisteer360.algorithms.state_control._common.gating import Gate
-from aisteer360.algorithms.state_control._common.selectors import ConditionPointSelector
-from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
 from aisteer360.algorithms.state_control.base import InterventionControl
+from aisteer360.algorithms.state_control.common.gating import Gate
+from aisteer360.algorithms.state_control.common.selectors import ConditionPointSelector
+from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
 
 from .args import ActivationAdapterArgs
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class ActivationAdapter(InterventionControl):
     """Composable activation-steering control (single-behavior atom).
 
-    `ActivationAdapter` wires together the `state_control/_common` component families (a transform
+    `ActivationAdapter` wires together the `state_control/common` component families (a transform
     that carries its own steering artifact, a selector, a gate, and a token scope) so an
     activation-steering recipe can be assembled directly without writing a new control class. It
     edits the residual stream at one or more layers during generation, applying the transform at

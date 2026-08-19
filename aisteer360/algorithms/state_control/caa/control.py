@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from aisteer360.algorithms.state_control._common.selectors import FractionalDepthSelector
-from aisteer360.algorithms.state_control._common.sources import ContrastiveFit, _Precomputed
-from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, NormPreservingTransform
-from aisteer360.algorithms.state_control._common.transforms.base import unwrap_modifiers
 from aisteer360.algorithms.state_control.base import InterventionControl
+from aisteer360.algorithms.state_control.common.selectors import FractionalDepthSelector
+from aisteer360.algorithms.state_control.common.sources import ContrastiveFit, _Precomputed
+from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
+from aisteer360.algorithms.state_control.common.transforms.base import unwrap_modifiers
 
 from .args import CAAArgs
 
@@ -41,7 +41,6 @@ class CAA(InterventionControl):
 
     Args = CAAArgs
     supports_batching = True
-    hook_only_hint = "positional directions have no intervention-spec form; run on the huggingface backend"
 
     def _configure(self):
         if self.steering_vector is not None:

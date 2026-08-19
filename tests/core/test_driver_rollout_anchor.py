@@ -11,8 +11,8 @@ from transformers import LogitsProcessorList, StoppingCriteriaList
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.output_control.base import DecodingDriver, session_generate
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.caa.control import CAA
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from tests.utils.runtime_helpers import RecordingTransform
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
@@ -121,9 +121,9 @@ class TestWireAnchorRewrite:
         import pytest
 
         pytest.importorskip("vllm_hook_plugins")
-        from aisteer360.algorithms.state_control._common.lowering import lower_interventions
-        from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
-        from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform
+        from aisteer360.algorithms.state_control.common.lowering import lower_interventions
+        from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
+        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
 
         intervention = Intervention(
             layers=(1,),

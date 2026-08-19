@@ -13,7 +13,7 @@ from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.core.internals.probes import Probe, ProbeFitSpec, ProbeSet, ProbeSetFit
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.core.utils.auxiliary_pass import current_auxiliary_pass
-from aisteer360.algorithms.output_control._common.drivers.phased import Fixed
+from aisteer360.algorithms.output_control.common.drivers.phased import Fixed
 from aisteer360.algorithms.output_control.routed_decoding import (
     P,
     Route,

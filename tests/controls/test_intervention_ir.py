@@ -13,7 +13,7 @@ import torch
 from aisteer360.algorithms.core.execution.contracts import InterventionKinds
 from aisteer360.algorithms.core.execution.payloads import ModelFacts
 from aisteer360.algorithms.core.internals.probes.probe import Probe
-from aisteer360.algorithms.state_control._common.gating import (
+from aisteer360.algorithms.state_control.common.gating import (
     AffineReadout,
     CallableReadout,
     CosineReadout,
@@ -24,11 +24,11 @@ from aisteer360.algorithms.state_control._common.gating import (
     SumThreshold,
     gate_from_probe,
 )
-from aisteer360.algorithms.state_control._common.lowering import lower_interventions
-from aisteer360.algorithms.state_control._common.selectors import FractionalDepthSelector
-from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope, WireForm, combine_kinds
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import (
+from aisteer360.algorithms.state_control.common.lowering import lower_interventions
+from aisteer360.algorithms.state_control.common.selectors import FractionalDepthSelector
+from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope, WireForm, combine_kinds
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.transforms import (
     AdditiveTransform,
     AlignmentAdaptiveTransform,
     HeadAdditiveTransform,
@@ -36,7 +36,7 @@ from aisteer360.algorithms.state_control._common.transforms import (
     ProjectionTransform,
     RotationTransform,
 )
-from aisteer360.algorithms.state_control._common.transforms.base import unwrap_modifiers
+from aisteer360.algorithms.state_control.common.transforms.base import unwrap_modifiers
 
 plugin_kinds = pytest.importorskip("vllm_hook_plugins.core.kinds")
 from vllm_hook_plugins.core.interpreter import MODIFIERS, TRANSFORMS  # noqa: E402
@@ -80,7 +80,7 @@ class TestWireKindTables:
         assert CallableReadout.wire_kind is None
 
     def test_backend_seed_advertisement_matches_plugin_tables(self):
-        from aisteer360.backends.vllm import _PLUGIN_INTERVENTION_KINDS as seed
+        from aisteer360.backends.vllm.capabilities import _PLUGIN_INTERVENTION_KINDS as seed
 
         assert seed.transforms == plugin_kinds.TRANSFORM_KINDS
         assert seed.modifiers == plugin_kinds.MODIFIER_KINDS
@@ -255,8 +255,16 @@ class TestInterventionWireKinds:
         )
 
     def test_positional_direction_is_hook_only(self):
-        transform = AdditiveTransform({3: torch.ones(4, H)})
+        transform = AdditiveTransform({3: torch.ones(4, H)}, positional=True)
         assert Intervention(layers=(3,), transform=transform).wire_kinds() is None
+
+    def test_positional_flag_is_hook_only_at_any_t(self):
+        transform = AdditiveTransform({3: torch.ones(1, H)}, positional=True)
+        assert Intervention(layers=(3,), transform=transform).wire_kinds() is None
+
+    def test_multi_row_direction_requires_positional_flag(self):
+        with pytest.raises(ValueError, match="positional=True"):
+            AdditiveTransform({3: torch.ones(4, H)})
 
     def test_layer_zero_input_edit_is_hook_only(self):
         transform = AdditiveTransform({0: torch.ones(1, H)})
@@ -353,7 +361,7 @@ class TestBind:
             intervention.bind(None, None, layout=_layout())
 
     def test_gate_source_resolves_to_gate(self):
-        from aisteer360.algorithms.state_control._common.sources import ConditionPointSearch
+        from aisteer360.algorithms.state_control.common.sources import ConditionPointSearch
 
         source = ConditionPointSearch(
             condition_vector=SteeringVector(model_type="test", directions={2: torch.ones(1, H)}),
@@ -407,7 +415,7 @@ class TestLowerInterventions:
         assert modifier_kinds == ["alignment_adaptive", "norm_preserving"]
 
     def test_positional_additive_rejected(self):
-        transform = AdditiveTransform({3: torch.ones(4, H)})
+        transform = AdditiveTransform({3: torch.ones(4, H)}, positional=True)
         spec = lower_interventions(
             [Intervention(layers=(3,), transform=transform)], num_layers=8,
         )
@@ -503,8 +511,8 @@ class TestReviewRegressions:
     """Regression pins from the adversarial review of the seam landing."""
 
     def test_two_interventions_at_the_same_lowest_layer_elect_one_opener(self):
-        from aisteer360.algorithms.state_control._common.model_layout import ModelLayout as ModulePaths
-        from aisteer360.algorithms.state_control._common.runtime import build_hooks
+        from aisteer360.algorithms.state_control.common.model_layout import ModelLayout as ModulePaths
+        from aisteer360.algorithms.state_control.common.runtime import build_hooks
 
         layout = ModulePaths(
             family="llama_style", layer_prefix="model.layers", num_layers=8,

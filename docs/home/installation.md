@@ -57,8 +57,8 @@ HUGGINGFACE_TOKEN=hf_***
 
 Some Hugging Face models (e.g. `meta-llama/Meta-Llama-3.1-8B-Instruct`) are behind an access gate. To gain access:
 
-1. Request access on the model’s Hub page with the same account whose token you use in your `.env` file.
-2. Wait for approval (you’ll receive an email).
+1. Request access on the model's Hub page with the same account whose token you use in your `.env` file.
+2. Wait for approval (you'll receive an email).
 3. (Re-)authenticate locally by running `huggingface-cli login`.
 
 Once you have completed the above steps, please see our [quickstart](quickstart.md) guide to get up and running!

@@ -11,7 +11,8 @@ from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.core.internals.probes.probe import Probe
 from aisteer360.algorithms.core.internals.probes.probe_set import ProbeSet
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control._common.gating import (
+from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
+from aisteer360.algorithms.state_control.common.gating import (
     AffineReadout,
     CallableReadout,
     Evidence,
@@ -19,7 +20,6 @@ from aisteer360.algorithms.state_control._common.gating import (
     PerKeyThreshold,
     SumThreshold,
 )
-from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
 from tests.utils.runtime_helpers import RecordingTransform
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

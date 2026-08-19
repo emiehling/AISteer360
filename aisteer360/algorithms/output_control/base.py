@@ -20,7 +20,7 @@ Examples of output controls:
 See Also:
 
 - `aisteer360.algorithms.output_control`: Implementations of output control methods
-- `aisteer360.algorithms.output_control._common`: Shared component library
+- `aisteer360.algorithms.output_control.common`: Shared component library
 - `aisteer360.algorithms.core.steering_pipeline`: Integration with steering pipeline
 """
 from abc import abstractmethod
@@ -116,7 +116,7 @@ class OutputControl(BaseControl):
         A processor must behave as a function of `(prefix_ids, scores)`. Internal state is
         permitted only as memoization keyed on the prefix and must re-derive on a prefix mismatch,
         since drivers may restart, rewind, or reorder sequences, and scoring replays prefixes
-        teacher-forced (subclass `_common.processors.base.PrefixKeyedProcessor` to satisfy this
+        teacher-forced (subclass `common.processors.base.PrefixKeyedProcessor` to satisfy this
         mechanically). Return fresh processor instances from this hook; it is invoked once per call
         precisely so that per-generation state is isolated.
 

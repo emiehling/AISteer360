@@ -7,8 +7,8 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.output_control._common.drivers.phased import Fixed, Generated
 from aisteer360.algorithms.output_control.budget_forcing.control import BudgetForcing
+from aisteer360.algorithms.output_control.common.drivers.phased import Fixed, Generated
 from tests.utils.runtime_helpers import script_session_generate
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

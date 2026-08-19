@@ -21,12 +21,12 @@ import torch
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, needs
 from aisteer360.algorithms.core.execution.session_utils import SessionLM
-from aisteer360.algorithms.input_control._common.formatters.system_prompt import SystemPromptFormatter
-from aisteer360.algorithms.input_control._common.memory.text import TextMemory
-from aisteer360.algorithms.input_control._common.proposers.llm_meta_prompt import LLMMetaPromptProposer
-from aisteer360.algorithms.input_control._common.proposers.utils.parsing import parse_concise_instruction
-from aisteer360.algorithms.input_control._common.scorers.task_evaluation import TaskEvaluationScorer
 from aisteer360.algorithms.input_control.base import InputControl
+from aisteer360.algorithms.input_control.common.formatters.system_prompt import SystemPromptFormatter
+from aisteer360.algorithms.input_control.common.memory.text import TextMemory
+from aisteer360.algorithms.input_control.common.proposers.llm_meta_prompt import LLMMetaPromptProposer
+from aisteer360.algorithms.input_control.common.proposers.utils.parsing import parse_concise_instruction
+from aisteer360.algorithms.input_control.common.scorers.task_evaluation import TaskEvaluationScorer
 from aisteer360.algorithms.input_control.cpo.args import CPOArgs
 from aisteer360.algorithms.input_control.cpo.utils import causal_reward, refinement_meta_prompt
 from aisteer360.algorithms.input_control.cpo.utils.causal_reward import CausalRewardScorer

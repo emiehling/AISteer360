@@ -32,7 +32,7 @@ can be passed into the metric's `compute` method via `kwargs`.
 
 Standard metrics are any metric that require completely custom `compute` logic. Any unstructured computation can be
 implemented as a function of `responses`, `prompts`, and `kwargs`. Any necessary parameter initialization should be
-added to the metric’s constructor (`__init__`).
+added to the metric's constructor (`__init__`).
 
 Below is an example implementation of a `DistinctN` metric (for computing unigrams, bigrams, etc.).
 
@@ -121,7 +121,7 @@ from aisteer360.evaluation.metrics.base_judge import LLMJudgeMetric
 _PROMPT = """\
 You are a careful fact-checker.
 
-Considering only verifiable facts, rate the response’s factual accuracy with respect to the prompt on a scale from
+Considering only verifiable facts, rate the response's factual accuracy with respect to the prompt on a scale from
 {lower_bound} (completely incorrect) to {upper_bound} (fully correct).
 
 PROMPT:

@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.output_control._common.processors.contrastive_mixture import ContrastiveMixtureProcessor
+from aisteer360.algorithms.output_control.common.processors.contrastive_mixture import ContrastiveMixtureProcessor
 from aisteer360.algorithms.output_control.contrastive_decoding.control import ContrastiveDecoding
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

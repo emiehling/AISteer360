@@ -80,14 +80,14 @@ def fake_server(monkeypatch):
 
     monkeypatch.setattr(VLLMServeBackend, "_request_json", fake_request)
     monkeypatch.setattr(
-        "aisteer360.backends.vllm._client_tokenizer",
+        "aisteer360.backends.vllm.backend._client_tokenizer",
         lambda source, trust_remote_code=False: wordlevel_tokenizer(),
     )
     monkeypatch.setattr(
-        "aisteer360.backends.vllm._config_layout",
+        "aisteer360.backends.vllm.backend._config_layout",
         lambda source, trust_remote_code=False: None,
     )
-    monkeypatch.setattr("aisteer360.backends.vllm._DISCOVERY_CACHE", {})
+    monkeypatch.setattr("aisteer360.backends.vllm.capabilities._DISCOVERY_CACHE", {})
     return server
 
 
@@ -138,7 +138,7 @@ class TestServeFingerprintVerification:
     @pytest.fixture()
     def templated_client(self, monkeypatch):
         monkeypatch.setattr(
-            "aisteer360.backends.vllm._client_tokenizer",
+            "aisteer360.backends.vllm.backend._client_tokenizer",
             lambda source, trust_remote_code=False: self._templated_tokenizer(),
         )
 
@@ -398,7 +398,7 @@ def _discovery_payload(**engine_overrides):
 
 
 def _mini_spec(scope=None, kind="additive"):
-    from aisteer360.algorithms.state_control._common.lowering import artifact_id_for
+    from aisteer360.algorithms.state_control.common.lowering import artifact_id_for
 
     params = {"strength": 1.0} if kind in ("additive", "head_additive") else {}
     artifact_id, prepared = artifact_id_for({"vector": torch.ones(4)})
@@ -678,7 +678,7 @@ class TestSharedFsVisibility:
             payload["artifact_registry_root"] = registry_root
         fake_server.discovery = payload
         monkeypatch.setattr(
-            "aisteer360.backends.vllm._ArtifactUploader.upload_payloads",
+            "aisteer360.backends.vllm.backend._ArtifactUploader.upload_payloads",
             lambda self, payloads: None,
         )
         spec = _serve_spec(hook_plugin=True, artifact_dir=str(tmp_path))

@@ -55,8 +55,8 @@ def verify_stage_released(ref: weakref.ref, controls) -> None:
     raise RuntimeError(
         f"The staged in-process model was retained past the steer stage by: {names}. "
         "Controls supported at generate on this backend must not hold the pipeline model "
-        "beyond steer(); release the reference in steer() or cleanup(), or require "
-        "Capability.IN_PROCESS_TORCH at generate."
+        "beyond steer(); release every instance reference to it before steer() returns, or "
+        "require Capability.IN_PROCESS_TORCH at generate."
     )
 
 

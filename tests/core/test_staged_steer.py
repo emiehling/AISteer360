@@ -5,6 +5,7 @@ handoff, and the capture smoke-test degradation path.
 Engine paths run against a fake backend registered by monkeypatching
 `resolve_backend_class`, since CI has no vLLM.
 """
+import os
 import weakref
 
 import pytest
@@ -337,3 +338,65 @@ class TestSmokeTestDegradation:
         assert len(fake_engine.instances) == 1
         # one smoke capture plus the fitter's own capture, both through the engine
         assert fake_engine.events.count("engine-capture") == 2
+
+
+@pytest.mark.skipif(
+    os.environ.get("RUN_TRL_SMOKE") != "1",
+    reason="set RUN_TRL_SMOKE=1 to run the TRL staged-steer smoke test (trains a tiny SFT LoRA)",
+)
+class TestTRLStagedSteerSmoke:
+    """A real SFT LoRA control, staged on an engine backend, releases the staged model and hands off
+    its merged checkpoint.
+
+    Reproduces the notebook scenario that first exposed the retention bug (merged-LoRA SFT with a
+    vLLM backend) against the fake engine, so the whole staged path runs without vLLM: train on the
+    staged in-process model, merge, free the stage (the retention check must pass), then boot the
+    engine with the merged checkpoint as its artifact.
+    """
+
+    def test_merged_lora_sft_frees_the_stage_and_hands_off_the_checkpoint(
+        self, fake_engine, model_dir, tmp_path
+    ):
+        from datasets import Dataset
+
+        from aisteer360.algorithms.structural_control.wrappers.trl.sfttrainer import SFT
+
+        tokenizer = wordlevel_tokenizer()
+        encoded = tokenizer(["the cat sat on the mat", "the dog ran fast"])
+        train_dataset = Dataset.from_dict(
+            {
+                "input_ids": encoded["input_ids"],
+                "attention_mask": encoded["attention_mask"],
+                "labels": [list(ids) for ids in encoded["input_ids"]],
+            }
+        )
+
+        merged_dir = tmp_path / "sft_merged"
+        sft = SFT(
+            train_dataset=train_dataset,
+            use_peft=True,
+            r=4,
+            lora_alpha=8,
+            target_modules=["q_proj", "v_proj"],
+            merge_lora_after_train=True,
+            merged_output_dir=str(merged_dir),
+            output_dir=str(tmp_path / "sft_out"),
+            load_best_model_at_end=False,
+            per_device_train_batch_size=1,
+            num_train_epochs=1,
+            report_to="none",
+            training_args={"use_cpu": True, "bf16": False, "fp16": False, "max_steps": 1},
+        )
+        pipeline = SteeringPipeline(controls=[sft], backend=_engine_spec(model_dir))
+        pipeline.steer()
+
+        # the stage was freed (retention check passed) and the engine booted exactly once
+        assert pipeline.model is None
+        assert len(fake_engine.instances) == 1
+        (backend,) = fake_engine.instances
+
+        # the merged checkpoint is the artifact handed to the engine
+        (artifact,) = backend.artifacts
+        assert isinstance(artifact, CheckpointArtifact)
+        assert artifact.path == str(merged_dir)
+        assert merged_dir.exists()

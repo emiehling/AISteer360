@@ -1,13 +1,13 @@
 """ActAdd (Activation Addition) control implementation."""
 from __future__ import annotations
 
-from aisteer360.algorithms.state_control._common.selectors import FractionalDepthSelector
-from aisteer360.algorithms.state_control._common.sources import SinglePairFit, _Precomputed
-from aisteer360.algorithms.state_control._common.specs import Intervention, TokenScope
-from aisteer360.algorithms.state_control._common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control._common.transforms import AdditiveTransform, NormPreservingTransform
-from aisteer360.algorithms.state_control._common.transforms.base import unwrap_modifiers
 from aisteer360.algorithms.state_control.base import InterventionControl
+from aisteer360.algorithms.state_control.common.selectors import FractionalDepthSelector
+from aisteer360.algorithms.state_control.common.sources import SinglePairFit, _Precomputed
+from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
+from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
+from aisteer360.algorithms.state_control.common.transforms.base import unwrap_modifiers
 
 from .args import ActAddArgs
 
@@ -16,14 +16,17 @@ class ActAdd(InterventionControl):
     """Activation Addition (ActAdd).
 
     Steers model behavior by adding a positional steering vector, computed from a single contrast
-    pair of short prompts, to the residual stream at a single layer during the initial forward
-    pass.
+    pair of short prompts, to the residual stream at a single layer. The vector is extracted at
+    the layer-input boundary of each layer and injected at the same boundary, so extraction and
+    injection read and write the same residual point.
 
     The control is declarative: `_configure` maps the validated args onto one `Intervention`
     at the layer-input boundary with an `"all"` token scope, since spatial control comes from
-    the transform's alignment-based positional injection rather than the mask. Injection
-    occurs only during prefill, because each decode pass has `seq_len == 1`, so the alignment
-    window never intersects it.
+    the transform's positional injection rather than the mask. Row `t` of the `[T, H]` vector
+    is added at absolute token position `alignment + t`. When the window
+    `[alignment, alignment + T)` lies within the prompt, injection happens entirely on the
+    prefill pass; when it extends past a shorter prompt, the covered generated positions
+    receive their rows once each.
 
     Reference:
 
@@ -49,7 +52,7 @@ class ActAdd(InterventionControl):
                 negative_prompt=self.negative_prompt,
                 normalize=self.normalize_vector,
             )
-        transform = AdditiveTransform(source, strength=self.multiplier, alignment=self.alignment)
+        transform = AdditiveTransform(source, strength=self.multiplier, alignment=self.alignment, positional=True)
         if self.use_norm_preservation:
             transform = NormPreservingTransform(transform)
 
