@@ -1,8 +1,10 @@
 """Same-model forward of candidate continuations with prefix KV-cache reuse.
 
 Some candidate values require forwarding the pipeline's own model mid-step to read candidate
-hidden states; `CandidateForward` performs those forwards. These passes are marked as auxiliary
-via `auxiliary_pass(aligned=True)`, so state-control accounting keeps them out of condition
+hidden states; `CandidateForward` performs those forwards. The states it reports lie at the raw
+output boundary of the final decoder layer (`location="layer_output"` in the capture utilities),
+before the model's final norm. These passes are marked as auxiliary via
+`auxiliary_pass(aligned=True)`, so state-control accounting keeps them out of condition
 scoring and gate updates while transforms still apply at the candidates' true positions (prefix
 and candidate positions lie on the generation's own coordinate axis). At hook points where the
 state runtime cannot read positions from `cache_position`, it skips transforming these passes and
@@ -14,7 +16,8 @@ import torch
 from transformers import PreTrainedModel
 
 from aisteer360.algorithms.core.utils.auxiliary_pass import auxiliary_pass
-from aisteer360.algorithms.output_control.common.kv_cache import repeat_cache
+from aisteer360.algorithms.output_control.common.kv_cache import extends_prefix, full_prefix_mask, repeat_cache
+from aisteer360.algorithms.state_control.common.hook_utils import get_model_layer_list
 
 
 class CandidateForward:
@@ -34,38 +37,15 @@ class CandidateForward:
 
     def __init__(self, model: PreTrainedModel):
         self.model = model
+        layer_modules, _ = get_model_layer_list(model)
+        self._final_layer = layer_modules[-1]
         self._cached_ids: torch.Tensor | None = None  # [1, T_c]
         self._cached_mask: torch.Tensor | None = None  # [1, T_c]
         self._cache = None  # past_key_values covering _cached_ids
 
-    def _extends(self, ids: torch.Tensor) -> bool:
-        last = self._cached_ids
-        if last is None or ids.size(1) < last.size(1):
-            return False
-        return bool(torch.equal(ids[:, : last.size(1)], last.to(ids.device)))
-
-    @staticmethod
-    def _full_mask(prefix_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
-        """The provided mask right-extended with ones to the prefix length.
-
-        The mask must span the full prefix; generated tokens are always real, so right-extension with
-        ones is exact.
-        """
-        if attention_mask is None:
-            return torch.ones_like(prefix_ids)
-        pad = prefix_ids.size(1) - attention_mask.size(1)
-        if pad < 0:
-            raise ValueError("attention_mask is longer than prefix_ids.")
-        if pad == 0:
-            return attention_mask
-        ones = torch.ones(
-            attention_mask.size(0), pad, device=attention_mask.device, dtype=attention_mask.dtype
-        )
-        return torch.cat([attention_mask, ones], dim=1)
-
     def _sync_cache(self, prefix_ids: torch.Tensor, full_mask: torch.Tensor) -> None:
         """Bring the internal cache up to `prefix_ids` (extend by the delta, or rebuild)."""
-        if not self._extends(prefix_ids):
+        if not extends_prefix(self._cached_ids, prefix_ids):
             out = self.model(
                 input_ids=prefix_ids, attention_mask=full_mask, use_cache=True, return_dict=True
             )
@@ -91,7 +71,13 @@ class CandidateForward:
         candidate_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return last-layer hidden states at the candidate position for each candidate.
+        """Return final-layer hidden states at the candidate position for each candidate.
+
+        The returned states lie at the raw output boundary of the final decoder layer
+        (`location="layer_output"` in the capture utilities), before the model's final norm,
+        recovered with a forward hook on that layer. The hook is registered per call, around the
+        candidate forward only, so it observes the output after any session-registered
+        state-control hooks on the same module.
 
         Args:
             prefix_ids: `[1, T]` prefix (batch size 1).
@@ -99,14 +85,18 @@ class CandidateForward:
             attention_mask: Optional prefix mask; right-extended with ones to the prefix length.
 
         Returns:
-            A tensor `[K, H]` of last-token hidden states, one per candidate.
+            A tensor `[K, H]` of candidate-position hidden states, one per candidate.
+
+        Raises:
+            RuntimeError: If the candidate forward does not pass through the final decoder layer
+                exactly once.
         """
         if prefix_ids.size(0) != 1:
             raise ValueError("CandidateForward supports batch size 1 only.")
 
         num = candidate_ids.size(1)
         device = prefix_ids.device
-        full_mask = self._full_mask(prefix_ids, attention_mask)
+        full_mask = full_prefix_mask(prefix_ids, attention_mask)
         with auxiliary_pass(aligned=True):
             self._sync_cache(prefix_ids, full_mask)
 
@@ -118,13 +108,27 @@ class CandidateForward:
                 dim=1,
             )
             positions = torch.arange(prefix_len, prefix_len + 1, device=device)
-            outputs = self.model(
-                input_ids=cand_tokens,
-                attention_mask=cand_mask,
-                past_key_values=repeated,
-                use_cache=True,
-                cache_position=positions,
-                output_hidden_states=True,
-                return_dict=True,
+
+            final_boundary: list[torch.Tensor] = []
+
+            def _grab_final(module, args, output):
+                final_boundary.append(output[0] if isinstance(output, tuple) else output)
+
+            handle = self._final_layer.register_forward_hook(_grab_final)
+            try:
+                self.model(
+                    input_ids=cand_tokens,
+                    attention_mask=cand_mask,
+                    past_key_values=repeated,
+                    use_cache=True,
+                    cache_position=positions,
+                    return_dict=True,
+                )
+            finally:
+                handle.remove()
+        if len(final_boundary) != 1:
+            raise RuntimeError(
+                f"Expected exactly one final-layer forward for the candidate batch, "
+                f"observed {len(final_boundary)}."
             )
-        return outputs.hidden_states[-1][:, -1, :]  # [K, H]
+        return final_boundary[0][:, -1, :]  # [K, H]

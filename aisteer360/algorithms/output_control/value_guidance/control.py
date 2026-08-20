@@ -25,7 +25,7 @@ class ValueGuidance(OutputControl):
         - FUDGE: `value={"kind": "classifier", ...}, policy="top_k", beta=1.0, normalize="none"`.
         - ARGS: `value={"kind": "reward_model", ...}, policy="top_k", normalize="none"`.
         - RAD-equivalent: `value={"kind": "reward_model", ...}, policy="top_k", k=20,
-          normalize="minmax", mask_non_candidates=True`.
+          normalize="clamp", invert=True, mask_non_candidates=True`.
         - SASA-equivalent: `value={"kind": "subspace_margin", ...}, policy="surviving",
           normalize="softmax", mask_non_candidates=False, include_in_scoring=False`.
 
@@ -41,8 +41,8 @@ class ValueGuidance(OutputControl):
         k (int | None): Candidate count for `policy="top_k"`. Defaults to 20.
         p (float | None): Nucleus threshold for `policy="top_p"`. Defaults to None.
         beta (float): Shift scale. Defaults to 1.0.
-        normalize (str): Per-row value normalization (`"none"`, `"minmax"`, `"softmax"`). Defaults to
-            `"none"`.
+        normalize (str): Per-row value normalization (`"none"`, `"minmax"`, `"softmax"`, `"clamp"`).
+            Defaults to `"none"`.
         invert (bool): Post-normalization `v <- 1 - v`. Defaults to False.
         mask_non_candidates (bool): Mask non-candidate logits to `-inf`. Defaults to True.
         max_candidates (int | None): Clamp on the candidate set (top-N by score). Defaults to None.

@@ -50,5 +50,5 @@ def load_sequence_classifier(
         max_len = max_length_clamp
     tokenizer.max_length = max_len
 
-    logger.info("Loaded sequence classifier from %s", model_id)
+    logger.debug("Loaded sequence classifier from %s", model_id)
     return model, tokenizer

@@ -8,10 +8,13 @@ import pytest
 import torch
 from transformers import LlamaConfig, LlamaForSequenceClassification
 
+from aisteer360.algorithms.core.internals.probes.probe import Probe
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.output_control.common.estimators.linear_probe import LinearProbe
 from aisteer360.algorithms.output_control.common.values.base import StepContext
-from aisteer360.algorithms.output_control.common.values.subspace_margin import SubspaceMarginValue
+from aisteer360.algorithms.output_control.common.values.subspace_margin import (
+    SubspaceMarginValue,
+    load_single_file_probe,
+)
 from aisteer360.algorithms.output_control.deal.control import DeAL
 from aisteer360.algorithms.output_control.phased_decoding.control import PhasedDecoding
 from aisteer360.algorithms.output_control.rad.control import RAD
@@ -51,11 +54,11 @@ class TestRADParity:
     def test_recipe_matches_reference_math(self, tmp_path):
         rm_path = _make_tiny_reward_model(tmp_path)
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
-        rad = RAD(beta=10.0, reward_model_id=rm_path)
+        rad = RAD(beta=10.0, reward_model_id=rm_path, top_k=5)
         pipeline, model, tokenizer = _pipeline([rad], model=model)
 
-        # build the processor exactly as get_logits_processors would (top-k default 20)
-        processors = rad.get_logits_processors(torch.tensor([[0, 3, 4]]), {}, top_k=5)
+        # build the processor exactly as get_logits_processors would (top_k=5 on the control)
+        processors = rad.get_logits_processors(torch.tensor([[0, 3, 4]]), {})
         assert len(processors) == 1
         proc = processors[0]
 
@@ -63,14 +66,12 @@ class TestRADParity:
         scores = torch.randn(1, VOCAB)
         out = proc(prefix, scores.clone())
 
-        # reference: top-5 candidates, min-max normalized reward (inverted=False for HF classifier),
-        # non-candidates -> -inf
+        # reference apply_function: top-5 candidates, reward clamped to [0, 1] (inverted=False for the
+        # HF classifier), shift += beta * reward, non-candidates -> -inf
         cand_scores, cand_ids = torch.topk(scores, 5, dim=-1)
         # reward the candidates via the same value the processor uses
         v = proc.value.score(StepContext(prefix, cand_ids, tokenizer, model, None))
-        r_min = v.min()
-        r_max = v.max()
-        norm = (v - r_min) / (r_max - r_min) if (r_max - r_min) > 1e-8 else torch.full_like(v, 0.5)
+        norm = v.clamp(0.0, 1.0)
         expected = torch.full_like(scores, float("-inf"))
         expected.scatter_(1, cand_ids, cand_scores)
         expected.scatter_add_(1, cand_ids, 10.0 * norm.to(scores.dtype))
@@ -87,7 +88,7 @@ class TestRADParity:
         assert processors[0].k == 20
 
     def test_unsteered_raises(self, monkeypatch):
-        rad = RAD(beta=1.0)
+        rad = RAD(beta=1.0, reward_model_id="x")
         with pytest.raises(RuntimeError, match="steer"):
             rad.get_logits_processors(torch.tensor([[0, 3, 4]]), {})
 
@@ -109,16 +110,15 @@ class TestSASAParity:
     def test_margin_softmax_math(self):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         tokenizer = wordlevel_tokenizer()
-        probe = LinearProbe(
-            direction=torch.randn(16),
-            midpoint=torch.randn(16),
+        probe = Probe(
+            model_type="test", location="layer_output", pooling="last",
+            layer_ids=[1], weights={1: torch.randn(16)}, bias=0.3,
         )
         sasa = SASA(beta=3.0, wv_path=None)
         # inject probe directly (skip fitting)
         sasa.model = model
         sasa.tokenizer = tokenizer
         sasa.probe = probe
-        sasa.probe.to(next(model.parameters()).device)
 
         prefix = torch.tensor([[0, 3, 4]])
         attention_mask = torch.ones_like(prefix)
@@ -143,10 +143,12 @@ class TestSASAParity:
         wv = {"wv": torch.randn(16), "mu_mu": torch.randn(16)}
         path = str(tmp_path / "steer_wv.pt")
         torch.save(wv, path)
-        probe = SASA._load_probe(path)
-        assert isinstance(probe, LinearProbe)
-        assert torch.allclose(probe.direction, wv["wv"])
-        assert torch.allclose(probe.midpoint, wv["mu_mu"])
+        probe = load_single_file_probe(path, layer_id=1)
+        assert isinstance(probe, Probe)
+        assert probe.location == "layer_output" and probe.pooling == "last"
+        assert probe.layer_ids == [1]
+        assert torch.allclose(probe.weights[1], wv["wv"])
+        assert probe.bias == pytest.approx(-float(torch.dot(wv["wv"], wv["mu_mu"])), abs=1e-5)
 
     def test_include_in_scoring_default_false(self):
         assert SASA.include_in_scoring is False
@@ -167,7 +169,7 @@ class TestSASAParity:
         out = pipeline.generate(input_ids=prompt, max_new_tokens=5, do_sample=False, eos_token_id=None)
         assert out.ndim == 2
         assert out.size(1) == 5  # continuation-only, prompt excluded
-        assert abs(float(sasa.probe.direction.norm()) - 1.0) < 1e-4
+        assert abs(float(sasa.probe.weights[1].norm()) - 1.0) < 1e-4
 
 
 # DeAL

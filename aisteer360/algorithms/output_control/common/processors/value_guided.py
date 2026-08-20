@@ -1,8 +1,8 @@
 """Shift candidate-token logits by a per-candidate value (select candidates, score, combine).
 
-One processor covers many methods. RAD = `(RewardModelValue, rad_candidate_sizing, minmax,
-invert=legacy, mask=True)`. SASA = `(SubspaceMarginValue, surviving, softmax, mask=False)`. FUDGE =
-`(ClassifierValue, top_k, none, beta=1)`. ARGS = `(RewardModelValue, top_k, none)`.
+One processor covers many methods. RAD = `(RewardModelValue, top_k, clamp, mask=True)`. SASA =
+`(SubspaceMarginValue, surviving, softmax, mask=False)`. FUDGE = `(ClassifierValue, top_k, none,
+beta=1)`. ARGS = `(RewardModelValue, top_k, none)`.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from aisteer360.algorithms.output_control.common.candidates import select_candid
 from aisteer360.algorithms.output_control.common.processors.base import PrefixKeyedProcessor
 from aisteer360.algorithms.output_control.common.values.base import BaseCandidateValue, StepContext
 
-Normalize = Literal["none", "minmax", "softmax"]
+Normalize = Literal["none", "minmax", "softmax", "clamp"]
 
 LARGE_CANDIDATE_SET_WARN_THRESHOLD = 1024
 
@@ -25,14 +25,17 @@ def _normalize(v: torch.Tensor, mode: Normalize, invert: bool) -> torch.Tensor:
 
     Args:
         v: Values `[B, K]`.
-        mode: `"minmax"` (per-row min-max; degenerate row -> 0.5), `"softmax"` (per-row softmax),
-            or `"none"`.
-        invert: When True, `v <- 1 - v` after normalization (RAD's legacy toxicity head).
+        mode: `"minmax"` (per-row min-max, relative to the set; degenerate row -> 0.5), `"softmax"`
+            (per-row softmax), `"clamp"` (element-wise clamp to `[0, 1]`, absolute rather than
+            relative to the set), or `"none"`.
+        invert: When True, `v <- 1 - v` after normalization (steer away from the scored attribute).
 
     Returns:
         Normalized values `[B, K]`.
     """
-    if mode == "minmax":
+    if mode == "clamp":
+        normalized = v.clamp(0.0, 1.0)
+    elif mode == "minmax":
         r_min = v.min(dim=-1, keepdim=True).values
         r_max = v.max(dim=-1, keepdim=True).values
         span = r_max - r_min
@@ -58,9 +61,9 @@ class ValueGuidedProcessor(PrefixKeyedProcessor):
         k: Candidate count for `top_k`.
         p: Nucleus threshold for `top_p`.
         beta: Shift scale.
-        normalize: `"minmax"` (in-set; degenerate set -> 0.5), `"softmax"` (over the set), or
-            `"none"`. Applied per row.
-        invert: Post-normalization `v <- 1 - v` (RAD's legacy toxicity head).
+        normalize: `"minmax"` (in-set; degenerate set -> 0.5), `"softmax"` (over the set), `"clamp"`
+            (element-wise to `[0, 1]`, absolute rather than in-set), or `"none"`. Applied per row.
+        invert: Post-normalization `v <- 1 - v` (steer away from the scored attribute).
         mask_non_candidates: Set non-candidate logits to `-inf` (RAD semantics). Forced False when
             `policy="surviving"` (everything finite is already a candidate).
         max_candidates: Optional clamp on the candidate-set size. After the policy selects candidates,

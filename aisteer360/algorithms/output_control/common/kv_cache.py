@@ -2,6 +2,8 @@
 
 `repeat_cache` / `select_cache` handle the cache-format compatibility that same-model value
 functions need: repeat a prefix cache across K candidates, then select the chosen candidate's slice.
+`extends_prefix` / `full_prefix_mask` are the pure tensor helpers an incremental prefix cache needs:
+whether a new prefix extends the cached one, and the full attention mask spanning a prefix.
 
 Mutation contract: both functions may mutate the input cache
 in-place on some backends (`batch_repeat_interleave`, `batch_select`, in-place key/value lists) and
@@ -15,6 +17,50 @@ from __future__ import annotations
 
 import torch
 from transformers.cache_utils import DynamicCache
+
+
+def extends_prefix(cached_ids: torch.Tensor | None, ids: torch.Tensor) -> bool:
+    """Whether `ids` extends `cached_ids` row-for-row (a shared, no-shorter prefix).
+
+    Args:
+        cached_ids: The previously cached prefix ids `[B, T_c]`, or None when nothing is cached.
+        ids: The candidate new prefix ids `[B, T]`.
+
+    Returns:
+        True when `cached_ids` is not None and `ids` is at least as long and matches `cached_ids`
+        over its first `T_c` positions; False otherwise (including any shorter or divergent prefix,
+        which must trigger a cache rebuild).
+    """
+    if cached_ids is None or ids.size(1) < cached_ids.size(1):
+        return False
+    return bool(torch.equal(ids[:, : cached_ids.size(1)], cached_ids.to(ids.device)))
+
+
+def full_prefix_mask(prefix_ids: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
+    """The provided mask right-extended with ones to the prefix length.
+
+    The mask must span the full prefix; generated tokens are always real, so right-extension with
+    ones is exact.
+
+    Args:
+        prefix_ids: The prefix ids `[B, T]`.
+        attention_mask: The prefix mask `[B, T']` with `T' <= T`, or None for an all-ones mask.
+
+    Returns:
+        An attention mask `[B, T]`.
+
+    Raises:
+        ValueError: If `attention_mask` is longer than `prefix_ids`.
+    """
+    if attention_mask is None:
+        return torch.ones_like(prefix_ids)
+    pad = prefix_ids.size(1) - attention_mask.size(1)
+    if pad < 0:
+        raise ValueError("attention_mask is longer than prefix_ids.")
+    if pad == 0:
+        return attention_mask
+    ones = torch.ones(attention_mask.size(0), pad, device=attention_mask.device, dtype=attention_mask.dtype)
+    return torch.cat([attention_mask, ones], dim=1)
 
 
 def repeat_cache(cache, n: int, *, preserve_input: bool = False):

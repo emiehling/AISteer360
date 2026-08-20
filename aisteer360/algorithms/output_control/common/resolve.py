@@ -50,13 +50,17 @@ def resolve_value(spec, *, model, tokenizer, device) -> BaseCandidateValue:
     Accepted forms: a `BaseCandidateValue` instance; a `(StepContext) -> Tensor[B, K]` callable
     (wrapped in `CallableValue`); or a dict with a `"kind"` key:
 
-        - `"reward_model"`: `model_id` (required); `score_index=0`, `hf_model_kwargs`. Loads an
-          `AutoModelForSequenceClassification` and wraps it in a `RewardModelValue`.
+        - `"reward_model"`: `model_id` (required); `score_index=0`, `score_transform="none"`,
+          `hf_model_kwargs`. Loads an `AutoModelForSequenceClassification` and wraps it in a
+          `RewardModelValue` (the text-round-trip path; `shared_vocab` defaults False).
         - `"classifier"`: `model_id` or `fn` (required); `label_index=1`, `hf_model_kwargs`.
           Wraps a loaded classifier (or a `list[str] -> Tensor` callable) in a `ClassifierValue`.
         - `"subspace_margin"`: `probe_path` or `data` (required); `batch_size=4`,
-          `max_length=1024`, `save_path`. Loads a probe via `LinearProbe.load_any` or fits one via
-          `LinearProbeEstimator` on the base model.
+          `max_length=1024`, `save_path`. Loads a probe from a directory artifact (`Probe.load`)
+          or a single-file checkpoint (`.probe` JSON or legacy `{'wv', 'mu_mu'}` tensor), or fits
+          one on the base model via `fit_probe` (fisher direction over last-token features at the
+          raw final-layer boundary, midpoint calibration); `save_path` writes the fitted probe's
+          directory artifact.
         - `"callable"`: `fn` (required); `supports_batching`, `scoring_cost`. Wraps `fn` in a
           `CallableValue` with explicit flags.
 
@@ -83,14 +87,14 @@ def resolve_value(spec, *, model, tokenizer, device) -> BaseCandidateValue:
         kind = spec.get("kind")
         if kind == "reward_model":
             model_id = _require(spec, "model_id", "reward_model")
-            score_index = spec.get("score_index", 0)
             rm, rm_tokenizer = load_sequence_classifier(
                 model_id, device=device, hf_model_kwargs=spec.get("hf_model_kwargs"),
             )
             return RewardModelValue(
                 reward_model=rm,
                 rm_tokenizer=rm_tokenizer,
-                rm_score_fn=lambda output, i=score_index: output.logits[:, i],
+                score_index=spec.get("score_index", 0),
+                score_transform=spec.get("score_transform", "none"),
             )
         if kind == "classifier":
             label_index = spec.get("label_index", 1)
@@ -102,26 +106,42 @@ def resolve_value(spec, *, model, tokenizer, device) -> BaseCandidateValue:
             )
             return ClassifierValue(clf, classifier_tokenizer=clf_tokenizer, label_index=label_index)
         if kind == "subspace_margin":
-            # imported lazily to avoid a heavy estimator import when subspace_margin is unused
-            from aisteer360.algorithms.output_control.common.estimators.linear_probe import (
-                LinearProbe,
-                LinearProbeEstimator,
-            )
+            # imported lazily to keep probe-fitting imports out of unrelated resolves
+            import os
+
+            from aisteer360.algorithms.core.internals.data import as_labeled_examples
+            from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec, fit_probe
+            from aisteer360.algorithms.core.internals.probes.probe import Probe
+            from aisteer360.algorithms.output_control.common.values.subspace_margin import load_single_file_probe
+
+            final_layer = int(model.config.num_hidden_layers) - 1
             if spec.get("probe_path") is not None:
-                probe = LinearProbe.load_any(spec["probe_path"])
+                path = spec["probe_path"]
+                if os.path.isdir(path):
+                    probe = Probe.load(path)
+                else:
+                    probe = load_single_file_probe(path, layer_id=final_layer)
             elif spec.get("data") is not None:
-                estimator = LinearProbeEstimator(pooling="last_token")
-                probe = estimator.fit(
+                fit_spec = ProbeFitSpec(
+                    method="fisher",
+                    pooling="last",
+                    location="layer_output",
+                    prompt_format="raw",
+                    candidate_layers=[final_layer],
+                    calibration="midpoint",
+                )
+                probe = fit_probe(
                     model,
                     tokenizer,
-                    data=spec["data"],
+                    data=as_labeled_examples(spec["data"]),
+                    spec=fit_spec,
                     batch_size=spec.get("batch_size", 4),
                     max_length=spec.get("max_length", 1024),
-                    save_path=spec.get("save_path"),
                 )
+                if spec.get("save_path") is not None:
+                    probe.save(spec["save_path"])
             else:
                 raise ValueError("'subspace_margin' spec requires a 'probe_path' or 'data' key.")
-            probe.to(device)
             return SubspaceMarginValue(probe)
         if kind == "callable":
             fn = _require(spec, "fn", "callable")

@@ -364,6 +364,15 @@ class ExclusiveSession:
         model = self.model
         tokenizer = self.tokenizer
         gen_kwargs = render_hf_gen_kwargs(params)
+        # default pad_token_id per call to avoid the transformers open-end-generation warning
+        # without mutating the model's generation config; caller kwargs and a model-configured
+        # value both take precedence over the tokenizer fallback
+        if (
+            "pad_token_id" not in gen_kwargs
+            and model.generation_config.pad_token_id is None
+            and getattr(tokenizer, "pad_token_id", None) is not None
+        ):
+            gen_kwargs["pad_token_id"] = tokenizer.pad_token_id
         user_processors = tuple(gen_kwargs.pop("logits_processor", None) or ())
         user_criteria = tuple(gen_kwargs.pop("stopping_criteria", None) or ())
 

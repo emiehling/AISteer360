@@ -204,7 +204,7 @@ decoding. Output controls participate in decoding through one of two modes:
 The toolkit implements the following step-level controls:
 
 - `RAD` ([API reference](../reference/algorithms/output_control/rad.md), [notebook](../examples/notebooks/algorithms/rad.ipynb))
-    - *Description*: reward-augmented decoding[@deng-raffel-2023-reward]; shifts candidate-token logits by a reward from a unidirectional reward model.
+    - *Description*: reward-augmented decoding[@deng-raffel-2023-reward]; scores the top-`k` candidate tokens with an `AutoModelForSequenceClassification` reward model and shifts their logits by `beta * reward`. When the reward model is decoder-only and shares the base model's vocabulary it caches the reward-model prefix activations across steps (the paper's efficient path), and otherwise scores each step statelessly.
     - *Backends*: HF (model-backed per-step logit math is in-process only).
 - `SASA` ([API reference](../reference/algorithms/output_control/sasa.md), [notebook](../examples/notebooks/algorithms/sasa.ipynb))
     - *Description*: self-disciplined autoregressive sampling[@ko2025large]; shifts logits toward a learned non-toxic subspace.
@@ -273,8 +273,8 @@ component specs (name / instance / callable / dict-with-`kind`) at `steer()` tim
 | [`StoppingRules`](../reference/algorithms/output_control/stopping_rules.md) | sampling-mapped (stop rules) | — | substring / token / budget stops |
 
 The named methods are siblings, not children, of these generics: they sit directly on the same `common` parts and
-each keeps the one thing its class adds beyond a config (RAD's dynamic candidate sizing, SASA's probe fitting, and so
-on). When a config earns a name through use, promote it with a small preset subclass over the generic.
+each keeps the one thing its class adds beyond a config (RAD's cached unidirectional reward path, SASA's probe
+fitting, and so on). When a config earns a name through use, promote it with a small preset subclass over the generic.
 
 Reusable building blocks shared across these methods (candidate policies, per-candidate value functions, full-vocabulary
 logit sources, sequence scorers, a segment-search driver, a phased driver, composable stopping criteria, and the

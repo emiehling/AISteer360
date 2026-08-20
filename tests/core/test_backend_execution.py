@@ -362,6 +362,76 @@ class TestSessionBatchedFastPath:
         assert torch.allclose(batched, serial, atol=1e-4)
 
 
+class TestPadTokenDefaulting:
+    """The session defaults pad_token_id per call without mutating the model's generation config."""
+
+    @staticmethod
+    def _capture_generate_kwargs(fresh_model):
+        """Wrap `fresh_model.generate` to record the kwargs of the most recent call."""
+        seen = {}
+        original = fresh_model.generate
+
+        def _spy(*args, **kwargs):
+            seen.clear()
+            seen.update(kwargs)
+            return original(*args, **kwargs)
+
+        fresh_model.generate = _spy
+        return seen
+
+    def _run(self, fresh_model, fresh_tokenizer, params):
+        seen = self._capture_generate_kwargs(fresh_model)
+        backend = HFBackend.adopt(HF_SPEC, lambda: fresh_model, lambda: fresh_tokenizer)
+        item = GenerationItem(prompt=PreparedPrompt.from_text("the cat"))
+        with backend.open_session() as session:
+            session.generate([item], params)
+        return seen
+
+    def test_defaults_pad_token_when_config_unset(self):
+        fresh_model = tiny_llama(num_layers=2, hidden=16, heads=2)
+        fresh_tokenizer = wordlevel_tokenizer()
+        assert fresh_model.generation_config.pad_token_id is None
+        assert fresh_tokenizer.pad_token_id is not None
+
+        seen = self._run(fresh_model, fresh_tokenizer, GenerationParams(max_new_tokens=3, greedy=True))
+
+        assert seen["pad_token_id"] == fresh_tokenizer.pad_token_id
+        # the model's generation config is not mutated by the defaulting
+        assert fresh_model.generation_config.pad_token_id is None
+
+    def test_generation_config_object_is_unchanged_after_generation(self):
+        fresh_model = tiny_llama(num_layers=2, hidden=16, heads=2)
+        fresh_tokenizer = wordlevel_tokenizer()
+        config_before = fresh_model.generation_config
+
+        self._run(fresh_model, fresh_tokenizer, GenerationParams(max_new_tokens=3, greedy=True))
+
+        assert fresh_model.generation_config is config_before  # identity preserved
+        assert fresh_model.generation_config.pad_token_id is None  # value preserved
+
+    def test_model_configured_pad_token_takes_precedence_over_tokenizer(self):
+        fresh_model = tiny_llama(num_layers=2, hidden=16, heads=2)
+        fresh_tokenizer = wordlevel_tokenizer()
+        fresh_model.generation_config.pad_token_id = 0  # differs from tokenizer.pad_token_id (2)
+
+        seen = self._run(fresh_model, fresh_tokenizer, GenerationParams(max_new_tokens=3, greedy=True))
+
+        # a model-configured value is left to model.generate; the session adds no override
+        assert "pad_token_id" not in seen
+
+    def test_caller_pad_token_takes_precedence(self):
+        fresh_model = tiny_llama(num_layers=2, hidden=16, heads=2)
+        fresh_tokenizer = wordlevel_tokenizer()
+        assert fresh_model.generation_config.pad_token_id is None
+
+        seen = self._run(
+            fresh_model, fresh_tokenizer,
+            GenerationParams(max_new_tokens=3, greedy=True, extra={"pad_token_id": 1}),
+        )
+
+        assert seen["pad_token_id"] == 1  # caller kwarg wins over the tokenizer default
+
+
 class TestPipelineStopRules:
 
     def test_decoded_text_truncates_at_stop_string(self, model, tokenizer):

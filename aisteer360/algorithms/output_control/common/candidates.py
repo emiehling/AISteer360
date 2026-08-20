@@ -71,29 +71,3 @@ def select_candidates(
         return cand_ids, scores.gather(1, cand_ids)
 
     raise ValueError(f"Unknown candidate policy: {policy!r}.")
-
-
-def rad_candidate_sizing(gen_kwargs: dict) -> dict:
-    """RAD's documented candidate-selection precedence, as a total rule.
-
-    Precedence:
-
-        - `top_k > 0` -> `(policy="top_k", k=top_k, p=None)`
-        - elif `top_p < 1` -> `(policy="top_p", k=None, p=top_p)`
-        - else -> `(policy="top_k", k=20, p=None)` (the processor's own default)
-
-    The returned mapping always binds `policy`, `k`, and `p`.
-
-    Args:
-        gen_kwargs: The caller's generation kwargs (read-only; `top_k` / `top_p` consulted).
-
-    Returns:
-        A dict `{"policy": ..., "k": ..., "p": ...}` suitable for a `ValueGuidedProcessor`.
-    """
-    top_k = gen_kwargs.get("top_k", 0)
-    top_p = gen_kwargs.get("top_p", 1.0)
-    if top_k and top_k > 0:
-        return {"policy": "top_k", "k": int(top_k), "p": None}
-    if top_p and top_p < 1.0:
-        return {"policy": "top_p", "k": None, "p": float(top_p)}
-    return {"policy": "top_k", "k": 20, "p": None}

@@ -2,9 +2,10 @@
 
 Hub-free: uses tiny randomly-initialized models and scripted values/scorers/automata. Covers the
 statefulness contract, candidate policies, the value-guided step shape, the contrastive-mixture
-distribution shape, KV-cache round-trips, the linear-probe estimator, the segment and phase drivers,
-composable criteria, and the constraint integration point.
+distribution shape, KV-cache round-trips, the segment and phase drivers, composable criteria, and
+the constraint integration point.
 """
+import json
 import math
 
 import pytest
@@ -12,13 +13,14 @@ import torch
 from transformers import LogitsProcessorList, StoppingCriteriaList
 
 from aisteer360.algorithms.core.internals.data import LabeledExamples
+from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec, fit_probe
+from aisteer360.algorithms.core.internals.probes.probe import Probe
 from aisteer360.algorithms.output_control.common.candidate_forward import CandidateForward
-from aisteer360.algorithms.output_control.common.candidates import rad_candidate_sizing, select_candidates
+from aisteer360.algorithms.output_control.common.candidates import select_candidates
 from aisteer360.algorithms.output_control.common.criteria import BudgetTokens, StopOnSubstring, StopOnTokens
 from aisteer360.algorithms.output_control.common.drivers.frontier import Frontier
 from aisteer360.algorithms.output_control.common.drivers.phased import Fixed, Generated, PhasedDriver
 from aisteer360.algorithms.output_control.common.drivers.search import SearchDriver
-from aisteer360.algorithms.output_control.common.estimators.linear_probe import LinearProbe, LinearProbeEstimator
 from aisteer360.algorithms.output_control.common.kv_cache import repeat_cache, select_cache
 from aisteer360.algorithms.output_control.common.logit_sources import BaseLogitSource
 from aisteer360.algorithms.output_control.common.processors.base import PrefixKeyedProcessor
@@ -104,13 +106,6 @@ class TestCandidates:
         ids, _ = select_candidates(scores, "surviving")
         assert sorted(ids[0].tolist()) == [1, 4]
 
-    def test_rad_candidate_sizing_totality(self):
-        assert rad_candidate_sizing({}) == {"policy": "top_k", "k": 20, "p": None}
-        assert rad_candidate_sizing({"top_k": 5}) == {"policy": "top_k", "k": 5, "p": None}
-        assert rad_candidate_sizing({"top_p": 0.9}) == {"policy": "top_p", "k": None, "p": 0.9}
-        # both -> top_k precedence
-        assert rad_candidate_sizing({"top_k": 5, "top_p": 0.9})["policy"] == "top_k"
-
 
 # ValueGuidedProcessor
 class TestValueGuidedProcessor:
@@ -145,6 +140,83 @@ class TestValueGuidedProcessor:
             value, policy="surviving", normalize="softmax", mask_non_candidates=True,
         )
         assert proc.mask_non_candidates is False  # forced off for surviving
+
+    def test_clamp_mode_math(self):
+        # monotone scores so top-3 candidate ids are [0, 1, 2] in that order, aligning positionally
+        # with the scripted reward row
+        scores = torch.tensor([[3.0, 2.0, 1.0, 0.0, 0.0]])
+        value = _ScriptedValue([-0.2, 0.3, 1.4])  # clamp -> [0.0, 0.3, 1.0]
+        proc = ValueGuidedProcessor(
+            value, policy="top_k", k=3, beta=10.0, normalize="clamp",
+            invert=False, mask_non_candidates=True, lm_tokenizer=None,
+        )
+        out = proc(torch.tensor([[9]]), scores.clone())
+        # non-candidates (ids 3, 4) -> -inf
+        assert out[0, 3] == float("-inf")
+        assert out[0, 4] == float("-inf")
+        # shifts beta * clamp(reward) = [0.0, 3.0, 10.0] added to the candidate logits
+        assert out[0, 0] == pytest.approx(3.0 + 0.0, abs=1e-4)
+        assert out[0, 1] == pytest.approx(2.0 + 3.0, abs=1e-4)
+        assert out[0, 2] == pytest.approx(1.0 + 10.0, abs=1e-4)
+
+    def test_clamp_invert_matches_reference_apply_function(self):
+        # parity pin: the processor's clamp+invert path must equal the reference apply_function
+        # (clamp to [0, 1], then 1 - r, then + beta * r) elementwise on the candidate positions
+        def reference_apply(original_score, reward, beta, inverse):
+            reward = reward.clamp(0.0, 1.0)
+            if inverse:
+                reward = 1.0 - reward
+            return original_score + reward * beta
+
+        scores = torch.tensor([[3.0, 2.0, 1.0, 0.0, 0.0]])
+        cand_ids = torch.tensor([0, 1, 2])  # top-3 in descending-score order
+        beta = 7.0
+        reward_grid = [
+            [0.0, 0.5, 1.0],
+            [-0.2, 0.3, 1.4],       # out-of-range low and high
+            [2.0, -1.0, 0.75],      # both extremes
+            [0.02, 0.021, 0.65],
+        ]
+        for row in reward_grid:
+            value = _ScriptedValue(row)
+            proc = ValueGuidedProcessor(
+                value, policy="top_k", k=3, beta=beta, normalize="clamp",
+                invert=True, mask_non_candidates=True, lm_tokenizer=None,
+            )
+            out = proc(torch.tensor([[9]]), scores.clone())
+            expected = reference_apply(
+                scores[0, cand_ids], torch.tensor(row), beta, inverse=True
+            )
+            assert torch.allclose(out[0, cand_ids], expected, atol=1e-4)
+
+    def test_clamp_spread_invariance(self):
+        # regression pin for the degeneration mechanism: on a benign step the candidate rewards
+        # differ only at noise scale, so the shift spread stays small even at beta=50 (contrast the
+        # in-set minmax rescaling, which would stretch that spread to the full beta)
+        beta = 50.0
+
+        def shift_spread(row):
+            value = _ScriptedValue(row)
+            # descending scores so candidate order matches the reward row positionally
+            scores = torch.tensor([[float(len(row) - i) for i in range(len(row) + 2)]])
+            proc = ValueGuidedProcessor(
+                value, policy="top_k", k=len(row), beta=beta, normalize="clamp",
+                invert=False, mask_non_candidates=True, lm_tokenizer=None,
+            )
+            out = proc(torch.tensor([[9]]), scores.clone())
+            cand_ids = torch.arange(len(row))
+            shifts = out[0, cand_ids] - scores[0, cand_ids]
+            return (shifts.max() - shifts.min()).item()
+
+        benign = [0.020, 0.021, 0.0215]
+        assert shift_spread(benign) < 0.1
+
+        contrast = [0.02, 0.65]
+        assert shift_spread(contrast) == pytest.approx(beta * (0.65 - 0.02), abs=1e-3)
+
+    def test_clamp_invert_normalize_unit(self):
+        v = _normalize(torch.tensor([[0.0, 0.5, 2.0]]), "clamp", invert=True)
+        assert torch.allclose(v, torch.tensor([[1.0, 0.5, 0.0]]))
 
 
 # ContrastiveMixtureProcessor
@@ -191,41 +263,6 @@ class TestKVCache:
         legacy = selected.to_legacy_cache() if hasattr(selected, "to_legacy_cache") else selected
         # first layer key tensor now has batch dim 1
         assert legacy[0][0].shape[0] == 1
-
-
-# LinearProbeEstimator
-class TestLinearProbeEstimator:
-    def test_golden_probe(self, tmp_path):
-        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
-        tokenizer = wordlevel_tokenizer()
-        data = LabeledExamples(
-            positives=["the cat sat", "the dog ran", "the cat ran on"],
-            negatives=["mat on fast", "span attention", "fast mat sat"],
-        )
-        est = LinearProbeEstimator(pooling="last_token")
-        probe = est.fit(model, tokenizer, data=data, batch_size=2, max_length=16)
-        assert probe.direction.shape == probe.midpoint.shape
-        # direction normalized
-        assert torch.norm(probe.direction).item() == pytest.approx(1.0, abs=1e-4)
-
-    def test_no_file_written_without_path(self, tmp_path):
-        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
-        tokenizer = wordlevel_tokenizer()
-        data = LabeledExamples(
-            positives=["the cat sat", "the dog ran", "the cat ran"],
-            negatives=["mat on fast", "span attention", "fast mat on"],
-        )
-        est = LinearProbeEstimator()
-        est.fit(model, tokenizer, data=data, batch_size=2, max_length=16)
-        assert list(tmp_path.iterdir()) == []  # nothing written
-
-    def test_save_load_round_trip(self, tmp_path):
-        probe = LinearProbe(direction=torch.tensor([1.0, 0.0]), midpoint=torch.tensor([0.5, 0.5]))
-        path = str(tmp_path / "p")
-        probe.save(path)
-        loaded = LinearProbe.load(path)
-        assert torch.allclose(loaded.direction, probe.direction)
-        assert torch.allclose(loaded.midpoint, probe.midpoint)
 
 
 # SearchDriver
@@ -419,7 +456,44 @@ class _ForwardCounter:
         self.model.forward = self._orig
 
 
+def _raw_final_boundary_states(model, prefix, cands):
+    """Candidate-position states at the raw output boundary of the final decoder layer.
+
+    Runs one plain full forward of `[prefix + candidate]` per candidate with a forward hook
+    registered directly on the last decoder block, independent of both `CandidateForward` and
+    `capture_hidden`. Returns a `[K, H]` reference tensor.
+    """
+    references = []
+    for cand in cands[0].tolist():
+        grabbed = []
+
+        def _grab(module, args, output):
+            grabbed.append(output[0] if isinstance(output, tuple) else output)
+
+        handle = model.model.layers[-1].register_forward_hook(_grab)
+        try:
+            with torch.no_grad():
+                model(
+                    input_ids=torch.cat([prefix, torch.tensor([[cand]])], dim=1),
+                    return_dict=True,
+                )
+        finally:
+            handle.remove()
+        assert len(grabbed) == 1
+        references.append(grabbed[0][0, -1, :])
+    return torch.stack(references)
+
+
 class TestCandidateForward:
+    def test_states_lie_on_raw_final_layer_boundary(self):
+        torch.manual_seed(0)
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        prefix = torch.tensor([[0, 3, 4, 5]])
+        cands = torch.tensor([[7, 8, 9]])
+        reference = _raw_final_boundary_states(model, prefix, cands)
+        out = CandidateForward(model).last_hidden_states(prefix, cands)
+        assert torch.allclose(out, reference, rtol=1e-5, atol=1e-5)
+
     def test_incremental_matches_fresh(self):
         torch.manual_seed(0)
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
@@ -526,7 +600,10 @@ class TestCandidateForward:
         # grows the prefix by one, so it hits the incremental path and matches fresh-per-call.
         torch.manual_seed(0)
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
-        probe = LinearProbe(direction=torch.randn(16), midpoint=torch.randn(16))
+        probe = Probe(
+            model_type="test", location="layer_output", pooling="last",
+            layer_ids=[1], weights={1: torch.randn(16)}, bias=0.1,
+        )
         value = SubspaceMarginValue(probe)  # holds one CandidateForward across the replay
         tokenizer = wordlevel_tokenizer()
 
@@ -540,6 +617,128 @@ class TestCandidateForward:
             fresh.append(fresh_value.score(StepContext(prefix, cands, tokenizer, model, None)))
         for a, b in zip(incremental, fresh):
             assert torch.allclose(a, b, rtol=1e-5, atol=1e-5)
+
+
+class TestFitApplyConsistency:
+    def test_fit_space_equals_margin_evaluation_space(self):
+        # end to end: a probe fitted at the raw final-layer boundary (fit_probe, last-token
+        # pooling) scores candidate states read by CandidateForward at that same boundary, so
+        # margins equal w . h_ref + bias on independently hooked reference states
+        torch.manual_seed(0)
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        tokenizer = wordlevel_tokenizer()
+        data = LabeledExamples(
+            positives=["the cat sat", "the dog ran", "the cat ran on"],
+            negatives=["mat on fast", "span attention", "fast mat sat"],
+        )
+        spec = ProbeFitSpec(
+            method="fisher", pooling="last", location="layer_output",
+            prompt_format="raw", candidate_layers=[1], calibration="midpoint",
+        )
+        probe = fit_probe(model, tokenizer, data=data, spec=spec, batch_size=2, max_length=16)
+
+        prefix = torch.tensor([[0, 3, 4]])
+        cands = torch.tensor([[7, 8, 9]])
+        h_ref = _raw_final_boundary_states(model, prefix, cands)
+        expected = h_ref @ probe.weights[1] + probe.bias
+
+        value = SubspaceMarginValue(probe)
+        margins = value.score(StepContext(prefix, cands, tokenizer, model, None))
+        assert torch.allclose(margins[0], expected, rtol=1e-4, atol=1e-4)
+
+
+class TestSASAWvPathCompatibility:
+    def _model_and_tokenizer(self):
+        torch.manual_seed(0)
+        return tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB), wordlevel_tokenizer()
+
+    def test_directory_artifact_round_trips_through_steer(self, tmp_path):
+        from aisteer360.algorithms.output_control.sasa.control import SASA
+
+        model, tokenizer = self._model_and_tokenizer()
+        probe = Probe(
+            model_type="test", location="layer_output", pooling="last",
+            layer_ids=[1], weights={1: torch.randn(16)}, bias=0.25,
+        )
+        save_dir = tmp_path / "probe_dir"
+        probe.save(save_dir)
+
+        sasa = SASA(beta=1.0, wv_path=str(save_dir))
+        sasa.steer(model, tokenizer=tokenizer)
+        assert torch.allclose(sasa.probe.weights[1], probe.weights[1])
+        assert sasa.probe.bias == pytest.approx(probe.bias)
+
+    def test_probe_json_margins_equal_midpoint_margin(self, tmp_path):
+        from aisteer360.algorithms.output_control.sasa.control import SASA
+
+        model, tokenizer = self._model_and_tokenizer()
+        direction = torch.randn(16)
+        midpoint = torch.randn(16)
+        path = str(tmp_path / "steer_wv.probe")
+        with open(path, "w") as f:
+            json.dump({"direction": direction.tolist(), "midpoint": midpoint.tolist()}, f)
+
+        sasa = SASA(beta=1.0, wv_path=path)
+        sasa.steer(model, tokenizer=tokenizer)
+
+        prefix = torch.tensor([[0, 3, 4]])
+        cands = torch.tensor([[7, 8]])
+        h = _raw_final_boundary_states(model, prefix, cands)
+        expected = (h - midpoint) @ direction
+        margins = SubspaceMarginValue(sasa.probe).score(
+            StepContext(prefix, cands, tokenizer, model, None)
+        )
+        assert torch.allclose(margins[0], expected, rtol=1e-4, atol=1e-4)
+
+    def test_legacy_checkpoint_margins_equal_midpoint_margin(self, tmp_path):
+        from aisteer360.algorithms.output_control.sasa.control import SASA
+
+        model, tokenizer = self._model_and_tokenizer()
+        wv = {"wv": torch.randn(16), "mu_mu": torch.randn(16)}
+        path = str(tmp_path / "steer_wv.pt")
+        torch.save(wv, path)
+
+        sasa = SASA(beta=1.0, wv_path=path)
+        sasa.steer(model, tokenizer=tokenizer)
+
+        prefix = torch.tensor([[0, 3, 4]])
+        cands = torch.tensor([[7, 8]])
+        h = _raw_final_boundary_states(model, prefix, cands)
+        expected = (h - wv["mu_mu"]) @ wv["wv"]
+        margins = SubspaceMarginValue(sasa.probe).score(
+            StepContext(prefix, cands, tokenizer, model, None)
+        )
+        assert torch.allclose(margins[0], expected, rtol=1e-4, atol=1e-4)
+
+    def test_space_mismatch_raises_at_steer(self, tmp_path):
+        from aisteer360.algorithms.output_control.sasa.control import SASA
+
+        model, tokenizer = self._model_and_tokenizer()
+        cases = [
+            ({"location": "layer_input", "pooling": "last", "layer_ids": [1]}, "layer_output"),
+            ({"location": "layer_output", "pooling": "mean", "layer_ids": [1]}, "pooling 'last'"),
+            ({"location": "layer_output", "pooling": "last", "layer_ids": [0]}, "final decoder layer"),
+        ]
+        for index, (fields, match) in enumerate(cases):
+            probe = Probe(
+                model_type="test", bias=0.0,
+                weights={lid: torch.randn(16) for lid in fields["layer_ids"]}, **fields,
+            )
+            save_dir = tmp_path / f"probe_{index}"
+            probe.save(save_dir)
+            sasa = SASA(beta=1.0, wv_path=str(save_dir))
+            with pytest.raises(ValueError, match=match):
+                sasa.steer(model, tokenizer=tokenizer)
+
+    def test_unrecognized_single_file_checkpoint_raises(self, tmp_path):
+        from aisteer360.algorithms.output_control.sasa.control import SASA
+
+        model, tokenizer = self._model_and_tokenizer()
+        path = str(tmp_path / "junk.pt")
+        torch.save(torch.randn(3), path)
+        sasa = SASA(beta=1.0, wv_path=path)
+        with pytest.raises(ValueError, match="Unrecognized probe checkpoint"):
+            sasa.steer(model, tokenizer=tokenizer)
 
 
 # ValueGuidedProcessor candidate-set bounding (P3.5 F2)
@@ -625,6 +824,27 @@ class TestValueGuidedMaxCandidates:
         pipeline.steer()
         proc = sasa.get_logits_processors(torch.tensor([[0, 3]]), {})[0]
         assert proc.max_candidates == 4
+
+
+class TestSASASteerNoModelMutation:
+    def test_steer_leaves_generation_config_pad_token_unset(self):
+        from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+        from aisteer360.algorithms.output_control.sasa.control import SASA
+
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        tokenizer = wordlevel_tokenizer()
+        assert model.generation_config.pad_token_id is None  # tiny llama starts unset
+
+        sasa = SASA(beta=1.0, gen_wv_data={
+            "pos": ["the cat sat", "the dog ran", "the cat ran on"],
+            "neg": ["mat on fast", "span attention", "fast mat sat"],
+        })
+        pipeline = SteeringPipeline(controls=[sasa], model=model, tokenizer=tokenizer)
+        pipeline.steer()
+
+        # steer fits the probe on the model but must not write its pad-token configuration
+        assert model.generation_config.pad_token_id is None
+        assert model.config.pad_token_id is None
 
 
 # AuxModelSource / PromptVariantSource mask correctness (P3.5 F4)

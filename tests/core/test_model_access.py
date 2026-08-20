@@ -98,7 +98,7 @@ class TestDeclarations:
         from aisteer360.algorithms.state_control.pasta.control import PASTA
 
         assert SASA(beta=0.1).steer_access() is ModelAccess.MODULE
-        assert RAD(beta=0.1).steer_access() is ModelAccess.MODULE
+        assert RAD(beta=0.1, reward_model_id="unused").steer_access() is ModelAccess.MODULE
         assert object.__new__(ValueGuidance).steer_access() is ModelAccess.MODULE
         assert PASTA(head_config=[0]).steer_access() is ModelAccess.MODULE
 
