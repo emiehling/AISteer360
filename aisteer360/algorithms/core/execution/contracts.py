@@ -8,9 +8,13 @@ executes. Controls state what a backend must provide as phase-keyed `Requirement
 backend. The steer phase produces no verdicts; steer-time model access is declared through
 `ModelAccess` and satisfied by the pipeline's steer plan.
 """
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
+
+from aisteer360.algorithms.core.execution.access import SteerPlan
+from aisteer360.algorithms.core.execution.spec import BackendSpec
 
 
 class Capability(Enum):
@@ -166,12 +170,6 @@ class BackendCapabilities:
     capture_kinds: CaptureKinds | None = None
     constraint_kinds: ConstraintKinds | None = None
 
-
-from collections.abc import Callable
-from dataclasses import dataclass
-
-from aisteer360.algorithms.core.execution.access import SteerPlan
-from aisteer360.algorithms.core.execution.spec import BackendSpec
 
 KindSet = InterventionKinds | ProcessorKinds | CaptureKinds | ConstraintKinds
 
@@ -331,12 +329,6 @@ class Requirements:
             raise ValueError(f"Unknown phase {phase!r}; phases are {', '.join(PHASES)}.")
         return getattr(self, phase)
 
-
-from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Any
-
-from aisteer360.algorithms.core.execution.spec import BackendSpec
 
 _DEFAULT_HINT = "run this pipeline on the huggingface backend"
 

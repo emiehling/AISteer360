@@ -6,7 +6,7 @@ import os
 
 import pandas as pd
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.internals.data import LabeledExamples
@@ -97,7 +97,7 @@ class SASA(OutputControl):
 
     # placeholders (filled by steer)
     model: PreTrainedModel | None = None
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
     probe: Probe | None = None
 
     beta: float
@@ -110,7 +110,7 @@ class SASA(OutputControl):
     def steer(
             self,
             model: PreTrainedModel,
-            tokenizer: PreTrainedTokenizer | None = None,
+            tokenizer: PreTrainedTokenizerBase | None = None,
             **__,
     ) -> PreTrainedModel:
         """Load or fit the linear probe defining the attribute subspace.
@@ -123,7 +123,7 @@ class SASA(OutputControl):
 
         Args:
             model (PreTrainedModel): The base language model to be steered.
-            tokenizer (PreTrainedTokenizer | None): Tokenizer for the base model.
+            tokenizer (PreTrainedTokenizerBase | None): Tokenizer for the base model.
             **__: Additional arguments (unused).
 
         Returns:

@@ -22,10 +22,18 @@ PROMPT_TEXT = "Give me a short set of instructions to follow when you respond."
 # helpers
 
 def _no_hooks_on(model) -> bool:
-    """True when no forward or pre hooks remain on any module (nothing leaked)."""
+    """True when no toolkit forward or pre hooks remain on any module (nothing leaked).
+
+    transformers v5 parks its own context-gated output-capture hooks on modules
+    (`transformers.utils.output_capturing`) after any forward that requests captured
+    outputs; those are inert outside a capture context and are not leaks, so hooks
+    owned by transformers itself are excluded from the check.
+    """
     for module in model.modules():
-        if module._forward_hooks or module._forward_pre_hooks:
-            return False
+        for registry in (module._forward_hooks, module._forward_pre_hooks):
+            for hook in registry.values():
+                if not getattr(hook, "__module__", "").startswith("transformers."):
+                    return False
     return True
 
 

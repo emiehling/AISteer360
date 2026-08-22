@@ -1512,9 +1512,7 @@ class SteeringPipeline:
             return returned_ids
 
         # text / chat → decode; decoded continuation text truncates at the first stop string
-        decoded = self.tokenizer.batch_decode(
-            returned_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True
-        )
+        decoded = self.tokenizer.decode(returned_ids, skip_special_tokens=True)
         if params.stop_strings and not return_full_sequence:
             decoded = [truncate_at_stop_strings(text, params.stop_strings) for text in decoded]
         if is_single:

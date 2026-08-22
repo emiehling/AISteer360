@@ -5,7 +5,7 @@ import logging
 import warnings
 
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.output_control.base import OutputControl
@@ -78,7 +78,7 @@ class RAD(OutputControl):
 
     Args = RADArgs
 
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
     _value = None
 
     beta: float
@@ -91,7 +91,7 @@ class RAD(OutputControl):
     def steer(
         self,
         model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizer | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
         **__,
     ) -> None:
         """Load the reward model and build the candidate value.
@@ -104,7 +104,7 @@ class RAD(OutputControl):
 
         Args:
             model (PreTrainedModel): The base language model to be steered.
-            tokenizer (PreTrainedTokenizer | None): Tokenizer for the base model.
+            tokenizer (PreTrainedTokenizerBase | None): Tokenizer for the base model.
             **__: Additional arguments (unused).
         """
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)

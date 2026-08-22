@@ -151,6 +151,10 @@ def layerwise_tokenwise_hidden(
                 output_hidden_states=True,
                 return_dict=True,
                 use_cache=False,
+                # transformers v5 threads `cache_position` into decoder-layer kwargs only when the
+                # caller passes it, and aligned auxiliary passes are positioned by that kwarg (see
+                # `TransformHookRuntime._position_offset`), so it is passed explicitly here.
+                cache_position=torch.arange(batch_ids.size(1), device=batch_ids.device),
             )
         finally:
             if handle is not None:

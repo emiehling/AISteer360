@@ -5,7 +5,7 @@ import warnings
 from typing import Any, Sequence
 
 import torch
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizerBase
 
 from aisteer360.algorithms.input_control.base import InputControl
 from aisteer360.algorithms.input_control.common.formatters.few_shot_block import FewShotBlockFormatter
@@ -73,7 +73,7 @@ class FewShot(InputControl):
     supports_batching: bool = True
 
     # placeholders (dataclass attrs from FewShotArgs override these at __init__ time)
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
     directive: str | None = None
     positive_example_pool: Sequence[dict] | None = None
     negative_example_pool: Sequence[dict] | None = None
@@ -90,7 +90,7 @@ class FewShot(InputControl):
     def steer(
             self,
             model=None,
-            tokenizer: PreTrainedTokenizer | None = None,
+            tokenizer: PreTrainedTokenizerBase | None = None,
             **kwargs,
     ) -> None:
         self.tokenizer = tokenizer

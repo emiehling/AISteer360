@@ -167,7 +167,7 @@ scores = answer_relevance(responses=answers, prompts=questions)
 
 Backends are cached by spec, so two metrics configured with equal specs share one loaded judge. Model placement and
 dtype travel as spec options (given as plain data), e.g.
-`BackendSpec(kind="huggingface", model=..., options={"device_map": "cuda:1", "hf_model_kwargs": {"torch_dtype": "bfloat16"}})`.
+`BackendSpec(kind="huggingface", model=..., options={"device_map": "cuda:1", "hf_model_kwargs": {"dtype": "bfloat16"}})`.
 
 The cache is released and emptied with `release_metric_backends()` (from `aisteer360.evaluation.metrics`).
 `Benchmark.run()` calls it when the run finishes or fails; outside a benchmark the caller releases when done. A metric

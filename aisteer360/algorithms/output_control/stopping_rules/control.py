@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.contracts import Requirements
 from aisteer360.algorithms.output_control.base import OutputControl
@@ -39,9 +39,9 @@ class StoppingRules(OutputControl):
 
     supports_batching: bool = True
 
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
 
-    def steer(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer | None = None, **_) -> PreTrainedModel:
+    def steer(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase | None = None, **_) -> PreTrainedModel:
         """Attach the tokenizer (required whenever `stop_texts` is configured)."""
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
         if self.stop_texts and self.tokenizer is None:

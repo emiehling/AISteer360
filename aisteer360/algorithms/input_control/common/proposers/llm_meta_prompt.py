@@ -105,7 +105,7 @@ class LLMMetaPromptProposer(BaseProposer):
             with torch.no_grad():
                 output_ids = self.llm.generate(input_ids, attention_mask=attention_mask, **gen_kwargs)
             decoded.extend(
-                self.tokenizer.batch_decode(output_ids[:, prompt_len:], skip_special_tokens=True)
+                self.tokenizer.decode(output_ids[:, prompt_len:], skip_special_tokens=True)
             )
 
         while len(decoded) < n:
@@ -114,7 +114,7 @@ class LLMMetaPromptProposer(BaseProposer):
             with torch.no_grad():
                 output_ids = self.llm.generate(input_ids, attention_mask=attention_mask, **single_kwargs)
             decoded.extend(
-                self.tokenizer.batch_decode(output_ids[:, prompt_len:], skip_special_tokens=True)
+                self.tokenizer.decode(output_ids[:, prompt_len:], skip_special_tokens=True)
             )
 
         return decoded[:n]

@@ -80,7 +80,7 @@ def resolve_metric_backend(
 
     Model options (device placement, dtype, quantization) travel as spec options, e.g.
     `BackendSpec(kind="huggingface", model=..., options={"device_map": "cuda:1",
-    "hf_model_kwargs": {"torch_dtype": "bfloat16"}})`. Option values must be plain data, since spec
+    "hf_model_kwargs": {"dtype": "bfloat16"}})`. Option values must be plain data, since spec
     canonicalization renders live objects as strings, so dtypes are given as strings.
 
     Args:

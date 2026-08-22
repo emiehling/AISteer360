@@ -7,7 +7,7 @@ before the model's final norm. These passes are marked as auxiliary via
 `auxiliary_pass(aligned=True)`, so state-control accounting keeps them out of condition
 scoring and gate updates while transforms still apply at the candidates' true positions (prefix
 and candidate positions lie on the generation's own coordinate axis). At hook points where the
-state runtime cannot read positions from `cache_position`, it skips transforming these passes and
+state runtime cannot read pass positions, it skips transforming these passes and
 warns once. Values scored by an auxiliary model are unaffected.
 """
 from __future__ import annotations
@@ -28,8 +28,8 @@ class CandidateForward:
     decode step in the common case); any non-extension (rewind, restart, new generation, scoring
     replay from an unrelated prefix) rebuilds from scratch. The candidate evaluation then repeats a
     fresh copy of the cache across the K candidates, so the incremental cache survives the call.
-    Explicit `cache_position` is passed on every with-past forward (this is what `generate` does
-    internally). Supports batch size 1 only.
+    Explicit `cache_position` is passed on every forward, including the prefix rebuild (this is what
+    `generate` does internally). Supports batch size 1 only.
 
     Args:
         model: The model to forward through (the pipeline's own model for same-model values).
@@ -47,7 +47,8 @@ class CandidateForward:
         """Bring the internal cache up to `prefix_ids` (extend by the delta, or rebuild)."""
         if not extends_prefix(self._cached_ids, prefix_ids):
             out = self.model(
-                input_ids=prefix_ids, attention_mask=full_mask, use_cache=True, return_dict=True
+                input_ids=prefix_ids, attention_mask=full_mask, use_cache=True, return_dict=True,
+                cache_position=torch.arange(prefix_ids.size(1), device=prefix_ids.device),
             )
             self._cache = out.past_key_values
         else:

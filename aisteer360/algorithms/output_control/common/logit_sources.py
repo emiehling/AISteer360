@@ -129,7 +129,7 @@ class AuxModelSource(BaseLogitSource):
         if self.model is None:
             raise RuntimeError("AuxModelSource is not prepared; call prepare() from steer().")
         if self.prompt_transform is not None and self.base_tokenizer is not None:
-            texts = self.base_tokenizer.batch_decode(prefix_ids, skip_special_tokens=True)
+            texts = self.base_tokenizer.decode(prefix_ids, skip_special_tokens=True)
             texts = [self.prompt_transform(t) for t in texts]
             enc = self.tokenizer(texts, return_tensors="pt", padding=True).to(self._device)
             ids = enc["input_ids"]
@@ -187,7 +187,7 @@ class PromptVariantSource(BaseLogitSource):
         equivalence is exact only up to the model's own padding-invariance."""
         if self.model is None:
             raise RuntimeError("PromptVariantSource is not prepared; call prepare() from steer().")
-        texts = self.base_tokenizer.batch_decode(prefix_ids, skip_special_tokens=True)
+        texts = self.base_tokenizer.decode(prefix_ids, skip_special_tokens=True)
         texts = [self.prompt_transform(t) for t in texts]
         enc = self.base_tokenizer(texts, return_tensors="pt", padding=True).to(self._device)
         with auxiliary_pass(aligned=False):

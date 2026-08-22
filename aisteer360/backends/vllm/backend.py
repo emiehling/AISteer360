@@ -142,7 +142,7 @@ def _config_layout(model_ref: str, trust_remote_code: bool = False) -> ModelFact
     head_dim = getattr(config, "head_dim", None)
     if head_dim is None and hidden_size and num_heads:
         head_dim = hidden_size // num_heads
-    dtype = getattr(config, "torch_dtype", None)
+    dtype = getattr(config, "dtype", None)
     config_dict = {
         key: value for key, value in config.to_dict().items()
         if key not in ("_name_or_path", "transformers_version")

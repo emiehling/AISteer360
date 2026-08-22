@@ -4,7 +4,7 @@ import gc
 import warnings
 
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.output_control.base import OutputControl
@@ -64,7 +64,7 @@ class ValueGuidance(OutputControl):
 
     # placeholders (filled by steer)
     model: PreTrainedModel | None = None
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
     _value = None
 
     def steer_access(self) -> ModelAccess:
@@ -75,7 +75,7 @@ class ValueGuidance(OutputControl):
     def steer(
         self,
         model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizer | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
         **__,
     ) -> PreTrainedModel:
         """Resolve the value spec, then derive batching / scoring posture from the resolved value."""

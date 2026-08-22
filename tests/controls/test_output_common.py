@@ -260,9 +260,9 @@ class TestKVCache:
         repeated = repeat_cache(cache, 3)
         # select the first repeated slice back -> matches a single-row cache length
         selected = select_cache(repeated, torch.tensor([0]))
-        legacy = selected.to_legacy_cache() if hasattr(selected, "to_legacy_cache") else selected
-        # first layer key tensor now has batch dim 1
-        assert legacy[0][0].shape[0] == 1
+        # first layer key tensor now has batch dim 1 (v5 layer-based cache or raw tuple)
+        first_keys = selected.layers[0].keys if hasattr(selected, "layers") else selected[0][0]
+        assert first_keys.shape[0] == 1
 
 
 # SearchDriver
@@ -580,15 +580,15 @@ class TestCandidateForward:
         with torch.no_grad():
             out = model(input_ids=ids, use_cache=True, return_dict=True)
         cache = out.past_key_values
-        original_ptr = cache.to_legacy_cache()[0][0].data_ptr()
-        original_batch = cache.to_legacy_cache()[0][0].shape[0]
+        original_ptr = cache.layers[0].keys.data_ptr()
+        original_batch = cache.layers[0].keys.shape[0]
 
         repeated = repeat_cache(cache, 4, preserve_input=True)
         # input cache unchanged: same batch size and same underlying storage
-        assert cache.to_legacy_cache()[0][0].shape[0] == original_batch == 1
-        assert cache.to_legacy_cache()[0][0].data_ptr() == original_ptr
+        assert cache.layers[0].keys.shape[0] == original_batch == 1
+        assert cache.layers[0].keys.data_ptr() == original_ptr
         # repeated cache does not share storage with the input
-        assert repeated.to_legacy_cache()[0][0].data_ptr() != original_ptr
+        assert repeated.layers[0].keys.data_ptr() != original_ptr
         # the input cache is still usable for a subsequent 1-token forward
         with torch.no_grad():
             positions = torch.arange(3, 4)

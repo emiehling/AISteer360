@@ -1,9 +1,16 @@
+import warnings
 from typing import Any
 
 import torch
 from peft import LoraConfig, PeftType
-from transformers import AutoModelForSequenceClassification, PreTrainedModel, PreTrainedTokenizer
-from trl import PPOConfig, PPOTrainer
+from transformers import AutoModelForSequenceClassification, PreTrainedModel, PreTrainedTokenizerBase
+
+# TRL 1.x ships PPO under `trl.experimental`; importing from there emits a
+# `TRLExperimentalWarning` that would otherwise fire on every `aisteer360` import
+# (the registry crawls this module), so it is suppressed for this import only.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    from trl.experimental.ppo import PPOConfig, PPOTrainer
 
 from aisteer360.algorithms.structural_control.base import StructuralControl
 from aisteer360.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin
@@ -12,7 +19,7 @@ from aisteer360.utils.tokenization import ensure_pad_token
 
 
 class PPOTrainerMixin(TRLMixin, StructuralControl):
-    """PPO structural control backed by TRL's `PPOTrainer`.
+    """PPO structural control backed by TRL's `PPOTrainer` (shipped under `trl.experimental` in TRL 1.x).
 
     Reward and value models are sequence-classification models. When
     `value_model_name_or_path` is not provided, the wrapper loads a fresh value model from the same
@@ -35,7 +42,7 @@ class PPOTrainerMixin(TRLMixin, StructuralControl):
     def steer(
         self,
         model: PreTrainedModel | None,
-        tokenizer: PreTrainedTokenizer | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
         ref_model: PreTrainedModel | None = None,
         **_,
     ) -> torch.nn.Module:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.output_control.base import OutputControl
 from aisteer360.algorithms.output_control.common.drivers.search import SearchDriver
@@ -49,7 +49,7 @@ class DeAL(SearchDriver):
 
     Args = DeALArgs
 
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
 
     def __init__(self, *args, **kwargs):
         # route through OutputControl (validate DeALArgs, mirror fields, then _configure)
@@ -64,7 +64,7 @@ class DeAL(SearchDriver):
         # self.max_iterations is already mirrored from DeALArgs
         self.propose_mode = "beam"
 
-    def steer(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer | None = None, **_) -> PreTrainedModel:
+    def steer(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase | None = None, **_) -> PreTrainedModel:
         """Lightweight preparation; attach the tokenizer used to decode continuations."""
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
         return model

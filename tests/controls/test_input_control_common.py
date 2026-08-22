@@ -591,6 +591,10 @@ class TestLLMMetaPromptProposerSmoke:
             tokenizer=tokenizer,
             meta_prompt_template="task={task}; seed={seed}",
             gen_kwargs={"max_new_tokens": 1, "do_sample": False},
+            # the tiny double's model vocab exceeds its tokenizer's, so the sampled id can
+            # decode to nothing; map any response (even empty) to one candidate so the test
+            # exercises template substitution rather than the double's decode luck
+            parse_fn=lambda response: [response or "<empty>"],
         )
         # if the format substitution fails, .format will KeyError
         out = proposer.propose(seed="x", n=1, context={"task": "rewrite"})

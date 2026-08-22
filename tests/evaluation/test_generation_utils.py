@@ -483,7 +483,7 @@ class _ScriptedTokenizer:
     def __init__(self, script: list[str]):
         self._script = script
 
-    def batch_decode(self, output_ids, skip_special_tokens=True):
+    def decode(self, output_ids, skip_special_tokens=True):
         index = int(output_ids[0][0])
         return [self._script[index]]
 

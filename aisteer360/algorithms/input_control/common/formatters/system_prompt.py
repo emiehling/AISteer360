@@ -55,7 +55,7 @@ class SystemPromptFormatter(BaseFormatter):
 
         if input_ids.ndim == 1:
             input_ids = input_ids.unsqueeze(0)
-        decoded = tokenizer.batch_decode(input_ids, skip_special_tokens=True)
+        decoded = tokenizer.decode(input_ids, skip_special_tokens=True)
 
         rebuilt: list[list[int]] = []
         for user_text in decoded:

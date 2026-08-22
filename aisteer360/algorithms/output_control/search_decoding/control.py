@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.output_control.base import OutputControl
 from aisteer360.algorithms.output_control.common.drivers.search import SearchDriver
@@ -52,7 +52,7 @@ class SearchDecoding(SearchDriver):
 
     Args = SearchDecodingArgs
 
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
 
     def __init__(self, *args, **kwargs):
         # route through OutputControl (validate SearchDecodingArgs, mirror fields, then _configure)
@@ -64,7 +64,7 @@ class SearchDecoding(SearchDriver):
         # already mirrored from SearchDecodingArgs; the driver reads them under the same names
         self.tokenizer = None
 
-    def steer(self, model: PreTrainedModel | None = None, tokenizer: PreTrainedTokenizer | None = None,
+    def steer(self, model: PreTrainedModel | None = None, tokenizer: PreTrainedTokenizerBase | None = None,
               **_) -> PreTrainedModel | None:
         """Attach the tokenizer and resolve the scorer spec (a device is needed for reward models)."""
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)

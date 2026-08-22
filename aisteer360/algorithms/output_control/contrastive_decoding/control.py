@@ -4,7 +4,7 @@ import gc
 import logging
 
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.output_control.base import OutputControl
@@ -51,7 +51,7 @@ class ContrastiveDecoding(OutputControl):
     Args = ContrastiveDecodingArgs
 
     # placeholders (filled by steer)
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
     _amateur_source: AuxModelSource | None = None
 
     def steer_access(self) -> ModelAccess:
@@ -62,7 +62,7 @@ class ContrastiveDecoding(OutputControl):
     def steer(
         self,
         model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizer | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
         **__,
     ) -> PreTrainedModel:
         """Load the amateur into an `AuxModelSource` (shared-vocab enforced)."""

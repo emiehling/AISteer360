@@ -336,7 +336,15 @@ class ProbeSet:
                 module = model.get_submodule(layer_names[lid])
                 handles.append(module.register_forward_pre_hook(_pre_capture(lid), with_kwargs=True))
             with torch.no_grad(), auxiliary_pass(aligned=True):
-                model(input_ids=ids, attention_mask=mask, use_cache=False)
+                # explicit `cache_position` keeps this aligned pass positionable for co-resident
+                # state hooks: transformers v5 threads the kwarg into decoder layers only when the
+                # caller passes it.
+                model(
+                    input_ids=ids,
+                    attention_mask=mask,
+                    use_cache=False,
+                    cache_position=torch.arange(ids.size(1), device=ids.device),
+                )
         finally:
             for handle in handles:
                 handle.remove()

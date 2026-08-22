@@ -29,7 +29,7 @@ class TRLArgs(BaseArgs):
     per_device_train_batch_size: int = 8
     per_device_eval_batch_size: int = 8
     gradient_accumulation_steps: int = 1
-    warmup_ratio: float = 0.0
+    warmup_steps: int | float = 0  # int = steps; float in [0, 1) = ratio of total steps (transformers v5)
     save_strategy: str = "no"
     load_best_model_at_end: bool = True
     bf16: bool | None = None
@@ -73,10 +73,10 @@ class TRLArgs(BaseArgs):
             "per_device_train_batch_size": self.per_device_train_batch_size,
             "per_device_eval_batch_size": self.per_device_eval_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
-            "warmup_ratio": self.warmup_ratio,
+            "warmup_steps": self.warmup_steps,
             "load_best_model_at_end": self.load_best_model_at_end,
             "save_strategy": self.save_strategy,
-            "bf16": self.bf16,
+            "bf16": self.bf16 if self.bf16 is not None else False,  # None is filtered out downstream; TRL 1.x then auto-detects, which raises on CPU-only hosts
             "fp16": self.fp16,
             "logging_steps": self.logging_steps,
             "report_to": self.report_to,

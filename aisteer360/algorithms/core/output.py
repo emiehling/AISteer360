@@ -41,7 +41,7 @@ class Output:
         skip_special_tokens: bool = True,
     ) -> list[str]:
         """Decode `output_ids` to text. Batch-aware."""
-        return tokenizer.batch_decode(
+        return tokenizer.decode(
             self.output_ids, skip_special_tokens=skip_special_tokens
         )
 

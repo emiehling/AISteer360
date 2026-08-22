@@ -121,7 +121,7 @@ class SearchDriver(DecodingDriver):
                 attention_mask=frontier_mask,
                 **rollout_kwargs,
             )
-            continuations = self.tokenizer.batch_decode(
+            continuations = self.tokenizer.decode(
                 beams[:, input_length:], skip_special_tokens=True
             )
             scores = self.scorer(prompt_text, continuations, reward_params)

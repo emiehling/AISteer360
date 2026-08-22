@@ -4,7 +4,7 @@ import gc
 import logging
 
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.output_control.base import OutputControl
@@ -52,7 +52,7 @@ class DExperts(OutputControl):
     Args = DExpertsArgs
 
     # placeholders (filled by steer)
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
     _expert_source: AuxModelSource | None = None
     _anti_expert_source: AuxModelSource | None = None
 
@@ -65,7 +65,7 @@ class DExperts(OutputControl):
     def steer(
         self,
         model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizer | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
         **__,
     ) -> PreTrainedModel:
         """Load the expert and anti-expert into `AuxModelSource`s (shared-vocab enforced)."""

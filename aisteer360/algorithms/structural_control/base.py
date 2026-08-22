@@ -25,7 +25,7 @@ See Also:
 """
 from abc import abstractmethod
 
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.base_control import BaseControl
@@ -53,7 +53,7 @@ class StructuralControl(BaseControl):
     def steer(
             self,
             model: PreTrainedModel,
-            tokenizer: PreTrainedTokenizer = None,
+            tokenizer: PreTrainedTokenizerBase = None,
             session=None,
             **kwargs
     ) -> PreTrainedModel:

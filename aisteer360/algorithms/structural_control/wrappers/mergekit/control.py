@@ -7,7 +7,7 @@ import mergekit.config as mk_config
 import mergekit.merge as mk_merge
 import torch
 import yaml
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.contracts import Capability
 from aisteer360.algorithms.core.execution.payloads import CheckpointArtifact
@@ -57,7 +57,7 @@ class MergeKit(StructuralControl):
     def steer(
             self,
             model: PreTrainedModel,
-            tokenizer: PreTrainedTokenizer = None,
+            tokenizer: PreTrainedTokenizerBase = None,
             **_
     ):
         """Execute model merging via MergeKit and optionally return the merged model.
@@ -75,7 +75,7 @@ class MergeKit(StructuralControl):
 
         Args:
             model (PreTrainedModel): The base model (potentially unused depending on the method).
-            tokenizer (PreTrainedTokenizer, optional): Base tokenizer (currently unused).
+            tokenizer (PreTrainedTokenizerBase, optional): Base tokenizer (currently unused).
             **_: Additional arguments (ignored).
 
         Returns:
@@ -104,7 +104,7 @@ class MergeKit(StructuralControl):
                     pretrained_model_name_or_path=str(out_path),
                     device_map=args.device_map,
                     trust_remote_code=args.trust_remote_code,
-                    torch_dtype=getattr(torch, args.dtype)
+                    dtype=getattr(torch, args.dtype)
                 )
                 return merged
             return model
@@ -124,7 +124,7 @@ class MergeKit(StructuralControl):
         if args.load_merged:
             merged = AutoModelForCausalLM.from_pretrained(
                 out_path,
-                torch_dtype=getattr(torch, args.dtype),
+                dtype=getattr(torch, args.dtype),
                 device_map=args.device_map,
                 trust_remote_code=args.trust_remote_code,
             )

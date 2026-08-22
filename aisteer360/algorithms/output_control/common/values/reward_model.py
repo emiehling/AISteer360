@@ -109,10 +109,10 @@ class RewardModelValue(BaseCandidateValue):
         prefix = ctx.prefix_ids.unsqueeze(1).expand(-1, num_candidates, -1)  # [B, K, T]
         combined = torch.cat([prefix, ctx.candidate_ids.unsqueeze(-1)], dim=-1)  # [B, K, T+1]
         flat = combined.reshape(batch_size * num_candidates, -1)  # [B*K, T+1]
-        texts = ctx.lm_tokenizer.batch_decode(flat, skip_special_tokens=True)
+        texts = ctx.lm_tokenizer.decode(flat, skip_special_tokens=True)
 
         max_length = getattr(self.rm_tokenizer, "max_length", None)
-        inputs = self.rm_tokenizer.batch_encode_plus(
+        inputs = self.rm_tokenizer(
             texts,
             return_tensors="pt",
             padding=True,
@@ -199,7 +199,8 @@ class CachedRewardModelValue(BaseCandidateValue):
         """Bring the internal cache up to `prefix_ids` (extend by the delta, or rebuild)."""
         if not extends_prefix(self._cached_ids, prefix_ids):
             out = self.reward_model(
-                input_ids=prefix_ids, attention_mask=full_mask, use_cache=True, return_dict=True
+                input_ids=prefix_ids, attention_mask=full_mask, use_cache=True, return_dict=True,
+                cache_position=torch.arange(prefix_ids.size(1), device=prefix_ids.device),
             )
             self._cache = out.past_key_values
         else:

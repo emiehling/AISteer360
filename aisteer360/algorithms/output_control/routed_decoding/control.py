@@ -283,7 +283,7 @@ class RoutedDecoding(PhasedDriver):
                     UserWarning,
                 )
 
-        prompts = self.tokenizer.batch_decode(input_ids, skip_special_tokens=True)
+        prompts = self.tokenizer.decode(input_ids, skip_special_tokens=True)
 
         final_sequences: list[torch.Tensor] = []
         for i in range(batch_size):

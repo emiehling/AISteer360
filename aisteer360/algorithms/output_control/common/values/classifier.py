@@ -49,7 +49,7 @@ class ClassifierValue(BaseCandidateValue):
         prefix = ctx.prefix_ids.unsqueeze(1).expand(-1, num_candidates, -1)
         combined = torch.cat([prefix, ctx.candidate_ids.unsqueeze(-1)], dim=-1)
         flat = combined.reshape(batch_size * num_candidates, -1)
-        texts = ctx.lm_tokenizer.batch_decode(flat, skip_special_tokens=True)
+        texts = ctx.lm_tokenizer.decode(flat, skip_special_tokens=True)
 
         if self._callable:
             logp = self.classifier(texts)

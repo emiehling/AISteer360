@@ -3,7 +3,7 @@ from __future__ import annotations
 import gc
 
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.output_control.base import OutputControl
@@ -58,7 +58,7 @@ class ContrastiveGuidance(OutputControl):
     Args = ContrastiveGuidanceArgs
 
     # placeholders (filled by steer)
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
     _sources: list | None = None
 
     def steer_access(self) -> ModelAccess:
@@ -70,7 +70,7 @@ class ContrastiveGuidance(OutputControl):
     def steer(
         self,
         model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizer | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
         **__,
     ) -> PreTrainedModel:
         """Resolve each source spec (loading auxiliary models and enforcing shared vocabularies)."""

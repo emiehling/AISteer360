@@ -5,7 +5,7 @@ from functools import partial
 from typing import Sequence
 
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, SpecConstraint, needs
@@ -89,7 +89,7 @@ class PASTA(HookControl):
 
     # placeholders
     model: PreTrainedModel | None = None
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
     device: torch.device | str | None = None
 
     _head_map: dict[int, list[int]] | None = None
@@ -129,7 +129,7 @@ class PASTA(HookControl):
         return ModelAccess.MODULE
 
     def steer(
-        self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer | None = None, **__
+        self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase | None = None, **__
     ) -> PreTrainedModel:
         """Initialize PASTA by configuring attention head mappings and model references.
 
@@ -139,7 +139,7 @@ class PASTA(HookControl):
 
         Args:
             model (PreTrainedModel): The base language model to be steered.
-            tokenizer (PreTrainedTokenizer | None): Tokenizer for substring identification.
+            tokenizer (PreTrainedTokenizerBase | None): Tokenizer for substring identification.
                 If None, attempts to retrieve from model attributes.
             **__: Additional arguments (unused).
 
@@ -243,13 +243,13 @@ class PASTA(HookControl):
 
         # decode *with* special tokens so offsets share the attention mask's coordinate system
         # (its key axis includes BOS/template tokens)
-        prompts = self.tokenizer.batch_decode(input_ids, skip_special_tokens=False)
+        prompts = self.tokenizer.decode(input_ids, skip_special_tokens=False)
 
         # round-trip the substrings through the tokenizer so they match the decoded text
         # (tokenization can subtly change text, e.g. drop spaces)
         for group_idx, group in enumerate(groups):
             try:
-                groups[group_idx] = self.tokenizer.batch_decode(
+                groups[group_idx] = self.tokenizer.decode(
                     self.tokenizer(group, return_tensors="pt", padding=True)["input_ids"],
                     skip_special_tokens=True,
                 )
@@ -312,6 +312,7 @@ class PASTA(HookControl):
                         head_idx=self._head_map[layer],
                         token_ranges=token_ranges,
                         input_len=input_len,
+                        layer_idx=layer,
                     ),
                 }
             )
@@ -460,6 +461,7 @@ class PASTA(HookControl):
         head_idx: list[int],
         token_ranges: list[torch.Tensor],
         input_len: int,
+        layer_idx: int = 0,
     ):
         """Modify attention mask to steer focus toward/away from target tokens.
 
@@ -472,6 +474,8 @@ class PASTA(HookControl):
             head_idx: List of attention head indices to modify.
             token_ranges: Token index ranges to apply scaling to.
             input_len: Length of input sequence (for generation positioning).
+            layer_idx: Decoder layer index of the hooked attention module, used to read this
+                layer's cached key length when `cache_position` is absent (transformers v5).
 
         Returns:
             Tuple of potentially modified (input_args, input_kwargs).
@@ -492,10 +496,18 @@ class PASTA(HookControl):
             num_heads = self.model.config.num_attention_heads
 
             # during decoding the query attends to the full kv cache, so the mask spans the cached key
-            # positions (read from cache_position) rather than just the current query window
+            # positions rather than just the current query window. transformers v4 exposes the key axis
+            # via cache_position; v5 removed that kwarg from attention calls, so fall back to this
+            # layer's cache length (the pre-hook runs before the layer's cache update, so cached length
+            # plus query_len is the post-update key length). an undersized mask would rely on sdpa
+            # broadcasting, and the cuda mem-efficient kernel rejects the stride-0 last dimension that
+            # its mask expansion produces ("(*bias): last dimension must be contiguous")
             cache_position = input_kwargs.get("cache_position")
+            past_key_values = input_kwargs.get("past_key_values")
             if cache_position is not None:
                 key_len = int(cache_position[-1]) + 1
+            elif past_key_values is not None and callable(getattr(past_key_values, "get_seq_length", None)):
+                key_len = int(past_key_values.get_seq_length(layer_idx) or 0) + query_len
             else:
                 key_len = query_len
 
@@ -515,6 +527,14 @@ class PASTA(HookControl):
             ).contiguous()
             input_kwargs["attention_mask"] = attention_mask
 
+        if attention_mask.dtype == torch.bool:
+            # transformers v5 materializes boolean masks (true = attend) for sdpa; convert to the
+            # additive convention before applying the log-alpha scaling edits
+            attention_mask = torch.where(
+                attention_mask,
+                hidden_states.new_zeros(()),
+                hidden_states.new_full((), torch.finfo(hidden_states.dtype).min),
+            )
         attention_mask = attention_mask.to(hidden_states.dtype).contiguous().clone()
         if attention_mask.size(1) == 1:
             attention_mask = attention_mask.expand(

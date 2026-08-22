@@ -1,4 +1,4 @@
-"""PASTA token-coordinate, beam-order, arch, and side-effect tests (Issues 1, 4, 6, 7).
+"""PASTA token-coordinate, beam-order, arch, side-effect, and decode-phase mask tests.
 
 Runs hub-free on a tiny randomly-initialized Llama with a WordLevel tokenizer whose re-encoding
 is id-faithful to the real sequence (so offsets land directly in real coordinates).
@@ -223,3 +223,73 @@ class TestSideEffects:
         snapshot = copy.deepcopy(runtime_kwargs)
         pasta.get_hooks(input_ids, runtime_kwargs)
         assert runtime_kwargs == snapshot
+
+
+class TestDecodePhaseMask:
+    """Regression tests for the decode-phase mask under transformers v5 (no `cache_position`).
+
+    The v5 port regression built a broadcastable (b, h, 1, 1) bias on every decode step. SDPA's
+    cuda mem-efficient backend expands broadcastable biases into a stride-0 last dimension and
+    rejects them ("(*bias): last dimension must be contiguous"); the cpu math kernel broadcasts
+    silently, turning every decode-step edit into a softmax-invariant no-op. These tests pin the
+    key-axis width, last-dim contiguity, and the persistence of the log-alpha boost during
+    generation, observed at layer 1 so the per-layer cache-length derivation is exercised.
+    """
+
+    def test_decode_mask_spans_cache_and_keeps_boost(self):
+        model = tiny_llama()
+        tokenizer = wordlevel_tokenizer()
+        alpha = 2.0
+        _, pasta = _pasta_pipeline(model, tokenizer, head_config=[0, 1], alpha=alpha, scale_position="include")
+
+        input_ids = tokenizer("the cat sat on mat", return_tensors="pt").input_ids  # span (2, 4)
+        input_len = input_ids.size(1)
+        hooks = pasta.get_hooks(input_ids, {"substrings": ["cat sat"]})
+
+        # register every pasta hook, then observe at layer 1: during a decode step layer 0's cache
+        # is already updated when layer 1's pre-hook runs, so this exercises the per-layer cache
+        # length derivation (a layer-0 lookup would overcount by the query length)
+        captured = []
+        handles = [
+            model.get_submodule(spec["module"]).register_forward_pre_hook(spec["hook_func"], with_kwargs=True)
+            for spec in hooks["pre"]
+        ]
+        observed = model.get_submodule(hooks["pre"][1]["module"])
+        handles.append(
+            observed.register_forward_pre_hook(
+                lambda module, args, kwargs: captured.append(kwargs["attention_mask"]), with_kwargs=True
+            )
+        )
+
+        try:
+            with torch.no_grad():
+                model.generate(
+                    input_ids,
+                    min_new_tokens=3,  # forces three forwards even if a random weight argmaxes eos
+                    max_new_tokens=3,
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        assert len(captured) == 3  # prefill + 2 decode steps
+        log_alpha = torch.tensor(alpha).log()
+        for step, mask in enumerate(captured):
+            assert mask is not None and mask.dim() == 4
+            expected_q = input_len if step == 0 else 1
+            expected_k = input_len + step
+            assert mask.shape[2] == expected_q
+            # the key axis must span the cached keys plus the current token; a (.., 1, 1) decode
+            # mask is the v5 regression (cuda stride-0 rejection, cpu silent steering no-op)
+            assert mask.shape[3] == expected_k, f"step {step}: key axis {mask.shape[3]}, expected {expected_k}"
+            assert mask.stride(-1) == 1
+            # steering persists at every step: span columns (2, 3) sit exactly log(alpha) above
+            # the non-span real columns on the last (current) query row
+            row = mask[0, 0, -1]
+            for span_col in (2, 3):
+                for other_col in (0, 1, 4, 5):
+                    torch.testing.assert_close(
+                        row[span_col] - row[other_col], log_alpha, rtol=1e-4, atol=1e-4
+                    )

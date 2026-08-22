@@ -5,13 +5,16 @@ functions need: repeat a prefix cache across K candidates, then select the chose
 `extends_prefix` / `full_prefix_mask` are the pure tensor helpers an incremental prefix cache needs:
 whether a new prefix extends the cached one, and the full attention mask spanning a prefix.
 
-Mutation contract: both functions may mutate the input cache
-in-place on some backends (`batch_repeat_interleave`, `batch_select`, in-place key/value lists) and
-return a fresh cache on others (the legacy tuple format, where `to_legacy_cache` round-trips). Treat
-the input cache as consumed after the call and use only the returned handle. The exception is
-`repeat_cache(..., preserve_input=True)`, which never mutates the input (it takes only the copying
-paths); use it when the input cache must survive the call (e.g. an incremental prefix cache repeated
-across candidates).
+Mutation contract: both functions may mutate the input cache in-place on some paths
+(`batch_repeat_interleave`, in-place per-layer tensor reassignment) and return a fresh cache on
+others (the raw-tuple path). Treat the input cache as consumed after the call and use only the
+returned handle. The exception is `repeat_cache(..., preserve_input=True)`, which never mutates the
+input (it builds a fresh `DynamicCache` from the input's per-layer tensors); use it when the input
+cache must survive the call (e.g. an incremental prefix cache repeated across candidates).
+
+Cache layouts handled, in dispatch order: `Cache` objects exposing per-layer tensors through
+`cache.layers[i].keys` / `cache.layers[i].values` (the transformers v5 layout), objects exposing
+`key_cache` / `value_cache` tensor lists, and raw per-layer `(key, value)` tuples.
 """
 from __future__ import annotations
 
@@ -63,16 +66,32 @@ def full_prefix_mask(prefix_ids: torch.Tensor, attention_mask: torch.Tensor | No
     return torch.cat([attention_mask, ones], dim=1)
 
 
+def _layer_tensors(cache) -> list[tuple[torch.Tensor | None, torch.Tensor | None]] | None:
+    """The per-layer `(keys, values)` tensors of a layer-based `Cache`, or None.
+
+    Reads the transformers v5 layout (`cache.layers[i].keys` / `cache.layers[i].values`). Returns
+    None when `cache` exposes no `layers` sequence of that shape.
+    """
+    layers = getattr(cache, "layers", None)
+    if layers is None:
+        return None
+    try:
+        return [(layer.keys, layer.values) for layer in layers]
+    except AttributeError:
+        return None
+
+
 def repeat_cache(cache, n: int, *, preserve_input: bool = False):
     """Repeat every cache entry `n` times along the batch dimension.
 
     Args:
-        cache: A KV cache (`DynamicCache`, legacy tuple, or key/value-list style).
+        cache: A KV cache (a layer-based `Cache` such as `DynamicCache`, a key/value-list style
+            object, or a raw per-layer tuple).
         n: Number of repeats per entry.
-        preserve_input: When True, never mutate `cache`; take the copying paths (the legacy-tuple
-            round-trip for `DynamicCache`-style caches, the tensor-building path for raw tuples) and
-            raise `TypeError` for cache types that offer only in-place repetition. The returned cache
-            shares no batch-repeated storage with the input.
+        preserve_input: When True, never mutate `cache`; take the copying paths (a fresh
+            `DynamicCache` built from the input's per-layer tensors, the tensor-building path for
+            raw tuples) and raise `TypeError` for cache types that offer only in-place repetition.
+            The returned cache shares no batch-repeated storage with the input.
 
     Returns:
         The repeated cache (may alias the input unless `preserve_input=True`; see the module
@@ -86,13 +105,20 @@ def repeat_cache(cache, n: int, *, preserve_input: bool = False):
         cache.batch_repeat_interleave(n)
         return cache
 
-    if hasattr(cache, "to_legacy_cache"):
-        raw = cache.to_legacy_cache()
-        repeated = tuple(
-            tuple(t.repeat(n, 1, 1, 1) for t in layer)
-            for layer in raw
-        )
-        return DynamicCache.from_legacy_cache(repeated)
+    layer_tensors = _layer_tensors(cache)
+    if layer_tensors is not None:
+        fresh = DynamicCache()
+        for layer_idx, (keys, values) in enumerate(layer_tensors):
+            if keys is None or values is None:
+                raise TypeError(
+                    f"{type(cache).__name__} has an unmaterialized layer {layer_idx}; cannot repeat."
+                )
+            fresh.update(
+                keys.repeat_interleave(n, dim=0),
+                values.repeat_interleave(n, dim=0),
+                layer_idx,
+            )
+        return fresh
 
     if hasattr(cache, "key_cache") and hasattr(cache, "value_cache"):
         if preserve_input:
@@ -117,7 +143,8 @@ def select_cache(cache, idx: torch.Tensor):
     """Select cache entries along the batch dimension by index.
 
     Args:
-        cache: A KV cache (`DynamicCache`, legacy tuple, or key/value-list style).
+        cache: A KV cache (a layer-based `Cache` such as `DynamicCache`, a key/value-list style
+            object, or a raw per-layer tuple).
         idx: 1-D index tensor of rows to keep.
 
     Returns:
@@ -142,13 +169,14 @@ def select_cache(cache, idx: torch.Tensor):
         cache.batch_gather(idx)
         return cache
 
-    if hasattr(cache, "to_legacy_cache"):
-        raw = cache.to_legacy_cache()
-        selected = tuple(
-            tuple(t[idx, :, :, :] for t in layer)
-            for layer in raw
-        )
-        return DynamicCache.from_legacy_cache(selected)
+    layers = getattr(cache, "layers", None)
+    if layers is not None and _layer_tensors(cache) is not None:
+        for layer in layers:
+            if layer.keys is not None:
+                layer.keys = layer.keys.index_select(dim=0, index=idx.to(layer.keys.device))
+            if layer.values is not None:
+                layer.values = layer.values.index_select(dim=0, index=idx.to(layer.values.device))
+        return cache
 
     if hasattr(cache, "key_cache") and hasattr(cache, "value_cache"):
         for i in range(len(cache.key_cache)):

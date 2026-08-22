@@ -1,6 +1,6 @@
 import torch
 from peft import LoraConfig, PeftType
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from trl import DPOConfig, DPOTrainer
 
 from aisteer360.algorithms.structural_control.base import StructuralControl
@@ -24,7 +24,7 @@ class DPOTrainerMixin(TRLMixin, StructuralControl):
     def steer(
         self,
         model: PreTrainedModel | None,
-        tokenizer: PreTrainedTokenizer | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
         ref_model: PreTrainedModel | None = None,
         **_,
     ) -> torch.nn.Module:

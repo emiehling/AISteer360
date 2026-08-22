@@ -70,7 +70,7 @@ def generate_with_system_prompt(
 
         prompt_len = encoded["input_ids"].size(1)
         new_ids = output_ids[:, prompt_len:]
-        decoded = tokenizer.batch_decode(new_ids, skip_special_tokens=True)
+        decoded = tokenizer.decode(new_ids, skip_special_tokens=True)
     finally:
         tokenizer.padding_side = original_padding_side
 

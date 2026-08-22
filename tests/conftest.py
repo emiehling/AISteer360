@@ -433,8 +433,14 @@ def create_mock_tokenizer() -> MagicMock:
         }
 
     tokenizer.side_effect = mock_call
-    tokenizer.batch_decode = MagicMock(return_value=["decoded text"])
-    tokenizer.decode = MagicMock(return_value="decoded text")
+
+    def mock_decode(token_ids, **kwargs):
+        """v5 unified `decode`: a batch (2D input) decodes to a list, a single row to a string."""
+        first = token_ids[0] if len(token_ids) else None
+        is_batch = hasattr(first, "__len__") or (hasattr(first, "dim") and first.dim() > 0)
+        return ["decoded text"] * len(token_ids) if is_batch else "decoded text"
+
+    tokenizer.decode = MagicMock(side_effect=mock_decode)
     return tokenizer
 
 

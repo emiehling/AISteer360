@@ -111,7 +111,7 @@ class PhasedDriver(DecodingDriver):
             input_ids = input_ids.unsqueeze(0)
         batch_size = input_ids.size(0)
         params_per_example = self._params_per_example(runtime_kwargs, batch_size)
-        original_prompts = self.tokenizer.batch_decode(input_ids, skip_special_tokens=True)
+        original_prompts = self.tokenizer.decode(input_ids, skip_special_tokens=True)
         original_lengths = [row.size(0) for row in input_ids]
 
         final_sequences: list[torch.Tensor] = []

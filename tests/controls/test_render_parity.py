@@ -109,9 +109,10 @@ def test_chat_modality_equals_encode_for_model(chat_tokenizer):
     prompt = "What is the capital of France?"
     messages = [{"role": "user", "content": prompt}]
 
+    # transformers v5: `apply_chat_template(tokenize=True)` returns a `BatchEncoding`
     chat_ids = chat_tokenizer.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True
-    )
+    )["input_ids"]
     efm_ids = encode_for_model(chat_tokenizer, prompt=prompt, mode="chat_prompt")["input_ids"]
     assert chat_ids == efm_ids
 

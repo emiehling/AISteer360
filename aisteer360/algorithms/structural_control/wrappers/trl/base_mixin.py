@@ -3,7 +3,7 @@ from dataclasses import fields, is_dataclass
 from typing import Any
 
 from peft import PeftType
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.contracts import Capability
 from aisteer360.algorithms.core.execution.payloads import Artifact, CheckpointArtifact, LoRAArtifact
@@ -33,15 +33,15 @@ class TRLMixin:
     merged_output_dir: str | None = None
 
     # resolved at runtime
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
     device = None
     _resolved_base_ref: str | None = None
 
     def _resolve_model_tokenizer(
         self,
         model: PreTrainedModel | None,
-        tokenizer: PreTrainedTokenizer | None,
-    ) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
+        tokenizer: PreTrainedTokenizerBase | None,
+    ) -> tuple[PreTrainedModel, PreTrainedTokenizerBase]:
         """Resolve the model and tokenizer, returning both as locals.
 
         Loads the model from `base_model_name_or_path` when `model` is None, and the tokenizer from

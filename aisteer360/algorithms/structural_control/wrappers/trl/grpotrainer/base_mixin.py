@@ -2,7 +2,7 @@ from typing import Any, Callable
 
 import torch
 from peft import LoraConfig, PeftType
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from trl import GRPOConfig, GRPOTrainer
 
 from aisteer360.algorithms.structural_control.base import StructuralControl
@@ -29,7 +29,7 @@ class GRPOTrainerMixin(TRLMixin, StructuralControl):
     def steer(
         self,
         model: PreTrainedModel | None,
-        tokenizer: PreTrainedTokenizer | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
         **_,
     ) -> torch.nn.Module:
         self.tokenizer = tokenizer or (getattr(model, "tokenizer", None) if model is not None else None)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.output_control.base import OutputControl
 from aisteer360.algorithms.output_control.best_of_n.args import BestOfNArgs
@@ -41,7 +41,7 @@ class BestOfN(SearchDriver):
 
     Args = BestOfNArgs
 
-    tokenizer: PreTrainedTokenizer | None = None
+    tokenizer: PreTrainedTokenizerBase | None = None
 
     def __init__(self, *args, **kwargs):
         # route through OutputControl (validate BestOfNArgs, mirror fields, then _configure)
@@ -56,7 +56,7 @@ class BestOfN(SearchDriver):
         self.propose_mode = "sample"
         self.segment_len = None  # resolved from the runtime budget in decode()
 
-    def steer(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer | None = None, **_) -> PreTrainedModel:
+    def steer(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase | None = None, **_) -> PreTrainedModel:
         """Lightweight preparation; attach the tokenizer used to decode continuations."""
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
         return model

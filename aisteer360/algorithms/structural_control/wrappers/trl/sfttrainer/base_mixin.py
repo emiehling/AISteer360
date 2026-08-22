@@ -1,7 +1,7 @@
 from typing import Any
 
 from peft import LoraConfig, PeftType
-from transformers import DataCollatorForLanguageModeling, PreTrainedModel, PreTrainedTokenizer
+from transformers import DataCollatorForLanguageModeling, PreTrainedModel, PreTrainedTokenizerBase
 from trl import SFTConfig, SFTTrainer
 
 from aisteer360.algorithms.structural_control.base import StructuralControl
@@ -18,7 +18,7 @@ class SFTTrainerMixin(TRLMixin, StructuralControl):
     eval_dataset: Any | None = None
     data_collator: Any | None = None
 
-    def steer(self, model: PreTrainedModel | None, tokenizer: PreTrainedTokenizer | None = None, **_) -> PreTrainedModel:
+    def steer(self, model: PreTrainedModel | None, tokenizer: PreTrainedTokenizerBase | None = None, **_) -> PreTrainedModel:
 
         self.tokenizer = tokenizer or (getattr(model, "tokenizer", None) if model is not None else None)
 

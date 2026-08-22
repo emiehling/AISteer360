@@ -66,7 +66,7 @@ class Truthfulness(LLMJudgeMetric):
     When neither `model` nor `backend` is given, the judge defaults to `Qwen/Qwen2.5-7B-Instruct` on
     the in-process Hugging Face backend, preserving zero-argument construction. Pass `model=` for a
     different judge id, or `backend=BackendSpec(...)` for a specific backend or model options (e.g.
-    `options={"hf_model_kwargs": {"torch_dtype": "bfloat16"}}`).
+    `options={"hf_model_kwargs": {"dtype": "bfloat16"}}`).
 
     Args:
         model: Judge model reference. Defaults to `Qwen/Qwen2.5-7B-Instruct` when `backend` is also

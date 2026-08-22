@@ -5,16 +5,16 @@ owns one control's per-generation mutable state. It covers hidden-state extracti
 re-wrapping, KV-cache position tracking, token-scope masking, condition scoring, and gated
 transform application. Four behaviors define the runtime's contract:
 
-1. **Position tracking**: Each pass's absolute position offset is read from the `cache_position`
-    kwarg when the hooked module receives it (decoder layers do, throughout the supported
-    `transformers` range), so positions are exact per forwarded sequence even when a decoding
-    driver issues several `generate` calls or an output control forwards the model mid-step.
-    Hook points whose modules do not receive the kwarg (attention output projections, norm
-    sub-modules) fall back to counting, which assumes the model processes the full prompt on
-    the prefill pass and one new token per decode pass; exactly one designated pass-opener hook
-    advances the shared offset by the observed sequence length once per pass, and every other
-    hook in that pass reads the opener's snapshot. The fallback assumes a single `generate`
-    call per generation.
+1. **Position tracking**: Each pass's absolute position offset is read from the hooked module's
+    pass positions when it supplies them (from the `cache_position` kwarg, or reconstructed from
+    `position_ids`; decoder layers receive `position_ids` on every pass), so positions are exact
+    per forwarded sequence even when a decoding driver issues several `generate` calls or an output
+    control forwards the model mid-step. Hook points whose modules receive neither kwarg (attention
+    output projections, norm sub-modules) fall back to counting, which assumes the model processes
+    the full prompt on the prefill pass and one new token per decode pass; exactly one designated
+    pass-opener hook advances the shared offset by the observed sequence length once per pass, and
+    every other hook in that pass reads the opener's snapshot. The fallback assumes a single
+    `generate` call per generation.
 
 2. **Row gating**: Gates hold one decision per logical row, one per prompt. HuggingFace
     `generate` may expand the hidden batch to `B_logical * num_beams` via
@@ -30,7 +30,7 @@ transform application. Four behaviors define the runtime's contract:
 4. **Auxiliary passes**: Forwards marked via `auxiliary_pass()` (same-model candidate scoring,
     variant-prompt branches) never feed condition scorers or gates and never advance the
     fallback counter. Trajectory-aligned auxiliary passes are transformed at their true
-    positions when `cache_position` is available; detached ones are never transformed.
+    positions when the pass positions are available; detached ones are never transformed.
 """
 from __future__ import annotations
 
@@ -139,14 +139,28 @@ class TransformHookRuntime:
         self._opener_built = True
 
     @staticmethod
-    def _extract_cache_position(forward_kwargs: dict | None) -> torch.Tensor | None:
-        """The `cache_position` kwarg of the hooked module's call, when present and non-empty."""
+    def _extract_pass_positions(forward_kwargs: dict | None, seq_len: int) -> torch.Tensor | None:
+        """The pass's cache-axis positions from the hooked module's kwargs, when recoverable.
+
+        Prefers the `cache_position` kwarg (transformers threads it into decoder layers only when
+        the model caller passes it explicitly). When absent, the padded-cache-axis offset is
+        reconstructed from `position_ids`, which transformers v5 forwards to decoder layers on
+        every pass: the longest row of a batch is unpadded, so its positions coincide with the
+        padded cache axis and `max(position_ids) - (seq_len - 1)` is the pass's start offset.
+        Neither kwarg reaches non-decoder hook points (e.g. `o_proj` inputs), which keep the
+        counting fallback.
+        """
         if not forward_kwargs:
             return None
         positions = forward_kwargs.get("cache_position")
-        if positions is None or not torch.is_tensor(positions) or positions.numel() == 0:
-            return None
-        return positions
+        if positions is not None and torch.is_tensor(positions) and positions.numel() > 0:
+            return positions
+        position_ids = forward_kwargs.get("position_ids")
+        if position_ids is not None and torch.is_tensor(position_ids) and position_ids.numel() > 0:
+            offset = int(position_ids.max().item()) - (seq_len - 1)
+            if offset >= 0:
+                return torch.tensor([offset], device=position_ids.device)
+        return None
 
     def _warn_once(self, key: str, message: str) -> None:
         """Emit `message` as a UserWarning at most once per generation (keyed by `key`)."""
@@ -161,15 +175,17 @@ class TransformHookRuntime:
         """Resolve the absolute position offset for the current pass, or None to skip the pass.
 
         Auxiliary passes (marked via `auxiliary_pass()`) never advance the fallback counter. An
-        aligned auxiliary pass is positioned by `cache_position` when the hooked module receives it
-        and skipped otherwise; a detached auxiliary pass is always skipped. Ordinary passes take
-        their offset from `cache_position` when present. The opener maintains the fallback counter
-        on every ordinary pass, so hook points without the kwarg keep the one-pass-one-step
-        accounting unchanged and an anomalous pass missing the kwarg degrades to counting.
+        aligned auxiliary pass is positioned by the pass positions when the hooked module supplies
+        them (from `cache_position` or `position_ids`) and skipped otherwise; a detached auxiliary
+        pass is always skipped. Ordinary passes take their offset from the pass positions when
+        present. The opener maintains the fallback counter on every ordinary pass, so hook points
+        without either kwarg keep the one-pass-one-step accounting unchanged and an anomalous pass
+        missing them degrades to counting.
 
         Args:
             seq_len: The sequence length seen by this hook on this call.
-            cache_position: The pass's `cache_position` kwarg, when the hooked module receives it.
+            cache_position: The pass positions (from `cache_position` or reconstructed from
+                `position_ids`), when the hooked module supplies them.
             is_pass_opener: Whether this hook is the designated pass opener.
 
         Returns:
@@ -178,9 +194,9 @@ class TransformHookRuntime:
 
         Warns:
             UserWarning: Once per generation for each of: an aligned auxiliary pass at a hook point
-                without `cache_position` (its transform is skipped); a multi-token ordinary pass
+                without pass positions (its transform is skipped); a multi-token ordinary pass
                 after prefill at such a hook point (a multi-call decode pattern that counting cannot
-                place); `cache_position` disappearing after having been observed.
+                place); pass positions disappearing after having been observed.
         """
         aux = current_auxiliary_pass()
         if aux is not None:
@@ -191,8 +207,9 @@ class TransformHookRuntime:
             self._warn_once(
                 "aux_without_cache_position",
                 "Auxiliary same-model passes cannot be position-mapped at this hook point (the "
-                "hooked module does not receive `cache_position`); their transforms are skipped. "
-                "Hook decoder layers for exact composition with same-model output controls.",
+                "hooked module receives neither `cache_position` nor `position_ids`); their "
+                "transforms are skipped. Hook decoder layers for exact composition with same-model "
+                "output controls.",
             )
             return None
 
@@ -201,8 +218,9 @@ class TransformHookRuntime:
                 if seq_len > 1 and cache_position is None:
                     self._warn_once(
                         "multi_call_without_cache_position",
-                        "Multiple generate calls detected at a hook point that does not receive "
-                        "`cache_position`; position scoping may be skewed for this generation.",
+                        "Multiple generate calls detected at a hook point that receives neither "
+                        "`cache_position` nor `position_ids`; position scoping may be skewed for "
+                        "this generation.",
                     )
                 self._pass_offset = self._offset
                 self._offset += seq_len
@@ -217,7 +235,7 @@ class TransformHookRuntime:
         if self._clock_seen:
             self._warn_once(
                 "inconsistent_cache_position",
-                "`cache_position` was available on earlier passes but missing on this one; "
+                "Pass positions were available on earlier passes but missing on this one; "
                 "falling back to pass counting for this pass.",
             )
         return self._pass_offset
@@ -380,7 +398,7 @@ class TransformHookRuntime:
         def _score(hidden: torch.Tensor, forward_kwargs: dict | None) -> None:
             if current_auxiliary_pass() is not None:
                 return
-            cache_position = self._extract_cache_position(forward_kwargs)
+            cache_position = self._extract_pass_positions(forward_kwargs, hidden.size(1))
             pass_offset = self._position_offset(hidden.size(1), cache_position, is_pass_opener)
             if gate.is_ready():
                 return
@@ -431,7 +449,7 @@ class TransformHookRuntime:
         resolvable position are returned unchanged.
         """
         seq_len = hidden.size(1)
-        cache_position = self._extract_cache_position(forward_kwargs)
+        cache_position = self._extract_pass_positions(forward_kwargs, seq_len)
         pass_offset = self._position_offset(seq_len, cache_position, is_pass_opener)
         if pass_offset is None:
             return hidden
