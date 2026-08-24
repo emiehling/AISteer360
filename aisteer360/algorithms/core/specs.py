@@ -22,8 +22,9 @@ Space = Mapping[str, Sequence[Any]] | Sequence[Mapping[str, Any]] | Callable[[di
 class ControlSpec:
     """Specification for a parameterized steering control.
 
-    A `ControlSpec` describes a control class plus a search space over its constructor arguments. It is used by a
-    benchmark object to instantiate control instances for different hyperparameter settings.
+    A `ControlSpec` describes a control class plus a search space over its constructor arguments. The sweep layer
+    (`core/sweeps.py`, and `SteeringEval` above it) uses it to instantiate control instances for different
+    hyperparameter settings.
 
     Attributes:
         control_cls: The steering control class to instantiate.

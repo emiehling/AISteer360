@@ -76,7 +76,7 @@ class SteeringVector:
         """Return a deep copy with independent direction tensors and metadata dicts.
 
         Use this before `to()` / normalization when the vector is caller-supplied and may be
-        reused (e.g., shared across controls or across a `Benchmark`/`ControlSpec` sweep).
+        reused (e.g., shared across controls or across a `ControlSpec` sweep).
         """
         return SteeringVector(
             model_type=self.model_type,

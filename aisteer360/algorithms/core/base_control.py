@@ -19,7 +19,13 @@ class BaseControl(ABC):
     Attributes:
         Args: The control's hyperparameter dataclass, or None for arg-free controls.
         RUNTIME_KWARGS_SCHEMA: Declarations for the per-call parameters the pipeline maps onto the
-            control at inference time.
+            control at inference time. Each entry is a dict carrying `name` plus optional `type`,
+            `required`, `help`, and `scope` fields. `scope` is `"row"` for a per-prompt value (in
+            a batched call the control receives a sequence with one element per prompt row, in row
+            order, each element one row's value) or `"call"` for one value per `generate` call
+            regardless of batch size; an entry without `scope` is `"call"`. The pipeline validates
+            the declarations at `steer()` and raises when two enabled controls declare one name
+            with a different `scope` or `type`.
         enabled: Whether the control participates in the pipeline (identity controls set False).
         supports_batching: Whether the control processes a batched prompt in one call.
     """

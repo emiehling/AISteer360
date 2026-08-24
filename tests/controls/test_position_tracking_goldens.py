@@ -1,9 +1,8 @@
-"""Golden token-id sequences for the runtime-migrated state controls.
+"""Golden token-id sequences for the `TransformHookRuntime`-backed state controls.
 
 Pins the greedy generations of `ITI`, `AngularSteering`, and `ActAdd` on the hub-free tiny
-fixtures so the position-tracking consolidation (moving these controls onto
-`TransformHookRuntime`) is verified to be token-identical, not merely close. Recorded against the
-pre-migration implementations and asserted unchanged afterwards.
+fixtures, in both position-tracking modes, so any change to position tracking is caught as a
+token-level difference rather than a merely approximate one.
 
 The literals are produced by the controls themselves; regenerate with
 `AISTEER_CAPTURE_GOLDENS=1 pytest tests/controls/test_position_tracking_goldens.py -s` and paste

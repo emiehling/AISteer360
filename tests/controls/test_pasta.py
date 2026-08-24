@@ -117,3 +117,40 @@ class TestAttentionPreHookMissingRangeNoOp:
         assert torch.equal(result[1], original[1])
         # item 0 is modified relative to the untouched baseline
         assert not torch.equal(result[0], original[0])
+
+
+class TestSubstringsAcceptedForms:
+    """The `substrings` runtime kwarg accepts a str, a nested per-row list, and a flat list only
+    at batch size 1."""
+
+    def test_str_broadcasts_to_every_row(self):
+        assert PASTA._normalize_substrings("First,", 3) == [["First,"], ["First,"], ["First,"]]
+
+    def test_nested_groups_of_batch_length(self):
+        groups = PASTA._normalize_substrings([["First,"], ["Second,", "Finally,"]], 2)
+        assert groups == [["First,"], ["Second,", "Finally,"]]
+
+    def test_flat_list_accepted_at_batch_size_one(self):
+        assert PASTA._normalize_substrings(["First,", "Second,"], 1) == [["First,", "Second,"]]
+
+    def test_flat_list_at_batch_size_above_one_raises_naming_workaround(self):
+        with pytest.raises(ValueError, match=r"\[\[\.\.\.\]\] \* batch_size"):
+            PASTA._normalize_substrings(["First,", "Second,"], 2)
+
+    def test_str_group_raises(self):
+        with pytest.raises(ValueError, match="non-str sequences of str"):
+            PASTA._normalize_substrings(["First,", ["Second,"]], 2)
+
+    def test_non_str_group_element_raises(self):
+        with pytest.raises(ValueError, match="only str elements"):
+            PASTA._normalize_substrings([[1], ["Second,"]], 2)
+
+    def test_group_count_must_match_batch(self):
+        with pytest.raises(ValueError, match="Need 3 substring groups"):
+            PASTA._normalize_substrings([["First,"], ["Second,"]], 3)
+
+    def test_local_copy_never_mutates_caller_groups(self):
+        caller = [["First,"], ["Second,"]]
+        groups = PASTA._normalize_substrings(caller, 2)
+        groups[0].append("x")
+        assert caller == [["First,"], ["Second,"]]

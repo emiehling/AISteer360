@@ -15,7 +15,7 @@ The AI Steerability 360 toolkit is an open source Python package for steering la
 The toolkit enables the development and evaluation of a wide range of steering methods through an expressive library of
 reusable components across four model control surfaces (input, structure, state, and output). Features include modular abstractions for the
 construction of steering methods, functionality for composition of steering methods into [steering pipelines](docs/concepts/steering_pipelines.md),
-and benchmarking of pipelines on custom use cases and metrics (including measurement of steering side effects).
+and evaluation of pipelines on Inspect AI task suites (including measurement of steering side effects).
 
 To get started, please see the documentation at <https://ibm.github.io/AISteer360/> and the [example notebooks](examples/index.md).
 
@@ -34,11 +34,10 @@ install the extra with `uv pip install ".[vllm]"`.
 
 ## Contributing
 
-We welcome contributions, particularly new steering methods (controls), use cases, and metrics, along with bug reports,
+We welcome contributions, particularly new steering methods (controls) and evaluation tasks, along with bug reports,
 documentation improvements, and new features. See the [contribution guidelines](CONTRIBUTING.md) and the tutorials on
-[adding a steering method](./docs/tutorials/add_new_steering_method.md),
-[adding a use case](./docs/tutorials/add_new_use_case.md), and
-[adding a metric](./docs/tutorials/add_new_metric.md).
+[adding a steering method](./docs/tutorials/add_new_steering_method.md) and
+[evaluating steering pipelines](./docs/tutorials/evaluate_steering_pipelines.md).
 
 ## Reference
 

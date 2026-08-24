@@ -1,4 +1,4 @@
-"""Output-control mechanism split in `SteeringPipeline` (output multiplicity design).
+"""Output-control mechanisms in `SteeringPipeline`.
 
 Covers the mechanism-based composition of the output category: step-level controls
 (`get_logits_processors` / `get_stopping_criteria`) compose in `controls`-list order; the decode

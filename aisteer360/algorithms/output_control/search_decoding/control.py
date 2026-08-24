@@ -19,7 +19,7 @@ class SearchDecoding(SearchDriver):
         - Best-of-N: defaults + `scorer={"kind": "reward_model", ...}` (or any callable).
         - Self-consistency: defaults + `scorer={"kind": "majority_vote"}`.
         - Blockwise controlled decoding: `segment_len=block, max_iterations=⌈budget/block⌉`.
-        - Metric-guided reranking: defaults + `scorer=MetricScorer(metric, score_key)`.
+        - Scorer-guided reranking: defaults + `scorer=SampleSequenceScorer(row_scorer)`.
         - DeAL-equivalent: `propose_mode="beam", segment_len=lookahead, num_candidates=init_beams,
           keep_k=topk, max_iterations=...`.
 

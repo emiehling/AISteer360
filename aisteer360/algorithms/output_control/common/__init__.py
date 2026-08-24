@@ -19,7 +19,7 @@ from .processors import (
     PrefixKeyedProcessor,
     ValueGuidedProcessor,
 )
-from .scorers import MajorityVoteScorer, MetricScorer, RewardModelScorer, SequenceScorer
+from .scorers import MajorityVoteScorer, RewardModelScorer, SampleSequenceScorer, SequenceScorer
 from .values import (
     BaseCandidateValue,
     CachedRewardModelValue,

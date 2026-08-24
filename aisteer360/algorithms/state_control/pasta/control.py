@@ -81,7 +81,12 @@ class PASTA(HookControl):
             "name": "substrings",
             "type": "list[str]",
             "required": True,
-            "help": "Substrings whose attention should be steered. Required at inference time.",
+            "scope": "row",
+            "help": (
+                "Substrings whose attention should be steered. Required at inference time. A `str` "
+                "broadcasts to every row; a `list[list[str]]` of batch length carries one group per "
+                "row; a flat `list[str]` is accepted only at batch size 1, as that row's group."
+            ),
         },
     ]
 
@@ -212,34 +217,25 @@ class PASTA(HookControl):
             input_ids (torch.Tensor): Input token IDs of shape [batch_size, seq_len].
             runtime_kwargs (dict | None): Must contain "substrings" key with target text spans:
 
-                - str: Single substring applied to all batch items
-                - list[str]: List of substrings applied to all batch items
-                - list[list[str]]: Per-batch substring groups
+                - str: one substring, broadcast to every batch item
+                - list[list[str]]: one substring group per batch item, of batch length
+                - list[str]: accepted only at batch size 1, as that row's group
             **__: Additional arguments (unused).
 
         Returns:
             dict[str, list]: Hook specifications with "pre", "forward", "backward" keys. Only "pre" hooks are populated for attention modification.
 
         Raises:
-            ValueError: If "substrings" not in runtime_kwargs or batch size mismatch.
+            ValueError: If "substrings" is missing from runtime_kwargs, a flat list of strings is
+                passed at batch size > 1, a group is a `str` or contains a non-`str` element, or
+                the number of groups does not match the batch size.
         """
         if not runtime_kwargs or "substrings" not in runtime_kwargs:
             raise ValueError("PASTA requires 'substrings' inside runtime_kwargs")
 
         substrings = runtime_kwargs["substrings"]
         batch_size = input_ids.size(0)
-
-        # normalize to (batch, group, str) in a local copy so we never mutate the caller's list
-        if isinstance(substrings, str):
-            groups: list[list[str]] = [[substrings] for _ in range(batch_size)]
-        elif substrings and isinstance(substrings[0], str):
-            groups = [list(substrings) for _ in range(batch_size)]
-        elif len(substrings) != batch_size:
-            raise ValueError(
-                f"Need {batch_size} substring groups (one per prompt); got {len(substrings)}"
-            )
-        else:
-            groups = [list(group) for group in substrings]
+        groups = self._normalize_substrings(substrings, batch_size)
 
         # decode *with* special tokens so offsets share the attention mask's coordinate system
         # (its key axis includes BOS/template tokens)
@@ -318,6 +314,66 @@ class PASTA(HookControl):
             )
 
         return hooks
+
+    @staticmethod
+    def _normalize_substrings(substrings, batch_size: int) -> list[list[str]]:
+        """Normalize the `substrings` runtime kwarg to one group per batch row, in a local copy.
+
+        Accepted forms are a `str` (one substring, broadcast to every row), a `list[list[str]]`
+        (one group per row, of batch length), and a flat `list[str]` (accepted only at batch
+        size 1, as that row's group). Every group must be a non-`str` sequence of `str`; a `str`
+        where a group is expected raises rather than being iterated character by character.
+
+        Args:
+            substrings: The runtime-kwarg value to normalize.
+            batch_size: Number of prompt rows.
+
+        Returns:
+            One list of substrings per batch row.
+
+        Raises:
+            ValueError: If a flat `list[str]` is passed at batch size > 1 (the message names the
+                accepted forms and the `[[...]] * batch_size` broadcast workaround), the number of
+                groups does not match the batch size, or any group is a `str` or contains a
+                non-`str` element.
+        """
+        if isinstance(substrings, str):
+            return [[substrings] for _ in range(batch_size)]
+        if not isinstance(substrings, Sequence):
+            raise ValueError(
+                f"PASTA 'substrings' must be a str, a list[list[str]] of batch length, or a flat "
+                f"list[str] at batch size 1; got {type(substrings).__name__}."
+            )
+        substrings = list(substrings)
+        if all(isinstance(element, str) for element in substrings):
+            if batch_size > 1:
+                raise ValueError(
+                    f"PASTA received a flat list[str] for 'substrings' with batch size {batch_size}. "
+                    "Accepted forms are a str (broadcast to every row) and a list[list[str]] with one "
+                    "group per row; to broadcast one group over the batch, pass "
+                    "[[...]] * batch_size."
+                )
+            return [substrings]
+        if len(substrings) != batch_size:
+            raise ValueError(
+                f"Need {batch_size} substring groups (one per prompt); got {len(substrings)}"
+            )
+        groups: list[list[str]] = []
+        for group in substrings:
+            if isinstance(group, str) or not isinstance(group, Sequence):
+                raise ValueError(
+                    f"PASTA substring groups must be non-str sequences of str; got "
+                    f"{type(group).__name__} for one row."
+                )
+            group = list(group)
+            invalid = [element for element in group if not isinstance(element, str)]
+            if invalid:
+                raise ValueError(
+                    f"PASTA substring groups must contain only str elements; got "
+                    f"{type(invalid[0]).__name__} in one row's group."
+                )
+            groups.append(group)
+        return groups
 
     def _setup_head_config(self, head_config):
         """Parse and validate attention head configuration.

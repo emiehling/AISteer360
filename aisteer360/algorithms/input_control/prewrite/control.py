@@ -25,7 +25,7 @@ from aisteer360.algorithms.input_control.common.scorers.task_evaluation import T
 from aisteer360.algorithms.input_control.common.selectors.top_k import TopKSelector
 from aisteer360.algorithms.input_control.prewrite.args import PRewriteArgs
 from aisteer360.algorithms.input_control.prewrite.utils import meta_prompts
-from aisteer360.algorithms.input_control.prewrite.utils.reward import make_metric_reward_func
+from aisteer360.algorithms.input_control.prewrite.utils.reward import make_scorer_reward_func
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class PRewrite(InputControl):
 
     When `train_rewriter=True`, the rewriter is trained with GRPO (group-relative policy optimization).
     The reward is downstream task performance, computed by applying each rewrite with the frozen task
-    model over a dev set and scoring with a `Metric`, or a user-supplied `reward_fn`.
+    model over a dev set and scoring with a per-row `SampleScorer`, or a user-supplied `reward_fn`.
 
     Memory shape: `TextMemory(slots={"instruction": str})`.
 
@@ -60,8 +60,7 @@ class PRewrite(InputControl):
     strategy: str = "search"
     k_candidates: int = 10
     dev_set: list[dict] | None = None
-    metric: Any = None
-    score_key: str | None = None
+    row_scorer: Any = None
     training_seeds: list[str] | None = None
     reward_fn: Any = None
     grpo_config: dict | None = None
@@ -120,8 +119,7 @@ class PRewrite(InputControl):
                     task_lm=task_lm,
                     tokenizer=tokenizer,
                     dev_set=self.dev_set,
-                    metric=self.metric,
-                    score_key=self.score_key,
+                    row_scorer=self.row_scorer,
                     gen_kwargs=self.eval_gen_kwargs or {"max_new_tokens": 32, "do_sample": False},
                 )
                 selector = TopKSelector(scorer=scorer)
@@ -180,30 +178,29 @@ class PRewrite(InputControl):
         """Build the GRPO reward callable for rewriter training.
 
         Uses a user-supplied `reward_fn` if present. Otherwise builds a `TaskEvaluationScorer` that
-        applies each rewrite with the frozen task model over `dev_set` and aggregates `metric` to a
-        scalar. The reward's `task_lm` generates through the steering session and stays frozen; only
-        the rewriter is trained.
+        applies each rewrite with the frozen task model over `dev_set` and aggregates `row_scorer`
+        to a scalar. The reward's `task_lm` generates through the steering session and stays frozen;
+        only the rewriter is trained.
         """
         if self.reward_fn is not None:
             return self.reward_fn
-        if self.metric is not None and self.dev_set:
+        if self.row_scorer is not None and self.dev_set:
             scorer = TaskEvaluationScorer(
                 task_lm=task_lm,
                 tokenizer=task_tok,
                 dev_set=self.dev_set,
-                metric=self.metric,
-                score_key=self.score_key,
+                row_scorer=self.row_scorer,
                 gen_kwargs=self.eval_gen_kwargs or {"max_new_tokens": 32, "do_sample": False},
                 max_dev_size=self.reward_dev_size,
             )
-            return make_metric_reward_func(scorer, parse_fn=parse_concise_instruction)
+            return make_scorer_reward_func(scorer, parse_fn=parse_concise_instruction)
         raise ValueError(
             "PRewrite.train_rewriter requires a GRPO reward source: a callable `reward_fn` or "
-            "(`metric` and `dev_set`)."
+            "(`row_scorer` and `dev_set`)."
         )
 
     def _grpo_train_rewriter(self, rewriter_lm, rewriter_tok, meta_prompt: str, reward_fn):
-        """GRPO-train the rewriter on a pool of seed instructions, using a callable/metric reward.
+        """GRPO-train the rewriter on a pool of seed instructions, using a callable/scorer reward.
 
         Returns the trained rewriter.
         """

@@ -15,7 +15,6 @@ from aisteer360.algorithms.state_control.common.gating import (
     projected_cosine_similarity_tensor,
     rank_one_projector,
 )
-from aisteer360.algorithms.state_control.common.selectors import condition_point
 from aisteer360.algorithms.state_control.common.selectors.condition_point import (
     ConditionPointSelector,
     _best_point_for_layer,
@@ -84,10 +83,6 @@ class TestSelectorRuntimeScoringParity:
         tensor_score = float(projected_cosine_similarity_tensor(pooled.unsqueeze(0), projector)[0])
         scalar_score = projected_cosine_similarity(pooled, projector)
         assert abs(tensor_score - scalar_score) < 1e-6
-
-
-def test_proj_sim_removed():
-    assert not hasattr(condition_point, "_proj_sim")
 
 
 class TestSelectEndToEnd:
@@ -223,7 +218,7 @@ class TestMarginAwareSelection:
         assert best["margin"] == pytest.approx(0.03, abs=0.011)
 
     def test_prefers_wider_margin_among_f1_ties(self):
-        # regression guard for the observed layer-9 failure: equal F1, wider margin must win
+        # among equal-F1 candidates the wider margin must win
         a = _best_point_for_layer(torch.tensor([0.11, 0.23]), torch.tensor([0.02, 0.05]), self.GRID)
         b = _best_point_for_layer(torch.tensor([0.30, 0.45]), torch.tensor([0.01, 0.02]), self.GRID)
         assert a["f1"] == b["f1"]  # a genuine tie

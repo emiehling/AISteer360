@@ -1,12 +1,11 @@
 """Cross-control behavioral test for `token_scope="after_prompt"` position tracking.
 
-This is the anti-drift guard for Issue 3 (KV-cache position heuristic). The four scoped
-controls (CAA, ITI, AngularSteering, DirectionalAblation) share one position-tracking
-implementation (`TransformHookRuntime`); this parametrized test pins the semantics for all of
-them, and any new runtime client can be added to the parameter list.
+The four scoped controls (CAA, ITI, AngularSteering, DirectionalAblation) share one
+position-tracking implementation (`TransformHookRuntime`); this parametrized test pins the
+semantics for all of them, and any new runtime client can be added to the parameter list.
 
-The bug it guards against: inferring the prefill/decode phase by comparing `seq_len` to the
-prompt length silently disables steering for length-1 prompts (prefill and decode become
+The failure mode it guards against: inferring the prefill/decode phase by comparing `seq_len`
+to the prompt length silently disables steering for length-1 prompts (prefill and decode become
 indistinguishable). With explicit first-call tracking, steering must fire on every generated
 position regardless of prompt length.
 

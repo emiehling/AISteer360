@@ -28,7 +28,6 @@ from aisteer360.algorithms.input_control.common.selectors import (
     RandomSelector,
     TopKSelector,
 )
-from aisteer360.evaluation.metrics.base import Metric
 
 
 class _CallableScorer(BaseScorer):
@@ -405,14 +404,11 @@ class TestCallableScorer:
         assert isinstance(scorer, BaseScorer)
 
 
-class _ConstantMetric(Metric):
-    """Trivial metric that returns a fixed score regardless of input."""
-    def __init__(self, value: float = 0.5, **extras):
-        super().__init__(**extras)
-        self._value = value
-
-    def compute(self, responses, prompts=None, **kwargs):
-        return {"score": self._value}
+def _constant_scorer(value: float = 0.5):
+    """Trivial per-row scorer returning a fixed score regardless of input."""
+    def score(response, row):
+        return value
+    return score
 
 
 @pytest.fixture(scope="module")
@@ -432,7 +428,7 @@ class TestTaskEvaluationScorerSmoke:
             task_lm=model,
             tokenizer=tokenizer,
             dev_set=[{"input": "hello"}, {"input": "world"}],
-            metric=_ConstantMetric(value=0.7),
+            row_scorer=_constant_scorer(value=0.7),
             gen_kwargs={"max_new_tokens": 2, "do_sample": False},
         )
         scores = scorer.score(["be brief", "be concise"])
@@ -442,37 +438,33 @@ class TestTaskEvaluationScorerSmoke:
         model, tokenizer = tiny_lm
         captured = []
 
-        class _CaptureMetric(Metric):
-            def compute(self, responses, prompts=None, **kwargs):
-                captured.append(len(responses))
-                return {"score": 1.0}
+        def capture_scorer(response, row):
+            captured.append(row["input"])
+            return 1.0
 
         scorer = TaskEvaluationScorer(
             task_lm=model,
             tokenizer=tokenizer,
             dev_set=[{"input": "a"}, {"input": "b"}, {"input": "c"}],
-            metric=_CaptureMetric(),
+            row_scorer=capture_scorer,
             gen_kwargs={"max_new_tokens": 1, "do_sample": False},
             max_dev_size=2,
         )
         scorer.score(["x"])
-        assert captured == [2]
+        assert captured == ["a", "b"]
 
     def test_batched_dev_rows_deterministic(self, tiny_lm):
         """Greedy generation on the batched path should be reproducible."""
         model, tokenizer = tiny_lm
 
-        class _ResponseLengthMetric(Metric):
-            """Score depends only on responses (stable, deterministic)."""
-            def compute(self, responses, prompts=None, **kwargs):
-                total = sum(len(r) for r in responses)
-                return {"score": total / max(len(responses), 1)}
+        def response_length_scorer(response, row):
+            return float(len(response))
 
         scorer = TaskEvaluationScorer(
             task_lm=model,
             tokenizer=tokenizer,
             dev_set=[{"input": "hello"}, {"input": "world"}, {"input": "test"}],
-            metric=_ResponseLengthMetric(),
+            row_scorer=response_length_scorer,
             gen_kwargs={"max_new_tokens": 4, "do_sample": False},
         )
         prompts = ["be helpful", "be brief"]
@@ -493,7 +485,7 @@ class TestTaskEvaluationScorerSmoke:
                 task_lm=model,
                 tokenizer=tokenizer,
                 dev_set=[{"input": "a"}, {"input": "b"}],
-                metric=_ConstantMetric(value=0.5),
+                row_scorer=_constant_scorer(value=0.5),
                 gen_kwargs={"max_new_tokens": 1, "do_sample": False},
             )
             scorer.score(["x"])

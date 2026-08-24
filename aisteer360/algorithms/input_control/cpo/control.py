@@ -93,8 +93,7 @@ class CPO(InputControl):
     rounds: int = 3
     candidates_per_parent: int = 5
     retained_per_round: int = 3
-    metric: Any = None
-    score_key: str | None = None
+    row_scorer: Any = None
     cache_queries: bool = True
     cache_key_normalizer: Any = None
     use_dml: bool | None = None
@@ -177,7 +176,7 @@ class CPO(InputControl):
         self._formatter = SystemPromptFormatter()
 
     def _generate_offline_data(self, task_lm, tokenizer) -> list[dict]:
-        """Build ⟨query, prompt, score⟩ rows from `train_dataset` × proposer × metric.
+        """Build ⟨query, prompt, score⟩ rows from `train_dataset` × proposer × row scorer.
 
         Each training row contributes `n_prompts_per_query` ⟨q, p, s⟩ triples (including the seed
         prompt as one of them, so the seed is always in-distribution for the reward model). Candidate
@@ -205,8 +204,7 @@ class CPO(InputControl):
                 task_lm=task_lm,
                 tokenizer=tokenizer,
                 dev_set=[dev_row],
-                metric=self.metric,
-                score_key=self.score_key,
+                row_scorer=self.row_scorer,
                 gen_kwargs=gen_kwargs,
             )
             scores = scorer.score(candidate_prompts)

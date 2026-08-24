@@ -1,6 +1,6 @@
-"""Mutation-guard tests for caller-supplied SteeringVectors (Issue 2).
+"""Mutation-guard tests for caller-supplied SteeringVectors.
 
-A precomputed vector shared across controls or across a Benchmark/ControlSpec sweep must not be
+A precomputed vector shared across controls or across a `ControlSpec` sweep must not be
 silently rescaled/re-cast by the first control that uses it. CAA, ActAdd, and CAST all clone the
 resolved vector before any in-place `.to()` / normalization.
 

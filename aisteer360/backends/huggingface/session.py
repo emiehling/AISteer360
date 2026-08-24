@@ -1,5 +1,6 @@
 """The in-process exclusive session: direct model access, hook scopes, and the default decode loop."""
 import contextlib
+import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
@@ -27,6 +28,8 @@ from aisteer360.utils.tokenization import infer_attention_mask_from_ids, to_left
 
 if TYPE_CHECKING:
     from aisteer360.backends.huggingface.backend import HFBackend
+
+logger = logging.getLogger(__name__)
 
 _CAPTURE_BATCH_SIZE = 8
 
@@ -281,9 +284,21 @@ class ExclusiveSession:
             torch.mps.manual_seed(seed)
 
     def _item_seeds(self, items: Sequence[GenerationItem], params: GenerationParams) -> list[int | None]:
-        """Effective per-item seeds: the item's own seed, else a per-item derivation from
-        `params.seed` under this call's operation id, else None."""
+        """Effective per-item seeds.
+
+        An item's own seed is always honored. Otherwise, under `params.seed` with
+        `seed_scope="item"`, each item derives its own seed from this call's operation id and its
+        index; with `seed_scope="dispatch"`, every item takes the dispatch seed, derived at index 0
+        so a single-item dispatch decodes identically under either scope. A dispatch mixing explicit
+        and absent item seeds falls back to per-item derivation. Unseeded calls yield None.
+        """
         operation_id = f"generate-{self._generate_count}"
+        if (
+            params.seed is not None
+            and params.seed_scope == "dispatch"
+            and all(item.seed is None for item in items)
+        ):
+            return [derive_item_seed(params.seed, operation_id, 0)] * len(items)
         seeds: list[int | None] = []
         for index, item in enumerate(items):
             if item.seed is not None:
@@ -293,6 +308,23 @@ class ExclusiveSession:
             else:
                 seeds.append(None)
         return seeds
+
+    def _report_serial_fallback(self, items: Sequence[GenerationItem]) -> None:
+        """Log once per backend and reason why a multi-item dispatch decodes one item at a time.
+
+        Reached only when `batchable` is False, so identical entries imply distinct seeds.
+        """
+        if not self._entries_identical(items):
+            key, detail = "entries", (
+                "items carry distinct state or output entries (row-scoped runtime kwargs or per-row hooks)"
+            )
+        else:
+            key, detail = "seeds", (
+                "items carry distinct seeds (seed_scope='item'); pass seed_scope='dispatch' to generate(), or "
+                "set ProviderOptions.seed_scope on the evaluation provider, to decode the dispatch in one pass"
+            )
+        if self._backend.report_once(f"serial_fallback:{key}"):
+            logger.info("Multi-item generate (%d items) decodes serially: %s.", len(items), detail)
 
     @staticmethod
     def _entries_identical(items: Sequence[GenerationItem | ScoringItem]) -> bool:
@@ -392,6 +424,8 @@ class ExclusiveSession:
             return self._generate_batched(
                 items, params, gen_kwargs, user_processors, user_criteria, seeds[0],
             )
+        if len(items) > 1:
+            self._report_serial_fallback(items)
 
         results: list[ItemResult] = []
         for index, item in enumerate(items):

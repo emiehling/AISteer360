@@ -10,7 +10,6 @@ Tests cover:
 - AdditiveTransform
 - NormPreservingTransform
 """
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -942,7 +941,7 @@ class TestResolveTransformSlot:
         assert built.is_bound is True and built.strength == 2.0
 
     def test_factory_returning_source_carrying_transform_is_bound(self):
-        # strict superset over old adapter behavior: an unbound factory result is bound here
+        # an unbound factory result is bound here
         from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform, resolve_transform_slot
 
         source = self._stub_source(self._sv(layers=(0, 1)))

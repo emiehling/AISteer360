@@ -1,12 +1,11 @@
-"""Layout guards for the consolidated data specs and the `state_control.common` module split.
+"""Layout guards for the data specs and the `state_control.common` modules.
 
 `LabeledExamples` and `as_labeled_examples` live in `core/internals/data.py` alongside
-`ContrastivePairs`/`as_contrastive_pairs`. The `state_control.common` and `output_control.common`
-packages re-export them from that single definition, and `output_control.common.specs` no longer
-exists. `state_control.common.specs` holds the intervention IR only; fit configuration lives in
-`fit_specs.py` and the wire compiler in `lowering.py`. These tests pin the identity of the
-re-exports, the module layout, the widening of `as_labeled_examples` over `ContrastivePairs`, and
-ITI's per-method rejection of `ContrastivePairs`.
+`ContrastivePairs`/`as_contrastive_pairs`; the `state_control.common` and `output_control.common`
+packages re-export them from that single definition. `state_control.common.specs` holds the
+intervention IR; fit configuration lives in `fit_specs.py` and the wire compiler in `lowering.py`.
+These tests pin the identity of the re-exports, the module layout, the inputs
+`as_labeled_examples` accepts, and ITI's per-method rejection of `ContrastivePairs`.
 """
 import importlib
 
@@ -33,7 +32,7 @@ class TestReExportIdentity:
         assert state_fn is as_labeled_examples
 
 
-class TestAsLabeledExamplesWidening:
+class TestAsLabeledExamplesInputs:
     """`as_labeled_examples` accepts a `ContrastivePairs`, a `LabeledExamples`, and a mapping."""
 
     def test_accepts_contrastive_pairs(self):
@@ -67,7 +66,7 @@ class TestAsLabeledExamplesWidening:
 
 
 class TestITIRejectsContrastivePairs:
-    """ITI keeps its per-method rejection of `ContrastivePairs` (above the generic converter)."""
+    """ITI rejects `ContrastivePairs` per method, above the generic converter."""
 
     def test_iti_args_raises_on_contrastive_pairs(self):
         from aisteer360.algorithms.state_control.iti.args import ITIArgs
@@ -76,36 +75,8 @@ class TestITIRejectsContrastivePairs:
             ITIArgs(data=ContrastivePairs(positives=["a"], negatives=["b"]))
 
 
-class TestModuleRemoval:
-    """`output_control.common.specs` is gone; `state_control.common.specs` no longer holds the moved names."""
-
-    def test_output_common_specs_module_removed(self):
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("aisteer360.algorithms.output_control.common.specs")
-
-    def test_state_common_specs_has_no_moved_names(self):
-        state_specs = importlib.import_module("aisteer360.algorithms.state_control.common.specs")
-        assert not hasattr(state_specs, "LabeledExamples")
-        assert not hasattr(state_specs, "ContrastivePairs")
-        assert not hasattr(state_specs, "as_labeled_examples")
-
-
-class TestCommonSpecsSplit:
+class TestCommonSpecsLayout:
     """`state_control.common.specs` holds the IR; fit configuration and the wire compiler live beside it."""
-
-    def test_specs_has_no_moved_names(self):
-        state_specs = importlib.import_module("aisteer360.algorithms.state_control.common.specs")
-        for name in (
-            "VectorTrainSpec",
-            "ConditionSearchSpec",
-            "Comparator",
-            "CompMode",
-            "normalize_comparator",
-            "lower_interventions",
-            "artifact_id_for",
-            "ScopeKindLiteral",
-        ):
-            assert not hasattr(state_specs, name)
 
     def test_fit_specs_holds_the_fit_configuration(self):
         fit_specs = importlib.import_module("aisteer360.algorithms.state_control.common.fit_specs")

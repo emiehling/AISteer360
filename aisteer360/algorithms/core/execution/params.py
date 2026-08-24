@@ -1,7 +1,9 @@
 """Normalized generation parameters with one rendering rule per backend family."""
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Literal
+
+SEED_SCOPES: tuple[str, ...] = ("item", "dispatch")
 
 NORMALIZED_PARAM_NAMES: tuple[str, ...] = (
     "max_new_tokens",
@@ -13,6 +15,7 @@ NORMALIZED_PARAM_NAMES: tuple[str, ...] = (
     "n",
     "repetition_penalty",
     "seed",
+    "seed_scope",
     "stop_strings",
     "stop_token_ids",
 )
@@ -47,6 +50,16 @@ class GenerationParams:
         seed: Sampling seed. In-process it renders as a `fork_rng`-scoped `manual_seed` around
             the item's decode; on vLLM it maps to the request seed. Sessions derive a distinct
             per-item seed from this value when an item carries no seed of its own.
+        seed_scope: How a call-level `seed` maps onto the items of one dispatch. `"item"` derives
+            one seed per item from the operation id and the item index, so an item's stream is
+            independent of its batch-mates; on the in-process backend a multi-item dispatch then
+            decodes one item at a time. `"dispatch"` derives one seed for the whole dispatch and
+            decodes every item in one batched pass; the call is reproducible as a whole (the same
+            items in the same order under the same seed reproduce), and an individual item is not
+            reproducible independently of batch composition. Ignored when `seed` is None. An item
+            carrying its own `seed` is honored as given under either scope. On vLLM backends the
+            scope is inert, since per-request seeds execute inside one engine batch under either
+            value.
         stop_strings: Stop strings, composed by the session as stop rules on both backend
             families. Token ids are returned as generated; the pipeline truncates decoded text
             at the first stop-string occurrence.
@@ -68,6 +81,7 @@ class GenerationParams:
     n: int | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    seed_scope: Literal["item", "dispatch"] = "item"
     stop_strings: tuple[str, ...] = ()
     stop_token_ids: tuple[int, ...] = ()
     extra: Mapping[str, Any] = field(default_factory=dict)
@@ -78,6 +92,8 @@ class GenerationParams:
         else:
             object.__setattr__(self, "stop_strings", tuple(self.stop_strings))
         object.__setattr__(self, "stop_token_ids", tuple(int(i) for i in self.stop_token_ids))
+        if self.seed_scope not in SEED_SCOPES:
+            raise ValueError(f"seed_scope must be one of {SEED_SCOPES}; got {self.seed_scope!r}.")
         if (
             self.min_new_tokens is not None
             and self.max_new_tokens is not None
@@ -116,8 +132,9 @@ class GenerationParams:
         """Render the parameters back into `model.generate`-vocabulary keyword arguments.
 
         This inverts `from_gen_kwargs`, so `greedy` renders as `do_sample` (inverted), `n` as
-        `num_return_sequences`, the stop fields and `seed` keep their normalized names, and
-        `extra` merges underneath the normalized fields.
+        `num_return_sequences`, the stop fields and `seed` keep their normalized names,
+        `seed_scope` renders only when it is not the default `"item"`, and `extra` merges
+        underneath the normalized fields.
 
         Returns:
             The keyword arguments; `from_gen_kwargs(**params.to_gen_kwargs())` reproduces
@@ -142,6 +159,8 @@ class GenerationParams:
             gen_kwargs["repetition_penalty"] = self.repetition_penalty
         if self.seed is not None:
             gen_kwargs["seed"] = self.seed
+        if self.seed_scope != "item":
+            gen_kwargs["seed_scope"] = self.seed_scope
         if self.stop_strings:
             gen_kwargs["stop_strings"] = self.stop_strings
         if self.stop_token_ids:

@@ -1,8 +1,7 @@
 """Tests for the shared example renderer (`core/internals/render.py`).
 
-The parity test is the regression guard for the unified-formatting design: it
-fails if steering-vector extraction and inference ever produce different
-prompt-region token ids again. The remaining tests cover `render_for_model`'s
+The parity test fails if steering-vector extraction and inference produce different
+prompt-region token ids. The remaining tests cover `render_for_model`'s
 three modes and `render_contrastive`'s mode resolution / fallbacks.
 """
 import logging
@@ -82,7 +81,7 @@ def raw_tokenizer():
     pytest.skip("No CI tokenizer without a chat template is available.")
 
 
-# Parity test (the regression guard)
+# Parity test
 def test_extraction_inference_prompt_parity(chat_tokenizer):
     """Extraction and inference must produce identical prompt-region token ids."""
     prompt = "What is the capital of France?"

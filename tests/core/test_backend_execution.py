@@ -15,6 +15,7 @@ from aisteer360.algorithms.core.execution import (
     LoRAArtifact,
     PartialBatchError,
     PreparedPrompt,
+    StackEntry,
     TransportError,
     derive_item_seed,
     merge_lowered_params,
@@ -84,6 +85,22 @@ class _ForceSequence:
         return forced
 
 
+def _count_generate_calls(model, monkeypatch) -> dict:
+    """Wrap `model.generate` to count invocations (auto-restored by `monkeypatch`).
+
+    Returns a dict whose `count` key updates on each call.
+    """
+    counter = {"count": 0}
+    original = model.generate
+
+    def wrapped(*args, **kwargs):
+        counter["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(model, "generate", wrapped)
+    return counter
+
+
 class TestGenerationParamsStops:
 
     def test_from_gen_kwargs_captures_stop_fields(self):
@@ -121,6 +138,19 @@ class TestGenerationParamsStops:
         with pytest.raises(ValueError, match="temperature"):
             merge_lowered_params(GenerationParams(), {"temperature": 0.5})
 
+    def test_seed_scope_round_trips_and_item_not_rendered(self):
+        item = GenerationParams.from_gen_kwargs(seed=5, max_new_tokens=4)
+        assert item.seed_scope == "item"
+        assert "seed_scope" not in item.to_gen_kwargs()  # default is not rendered
+        dispatch = GenerationParams.from_gen_kwargs(seed=5, seed_scope="dispatch", max_new_tokens=4)
+        assert dispatch.seed_scope == "dispatch"
+        assert dispatch.to_gen_kwargs()["seed_scope"] == "dispatch"
+        assert GenerationParams.from_gen_kwargs(**dispatch.to_gen_kwargs()) == dispatch
+
+    def test_seed_scope_unknown_value_raises(self):
+        with pytest.raises(ValueError, match="seed_scope"):
+            GenerationParams(seed_scope="whole")
+
 
 class TestVLLMRendering:
 
@@ -153,6 +183,13 @@ class TestVLLMRendering:
 
     def test_seed_never_rendered_by_table(self):
         assert "seed" not in render_vllm_sampling_args(GenerationParams(seed=7))
+
+    def test_seed_scope_never_rendered_by_hf_or_vllm(self):
+        from aisteer360.backends.huggingface.session import render_hf_gen_kwargs
+
+        params = GenerationParams(seed=7, seed_scope="dispatch", max_new_tokens=4)
+        assert "seed_scope" not in render_hf_gen_kwargs(params)
+        assert "seed_scope" not in render_vllm_sampling_args(GenerationParams(seed_scope="dispatch"))
 
 
 class TestFinishReasonMapping:
@@ -324,6 +361,109 @@ class TestSessionBatchedFastPath:
         assert torch.equal(first[0].output.output_ids, second[0].output.output_ids)
         assert torch.equal(first[1].output.output_ids, second[1].output.output_ids)
         assert not torch.equal(first[0].output.output_ids, first[1].output.output_ids)
+
+    def test_dispatch_scope_batches_seeded_items(self, backend, model, tokenizer, monkeypatch):
+        encoded = tokenizer(["the cat", "the cat"], return_tensors="pt", padding=True)
+        items = [
+            GenerationItem(prompt=PreparedPrompt.from_token_ids(
+                encoded["input_ids"][i:i + 1], encoded["attention_mask"][i:i + 1],
+            ))
+            for i in range(2)
+        ]
+        params = GenerationParams(
+            max_new_tokens=8, greedy=False, temperature=1.0, seed=42, seed_scope="dispatch",
+        )
+        calls = _count_generate_calls(model, monkeypatch)
+        with backend.open_session() as session:
+            first = session.generate(items, params)
+        assert calls["count"] == 1  # both rows decode in one batched pass
+        with backend.open_session() as session:
+            second = session.generate(items, params)
+        # the two rows sample distinct streams, and a second session reproduces the dispatch
+        assert not torch.equal(first[0].output.output_ids, first[1].output.output_ids)
+        assert torch.equal(first[0].output.output_ids, second[0].output.output_ids)
+        assert torch.equal(first[1].output.output_ids, second[1].output.output_ids)
+
+    def test_single_item_parity_across_scopes(self, backend, tokenizer):
+        item = GenerationItem(prompt=PreparedPrompt.from_text("the cat"))
+        base = dict(max_new_tokens=8, greedy=False, temperature=1.0, seed=42)
+        with backend.open_session() as session:
+            item_scope = session.generate([item], GenerationParams(**base, seed_scope="item"))
+        with backend.open_session() as session:
+            dispatch_scope = session.generate([item], GenerationParams(**base, seed_scope="dispatch"))
+        assert torch.equal(item_scope[0].output.output_ids, dispatch_scope[0].output.output_ids)
+
+    def test_explicit_item_seeds_honored_serially_under_dispatch_scope(self, backend, model, tokenizer, monkeypatch):
+        encoded = tokenizer(["the cat", "the cat"], return_tensors="pt", padding=True)
+        items = [
+            GenerationItem(
+                prompt=PreparedPrompt.from_token_ids(
+                    encoded["input_ids"][i:i + 1], encoded["attention_mask"][i:i + 1],
+                ),
+                seed=100 + i,
+            )
+            for i in range(2)
+        ]
+        params = GenerationParams(
+            max_new_tokens=8, greedy=False, temperature=1.0, seed=42, seed_scope="dispatch",
+        )
+        calls = _count_generate_calls(model, monkeypatch)
+        with backend.open_session() as session:
+            first = session.generate(items, params)
+        assert calls["count"] == 2  # explicit distinct item seeds decode serially
+        with backend.open_session() as session:
+            second = session.generate(items, params)
+        assert torch.equal(first[0].output.output_ids, second[0].output.output_ids)
+        assert torch.equal(first[1].output.output_ids, second[1].output.output_ids)
+
+    def test_mixed_item_seeds_fall_back_to_per_item_under_dispatch_scope(self, backend, tokenizer):
+        encoded = tokenizer(["the cat", "the cat"], return_tensors="pt", padding=True)
+        items = [
+            GenerationItem(
+                prompt=PreparedPrompt.from_token_ids(
+                    encoded["input_ids"][i:i + 1], encoded["attention_mask"][i:i + 1],
+                ),
+                seed=100 if i == 0 else None,
+            )
+            for i in range(2)
+        ]
+        params = GenerationParams(seed=42, seed_scope="dispatch")
+        with backend.open_session() as session:
+            seeds = session._item_seeds(items, params)
+        # the explicit seed is honored, the absent one derives per index (not the dispatch seed)
+        assert seeds[0] == 100
+        assert seeds[1] == derive_item_seed(42, "generate-0", 1)
+
+    def test_serial_fallback_logged_once_per_reason(self, backend, tokenizer, caplog):
+        encoded = tokenizer(["the cat", "the cat"], return_tensors="pt", padding=True)
+        seeded_items = [
+            GenerationItem(prompt=PreparedPrompt.from_token_ids(
+                encoded["input_ids"][i:i + 1], encoded["attention_mask"][i:i + 1],
+            ))
+            for i in range(2)
+        ]
+        seeded = GenerationParams(max_new_tokens=4, greedy=False, temperature=1.0, seed=42)
+        with caplog.at_level("INFO", logger="aisteer360.backends.huggingface.session"):
+            with backend.open_session() as session:
+                session.generate(seeded_items, seeded)
+            with backend.open_session() as session:
+                session.generate(seeded_items, seeded)  # second session must not log again
+        seed_records = [r for r in caplog.records if "seed_scope='dispatch'" in r.message]
+        assert len(seed_records) == 1
+
+    def test_serial_fallback_names_distinct_entries(self, backend, tokenizer, caplog):
+        items = [
+            GenerationItem(
+                prompt=PreparedPrompt.from_text("the cat"),
+                output_entries=(StackEntry(logits_processors=[_ForceSequence(2, [i + 3])]),),
+            )
+            for i in range(2)
+        ]
+        with caplog.at_level("INFO", logger="aisteer360.backends.huggingface.session"):
+            with backend.open_session() as session:
+                session.generate(items, GenerationParams(max_new_tokens=4, greedy=True))
+        entry_records = [r for r in caplog.records if "distinct state or output entries" in r.message]
+        assert len(entry_records) == 1
 
     def test_stop_strings_compose_and_classify(self, backend, tokenizer):
         item = GenerationItem(prompt=PreparedPrompt.from_text("the cat"))
@@ -774,6 +914,15 @@ class TestSerialSeedStateHooks:
         control = _RowRecordingStateControl()
         pipeline = _pipeline(model, tokenizer, controls=[control])
         pipeline.generate(text=["the cat sat on the mat", "the dog"], max_new_tokens=2)
+        assert len(control.seen_shapes) == 1
+        assert control.seen_shapes[0][0] == 2
+
+    def test_seeded_dispatch_scope_batch_keeps_batch_hooks(self, model, tokenizer):
+        control = _RowRecordingStateControl()
+        pipeline = _pipeline(model, tokenizer, controls=[control])
+        pipeline.generate(
+            text=["the cat sat on the mat", "the dog"], seed=7, seed_scope="dispatch", max_new_tokens=2,
+        )
         assert len(control.seen_shapes) == 1
         assert control.seen_shapes[0][0] == 2
 

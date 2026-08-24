@@ -334,11 +334,6 @@ class TestCheck:
         with pytest.raises(TypeError, match="backend must be"):
             pipeline.check(backend=3.14)
 
-    def test_removed_constructor_parameters_rejected(self):
-        for removed in ("steer" + "_backend", "inference" + "_backend"):
-            with pytest.raises(TypeError):
-                SteeringPipeline(**{removed: "huggingface"})
-
 
 class TestPastaSpecConstraint:
 

@@ -82,6 +82,7 @@ class RoutedDecoding(PhasedDriver):
         {
             "name": "canned_responses",
             "type": "dict[str, str]",
+            "scope": "call",
             "description": "Per-call override of Respond/Prefix text, keyed by route name.",
         },
     ]

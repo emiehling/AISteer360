@@ -55,25 +55,31 @@ dependencies = [
 
 # optional groups
 [project.optional-dependencies]
+# `merging` cannot share an environment with `inspect`: mergekit 0.1.4 pins pydantic~=2.10 and
+# fails to import under the pydantic>=2.13 that inspect-ai requires, so it stays out of `all`
 merging = [
     "mergekit>=0.1.4,<0.2.0",
 ]
 cpo = [
     "econml>=0.16.0,<0.17.0",
 ]
-plots = [
-    "matplotlib>=3.8.0,<4.0.0",
-    "seaborn>=0.13.2,<0.14.0",
+inspect = [
+    "inspect-ai>=0.3.260,<0.4.0",
+    "inspect-evals>=0.18.0,<1.0.0",
 ]
 guided = [
     "xgrammar>=0.1.19",
+]
+viz = [
+    "matplotlib>=3.8.0,<4.0.0",
+    "seaborn>=0.13.0,<0.14.0",
 ]
 vllm = [
     "vllm>=0.26.0,<1.0.0",
     "vllm-hook-plugins @ git+https://github.com/IBM/vLLM-Hook.git@steerability-challenge#subdirectory=vllm_hook_plugins",
 ]
 all = [
-    "aisteer360[merging,cpo,plots]",
+    "aisteer360[cpo,inspect,viz]",
 ]
 docs = [
     "aisteer360[all]",
@@ -93,11 +99,24 @@ dev = [
     "aisteer360[all]",
     "vllm-hook-plugins @ git+https://github.com/IBM/vLLM-Hook.git@steerability-challenge#subdirectory=vllm_hook_plugins",
     "notebook>=7.4.5",
+    "ipywidgets>=8.1.0,<9.0.0",
     "pytest>=8.3.2,<9.0.0",
     "pre-commit>=4.3.0",
 ]
 
 # tools
+[tool.uv]
+# mergekit pins pydantic~=2.10 and cannot import under the pydantic>=2.13 that inspect-ai
+# requires, so `merging` never co-installs with `inspect` or the extras that include it;
+# mergekit's safetensors pin (<0.6) likewise conflicts with vllm's (>=0.6.2)
+conflicts = [
+    [{ extra = "merging" }, { extra = "inspect" }],
+    [{ extra = "merging" }, { extra = "all" }],
+    [{ extra = "merging" }, { extra = "dev" }],
+    [{ extra = "merging" }, { extra = "docs" }],
+    [{ extra = "merging" }, { extra = "vllm" }],
+]
+
 [tool.uv.build-backend]
 module-root = ""
 module-name = "aisteer360"

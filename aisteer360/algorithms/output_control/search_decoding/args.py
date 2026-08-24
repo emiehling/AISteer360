@@ -15,7 +15,7 @@ class SearchDecodingArgs(BaseArgs):
 
     scorer: Any = field(
         default=None,
-        metadata={"help": "The sequence scorer: a SequenceScorer callable, a MetricScorer/other "
+        metadata={"help": "The sequence scorer: a SequenceScorer callable, a SampleSequenceScorer/other "
                           "instance, or a dict spec with a 'kind' key (see resolve_scorer)."},
     )
     segment_len: int | None = field(

@@ -147,9 +147,9 @@ class TestConditionPointExpansion:
             pipe_b.generate(prompt, max_new_tokens=2, do_sample=False)
             assert search_control.latest_decision.open_per_row == reuse_control.latest_decision.open_per_row
 
-    @pytest.mark.parametrize("stale", ["score_below", "larger", "smaller"])
-    def test_non_canonical_comparator_raises(self, stale):
-        point = {"layer_ids": [1], "threshold": 0.3, "comparator": stale}
+    @pytest.mark.parametrize("comparator", ["<=", "LE", "bogus"])
+    def test_non_canonical_comparator_raises(self, comparator):
+        point = {"layer_ids": [1], "threshold": 0.3, "comparator": comparator}
         with pytest.raises(ValueError, match="'ge' or 'le'"):
             self._cast(point)
 

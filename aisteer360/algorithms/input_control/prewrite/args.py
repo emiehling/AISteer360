@@ -55,7 +55,7 @@ class PRewriteArgs(BaseArgs):
 
     train_rewriter: bool = field(
         default=False,
-        metadata={"help": "If True, GRPO-train the rewriter (metric-in-the-loop reward) before proposing rewrites."},
+        metadata={"help": "If True, GRPO-train the rewriter (scorer-in-the-loop reward) before proposing rewrites."},
     )
 
     meta_prompt: str | None = field(
@@ -83,14 +83,9 @@ class PRewriteArgs(BaseArgs):
         metadata={"help": "Dev set used to score candidates under the search strategy."},
     )
 
-    metric: Any = field(
+    row_scorer: Callable[[str, dict], float] | None = field(
         default=None,
-        metadata={"help": "An aisteer360 Metric used to aggregate dev-set responses into a scalar."},
-    )
-
-    score_key: str | None = field(
-        default=None,
-        metadata={"help": "When the metric returns a dict, which key to extract as the scalar."},
+        metadata={"help": "Per-row scorer (response, row) -> float used to aggregate dev-set responses into a scalar."},
     )
 
     training_seeds: list[str] | None = field(
@@ -108,8 +103,8 @@ class PRewriteArgs(BaseArgs):
         metadata={
             "help": (
                 "Callable GRPO reward, with signature `reward_func(prompts, completions, **kwargs) -> "
-                "list[float]`. Takes precedence over the `metric` + `dev_set` reward when both are set. "
-                "If unset, the reward is built from `metric` + `dev_set` (the paper's reward)."
+                "list[float]`. Takes precedence over the `row_scorer` + `dev_set` reward when both are set. "
+                "If unset, the reward is built from `row_scorer` + `dev_set` (the paper's reward)."
             )
         },
     )
@@ -152,8 +147,8 @@ class PRewriteArgs(BaseArgs):
         if self.strategy == "search":
             if self.dev_set is None or not self.dev_set:
                 raise ValueError("`dev_set` is required for search strategy.")
-            if self.metric is None:
-                raise ValueError("`metric` is required for search strategy.")
+            if self.row_scorer is None:
+                raise ValueError("`row_scorer` is required for search strategy.")
             if self.k_candidates <= 0:
                 raise ValueError("`k_candidates` must be positive for search strategy.")
         if self.rewriter_model is not None and self.rewriter_model_name_or_path is not None:
@@ -168,9 +163,9 @@ class PRewriteArgs(BaseArgs):
                     "training (it would mutate the task model)."
                 )
             has_callable_reward = self.reward_fn is not None
-            has_metric_reward = self.metric is not None and bool(self.dev_set)
-            if not (has_callable_reward or has_metric_reward):
+            has_scorer_reward = self.row_scorer is not None and bool(self.dev_set)
+            if not (has_callable_reward or has_scorer_reward):
                 raise ValueError(
                     "`train_rewriter=True` requires a GRPO reward source: provide a callable `reward_fn`, "
-                    "or (`metric` and `dev_set`) for the metric-in-the-loop reward."
+                    "or (`row_scorer` and `dev_set`) for the scorer-in-the-loop reward."
                 )

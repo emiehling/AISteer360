@@ -14,8 +14,8 @@ class PhasedDecodingArgs(BaseArgs):
         - `{"generate": {"until": str | None = None, "budget": int | None = None}}` — generate until
           a boundary; `{"generate": {}}` is unbounded (bounded by the call's own kwargs/criteria).
 
-    Plans whose `fixed` values are all strings are fully JSON-serializable (Benchmark-sweepable and
-    log-friendly). Grammar validation happens in the control's `_configure()`.
+    Plans whose `fixed` values are all strings are fully JSON-serializable (sweepable through
+    `ControlSpec` and log-friendly). Grammar validation happens in the control's `_configure()`.
     """
 
     plan: list = field(

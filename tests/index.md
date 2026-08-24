@@ -8,7 +8,7 @@ The test tree is organized by area:
 - `tests/controls/` covers individual steering controls
 - `tests/core/` covers the pipeline, registry, and other core functionality
 - `tests/internals/` covers the `core/internals` substrate and probes
-- `tests/evaluation/` covers metrics and benchmarks
+- `tests/evaluation/` covers the Inspect AI evaluation stack (provider, collator, solver, scorer adapter, suite, runner)
 - `tests/utils/` holds shared test utilities
 
 ## Executing tests

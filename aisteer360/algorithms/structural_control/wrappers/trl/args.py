@@ -1,3 +1,4 @@
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -62,8 +63,12 @@ class TRLArgs(BaseArgs):
 
     def __post_init__(self) -> None:
 
-        # default transient artifacts under ./tmp so nothing lands at the repository root
-        self.output_dir = self.output_dir or self.training_args.get("output_dir") or "./tmp/trainer_output"
+        # default transient artifacts to a system temp directory so nothing lands relative to the caller's cwd
+        self.output_dir = (
+            self.output_dir
+            or self.training_args.get("output_dir")
+            or tempfile.mkdtemp(prefix="aisteer-trainer-")
+        )
 
         # compose training args
         base_training_args = {

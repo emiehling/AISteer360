@@ -10,11 +10,13 @@ from types import ModuleType
 OPTIONAL_MODULE_EXTRAS: dict[str, str] = {
     "mergekit": "merging",
     "econml": "cpo",
-    "matplotlib": "plots",
-    "seaborn": "plots",
+    "inspect_ai": "inspect",
+    "inspect_evals": "inspect",
     "vllm": "vllm",
     "vllm_hook_plugins": "vllm",
     "xgrammar": "guided",
+    "matplotlib": "viz",
+    "seaborn": "viz",
 }
 
 

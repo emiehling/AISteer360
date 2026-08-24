@@ -44,11 +44,14 @@ pipelines can consist of simply a single control (e.g., activation steering) or 
 (e.g., LoRA following by reward-augmented decoding). This flexibility allows users to evaluate the impact of various
 steering methods (and combinations thereof) on a given model.
 
-To facilitate a principled comparison, we have developed `UseCase` and `Benchmark` classes. Use cases define tasks for a
-(steered) model and specify how performance on that task is measured (via evaluation metrics on the model's generations).
-Benchmarks facilitate the comparison of steering pipelines on a given use case. This provides a unified structure for
-testing and comparing methods, addressing the current fragmentation in the field where steering algorithms are typically
-developed and evaluated within isolated, task-specific environments.[@liang2024controllable]
+To facilitate a principled comparison, the toolkit evaluates steering pipelines on
+[Inspect AI](https://inspect.aisi.org.uk/) and its benchmark catalog
+[`inspect_evals`](https://github.com/UKGovernmentBEIS/inspect_evals). A steered pipeline runs as an Inspect model, so
+one stack measures both the target behavior of a pipeline and its general-capability side effects on
+community-standard tasks, with results transparent down to the per-sample generation. The `SteeringEval` runner
+compares pipelines (fixed configurations, hyperparameter sweeps, and an unsteered baseline) on shared task suites,
+addressing the current fragmentation in the field where steering algorithms are typically developed and evaluated
+within isolated, task-specific environments.[@liang2024controllable]
 
 We encourage the community to use AISteer360 in their steering workflows. We will continue to develop in the open, and
 encourage users to suggest any additional features or raise any issues on our [GitHub page](https://github.com/IBM/AISteer360).

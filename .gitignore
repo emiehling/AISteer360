@@ -23,6 +23,7 @@ examples/**/profiles_*/
 **/trainer_output
 **/tmp
 **/profiles/
+**/runs/
 .claude/
 **/CLAUDE.md
 **/_run_notebooks.sh

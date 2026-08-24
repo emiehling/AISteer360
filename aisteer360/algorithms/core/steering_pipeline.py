@@ -3,6 +3,7 @@ Core steering pipeline for composing and applying multiple LLM control methods.
 """
 import contextlib
 import logging
+import time
 import warnings
 import weakref
 from collections.abc import Mapping
@@ -52,7 +53,7 @@ from aisteer360.algorithms.core.utils.assembly import (
     resolve_decoding_driver,
     rollout_entries,
 )
-from aisteer360.algorithms.core.utils.controls import merge_controls
+from aisteer360.algorithms.core.utils.controls import merge_controls, runtime_kwargs_schema
 from aisteer360.algorithms.core.utils.generation import (
     PromptWarnings,
     prepare_inputs,
@@ -249,6 +250,8 @@ class SteeringPipeline:
 
     def _load_in_process_model(self, model_ref: str | Path) -> None:
         """Load `model_ref` with the constructor's placement knobs and bind it as `model`."""
+        logger.info("Loading model %s.", model_ref)
+        started = time.monotonic()
         if self.device is not None:
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_ref,
@@ -263,6 +266,7 @@ class SteeringPipeline:
                 **self.hf_model_kwargs,
             )
             self.device = self.model.device
+        logger.info("Loaded model %s in %.0fs.", model_ref, time.monotonic() - started)
 
     @property
     def supports_batching(self) -> bool:
@@ -295,15 +299,21 @@ class SteeringPipeline:
                 control.tokenizer = self.tokenizer
 
     def _warn_on_runtime_kwargs_overlap(self) -> None:
-        """Warn (UserWarning, once) when two or more enabled controls declare the same
-        `RUNTIME_KWARGS_SCHEMA` variable name.
+        """Validate the enabled controls' `RUNTIME_KWARGS_SCHEMA` declarations and warn
+        (UserWarning, once) when two or more enabled controls declare the same variable name.
 
         All controls read from the single `runtime_kwargs` dict passed to `generate()`, so a shared
         name means one value feeds several controls. Sharing can be intentional, hence a warning
-        rather than an error.
+        rather than an error; disagreeing declarations of one name are a contract conflict and
+        raise instead.
+
+        Raises:
+            ValueError: If an entry declares an invalid `scope`, or two controls declare one name
+                with a different `scope` or `type`.
         """
-        declared: dict[str, list[str]] = {}
         controls = (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls)
+        runtime_kwargs_schema(controls)
+        declared: dict[str, list[str]] = {}
         for control in controls:
             if not control.enabled:
                 continue
@@ -516,6 +526,9 @@ class SteeringPipeline:
         Raises:
             RuntimeError: If no model is available after steering, or the staged in-process
                 model was retained past the steer stage.
+            ValueError: If an enabled control's `RUNTIME_KWARGS_SCHEMA` entry declares an invalid
+                `scope`, or two enabled controls declare one runtime kwarg with a different
+                `scope` or `type`.
             UnsupportedPipelineError: If any enabled control is unsupported at the generate
                 phase on the configured backend.
             ModuleNotFoundError: If a configured backend kind requires an optional dependency
@@ -594,7 +607,11 @@ class SteeringPipeline:
             scoped = ScopedSession(venue_session, type(control).__name__, access)
             kwargs = {**kwargs, "session": scoped}
         model = self.model if access >= ModelAccess.MODULE else None
+        control_name = type(control).__name__
+        logger.info("Steering %s (access=%s).", control_name, access.name.lower())
+        started = time.monotonic()
         maybe_new_model = steer_fn(model, tokenizer=self.tokenizer, **kwargs)
+        logger.info("Steered %s in %.1fs.", control_name, time.monotonic() - started)
         if isinstance(maybe_new_model, nn.Module):
             self.model = maybe_new_model
 
@@ -1346,8 +1363,9 @@ class SteeringPipeline:
 
         # state-control entry selection per backend: an in-process backend gets hooks built
         # once per logical generation; an intervention-capable backend gets exported specs. On
-        # the in-process path, distinct per-item derived seeds run serially in the session, so
-        # hooks are computed per row there rather than once on the batch.
+        # the in-process path under seed_scope="item", distinct per-item derived seeds run
+        # serially in the session, so hooks are computed per row there rather than once on the
+        # batch; under seed_scope="dispatch" the seeded dispatch batches, so batch hooks are kept.
         state_entry_rows: list[tuple[HookEntry, ...]] | None = None
         state_entries: tuple[StateControlEntry, ...] = ()
         if decoding_driver is not None:
@@ -1369,6 +1387,7 @@ class SteeringPipeline:
                 )
         elif (
             gen_kwargs.get("seed") is not None
+            and gen_kwargs.get("seed_scope", "item") == "item"
             and steered_input_ids.size(0) > 1
             and has_enabled_state
         ):

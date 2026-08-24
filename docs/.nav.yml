@@ -28,9 +28,7 @@ nav:
   - Tutorials:
     - Tutorials: tutorials/index.md
     - Add a steering method: "tutorials/add_new_steering_method.md"
-    - Add a metric: "tutorials/add_new_metric.md"
-    - Add a use case: "tutorials/add_new_use_case.md"
-    - Add a benchmark: "tutorials/add_new_benchmark.md"
+    - Evaluate steering pipelines: "tutorials/evaluate_steering_pipelines.md"
     - Add a new input control: "tutorials/add_method_by_category/add_new_input_control.md"
     - Add a new output control: "tutorials/add_method_by_category/add_new_output_control.md"
     - Add a new state control: "tutorials/add_method_by_category/add_new_state_control.md"
@@ -70,10 +68,10 @@ nav:
         - ValueGuidance: "examples/notebooks/generics/value_guidance.ipynb"
     - Recipes:
       - Routed decoding: "examples/notebooks/recipes/routed_decoding.ipynb"
-    - Benchmarks:
-      - Commonsense MCQA: "examples/notebooks/benchmarks/commonsense_mcqa/commonsense_mcqa.ipynb"
-      - Instruction following: "examples/notebooks/benchmarks/instruction_following/instruction_following.ipynb"
-      - Composite steering for truthfulness: "examples/notebooks/benchmarks/truthful_qa_composite_steering/truthful_qa_composite_steering.ipynb"
+    - Studies:
+      - Commonsense MCQA: "examples/notebooks/studies/commonsense_mcqa/commonsense_mcqa.ipynb"
+      - Instruction following: "examples/notebooks/studies/instruction_following/instruction_following.ipynb"
+      - Composite steering for truthfulness: "examples/notebooks/studies/truthful_qa_composite_steering/truthful_qa_composite_steering.ipynb"
 #  - Developer notes:
 #      - Developer notes: dev_notes/index.md
 #      - "dev_notes/steering_lifecycle.md"
@@ -126,16 +124,10 @@ nav:
             - StoppingRules: reference/algorithms/output_control/stopping_rules.md
             - ValueGuidance: reference/algorithms/output_control/value_guidance.md
     - Evaluation:
-        - Metrics:
-          - Base classes: reference/evaluation/metrics/base_metrics.md
-          - Generic: reference/evaluation/metrics/generic.md
-          - Custom:
-            - Commonsense MCQA: reference/evaluation/metrics/custom/commonsense_mcqa_metrics.md
-            - Instruction following: reference/evaluation/metrics/custom/instruction_following_metrics.md
-            - Truthful QA: "reference/evaluation/metrics/custom/truthful_qa_metrics.md"
-        - Use cases:
-          - Base class: reference/evaluation/use_cases/base_use_case.md
-          - Commonsense MCQA: reference/evaluation/use_cases/commonsense_mcqa_use_case.md
-          - Instruction following: reference/evaluation/use_cases/instruction_following_use_case.md
-          - Truthful QA: reference/evaluation/use_cases/truthful_qa_use_case.md
-        - Benchmark: reference/evaluation/benchmark.md
+        - Provider: reference/evaluation/provider.md
+        - Batching: reference/evaluation/batching.md
+        - Solvers: reference/evaluation/solvers.md
+        - Scorers: reference/evaluation/scorers.md
+        - Suite: reference/evaluation/suite.md
+        - Runner: reference/evaluation/runner.md
+        - Plotting: reference/evaluation/plotting.md

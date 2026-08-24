@@ -16,8 +16,8 @@ Sweepability rule: `ControlSpec` sweeps flat constructor kwargs, so scalar knobs
 identities; you sweep over configs by listing whole dicts in a spec's `vars`, not by reaching
 inside them.
 
-`MetricScorer` is served by passing an instance (it wraps an `evaluation.Metric` object, which has
-no meaningful string form); no dict kind is added for it.
+`SampleSequenceScorer` is served by passing an instance (it wraps a per-row `SampleScorer`
+callable, which has no meaningful string form); no dict kind is added for it.
 """
 from __future__ import annotations
 
@@ -228,7 +228,7 @@ def resolve_scorer(spec, *, device):
     """Resolve a scorer spec into a `SequenceScorer`.
 
     Accepted forms: any `SequenceScorer` callable (returned as-is, such as a plain function, a
-    `MajorityVoteScorer`, or a `MetricScorer`); or a dict with a `"kind"` key:
+    `MajorityVoteScorer`, or a `SampleSequenceScorer`); or a dict with a `"kind"` key:
 
         - `"reward_model"`: `model_id` (required); `score_index=0`, `batch_size=8`,
           `hf_model_kwargs`. Loads a classifier and wraps it in a `RewardModelScorer`.
@@ -261,7 +261,7 @@ def resolve_scorer(spec, *, device):
             return MajorityVoteScorer(answer_extractor=spec.get("answer_extractor"))
         raise ValueError(
             f"Unknown scorer kind {kind!r}; accepted kinds are 'reward_model', 'majority_vote' "
-            "(or pass a SequenceScorer callable / MetricScorer instance)."
+            "(or pass a SequenceScorer callable / SampleSequenceScorer instance)."
         )
 
     if callable(spec):
@@ -269,5 +269,5 @@ def resolve_scorer(spec, *, device):
 
     raise ValueError(
         "A scorer spec must be a SequenceScorer callable (e.g. a function, MajorityVoteScorer, or "
-        "MetricScorer) or a dict with a 'kind' key."
+        "SampleSequenceScorer) or a dict with a 'kind' key."
     )

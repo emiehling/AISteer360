@@ -79,6 +79,67 @@ def merge_controls(
     }
 
 
+def runtime_kwargs_schema(
+        controls: Iterable[StructuralControl | StateControl | InputControl | OutputControl]
+) -> dict[str, dict]:
+    """Merge the `RUNTIME_KWARGS_SCHEMA` declarations of the enabled controls, by name.
+
+    Each declared entry carries `name` plus optional `type`, `required`, `help`, and `scope`
+    fields. `scope` is `"row"` for a per-prompt value (in a batched call the control receives a
+    sequence with one element per prompt row, in row order) or `"call"` for one value per
+    `generate` call regardless of batch size; an entry without `scope` is `"call"`. Two controls
+    may declare one name only when their declarations agree, in which case they share one value at
+    inference time.
+
+    Args:
+        controls: Control instances whose enabled members' declarations are merged.
+
+    Returns:
+        Mapping from declared name to its merged entry, with `scope` normalized to `"row"` or
+        `"call"`. For a name declared by several controls, the first declaration's other fields
+        are kept.
+
+    Raises:
+        ValueError: If an entry's `scope` is neither `"row"` nor `"call"` (naming the control and
+            the entry), or if two controls declare one name with a different `scope` or `type`
+            (naming both controls).
+    """
+    merged: dict[str, dict] = {}
+    owners: dict[str, str] = {}
+    for control in controls:
+        if not getattr(control, "enabled", True):
+            continue
+        control_name = type(control).__name__
+        for entry in getattr(control, "RUNTIME_KWARGS_SCHEMA", []):
+            name = entry.get("name")
+            if not name:
+                continue
+            scope = entry.get("scope", "call")
+            if scope not in ("row", "call"):
+                raise ValueError(
+                    f"{control_name} declares runtime kwarg {name!r} with invalid scope {scope!r}; "
+                    "scope must be 'row' or 'call'."
+                )
+            if name not in merged:
+                merged[name] = {**entry, "scope": scope}
+                owners[name] = control_name
+                continue
+            existing = merged[name]
+            if existing["scope"] != scope:
+                raise ValueError(
+                    f"{owners[name]} and {control_name} declare runtime kwarg {name!r} with different "
+                    f"scopes ({existing['scope']!r} vs {scope!r})."
+                )
+            existing_type = existing.get("type")
+            new_type = entry.get("type")
+            if existing_type is not None and new_type is not None and existing_type != new_type:
+                raise ValueError(
+                    f"{owners[name]} and {control_name} declare runtime kwarg {name!r} with different "
+                    f"types ({existing_type!r} vs {new_type!r})."
+                )
+    return merged
+
+
 def warn_if_adapt_messages_bypassed(input_controls: list[InputControl], already_warned: bool) -> bool:
     """Warn (UserWarning) when any control in `input_controls` overrides `adapt_messages` but the
     caller used tensor/text input, bypassing chat-template tokenization. The warning names each

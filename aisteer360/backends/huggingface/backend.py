@@ -60,6 +60,7 @@ class HFBackend(Backend):
             raise ValueError(f"HFBackend requires a 'huggingface' spec; got kind {spec.kind!r}.")
         self.spec = spec
         self._open_session: ExclusiveSession | None = None
+        self._reported_once: set[str] = set()
 
         if model_provider is not None:
             self._model_provider = model_provider
@@ -130,3 +131,14 @@ class HFBackend(Backend):
             )
         self._open_session = ExclusiveSession(self)
         return self._open_session
+
+    def report_once(self, key: str) -> bool:
+        """Return True the first time `key` is seen on this backend, False afterwards.
+
+        Sessions are opened per pipeline call, so a per-session flag would fire on every call;
+        this guard lives on the backend so a repeated informational readout fires once.
+        """
+        if key in self._reported_once:
+            return False
+        self._reported_once.add(key)
+        return True

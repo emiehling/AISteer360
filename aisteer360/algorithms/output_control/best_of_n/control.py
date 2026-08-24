@@ -22,8 +22,8 @@ class BestOfN(SearchDriver):
     onto `(scorer, num_candidates=n, keep_k=1, max_iterations=1, propose_mode="sample")`. Each of the
     `n` samples is a full rollout, so the composed logits/stopping stacks steer every sample (a
     step-level control such as RAD applies to every candidate). Pairing the scorer with
-    `MajorityVoteScorer` recovers self-consistency (Wang et al., 2022); pairing it with `MetricScorer`
-    gives metric-guided reranking.
+    `MajorityVoteScorer` recovers self-consistency (Wang et al., 2022); pairing it with
+    `SampleSequenceScorer` gives scorer-guided reranking.
 
     Args:
         n (int): Number of full-length continuations to sample and rank. Defaults to 8.

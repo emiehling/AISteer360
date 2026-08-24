@@ -3,7 +3,7 @@
 Wraps a `TaskEvaluationScorer` into the callable shape TRL's `GRPOTrainer` expects,
 `reward_func(prompts, completions, **kwargs)`, returning one float per completion. The reward applies
 the rewritten instruction with the frozen task model over a dev set and scores the answers with a
-`Metric` (Kong et al., 2024).
+per-row `SampleScorer` (Kong et al., 2024).
 
 For a callable reward on trl==0.16.1, `GRPOTrainer` calls
 `reward_func(prompts=prompts, completions=completions, **reward_kwargs)`. Completions are plain strings
@@ -26,13 +26,13 @@ def _completion_text(completion: Any) -> str:
     return str(completion)
 
 
-def make_metric_reward_func(
+def make_scorer_reward_func(
     scorer: TaskEvaluationScorer,
     parse_fn: Callable[[str], list[str]] | None = None,
 ) -> Callable:
     """Wrap a `TaskEvaluationScorer` as a GRPO reward function.
 
-    Each completion is a candidate rewritten instruction; its reward is the scorer's dev-set metric for
+    Each completion is a candidate rewritten instruction; its reward is the scorer's dev-set score for
     that instruction. Identical rewrites are scored once and the result reused. PRewrite rewrites are
     input-agnostic (the rewriter sees only the seed meta-prompt, not the task inputs), so a generation
     group often contains duplicates.

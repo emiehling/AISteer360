@@ -1,6 +1,6 @@
-"""State-control multiplicity in `SteeringPipeline` (design PR 1).
+"""State-control multiplicity in `SteeringPipeline`.
 
-Covers the relaxed one-per-category rule for the state category: `merge_controls` returns an ordered
+Covers the any-number-per-category rule for the state category: `merge_controls` returns an ordered
 `state_controls` list, the session registers every entry's hooks in list order, same-module hooks
 chain (so composition is order-sensitive by design), a failed registration removes prior entries'
 hooks, `supports_batching` is the AND across all controls, and `compute_logprobs` composes edits.

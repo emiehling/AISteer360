@@ -1,6 +1,6 @@
 """Tests for the shared `BaseControl` constructor/lifecycle, parametrized over all four categories.
 
-Pins the consolidated construction contract: the null-argument guard and its message, args-field
+Pins the construction contract: the null-argument guard and its message, args-field
 mirroring (with reachability via `self.args`), the `@property`-name skip in every category, the
 `_configure()` hook firing on both the null and non-null paths in every category, the class-attribute
 defaults.

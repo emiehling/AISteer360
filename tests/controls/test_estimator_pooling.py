@@ -1,4 +1,4 @@
-"""Pad-position pooling invariance tests for direction estimators (Issue 5).
+"""Pad-position pooling invariance tests for direction estimators.
 
 With variable-length contrastive pairs, activations at pad positions are garbage and the amount
 of padding differs per pair. Pooling must be mask-driven so poisoning pad positions cannot bias

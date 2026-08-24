@@ -44,7 +44,7 @@ self-consistency), automatic prompting methods, and prompt routing. The toolkit 
     - *Description*: pool- or runtime-supplied few-shot examples; pluggable selector.
     - *Backends*: HF, vLLM.
 - `PRewrite` ([API reference](../reference/algorithms/input_control/prewrite.md), [notebook](../examples/notebooks/algorithms/prewrite.ipynb))
-    - *Description*: RL-trained instruction rewriter ([Kong et al. 2024](https://arxiv.org/abs/2401.08189)); supports a greedy "inference" strategy and a best-of-K "search" strategy. The rewriter can optionally be trained with GRPO using a metric-in-the-loop reward (apply the rewrite with the frozen task model over a dev set and score with a `Metric`, the paper's reward).
+    - *Description*: RL-trained instruction rewriter ([Kong et al. 2024](https://arxiv.org/abs/2401.08189)); supports a greedy "inference" strategy and a best-of-K "search" strategy. The rewriter can optionally be trained with GRPO using a scorer-in-the-loop reward (apply the rewrite with the frozen task model over a dev set and score each response with a per-row `SampleScorer`, the paper's reward).
     - *Backends*: HF, vLLM.
 - `CPO` ([API reference](../reference/algorithms/input_control/cpo.md), [notebook](../examples/notebooks/algorithms/cpo.ipynb))
     - *Description*: causal prompt optimization ([Chen et al. 2026](https://arxiv.org/abs/2602.01711)); offline causal reward training (Double ML over PCA-reduced embeddings) plus per-query tree search.
@@ -280,7 +280,7 @@ Reusable building blocks shared across these methods (candidate policies, per-ca
 logit sources, sequence scorers, a segment-search driver, a phased driver, composable stopping criteria, and the
 `PrefixKeyedProcessor` base) live in
 [`output_control.common`](../reference/algorithms/output_control/common.md). Within a `common/<family>/` folder, the
-primary class in `<name>.py` is `<Name><FamilySingular>` (for example `values/classifier.py` defines `ClassifierValue`,
-`scorers/metric.py` defines `MetricScorer`); the family base lives in `base.py`, and top-level `common/*.py` modules
+primary class in `<name>.py` is `<Name><FamilySingular>` (for example `values/classifier.py` defines
+`ClassifierValue`); the family base lives in `base.py`, and top-level `common/*.py` modules
 (such as `candidates.py`, `criteria.py`, `candidate_forward.py`) are collection or helper modules exempt from the
 suffix rule.

@@ -5,7 +5,7 @@ Each case builds a synthetic `fakepkg` package tree under `tmp_path`, puts it on
 real package is never touched. The `synthetic_env` fixture snapshots and restores the
 module-global `REGISTRY`, `sys.path`, and `sys.modules` so cases do not bleed.
 
-Covers the four registry failure modes (R1-R4 in the design doc) plus the happy paths:
+Covers the registry failure modes plus the happy paths:
 
     - well-formed export (with an extra key, mirroring MergeKit) -> registered
     - absent recognized optional dependency -> INFO skip with extra hint
@@ -65,7 +65,7 @@ def synthetic_env(tmp_path, monkeypatch):
 
 
 def test_well_formed_method_registered_with_extra_key_tolerated(synthetic_env):
-    """Case 1: a well-formed export (with an extra 'category' key) is registered."""
+    """A well-formed export (with an extra 'category' key) is registered."""
     category_dir = _make_category(synthetic_env)
     _write(
         category_dir / "good" / "__init__.py",
@@ -92,7 +92,7 @@ def test_well_formed_method_registered_with_extra_key_tolerated(synthetic_env):
 
 
 def test_absent_recognized_optional_dependency_skipped_with_info(synthetic_env, monkeypatch, caplog):
-    """Case 2 (R1): an absent module present in the extras map -> INFO skip with hint."""
+    """An absent module present in the extras map -> INFO skip with hint."""
     monkeypatch.setitem(registry.OPTIONAL_MODULE_EXTRAS, "totally_fake_optional", "fakeextra")
     category_dir = _make_category(synthetic_env)
     _write(
@@ -116,7 +116,7 @@ def test_absent_recognized_optional_dependency_skipped_with_info(synthetic_env, 
 
 
 def test_absent_unrecognized_module_skipped_with_warning(synthetic_env, caplog):
-    """Case 3 (R1 unmapped): an absent module not in the extras map -> WARNING skip."""
+    """An absent module not in the extras map -> WARNING skip."""
     category_dir = _make_category(synthetic_env)
     _write(
         category_dir / "weird" / "__init__.py",
@@ -137,7 +137,7 @@ def test_absent_unrecognized_module_skipped_with_warning(synthetic_env, caplog):
 
 
 def test_internal_module_not_found_raises(synthetic_env):
-    """Case 4 (R2): a missing module *inside the package prefix* raises RegistryError."""
+    """A missing module *inside the package prefix* raises RegistryError."""
     category_dir = _make_category(synthetic_env)
     _write(
         category_dir / "broken" / "__init__.py",
@@ -152,7 +152,7 @@ def test_internal_module_not_found_raises(synthetic_env):
 
 
 def test_tripwire_typeerror_raises_naming_module(synthetic_env):
-    """Case 5 (R3): a non-ImportError at import raises RegistryError naming the module path."""
+    """A non-ImportError at import raises RegistryError naming the module path."""
     category_dir = _make_category(synthetic_env)
     _write(
         category_dir / "tripwire" / "__init__.py",
@@ -179,7 +179,7 @@ def test_tripwire_typeerror_raises_naming_module(synthetic_env):
     ],
 )
 def test_malformed_export_raises(synthetic_env, export_src, match):
-    """Case 6 (R4): malformed exports raise RegistryError."""
+    """Malformed exports raise RegistryError."""
     category_dir = _make_category(synthetic_env)
     _write(category_dir / "bad" / "__init__.py", export_src + "\n")
 
@@ -188,7 +188,7 @@ def test_malformed_export_raises(synthetic_env, export_src, match):
 
 
 def test_duplicate_name_within_category_raises(synthetic_env):
-    """Case 7 (R4): two packages exporting the same name in one category raise RegistryError."""
+    """Two packages exporting the same name in one category raise RegistryError."""
     category_dir = _make_category(synthetic_env)
     for pkg in ("first", "second"):
         _write(
@@ -203,7 +203,7 @@ def test_duplicate_name_within_category_raises(synthetic_env):
 
 
 def test_no_export_silently_skipped(synthetic_env, caplog):
-    """Case 8: a package with no STEERING_METHOD is skipped with no log noise above DEBUG."""
+    """A package with no STEERING_METHOD is skipped with no log noise above DEBUG."""
     category_dir = _make_category(synthetic_env)
     _write(
         category_dir / "plain" / "__init__.py",

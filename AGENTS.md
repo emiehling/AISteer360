@@ -8,7 +8,8 @@ code disagree, the code is authoritative; verify against the source before actin
 
 AISteer360 is a toolkit for steering large language models (Hugging Face causal LMs). It provides steering methods
 ("controls") across four model control surfaces, a `SteeringPipeline` that composes controls from any categories into
-one operation on a model, and an evaluation stack (use cases, metrics, benchmarks) for comparing steering pipelines.
+one operation on a model, and an Inspect AI evaluation stack (a registered model provider, task suites, and a sweep
+runner) for comparing steering pipelines.
 
 Pipelines execute on one configurable backend: the in-process Hugging Face backend (default), the offline vLLM
 engine (`kind="vllm"`), or a vLLM server (`kind="vllm-serve"`). Support is binary per control configuration and
@@ -41,7 +42,9 @@ Vocabulary used throughout the codebase:
 ```
 aisteer360/
 ├── algorithms/
-│   ├── core/                    # SteeringPipeline, registry, ControlSpec, BaseArgs, shared types
+│   ├── core/                    # SteeringPipeline, registry, ControlSpec, BaseArgs, shared types;
+│   │   │                        # identity.py (config identity), sweeps.py (configuration sweeps,
+│   │   │                        # PipelineFactory), scoring.py (SampleScorer)
 │   │   ├── execution/           # backend seam: spec, contracts, payloads, backend/session/registry, params, fanout
 │   │   ├── internals/           # activation capture, pooling, stats; probes/ (detection)
 │   │   └── utils/               # control merging, generation helpers, auxiliary_pass
@@ -54,15 +57,17 @@ aisteer360/
 │   └── structural_control/
 │       └── wrappers/            # trl/ (sft, dpo, ppo, grpo, apo) and mergekit/
 ├── backends/                    # huggingface/ (HFBackend, ExclusiveSession); vllm/ (VLLMBackend, VLLMServeBackend)
-├── evaluation/
-│   ├── benchmark.py             # Benchmark runner (trials, sweeps, checkpoint/resume)
-│   ├── metrics/                 # base.py, base_judge.py; generic/ and custom/<use_case>/
-│   ├── use_cases/               # base.py; one folder per use case (use_case.py)
-│   └── utils/                   # data_utils, generation_utils, metric_utils, viz_utils
-└── utils/                       # tokenization, rendering, optional-dependency guard
+├── evaluation/                  # Inspect AI stack (optional `inspect` extra; __init__ stays empty)
+│   ├── provider.py              # ProviderOptions, SteeringPipelineModelAPI, as_inspect_model
+│   ├── batching.py              # lock-leader collator (batched dispatch over concurrent requests)
+│   ├── solvers.py               # runtime_kwargs_solver (per-sample runtime kwargs)
+│   ├── scorers.py               # sample_scorer_from_inspect (Inspect scorers as SampleScorer rewards)
+│   ├── suite.py                 # InspectSuite (task sets over eval_set)
+│   └── runner.py                # SteeringEval (configs x trials x suites, results frame)
+└── utils/                       # tokenization, rendering, thinking, optional-dependency guard
 
 docs/                            # MkDocs site: home/, concepts/, tutorials/, reference/, .nav.yml
-examples/                        # notebooks/{algorithms,generics,benchmarks,recipes}/ + index.md
+examples/                        # notebooks/{algorithms,generics,studies,recipes}/, index.md
 tests/                           # controls/, core/, internals/, evaluation/, utils/; conftest.py
 ```
 
@@ -75,10 +80,11 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 source .venv/bin/activate
 ```
 
-On Windows, run the two chained commands separately. Optional extras: `merging` (MergeKit), `cpo` (econml), `plots`
-(matplotlib/seaborn), `vllm` (the vLLM backends plus the `vllm_hook_plugins` core, git-pinned until its PyPI
-release), `guided` (xgrammar, for in-process constrained decoding), `all` (all features except `vllm` and `guided`), `dev`
-(`all` plus the plugin core, pytest, pre-commit, notebook), `docs` (site tooling).
+On Windows, run the two chained commands separately. Optional extras: `merging` (MergeKit), `cpo` (econml),
+`inspect` (Inspect AI evaluation stack), `vllm` (the vLLM backends plus the `vllm_hook_plugins` core, git-pinned until
+its PyPI release), `guided` (xgrammar, for in-process constrained decoding), `all` (`cpo` plus `inspect`), `dev`
+(`all` plus the plugin core, pytest, pre-commit, notebook), `docs` (site tooling). `merging` cannot share an
+environment with `inspect` (MergeKit pins an older pydantic than Inspect requires), so it stays out of `all`.
 
 Hugging Face access uses a `.env` file at the repo root containing `HUGGINGFACE_TOKEN=hf_***` (see
 `.env.example`). Some models (e.g. `meta-llama/*`) are gated; the account behind the token needs access on the
@@ -198,21 +204,26 @@ Behaviors that differ from bare Hugging Face usage:
   `text=`/`input_ids=` raises `TypeError`), may not name a pipeline-owned template kwarg
   (`return_tensors`, `padding`, `add_generation_prompt`, `return_dict`), and is not interpreted by
   the toolkit (keys are model-family specific, e.g. `enable_thinking`). Because it rides inside
-  `gen_kwargs`, thinking-on and thinking-off runs get distinct benchmark checkpoint identities.
+  `gen_kwargs`, thinking-on and thinking-off runs get distinct configuration identities in sweeps.
 - Token ids are returned as generated on every backend (stop text and any token-boundary overrun stay in the ids);
   decoded continuation text is truncated at the first stop-string occurrence by one client-side rule.
 - `generate(..., return_output=True)` returns an `Output` object (or list of them) with fields `output_ids`,
   `adapted_input_ids` (the prompt after input controls, useful for inspecting the steered prompt), a per-item
   `finish_reason` (`"stop"`, `"eos"`, `"length"`, or `None`, with that precedence), and `finish_reasons` (one reason
   per candidate for `n > 1`). Import it via `from aisteer360.algorithms.core import Output`.
+- A seeded `generate()` call maps its `seed` onto the items of a multi-item dispatch by `seed_scope`
+  (default `"item"`): `"item"` derives one seed per row, and on the Hugging Face backend the dispatch then
+  decodes one row at a time; `"dispatch"` derives one seed for the whole dispatch and batches it in one pass
+  (reproducible as a whole). The scope is inert on vLLM backends, and an item carrying its own seed is honored
+  under either scope.
 - `generate()` before `steer()` raises `RuntimeError`; a second `steer()` call is a silent no-op.
 - `attention_mask` is valid only with `input_ids=`; it is derived automatically for `text=` and `messages=`, and passing it with either (or with positional text) raises a `TypeError`.
 - `device` and a non-default `device_map` are mutually exclusive on the `SteeringPipeline` constructor.
 - Construction never loads the model. `steer()` acquires it from `model_name_or_path`, reuses preloaded
   `model=`/`tokenizer=` objects passed at construction, or receives it from a structural control that produces the
   final weights itself (e.g. `mergekit`). `lazy_init` is accepted and inert.
-- `pipeline.supports_batching` is `True` only when every enabled control declares batch safety; evaluation utilities
-  batch when it is `True` and fall back to per-example generation otherwise.
+- `pipeline.supports_batching` is `True` only when every enabled control declares batch safety; the Inspect model
+  provider batches concurrent requests when it is `True` and serializes them otherwise.
 - `pipeline.compute_logprobs(input_ids, ref_output_ids=...)` scores reference tokens teacher-forced with the full
   steering applied; output controls with `include_in_scoring=False` are excluded from scoring.
 - Controls with a `tokenizer` attribute left as `None` get the pipeline tokenizer injected automatically.
@@ -255,7 +266,7 @@ pipeline = SteeringPipeline(
   `include_in_scoring=True` keeps scoring in-process.
 - Discarding a pipeline that booted a vLLM engine should go through `release_backends()` (or a
   `with` block over the pipeline) rather than relying on garbage collection, which is not prompt at
-  freeing the engine. `Benchmark` does this per configuration.
+  freeing the engine. `PipelineFactory` (and so `SteeringEval`) does this per configuration.
 
 ### Composition rules
 
@@ -275,8 +286,13 @@ pipeline = SteeringPipeline(
 ### Runtime kwargs
 
 Some controls need per-call information at inference time. All controls read from the single `runtime_kwargs` dict
-passed to `generate()`; each control declares the names it consumes in its `RUNTIME_KWARGS_SCHEMA`, and the pipeline
-warns at `steer()` time when two controls declare the same name (they will share one value).
+passed to `generate()`; each control declares the names it consumes in its `RUNTIME_KWARGS_SCHEMA`, together with a
+`scope` per entry (`"row"` for a per-prompt value, delivered as a row-aligned sequence in batched calls, or `"call"`
+for one value per call; missing means `"call"`). The pipeline validates the declarations at `steer()`, raising on
+disagreeing declarations of one name and warning when two controls declare the same name with agreeing declarations
+(they will share one value). For PASTA's row-scoped `substrings`, a `str` broadcasts to every row, a
+`list[list[str]]` of batch length carries one group per row, and a flat `list[str]` is accepted only at batch size 1
+(to broadcast one group over a batch, pass `[[...]] * batch_size`).
 
 ```python
 pipeline.generate(
@@ -288,60 +304,54 @@ pipeline.generate(
 
 ### Evaluation
 
-A `Metric` implements `compute(responses, prompts=None, **kwargs) -> dict` (subclass `LLMJudgeMetric` for judge-based
-scoring). A `UseCase` bundles `evaluation_data` and `evaluation_metrics` and implements `generate()` and `evaluate()`.
-A `Benchmark` compares steering pipelines on one use case:
+Evaluation runs steered pipelines on [Inspect AI](https://inspect.aisi.org.uk/) tasks (optional `inspect` extra).
+`as_inspect_model(pipeline)` wraps a steered pipeline as a generation-only Inspect model; an `InspectSuite` names a
+set of tasks; `SteeringEval` runs configurations (fixed controls, `ControlSpec` sweeps, and the empty-list baseline
+arm) x trials x suites, sequentially, one GPU-resident pipeline at a time:
 
 ```python
-from aisteer360.algorithms.core.specs import ControlSpec
-from aisteer360.evaluation.benchmark import Benchmark
+from aisteer360.evaluation.provider import ProviderOptions
+from aisteer360.evaluation.runner import SteeringEval
+from aisteer360.evaluation.suite import InspectSuite
 
-benchmark = Benchmark(
-    use_case=use_case,
+runner = SteeringEval(
+    pipelines={"baseline": [], "few_shot": [few_shot], "caa_sweep": [ControlSpec(control_cls=CAA, ...)]},
     base_model_name_or_path="meta-llama/Llama-3.1-8B-Instruct",
-    steering_pipelines={
-        "baseline": [],  # empty list denotes the unsteered baseline
-        "few_shot": [few_shot],
-        "caa_sweep": [ControlSpec(control_cls=CAA, params={"data": caa_train_data}, vars={"multiplier": [1.0, 2.0]})],
-    },
-    runtime_overrides={"PASTA": {"substrings": "emphasis_column"}},  # routed by control class name
+    suites=[InspectSuite(name="capability", tasks=("inspect_evals/gsm8k",), limit=200)],
     num_trials=3,
-    seed=7,  # derives one seed per (config, trial); recorded on each run dict
-    save_dir="runs/exp1",  # versioned checkpoint.json; resume completes only missing trials
+    seed=7,  # derives one seed per (config, trial), attached to sampling dispatches
+    generate_defaults={"temperature": 0},  # greedy is the recommended posture
+    provider_options=ProviderOptions(max_batch_size=8),
+    save_dir="runs/exp1",
+    display="plain",  # stream Inspect's per-sample progress inside each cell (progress=True draws a cell bar)
 )
-profiles = benchmark.run()
+results = runner.run()       # {config_name: [{trial_id, seed, config_id, params, suites, provenance}, ...]}
+frame = runner.results()     # one row per (config, trial, suite, task, scorer/metric)
 ```
 
-`ControlSpec.vars` accepts a mapping (cartesian grid, traversed fully or sampled via `search_strategy="random"` and
-`num_samples`), a sequence of parameter dicts, or a callable yielding dicts given a context. Each trial reuses the
-same steered model and re-samples generate-time randomness; setting `seed=` derives one seed per (config, trial),
-threads it through `gen_kwargs` into core's seed path and into use-case-side RNG, and records it on the run dict, so
-a resumed trial reproduces what an uninterrupted trial would have sampled (same hardware, dtype, and torch/vLLM
-versions). On the in-process Hugging Face backend, pipelines with a structural control load a fresh model while
-others reuse a shared preloaded base model; `runtime_overrides` is keyed by control class name, so two instances of
-one class in a pipeline share a single entry.
+Every generation flows through `pipeline.generate()`: prompts enter as `messages=` when the tokenizer has a chat
+template (so `adapt_messages` input controls fire exactly as in deployment) and as rendered `text=` otherwise, with
+the path recorded as `prompt_path` in provenance. Scoring is generation-based only; logprob parameters, tools, and
+multimodal content are refused with actionable messages. Concurrent Inspect requests collate into batched pipeline
+calls when every enabled control is batch-safe; a seeded dispatch carries `seed_scope` from `ProviderOptions`
+(default `"dispatch"`), so a seeded batch decodes in one pass on the Hugging Face backend, and bitwise
+reproducibility of stochastic sampling is not preserved under concurrency (see the
+`aisteer360/evaluation/batching.py` module docstring for the full contract).
 
-`backend=` and `fit=` forward to the pipelines the benchmark builds (a `BackendSpec` or a known kind name);
-before any model or engine work, a pre-flight `check()` over every sweep point either raises one aggregate error
-(`on_unsupported="raise"`, the default) or skips the unsupported points with a warning (`on_unsupported="skip"`). Only
-a checkpoint whose identity metadata matches (`format` first, then model, backend, fit, use case, and digests)
-resumes; a well-shaped envelope from a different configuration or an earlier format is refused naming the differing
-field, and anything unreadable or wrong-shaped at the checkpoint path is ignored with one warning and overwritten on
-the next save.
+There is no results checkpoint: the `.eval` logs under `save_dir/inspect_logs/` are the store, and `eval_set`
+resumes each (config, trial, suite) cell from them at sample granularity and matches task identity only, so a
+changed protocol (seed, generate defaults, provider options, suites, fit, backend) needs a new `save_dir`.
+Pre-flight `check()` runs over every sweep point before any model or engine work (`on_unsupported="raise"` or
+`"skip"`). Per-sample steering inputs travel on `Sample.metadata` and are delivered by the shipped
+`runtime_kwargs_solver` (used in place of a bare `generate()` in the task's solver chain); static per-arm kwargs go
+in `ProviderOptions.runtime_kwargs`. Controls that consume a per-row reward take a `SampleScorer`
+(`(response, row) -> float`, from `algorithms/core/scoring.py`); `sample_scorer_from_inspect` adapts any Inspect
+scorer into that shape. See `docs/tutorials/evaluate_steering_pipelines.md` for the full guide, including task
+authoring and grader-model guidance.
 
-Every benchmark generation, baseline included, routes through `pipeline.generate(messages=...)` (or `text=` for a
-template-less tokenizer), so the pipeline owns chat templating, tokenization, and padding, `adapt_messages` input
-controls fire during benchmarking, and `runtime_overrides` columns live on the prompt rows (aligned under retry and
-prompt expansion by construction). The shared-preloaded-model reuse and its fingerprint tripwire are Hugging Face
-features: after each shared-base configuration, the tripwire checks the shared model for mutation and, on detecting
-one, warns naming the configuration and reloads a clean base for the next.
-
-`batch_retry_generate` and `generate_on_pipeline` split each decoded continuation into a thinking segment and an
-answer segment (the `think_tags` parameter, default `("<think>", "</think>")`). Metrics and `parse_fn` see the answer
-segment only, so reasoning tokens do not blend into scoring; the thinking segment is retained and the built-in use
-cases store it under a `"thinking"` generation-dict column (`str | None`). Pass `think_tags=None` to disable the
-split and score the full continuation. A generation that opens a thinking segment but never closes it (the budget was
-spent thinking) logs one warning naming the count.
+The core sweep layer (`algorithms/core/sweeps.py`: `expand_configurations`, `preflight`, `PipelineFactory`;
+`algorithms/core/identity.py`: canonical config identity and trial seeds) has no Inspect dependency; the planned
+`aisteer360/optimization/` package composes the same pieces with a suite as its objective.
 
 ## Developer guide
 
@@ -403,8 +413,9 @@ own in the common case. Required hooks per category:
   capture-backed extraction.
 
 Declare the class attributes the pipeline reads: `supports_batching` (default `False`; set `True` only
-when the control is batch-safe), `enabled`, `RUNTIME_KWARGS_SCHEMA` (a list of `{"name": ...}` entries), and for
-output controls `include_in_scoring` and `same_model_forwards`.
+when the control is batch-safe), `enabled`, `RUNTIME_KWARGS_SCHEMA` (a list of `{"name": ...}` entries; declare
+`scope` on every entry, `"row"` for a per-prompt value delivered row-aligned in batched calls or `"call"` for one
+value per call), and for output controls `include_in_scoring` and `same_model_forwards`.
 
 Backend support is declared through `requirements()`. The default (`IN_PROCESS_TORCH` at generate) is honest for a
 new control and keeps it Hugging Face-only; do not widen it speculatively. An `InterventionControl` derives its
@@ -471,28 +482,23 @@ the generic base's fields in `_configure()` rather than overriding `__init__`; f
 methods. Before writing a new state control, check whether an `ActivationAdapter` configuration (transform, layer
 selector, gate, token scope) already covers the behavior.
 
-### Adding metrics and use cases
+### Authoring evaluation tasks
 
-A metric subclasses `Metric` (or `LLMJudgeMetric` from `evaluation/metrics/base_judge.py`) and implements
-`compute(responses, prompts=None, **kwargs) -> dict`. Task-agnostic metrics go in `evaluation/metrics/generic/`;
-task-specific ones in `evaluation/metrics/custom/<use_case>/`.
-
-A use case is a folder `evaluation/use_cases/<name>/` containing `use_case.py` with a `UseCase` subclass implementing
-`generate()` and `evaluate()`. A use case declares each extra constructor parameter as a class-level annotation (a bare
-annotation is required; a class-attribute default makes it optional) rather than writing an `__init__`; unknown
-keywords and missing required parameters raise `TypeError` at construction, and each retained instance is checked by
-`validate_evaluation_data` (which raises `ValueError` prefixed with `evaluation_data[<index>]`). Follow the existing use
-cases, where `generate()` builds prompt rows and calls `batch_retry_generate` from
-`evaluation/utils/generation_utils.py` (batched decoding with parsing and retry), and `evaluate()` maps metric names to
-computed results. Build each prompt row by spreading its source instance (`{**instance, "prompt": ...}`) so the row
-carries its own columns and `runtime_overrides` map per row; constructed keys (`"prompt"`, `"reference_answer"`,
-`"thinking"`, ...) shadow same-named instance columns, so name override columns distinctly from them.
+Target-behavior evaluations are ordinary Inspect `Task`s; the toolkit ships no task, scorer, or metric classes of its
+own (working examples are defined inside the study notebooks under `examples/notebooks/studies/`). A task whose samples carry per-sample steering inputs puts
+them on `Sample.metadata` as `{"runtime_kwargs": {...}}`, with each value in the consuming control's per-row form,
+and uses `runtime_kwargs_solver()` from `aisteer360/evaluation/solvers.py` as its generation step; each key must be
+declared `"row"`-scoped in the consuming control's `RUNTIME_KWARGS_SCHEMA` or the provider rejects it at admission.
+Tasks with model-graded scorers take the grader model through their own arguments (`task_args`); the grader is never
+the pipeline under evaluation. Controls that consume a per-row reward accept a `SampleScorer`; use
+`sample_scorer_from_inspect` to drive them with an Inspect scorer. See
+`docs/tutorials/evaluate_steering_pipelines.md` for the authoring guide.
 
 ### Testing
 
 Fixtures in `tests/conftest.py` provide a parametrized `device` fixture (`cpu` / `cuda` / `mps`, skipping unavailable
 devices), a session-scoped `model_and_tokenizer` fixture over the tiny models in `tests/utils/ci_models.yaml`, mock
-controls for every category, and evaluation fixtures. A new control needs `tests/controls/test_<method>.py` following
+controls for every category, and mock model/tokenizer factories. A new control needs `tests/controls/test_<method>.py` following
 the existing pattern: a parameter grid expanded with `build_param_grid()`, then build the control, wrap it in a
 `SteeringPipeline`, `steer()`, `generate()`, and assert on the output. Unit-test any new generics directly
 (`tests/controls/` for control components, `tests/internals/` for the probes substrate, `tests/core/` for pipeline
@@ -534,10 +540,9 @@ entry in `docs/.nav.yml`, and a mention in the category's list in `docs/concepts
 ### Notebooks
 
 Each method gets a demonstration notebook: `examples/notebooks/algorithms/` for named methods, `generics/` for
-config-first controls, `benchmarks/` for use-case studies (run artifacts stay in that subfolder), `recipes/` for
+config-first controls, `studies/` for use-case studies (run artifacts stay in that subfolder), `recipes/` for
 composite workflows. Add an entry to `examples/index.md`. Conventions: imports in a setup cell; explanation lives in
-markdown cells rather than code comments; one plot per cell, drawn with `evaluation/utils/viz_utils.py` (call
-`apply_plot_style()` first if custom matplotlib is unavoidable); no special characters in axis text; f-strings when
+markdown cells rather than code comments; one plot per cell; no special characters in axis text; f-strings when
 titles reference variable values. Markdown prose is plain technical reporting: narrate with "we", keep the register
 neutral, signpost with connectives ("Note that ...", "For instance, ..."), write paragraphs rather than bolded bullet
 lists, and link the paper in the introduction when demonstrating a published method.
@@ -590,10 +595,11 @@ Rules that hold regardless of task:
 9. One in-flight generation per control instance: gate instances embedded in a control's interventions carry
    per-generation decisions, so do not share control instances across concurrently running pipelines.
 10. `generate()` returns continuation-only ids by default; never re-slice its result by prompt length.
-11. `runtime_kwargs` is a single shared namespace per call; declare consumed names in `RUNTIME_KWARGS_SCHEMA` and
-    expect shared values on name collisions.
+11. `runtime_kwargs` is a single shared namespace per call; declare consumed names and their `scope` in
+    `RUNTIME_KWARGS_SCHEMA` (a row-scoped kwarg receives a row-aligned sequence in batched calls) and expect shared
+    values on name collisions.
 12. Declare `supports_batching=True` only when a control is safe under batched prompts; the pipeline and the
-    evaluation utilities read it to choose between batched and per-example generation.
+    Inspect model provider read it to choose between batched and per-example generation.
 13. A control's behavior has exactly one declarative statement (the adapted prompt, a structural artifact, an
     intervention tuple, or exported params/specs); every backend consumes the highest representation it supports;
     hooks are per-generation products of the pipeline and specs are per-steer products of it; and no code path
@@ -604,7 +610,7 @@ Rules that hold regardless of task:
 ## Pointers
 
 - `docs/concepts/`: conceptual guides on controls, steering pipelines, and probes.
-- `docs/tutorials/`: step-by-step guides for adding a steering method, metric, use case, and benchmark.
-- `examples/notebooks/`: runnable references for every method, the generic controls, and full benchmarks.
+- `docs/tutorials/`: step-by-step guides for adding a steering method and evaluating steering pipelines.
+- `examples/notebooks/`: runnable references for every method, the generic controls, and use-case studies.
 - `tests/index.md`: test-suite layout and the pattern for adding control tests.
 - Hosted documentation: <https://ibm.github.io/AISteer360/>.

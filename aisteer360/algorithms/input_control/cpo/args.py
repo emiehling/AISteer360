@@ -84,14 +84,9 @@ class CPOArgs(BaseArgs):
         metadata={"help": "Number of survivors kept after each round (K)."},
     )
 
-    metric: Any = field(
+    row_scorer: Callable[[str, dict], float] | None = field(
         default=None,
-        metadata={"help": "An aisteer360 Metric used to score offline-generated rows."},
-    )
-
-    score_key: str | None = field(
-        default=None,
-        metadata={"help": "If the metric returns a dict, which key to extract."},
+        metadata={"help": "Per-row scorer (response, row) -> float used to score offline-generated rows."},
     )
 
     cache_queries: bool = field(
@@ -140,8 +135,8 @@ class CPOArgs(BaseArgs):
         if self.offline_data is None:
             if not self.train_dataset:
                 raise ValueError("Either `offline_data` or `train_dataset` must be supplied.")
-            if self.metric is None:
-                raise ValueError("`metric` is required when offline_data is generated from train_dataset.")
+            if self.row_scorer is None:
+                raise ValueError("`row_scorer` is required when offline_data is generated from train_dataset.")
             if self.prompt_lm is None:
                 raise ValueError("`prompt_lm` is required when offline_data is generated from train_dataset.")
         if self.rounds <= 0 or self.candidates_per_parent <= 0 or self.retained_per_round <= 0:

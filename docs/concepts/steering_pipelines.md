@@ -145,8 +145,9 @@ Backends are constructed lazily per pipeline and cached by spec. `SteeringPipeli
 pipeline as a context manager, releases and evicts every backend the pipeline constructed, shutting engine-owning
 backends down deterministically rather than waiting for garbage collection. A released pipeline stays usable. The
 next operation reconstructs backends against the same specs, so a re-booted engine serves subsequent generations.
-`Benchmark` releases each configuration's backends automatically after its trials. The offline engine's release is
-process-global with respect to vLLM distributed state, so it assumes no other live vLLM engine in the process.
+The `SteeringEval` runner releases each configuration's backends automatically after its trials. The offline
+engine's release is process-global with respect to vLLM distributed state, so it assumes no other live vLLM engine in
+the process.
 
 ```python
 with SteeringPipeline(controls=[caa], backend="vllm") as pipeline:
@@ -155,19 +156,19 @@ with SteeringPipeline(controls=[caa], backend="vllm") as pipeline:
 # the engine is shut down on exit
 ```
 
-### Benchmarking
+### Evaluation
 
-`Benchmark` forwards its `backend` and `fit` arguments to the pipelines it builds and pre-flights support over every
-sweep point (via `SteeringPipeline.check()`) before any model or engine work, so the per-control support recorded on
-each control's `Backends` line in [steering controls](controls.md) governs benchmarking too. A sweep point that is
-unsupported on the configured backend either fails the whole run (`on_unsupported="raise"`, the default) or is
-skipped with a warning (`on_unsupported="skip"`).
+The `SteeringEval` runner forwards its `backend` and `fit` arguments to the pipelines it builds and pre-flights
+support over every sweep point (via `SteeringPipeline.check()`) before any model or engine work, so the per-control
+support recorded on each control's `Backends` line in [steering controls](controls.md) governs evaluation too. A
+sweep point that is unsupported on the configured backend either fails the whole run (`on_unsupported="raise"`, the
+default) or is skipped with a warning (`on_unsupported="skip"`).
 
 ### Running a server
 
 The offline vLLM engine (`BackendSpec(kind="vllm")`) boots vLLM inside the current process, so it needs no server and
 is the automatic path for single-process runs. The serve backend targets a vLLM server you launch yourself, which is
-the answer for a remote GPU box, one server shared across processes or benchmark runs, a client with no local vLLM
+the answer for a remote GPU box, one server shared across processes or evaluation runs, a client with no local vLLM
 install, or process isolation from the steering client.
 
 Start a server with `vllm serve <model> --port 8000` (any extra engine flags as usual), then target it with a spec

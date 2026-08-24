@@ -6,7 +6,7 @@ functionality.
 - `algorithms/` contain demonstrations of the toolkit's built-in algorithms, including wrappers around existing libraries (e.g., `trl`, `mergekit`).
 - `generics/` illustrate config-based generic controls and demonstrate how modular controls can be constructed.
 - `recipes/` are worked examples that compose existing toolkit components into something new.
-- `benchmarks/` demonstrate more extensive studies that compare methods on a given use case.
+- `studies/` demonstrate more extensive studies that compare methods on a given use case.
 
 ## Algorithms
 
@@ -136,7 +136,7 @@ Where an algorithm notebook demonstrates one control, a recipe builds a new capa
 </div>
 
 
-## Benchmarks
+## Studies
 
 <div class="grid cards" markdown>
 
@@ -146,15 +146,19 @@ Where an algorithm notebook demonstrates one control, a recipe builds a new capa
 
     This notebook studies the effect of post-hoc attention steering ([PASTA](https://arxiv.org/abs/2311.02262)) on a model's ability to follow instructions. We sweep over the steering strength and investigate the trade-off between a model's instruction following ability and general response quality.
 
-    [:octicons-arrow-right-24: See the benchmark](./notebooks/benchmarks/instruction_following/instruction_following.ipynb)
+    [:octicons-arrow-right-24: See the study](./notebooks/studies/instruction_following/instruction_following.ipynb)
 
 -   :material-comment-question-outline:  __Commonsense MCQA__
 
     ---
 
-    This notebook benchmarks steering methods on the [CommonsenseQA](https://huggingface.co/datasets/tau/commonsense_qa) dataset, comparing few-shot prompting against a LoRA adapter trained with DPO. We sweep over the number of few-shot examples and study how accuracy scales relative to the fine-tuned baseline across two models.
+    This notebook studies steering methods on the [CommonsenseQA](https://huggingface.co/datasets/tau/commonsense_qa)
+    dataset, comparing a few-shot sweep against a DPO-trained LoRA adapter and the unsteered
+    baseline. The Inspect task measures accuracy and positional bias
+    under deterministic choice shuffling; the notebook sweeps the number of few-shot examples and
+    composes the figures from the library plotting calls.
 
-    [:octicons-arrow-right-24: See the benchmark](./notebooks/benchmarks/commonsense_mcqa/commonsense_mcqa.ipynb)
+    [:octicons-arrow-right-24: See the study](./notebooks/studies/commonsense_mcqa/commonsense_mcqa.ipynb)
 
 -   :material-layers-triple-outline:  __Composite steering for truthfulness__
 
@@ -162,6 +166,6 @@ Where an algorithm notebook demonstrates one control, a recipe builds a new capa
 
     One of the primary features of the toolkit is the ability to compose multiple steering methods into one model operation. This notebook composes a state control ([PASTA](https://arxiv.org/abs/2311.02262)) with an output control ([DeAL](https://arxiv.org/abs/2402.06147)) with the goal of improving the model's truthfulness (as measured on [TruthfulQA](https://huggingface.co/datasets/domenicrosati/TruthfulQA)) without significantly degrading informativeness. We sweep over the joint parameter space of the controls and study each control's performance (via the tradeoff between truthfulness and informativeness) to that of the composition.
 
-    [:octicons-arrow-right-24: See the benchmark](./notebooks/benchmarks/truthful_qa_composite_steering/truthful_qa_composite_steering.ipynb)
+    [:octicons-arrow-right-24: See the study](./notebooks/studies/truthful_qa_composite_steering/truthful_qa_composite_steering.ipynb)
 
 </div>
