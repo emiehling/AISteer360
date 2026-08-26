@@ -581,6 +581,31 @@ class SteeringPipeline:
         # return steered pipeline
         self._is_steered = True
 
+    def to_spipe(self, *, freeze: bool | None = None, model_ref: str | None = None):
+        """Serialize this pipeline as an `SPipe`.
+
+        A steered pipeline freezes by default: each enabled control's steer-time products are
+        exported into a content-addressed artifact store and its resolved constructor form is
+        recorded alongside the recipe, so the loaded pipeline steers cheaply and model-free.
+        An unsteered pipeline yields a recipe-only spipe; `freeze=False` forces recipe-only
+        from a steered pipeline.
+
+        Args:
+            freeze: Freeze the resolution. Defaults to the pipeline's steered state.
+            model_ref: Explicit model reference recorded in the spipe, overriding
+                `model_name_or_path` and the loaded model's `name_or_path`.
+
+        Returns:
+            The built `SPipe` (call its `save()` to write a `.spipe` file or directory).
+
+        Raises:
+            SpipeSaveError: If no model reference is resolvable, a control is unregistered or
+                cannot serialize, or a control cannot freeze.
+        """
+        from aisteer360.spipe.freeze import build_spipe
+
+        return build_spipe(self, freeze=freeze, model_ref=model_ref)
+
     def _enabled_controls(self) -> list:
         """Enabled controls in global steer order (structural, input, state, output)."""
         return [

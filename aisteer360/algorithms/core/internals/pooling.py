@@ -115,7 +115,8 @@ def select_spans(
             else:
                 first, last = 0, T - 1
             if accumulate == "last_token":
-                # one-token span at the final non-pad position (mask-derived, so pad-side agnostic)
+                # one-token span at the final non-pad position (derived from the mask, so it works
+                # regardless of padding side)
                 start, end = last, last + 1
             else:
                 start = first + prompt_len
@@ -141,11 +142,11 @@ def pool_over_spans(
     A degenerate span (`start >= end`) falls back to the sample's last token position.
 
     Args:
-        hidden: Shape [N, T, H].
-        spans: List of (start, end) tuples.
+        hidden: Shape `[N, T, H]`.
+        spans: List of `(start, end)` tuples.
 
     Returns:
-        Pooled tensor of shape [N, H].
+        Pooled tensor of shape `[N, H]`.
     """
     N, T, H = hidden.shape
     pooled = []
@@ -166,12 +167,12 @@ def get_last_token_positions(
     """Find the last non-pad token position for each sample.
 
     Args:
-        attention_mask: Shape [N, T] or None.
-        seq_len: Sequence length T.
-        num_samples: Number of samples N.
+        attention_mask: Shape `[N, T]` or None.
+        seq_len: Sequence length `T`.
+        num_samples: Number of samples `N`.
 
     Returns:
-        Tensor of shape [N] with last token positions.
+        Tensor of shape `[N]` with last token positions.
     """
     if attention_mask is None:
         # no padding, last token is at seq_len - 1
@@ -192,11 +193,11 @@ def select_at_positions(
     """Select hidden states at specified positions for each sample.
 
     Args:
-        hidden: Shape [N, T, H].
-        positions: Shape [N] with position indices.
+        hidden: Shape `[N, T, H]`.
+        positions: Shape `[N]` with position indices.
 
     Returns:
-        Tensor of shape [N, H].
+        Tensor of shape `[N, H]`.
     """
     N, _, H = hidden.shape
     # gather at the specified positions

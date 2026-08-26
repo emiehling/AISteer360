@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 
 from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.algorithms.state_control.common.sources import ArtifactSource
 from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
 
@@ -31,7 +32,7 @@ class ActAddArgs(BaseArgs):
     """
 
     # steering vector source (provide exactly one path)
-    steering_vector: SteeringVector | None = None
+    steering_vector: "SteeringVector | ArtifactSource | None" = None
     positive_prompt: str | None = None
     negative_prompt: str | None = None
 
@@ -49,8 +50,10 @@ class ActAddArgs(BaseArgs):
         if has_vector == has_prompts:
             raise ValueError("Provide either steering_vector or (positive_prompt, negative_prompt), not both.")
 
-        if self.steering_vector is not None:
+        if isinstance(self.steering_vector, SteeringVector):
             self.steering_vector.validate()
+        elif self.steering_vector is not None and self.normalize_vector:
+            raise ValueError("normalize_vector requires a concrete steering_vector or a prompt pair.")
 
         if self.layer_id is not None and self.layer_id < 0:
             raise ValueError("layer_id must be >= 0.")

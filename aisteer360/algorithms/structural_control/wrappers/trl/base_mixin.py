@@ -5,6 +5,7 @@ from typing import Any
 from peft import PeftType
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
+from aisteer360.algorithms.core.base_control import NotFreezableError
 from aisteer360.algorithms.core.execution.contracts import Capability
 from aisteer360.algorithms.core.execution.payloads import Artifact, CheckpointArtifact, LoRAArtifact
 
@@ -147,6 +148,60 @@ class TRLMixin:
         is_lora = bool(self.use_peft) and self.peft_type == PeftType.LORA
         path = self.merged_output_dir if (is_lora and self.merge_lora_after_train) else self._resolved_output_dir()
         return CheckpointArtifact(path=str(path))
+
+    def export_state(self) -> dict[str, Any]:
+        """The trained on-disk product under the `"artifact"` key, for freezing.
+
+        Returns an empty mapping when the configuration trains nothing (`train_dataset` is
+        None), so an inert wrapper's recipe is its frozen form.
+
+        Raises:
+            NotFreezableError: If the configuration trains but produces no on-disk product
+                (a merged LoRA run without `merged_output_dir`).
+        """
+        if getattr(self, "train_dataset", None) is None:
+            return {}
+        artifact = self.export_artifact()
+        if artifact is None:
+            raise NotFreezableError(
+                f"{type(self).__name__} trains but writes no on-disk product; set output_dir "
+                "(or merged_output_dir for a merged LoRA run) to make the result freezable."
+            )
+        return {"artifact": artifact}
+
+    def frozen_form(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """The trained artifact as a `load_lora` or `load_checkpoint` entry."""
+        artifact = state["artifact"]
+        if isinstance(artifact, LoRAArtifact):
+            return "structural_control/load_lora", {
+                "path": artifact,
+                "base_model": artifact.base_model,
+                "merge": False,
+            }
+        return "structural_control/load_checkpoint", {"path": artifact}
+
+    def fit_identity(self) -> Any | None:
+        """The training-relevant args projection, or None when nothing trains.
+
+        Output locations (`output_dir`, `merged_output_dir`, `resume_from_checkpoint`, and
+        `training_args["output_dir"]`) are excluded, since where a product is saved does not
+        change what was trained.
+        """
+        if getattr(self, "train_dataset", None) is None:
+            return None
+        args = getattr(self, "args", None)
+        if args is None:
+            return None
+        excluded = {"output_dir", "merged_output_dir", "resume_from_checkpoint"}
+        payload: dict[str, Any] = {}
+        for f in fields(args):
+            if not f.init or f.name in excluded:
+                continue
+            value = getattr(args, f.name)
+            if f.name == "training_args" and isinstance(value, dict):
+                value = {k: v for k, v in value.items() if k != "output_dir"}
+            payload[f.name] = value
+        return payload
 
     def _maybe_merge_lora_in_place(self, model: PreTrainedModel) -> PreTrainedModel:
         """Optionally merge LoRA into the base weights, returning the (possibly merged) model.

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.internals.data import ContrastivePairs, LabeledExamples, as_labeled_examples
 from aisteer360.algorithms.state_control.common.fit_specs import VectorTrainSpec
+from aisteer360.algorithms.state_control.common.sources import ArtifactSource
 from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.common.token_scope import ScopeKind
 
@@ -39,7 +40,7 @@ class ITIArgs(BaseArgs):
     """
 
     # steering vector source (provide exactly one)
-    steering_vector: SteeringVector | None = None
+    steering_vector: "SteeringVector | ArtifactSource | None" = None
     data: LabeledExamples | dict | None = None
 
     # training configuration
@@ -65,8 +66,8 @@ class ITIArgs(BaseArgs):
         if self.steering_vector is not None and self.data is not None:
             raise ValueError("Provide steering_vector or data, not both.")
 
-        # validate steering_vector if provided
-        if self.steering_vector is not None:
+        # validate steering_vector if provided as a concrete vector; sources resolve at steer()
+        if isinstance(self.steering_vector, SteeringVector):
             self.steering_vector.validate()
 
         # normalize dict inputs; reject ContrastivePairs with a clear error

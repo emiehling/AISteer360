@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.internals.data import ContrastivePairs, as_contrastive_pairs
 from aisteer360.algorithms.state_control.common.fit_specs import VectorTrainSpec
+from aisteer360.algorithms.state_control.common.sources import ArtifactSource
 from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.common.token_scope import ScopeKind
 
@@ -16,7 +17,9 @@ class CAAArgs(BaseArgs):
     If data is provided, the vector is fitted during steer().
 
     Attributes:
-        steering_vector: Pre-trained steering vector. If provided, skip training.
+        steering_vector: Pre-trained steering vector, or an `ArtifactSource` resolving to one
+            at `steer()` time (e.g. a provenance-checked precomputed source). If provided,
+            skip training. `normalize_vector` requires a concrete vector.
         data: Contrastive pairs for training. Required if steering_vector is None.
         train_spec: Controls extraction method and accumulation mode.
         layer_id: Single layer to apply steering at. If None, uses heuristic.
@@ -33,7 +36,7 @@ class CAAArgs(BaseArgs):
     """
 
     # steering vector source (provide exactly one)
-    steering_vector: SteeringVector | None = None
+    steering_vector: "SteeringVector | ArtifactSource | None" = None
     data: ContrastivePairs | dict | None = None
 
     # training configuration
@@ -57,9 +60,11 @@ class CAAArgs(BaseArgs):
         if self.steering_vector is not None and self.data is not None:
             raise ValueError("Provide steering_vector or data, not both.")
 
-        # validate steering_vector if provided
-        if self.steering_vector is not None:
+        # validate steering_vector if provided as a concrete vector; sources resolve at steer()
+        if isinstance(self.steering_vector, SteeringVector):
             self.steering_vector.validate()
+        elif self.steering_vector is not None and self.normalize_vector:
+            raise ValueError("normalize_vector requires a concrete steering_vector or data.")
 
         # normalize dict inputs
         if self.data is not None and not isinstance(self.data, ContrastivePairs):

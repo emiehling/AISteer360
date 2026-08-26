@@ -32,8 +32,9 @@ class AngularSteering(InterventionControl):
        orthonormal `(b1, b2)` per layer. A precomputed `[2, H]`-per-layer plane may be supplied
        directly instead.
 
-    2. **Online rotation**: A `forward_pre_hook` on each layer's normalization sub-modules
-       (`input_layernorm` and `post_attention_layernorm`, or `ln_1`/`ln_2` on GPT-2) rotates the
+    2. **Online rotation**: A `forward_pre_hook` on each layer's residual-stream normalization
+       sub-modules (`input_layernorm` and `pre_feedforward_layernorm` on Gemma, `input_layernorm`
+       and `post_attention_layernorm` on Llama/Mistral/Qwen, `ln_1`/`ln_2` on GPT-2) rotates the
        residual stream entering the norm to the target angle (`mode="target"`) or by the angle
        (`mode="offset"`). Vector addition and directional ablation are special cases of this
        rotation. The adaptive variant rotates only tokens already positively aligned with the

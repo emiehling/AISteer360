@@ -33,6 +33,7 @@ from aisteer360.algorithms.core.execution.payloads import (
 )
 from aisteer360.algorithms.core.execution.spec import BackendSpec
 from aisteer360.algorithms.core.internals.fingerprint import is_absent_chat_template_fingerprint
+from aisteer360.algorithms.core.internals.model_layout import text_config
 from aisteer360.backends.vllm.capabilities import _DISCOVERY_CACHE, _reconcile_discovery, _vllm_capabilities
 from aisteer360.backends.vllm.rendering import raise_for_spec_rejection
 from aisteer360.backends.vllm.session import VLLMOfflineSession, VLLMServeSession
@@ -137,9 +138,10 @@ def _config_layout(model_ref: str, trust_remote_code: bool = False) -> ModelFact
         config = AutoConfig.from_pretrained(model_ref, trust_remote_code=trust_remote_code)
     except Exception:
         return None
-    hidden_size = getattr(config, "hidden_size", None)
-    num_heads = getattr(config, "num_attention_heads", None)
-    head_dim = getattr(config, "head_dim", None)
+    facts = text_config(config)
+    hidden_size = facts.hidden_size
+    num_heads = getattr(facts, "num_attention_heads", None)
+    head_dim = getattr(facts, "head_dim", None)
     if head_dim is None and hidden_size and num_heads:
         head_dim = hidden_size // num_heads
     dtype = getattr(config, "dtype", None)
@@ -151,8 +153,8 @@ def _config_layout(model_ref: str, trust_remote_code: bool = False) -> ModelFact
         json.dumps(config_dict, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]
     return ModelFacts(
-        num_layers=getattr(config, "num_hidden_layers", 0),
-        hidden_size=hidden_size or 0,
+        num_layers=facts.num_hidden_layers,
+        hidden_size=hidden_size,
         num_attention_heads=num_heads,
         head_dim=head_dim,
         dtype=str(dtype).removeprefix("torch.") if dtype is not None else "unknown",

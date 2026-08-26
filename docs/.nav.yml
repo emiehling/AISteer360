@@ -24,6 +24,7 @@ nav:
     - Controls: concepts/controls.md
     - Probes: concepts/probes.md
     - Steering pipelines: concepts/steering_pipelines.md
+    - Sharing pipelines (.spipe): concepts/spipe.md
 #    - Use cases & benchmarking: concepts/benchmarks.md
   - Tutorials:
     - Tutorials: tutorials/index.md
@@ -68,6 +69,7 @@ nav:
         - ValueGuidance: "examples/notebooks/generics/value_guidance.ipynb"
     - Recipes:
       - Routed decoding: "examples/notebooks/recipes/routed_decoding.ipynb"
+      - Sharing pipelines (.spipe): "examples/notebooks/recipes/spipe_share.ipynb"
     - Studies:
       - Commonsense MCQA: "examples/notebooks/studies/commonsense_mcqa/commonsense_mcqa.ipynb"
       - Instruction following: "examples/notebooks/studies/instruction_following/instruction_following.ipynb"
@@ -93,6 +95,8 @@ nav:
             - GEPA: reference/algorithms/input_control/gepa.md
         - Structural control:
             - Base classes: reference/algorithms/structural_control/base_structural_control.md
+            - LoadCheckpoint: reference/algorithms/structural_control/load_checkpoint.md
+            - LoadLoRA: reference/algorithms/structural_control/load_lora.md
             - MergeKit wrapper: reference/algorithms/structural_control/mergekit_wrapper.md
             - TRL wrapper: reference/algorithms/structural_control/trl_wrapper.md
         - State control:
@@ -123,6 +127,7 @@ nav:
             - SearchDecoding: reference/algorithms/output_control/search_decoding.md
             - StoppingRules: reference/algorithms/output_control/stopping_rules.md
             - ValueGuidance: reference/algorithms/output_control/value_guidance.md
+    - SPipe: reference/spipe.md
     - Evaluation:
         - Provider: reference/evaluation/provider.md
         - Batching: reference/evaluation/batching.md

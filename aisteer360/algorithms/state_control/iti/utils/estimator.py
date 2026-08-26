@@ -8,10 +8,10 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.internals.data import LabeledExamples
 from aisteer360.algorithms.core.internals.encoding import tokenize_texts
+from aisteer360.algorithms.core.internals.model_layout import head_geometry, resolve_model_layout
 from aisteer360.algorithms.core.internals.pooling import get_last_token_positions, select_at_positions
 from aisteer360.algorithms.state_control.common.estimators.base import BaseEstimator
 from aisteer360.algorithms.state_control.common.fit_specs import VectorTrainSpec
-from aisteer360.algorithms.state_control.common.model_layout import resolve_model_layout
 from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 
 logger = logging.getLogger(__name__)
@@ -60,24 +60,39 @@ class ProbeMassShiftEstimator(BaseEstimator[SteeringVector]):
         Returns:
             SteeringVector with directions shaped [num_heads, head_dim] per layer,
             num_heads/head_dim metadata, and probe_accuracies for all heads.
+
+        Raises:
+            ValueError: If the model is a hybrid attention stack (some decoder layers carry no
+                attention module), or its attention head geometry is not uniform across layers.
         """
         device = next(model.parameters()).device
         model_type = getattr(model.config, "model_type", "unknown")
-        num_heads = model.config.num_attention_heads
-        hidden_size = model.config.hidden_size
-        # some architectures define an independent head_dim (not hidden_size // num_heads)
-        head_dim = getattr(model.config, "head_dim", None) or hidden_size // num_heads
 
-        # sanity-check the per-head slicing matches the o_proj input width (else the reshape corrupts)
+        # ITI reshapes every layer's o_proj input with one head geometry, so every layer must carry
+        # an attention module and the geometry must be uniform. refuse hybrid stacks, then read the
+        # geometry per layer from the module tree and fail loudly before any capture on a model with
+        # heterogeneous heads (e.g. Gemma 4 alternates sliding and global head dims).
         layout = resolve_model_layout(model)
-        o_proj = model.get_submodule(layout.oproj_names[0])
-        in_features = getattr(o_proj, "in_features", None)
-        if in_features is not None and num_heads * head_dim != in_features:
+        if layout.is_hybrid:
             raise ValueError(
-                f"ITI head slicing mismatch: num_heads ({num_heads}) * head_dim ({head_dim}) = "
-                f"{num_heads * head_dim} != o_proj.in_features ({in_features}). "
-                f"Set model.config.head_dim to the correct per-head dimension."
+                "ITI requires an attention module on every decoder layer, but only layers "
+                f"{list(layout.attention_layers)} of {layout.num_layers} carry one; hybrid "
+                "attention stacks such as Qwen3.5 are not supported by ITI."
             )
+        geometries = {lid: head_geometry(model, layout, lid) for lid in range(layout.num_layers)}
+        distinct = {(g.num_heads, g.head_dim) for g in geometries.values()}
+        if len(distinct) > 1:
+            differing = sorted(
+                (lid, g.num_heads, g.head_dim) for lid, g in geometries.items()
+            )
+            raise ValueError(
+                "ITI requires uniform attention head geometry across layers, but the model has "
+                f"heterogeneous heads: {differing} as (layer, num_heads, head_dim). Models such as "
+                "Gemma 4 that alternate sliding and global head dimensions are not supported by ITI."
+            )
+        geometry = next(iter(geometries.values()))
+        num_heads = geometry.num_heads
+        head_dim = geometry.head_dim
 
         pos_texts = list(data.positives)
         neg_texts = list(data.negatives)

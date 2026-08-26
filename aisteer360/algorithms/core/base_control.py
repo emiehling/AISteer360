@@ -2,10 +2,20 @@
 import copy
 from abc import ABC
 from dataclasses import fields
+from typing import Any
 
 from aisteer360.algorithms.core.base_args import BaseArgs
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, needs
+
+
+class NotFreezableError(RuntimeError):
+    """A control produces steer-time state but declares no frozen form.
+
+    Raised by `BaseControl.frozen_form` when a control's steer step produces fits or exported
+    state and the control does not override `frozen_form` to name a constructor-valid frozen
+    form. Re-exported from `aisteer360.spipe.errors` alongside the other spipe exceptions.
+    """
 
 
 class BaseControl(ABC):
@@ -103,6 +113,63 @@ class BaseControl(ABC):
             The declared fit artifacts, in declaration order.
         """
         return ()
+
+    def export_state(self) -> dict[str, Any]:
+        """Steer-time state to persist when freezing, keyed by logical name.
+
+        Values are typed artifacts (`SteeringVector`, `Probe`, `ProbeSet`, a `Memory`
+        implementation, `CheckpointArtifact`, `LoRAArtifact`, `torch.Tensor`, or a `Path` to an
+        on-disk product). Must be called after `steer()`. The default returns an empty mapping
+        (nothing to persist).
+
+        Returns:
+            Mapping from logical name to artifact value.
+        """
+        return {}
+
+    def frozen_form(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """The `(registry method key, constructor kwargs)` of this control's frozen form.
+
+        `state` is the output of `export_state()`; artifact values inside the returned kwargs
+        are replaced by store references at encode time. When `steer_fits()` is empty and
+        `state` is empty, the recipe is the frozen form and the control's own key and recipe
+        args are returned unchanged. A control whose freeze expands into several entries may
+        return a list of `(method key, kwargs)` pairs instead.
+
+        Args:
+            state: The output of `export_state()`.
+
+        Returns:
+            The frozen method key and its constructor kwargs.
+
+        Raises:
+            NotFreezableError: If the control produces fits or state but declares no frozen
+                form.
+        """
+        if not state and not self.steer_fits():
+            from aisteer360.algorithms.core.registry import method_key_for
+
+            args = getattr(self, "args", None)
+            kwargs = {field.name: getattr(args, field.name) for field in fields(args) if field.init} \
+                if args is not None else {}
+            return method_key_for(type(self)), kwargs
+        raise NotFreezableError(
+            f"{type(self).__name__} produces steer-time state but declares no frozen form; "
+            "override frozen_form() (and export_state()) to support freezing."
+        )
+
+    def fit_identity(self) -> Any | None:
+        """The object whose canonical form defines this control's fit digest, or None.
+
+        The digest detects recipe edits that invalidate frozen artifacts, so the returned
+        object should cover exactly the inputs a re-fit would consume (training data, fit
+        specs) and exclude inert application parameters (strengths, multipliers). The default
+        returns None (no fits).
+
+        Returns:
+            The fit-identity object, or None.
+        """
+        return None
 
     def clone_for_call(self, seed: int | None = None):
         """A configuration-preserving shallow clone for one generation call.

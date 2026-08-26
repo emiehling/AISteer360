@@ -102,6 +102,24 @@ class HeadAdditiveTransform(BaseTransform):
             if self.active_heads.get(layer_id)
         }
 
+    def to_config(self) -> tuple[dict, object | None, "BaseTransform | None"]:
+        """The `(params, artifact, inner)` serialized form under the `head_additive` kind.
+
+        `active_heads` serializes with string layer keys and sorted head lists.
+        """
+        params = {
+            "strength": float(self.strength),
+            "active_heads": {str(layer): sorted(int(h) for h in heads)
+                             for layer, heads in self.active_heads.items()},
+        }
+        artifact = self.steering_vector if self.steering_vector is not None else self._source
+        return params, artifact, None
+
+    @classmethod
+    def from_config(cls, params: dict, *, artifact=None, inner=None) -> "HeadAdditiveTransform":
+        """Rebuild a `head_additive` transform from its serialized form."""
+        active_heads = {int(layer): set(heads) for layer, heads in params.get("active_heads", {}).items()}
+        return cls(artifact, active_heads=active_heads, strength=params.get("strength", 1.0))
 
     def export(self, layer_id: int) -> "WireForm | None":
         """The `head_additive` wire form for `layer_id`.

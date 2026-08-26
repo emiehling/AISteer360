@@ -1,5 +1,6 @@
 """Selector that returns top-K heads by probe accuracy."""
 import logging
+from typing import ClassVar
 
 from ..steering_vector import SteeringVector
 from .base import BaseSelector
@@ -17,10 +18,21 @@ class TopKHeadSelector(BaseSelector[list[tuple[int, int]]]):
         k: Number of top heads to select.
     """
 
+    component_kind: ClassVar[str] = "top_k_head"
+
     def __init__(self, k: int):
         if k < 1:
             raise ValueError(f"k must be >= 1, got {k}.")
         self.k = k
+
+    def to_config(self) -> dict:
+        """The selector's serialized parameters."""
+        return {"k": int(self.k)}
+
+    @classmethod
+    def from_config(cls, params: dict) -> "TopKHeadSelector":
+        """Rebuild the selector from its serialized parameters."""
+        return cls(k=params["k"])
 
     def select(self, *, steering_vector: SteeringVector) -> list[tuple[int, int]]:
         """Return the top-K (layer_id, head_id) pairs sorted by accuracy descending.

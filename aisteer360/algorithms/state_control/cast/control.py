@@ -103,6 +103,10 @@ class _BehaviorFit:
         self._data = data
         self._fit_spec = fit_spec
 
+    def fit_ingredients(self) -> dict:
+        """The encodable fit-identity form: the contrastive data and the fit spec."""
+        return {"kind": "behavior_fit", "data": self._data, "fit_spec": self._fit_spec}
+
     def resolve(self, model, tokenizer, *, session=None):
         estimator = _make_estimator(self._fit_spec)
         return estimator.fit(model, tokenizer, data=self._data, spec=self._fit_spec, session=session)
@@ -131,6 +135,17 @@ class _BehaviorBuild:
     @property
     def artifact_class(self) -> str | None:
         return getattr(self._source, "artifact_class", None)
+
+    def fit_ingredients(self) -> dict:
+        """The encodable fit-identity form: the source's ingredients plus the fit-relevant
+        scaling switch."""
+        from aisteer360.algorithms.state_control.base import _fit_ingredients
+
+        return {
+            "kind": "behavior_build",
+            "source": _fit_ingredients(self._source),
+            "use_explained_variance": self._use_explained_variance,
+        }
 
     def wire_plan(self) -> str | None:
         """`"additive"` for broadcast behavior directions; None when the source is positional."""

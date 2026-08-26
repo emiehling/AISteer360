@@ -1,5 +1,5 @@
-"""Tokenizer- and attention-mask-level hygiene: pad-token setup, mask inference, batch re-padding, and BOS
-sanity checks."""
+"""Tokenizer- and attention-mask-level hygiene: pad-token setup, token counting, mask inference, batch re-padding,
+and BOS sanity checks."""
 from __future__ import annotations
 
 import logging
@@ -23,6 +23,19 @@ def ensure_pad_token(tokenizer: PreTrainedTokenizerBase) -> PreTrainedTokenizerB
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     return tokenizer
+
+
+def count_tokens(tokenizer: PreTrainedTokenizerBase, text: str) -> int:
+    """Count the tokens in `text`, without special tokens.
+
+    Args:
+        tokenizer: HuggingFace tokenizer instance.
+        text: The text to tokenize.
+
+    Returns:
+        The token count.
+    """
+    return len(tokenizer(text, add_special_tokens=False)["input_ids"])
 
 
 def infer_attention_mask_from_ids(

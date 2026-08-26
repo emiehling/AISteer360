@@ -613,6 +613,88 @@ class Gate:
             "rule": {"kind": rule_form.kind, **rule_form.params},
         }
 
+    def to_config(self) -> tuple[dict, dict[str, torch.Tensor] | None]:
+        """The gate's serialized form: `(params, readout tensors)`.
+
+        Params carry the evidence layers, pooling, the readout's kind, boundary, and recorded
+        model fingerprint, and the rule's kind and parameters; the readout's per-layer tensors
+        are returned stacked row-aligned with the evidence layers, using the readout's wire
+        names.
+
+        Raises:
+            ValueError: If the readout or rule has no wire form (e.g. `CallableReadout`), or
+                the readout lacks a tensor for an evidence layer.
+        """
+        readout = self.evidence.readout
+        readout_form = readout.export(self.evidence.layer_ids)
+        rule_form = self.rule.export()
+        if readout_form is None or rule_form is None:
+            offender = type(readout).__name__ if readout_form is None else type(self.rule).__name__
+            raise ValueError(
+                f"Gate over {offender} has no serialized form; gates serialize only when "
+                "their readout and rule have wire kinds."
+            )
+        params = {
+            "layers": [int(lid) for lid in self.evidence.layer_ids],
+            "pooling": self.evidence.pooling,
+            "readout": {
+                "kind": readout_form.kind,
+                "location": getattr(readout, "location", None),
+                "model_fingerprint": getattr(readout, "model_fingerprint", None),
+            },
+            "rule": {"kind": rule_form.kind, **rule_form.params},
+        }
+        return params, dict(readout_form.tensors) or None
+
+    @classmethod
+    def from_config(cls, params: dict, *, readout_tensors: Mapping[str, torch.Tensor] | None = None) -> "Gate":
+        """Rebuild a gate from its serialized form.
+
+        Args:
+            params: The serialized params (`layers`, `pooling`, `readout`, `rule`).
+            readout_tensors: The readout's stacked tensors, row-aligned with `params["layers"]`.
+
+        Returns:
+            The assembled `Gate`.
+
+        Raises:
+            ValueError: If the readout or rule kind is unknown, or the stacked tensor rows do
+                not match the layer count.
+        """
+        layer_ids = [int(lid) for lid in params["layers"]]
+        readout_params = params["readout"]
+        rule_params = dict(params["rule"])
+
+        readout_classes = {"affine": AffineReadout, "cosine": CosineReadout,
+                           "projected_cosine": ProjectedCosineReadout}
+        readout_cls = readout_classes.get(readout_params["kind"])
+        if readout_cls is None:
+            raise ValueError(f"Unknown gate readout kind {readout_params['kind']!r}.")
+        tensor_name = "weights" if readout_params["kind"] == "affine" else "directions"
+        if readout_tensors is None or tensor_name not in readout_tensors:
+            raise ValueError(f"Gate readout tensors missing {tensor_name!r}.")
+        stacked = readout_tensors[tensor_name]
+        if stacked.size(0) != len(layer_ids):
+            raise ValueError(
+                f"Gate readout tensor has {stacked.size(0)} rows for {len(layer_ids)} layers."
+            )
+        per_layer = {lid: stacked[i] for i, lid in enumerate(layer_ids)}
+        readout = readout_cls(
+            per_layer,
+            location=readout_params.get("location"),
+            model_fingerprint=readout_params.get("model_fingerprint"),
+        )
+
+        rule_kind = rule_params.pop("kind")
+        if rule_kind == "sum_threshold":
+            rule: Rule = SumThreshold(**rule_params)
+        elif rule_kind == "per_key_threshold":
+            rule = PerKeyThreshold(**rule_params)
+        else:
+            raise ValueError(f"Unknown gate rule kind {rule_kind!r}.")
+
+        return cls(Evidence(tuple(layer_ids), readout, pooling=params.get("pooling", "mean")), rule)
+
 
 @runtime_checkable
 class GateSource(Protocol):

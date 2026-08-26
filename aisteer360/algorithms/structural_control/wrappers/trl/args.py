@@ -54,7 +54,8 @@ class TRLArgs(BaseArgs):
     use_rslora: bool | None = None
     adapter_name: str | None = "sft"
 
-    # optional in-place LoRA merge after training (no separate control)
+    # optional in-place LoRA merge after training (no separate control); left False, the trained
+    # adapter stays attached as a PeftModel and a state control listed after it hooks the adapted model
     merge_lora_after_train: bool = False
     merged_output_dir: str | Path | None = None  # where to save merged model/tokenizer
 

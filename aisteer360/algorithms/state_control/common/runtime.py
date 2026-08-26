@@ -518,7 +518,8 @@ def build_hooks(
         mapping with `"module"` and `"hook_func"`.
 
     Raises:
-        ValueError: If an intervention is unbound, or a layer has no module path in `layout`.
+        ValueError: If an intervention is unbound, a layer has no module path in `layout`, or an
+            o_proj-site intervention targets a layer that carries no attention module.
     """
     from .specs import Intervention
 
@@ -569,6 +570,13 @@ def build_hooks(
                         },
                     ))
             elif site == "o_proj":
+                if not layout.has_attention(layer_id):
+                    raise ValueError(
+                        f"Intervention at the o_proj site targets decoder layer {layer_id}, which "
+                        f"carries no attention module; attention layers of this model are "
+                        f"{list(layout.attention_layers)}. Restrict the behavior layers to those, "
+                        "or use a residual-stream site (decoder_layer or norm_input)."
+                    )
                 units.append((
                     (layer_id, site_rank["o_proj"], 1),
                     {

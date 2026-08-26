@@ -1,4 +1,4 @@
-"""Batched probe reads, scoring every probe in a set in one read-only forward."""
+"""Score all probes in a batch with a read-only forward pass."""
 import logging
 from dataclasses import dataclass, field
 from typing import Mapping
@@ -8,6 +8,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.internals.data import ContrastivePairs
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
+from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec, fit_probe
 from aisteer360.algorithms.core.internals.probes.probe import Probe
@@ -111,22 +112,6 @@ class ProbeSetFit:
             calibration_data=self.calibration_data,
             session=session,
         )
-
-
-def _decoder_layer_names(model: PreTrainedModel) -> list[str]:
-    """Dotted module paths of the decoder layers, for llama-style and GPT-2-style models.
-
-    Raises:
-        ValueError: If the model architecture is not recognized.
-    """
-    if hasattr(model, "model") and hasattr(model.model, "layers"):
-        return [f"model.layers.{i}" for i in range(len(model.model.layers))]
-    if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
-        return [f"transformer.h.{i}" for i in range(len(model.transformer.h))]
-    raise ValueError(
-        f"Unrecognized model architecture {type(model).__name__}; expected llama-style "
-        "(model.layers) or GPT-2-style (transformer.h) decoder layers."
-    )
 
 
 class ProbeSet:
@@ -314,7 +299,7 @@ class ProbeSet:
         if model is None:
             return self._read_via_session(session, ids, mask)
 
-        layer_names = _decoder_layer_names(model)
+        layer_names = resolve_model_layout(model).layer_names
         for lid in self.layer_ids:
             if not 0 <= lid < len(layer_names):
                 raise ValueError(f"probe layer {lid} out of range [0, {len(layer_names)}).")
@@ -336,9 +321,9 @@ class ProbeSet:
                 module = model.get_submodule(layer_names[lid])
                 handles.append(module.register_forward_pre_hook(_pre_capture(lid), with_kwargs=True))
             with torch.no_grad(), auxiliary_pass(aligned=True):
-                # explicit `cache_position` keeps this aligned pass positionable for co-resident
-                # state hooks: transformers v5 threads the kwarg into decoder layers only when the
-                # caller passes it.
+                # explicit `cache_position` lets co-resident state hooks position this aligned
+                # pass since transformers v5 threads the kwarg into decoder layers only when the
+                # caller passes it
                 model(
                     input_ids=ids,
                     attention_mask=mask,

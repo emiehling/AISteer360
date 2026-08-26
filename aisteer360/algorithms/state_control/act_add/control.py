@@ -40,12 +40,15 @@ class ActAdd(InterventionControl):
 
     def _configure(self):
         if self.steering_vector is not None:
-            artifact = self.steering_vector.clone()
-            if self.normalize_vector:
-                for layer_id, direction in artifact.directions.items():
-                    norms = direction.norm(dim=-1, keepdim=True)
-                    artifact.directions[layer_id] = direction / (norms + 1e-8)
-            source = _Precomputed(artifact)
+            if isinstance(self.steering_vector, SteeringVector):
+                artifact = self.steering_vector.clone()
+                if self.normalize_vector:
+                    for layer_id, direction in artifact.directions.items():
+                        norms = direction.norm(dim=-1, keepdim=True)
+                        artifact.directions[layer_id] = direction / (norms + 1e-8)
+                source = _Precomputed(artifact)
+            else:
+                source = self.steering_vector
         else:
             source = SinglePairFit(
                 positive_prompt=self.positive_prompt,
@@ -89,3 +92,23 @@ class ActAdd(InterventionControl):
             directions=core.directions,
             meta=core.artifact_meta or {},
         )
+
+    def export_state(self) -> dict:
+        """The bound positional steering vector under the `"steering_vector"` key (after `steer()`)."""
+        vector = self._steering_vector
+        return {"steering_vector": vector} if vector is not None else {}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class frozen form: the bound positional vector plus the resolved layer.
+
+        `normalize_vector` is cleared since the exported vector is already in its applied
+        form.
+        """
+        return "state_control/act_add", {
+            "steering_vector": state["steering_vector"],
+            "layer_id": self._layer_id,
+            "multiplier": self.multiplier,
+            "alignment": self.alignment,
+            "normalize_vector": False,
+            "use_norm_preservation": self.use_norm_preservation,
+        }

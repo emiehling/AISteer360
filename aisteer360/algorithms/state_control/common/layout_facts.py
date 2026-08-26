@@ -11,6 +11,7 @@ import torch
 
 from aisteer360.algorithms.core.execution.payloads import ModelFacts
 from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
+from aisteer360.algorithms.core.internals.model_layout import text_config
 
 from .hook_utils import get_model_layer_list
 
@@ -36,18 +37,21 @@ def resolve_layout(model=None, session=None) -> ModelFacts:
             "vector-supplied configurations may steer with model=None only when a session is given."
         )
     _, layer_names = get_model_layer_list(model)
-    config = model.config
-    num_heads = getattr(config, "num_attention_heads", None)
-    head_dim = getattr(config, "head_dim", None)
+    text_cfg = text_config(model)
+    hidden_size = text_cfg.hidden_size
+    num_heads = getattr(text_cfg, "num_attention_heads", None)
+    head_dim = getattr(text_cfg, "head_dim", None)
     if head_dim is None and num_heads:
-        head_dim = getattr(config, "hidden_size", 0) // num_heads
+        head_dim = hidden_size // num_heads
     return ModelFacts(
         num_layers=len(layer_names),
-        hidden_size=getattr(config, "hidden_size", 0),
+        hidden_size=hidden_size,
         num_attention_heads=num_heads,
         head_dim=head_dim,
         dtype=str(model.dtype).removeprefix("torch."),
         model_fingerprint=model_fingerprint(model),
+        model_type=getattr(model.config, "model_type", None),
+        model_ref=getattr(model, "name_or_path", None),
     )
 
 

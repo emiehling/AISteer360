@@ -15,9 +15,9 @@ from __future__ import annotations
 import torch
 from transformers import PreTrainedModel
 
+from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
 from aisteer360.algorithms.core.utils.auxiliary_pass import auxiliary_pass
 from aisteer360.algorithms.output_control.common.kv_cache import extends_prefix, full_prefix_mask, repeat_cache
-from aisteer360.algorithms.state_control.common.hook_utils import get_model_layer_list
 
 
 class CandidateForward:
@@ -37,8 +37,7 @@ class CandidateForward:
 
     def __init__(self, model: PreTrainedModel):
         self.model = model
-        layer_modules, _ = get_model_layer_list(model)
-        self._final_layer = layer_modules[-1]
+        self._final_layer = model.get_submodule(resolve_model_layout(model).layer_names[-1])
         self._cached_ids: torch.Tensor | None = None  # [1, T_c]
         self._cached_mask: torch.Tensor | None = None  # [1, T_c]
         self._cache = None  # past_key_values covering _cached_ids

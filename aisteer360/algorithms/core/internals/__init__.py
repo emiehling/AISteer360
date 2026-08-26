@@ -26,6 +26,14 @@ from .capture import HiddenStateLocation, layerwise_tokenwise_hidden
 from .data import ContrastivePairs, LabeledExamples, as_contrastive_pairs, as_labeled_examples
 from .encoding import tokenize_pairs, tokenize_texts
 from .fingerprint import model_fingerprint
+from .model_layout import (
+    HeadGeometry,
+    ModelLayout,
+    head_geometry,
+    register_layout_detector,
+    resolve_model_layout,
+    text_config,
+)
 from .pooling import (
     aggregate_condition_hidden,
     get_last_token_positions,
@@ -40,22 +48,28 @@ from .stats import ActivationStats, StatsSpec, measure_residual_norms
 __all__ = [
     "ActivationStats",
     "ContrastivePairs",
+    "HeadGeometry",
     "HiddenStateLocation",
     "LabeledExamples",
+    "ModelLayout",
     "RenderedContrastive",
     "StatsSpec",
     "aggregate_condition_hidden",
     "as_contrastive_pairs",
     "as_labeled_examples",
     "get_last_token_positions",
+    "head_geometry",
     "layerwise_tokenwise_hidden",
     "masked_mean",
     "measure_residual_norms",
     "model_fingerprint",
     "pool_over_spans",
+    "register_layout_detector",
     "render_contrastive",
+    "resolve_model_layout",
     "select_at_positions",
     "select_spans",
+    "text_config",
     "tokenize_pairs",
     "tokenize_texts",
 ]

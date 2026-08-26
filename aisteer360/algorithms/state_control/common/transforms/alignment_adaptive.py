@@ -100,6 +100,26 @@ class AlignmentAdaptiveTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return self.inner.covered_layer_ids
 
+    def to_config(self) -> tuple[dict, object | None, BaseTransform | None]:
+        """The `(params, artifact, inner)` serialized form under the `alignment_adaptive` kind."""
+        params = {
+            "threshold": float(self.threshold),
+            "direction_index": int(self.direction_index),
+            "use_cosine": bool(self.use_cosine),
+        }
+        artifact = self.steering_vector if self.steering_vector is not None else self._source
+        return params, artifact, self.inner
+
+    @classmethod
+    def from_config(cls, params: dict, *, artifact=None, inner=None) -> "AlignmentAdaptiveTransform":
+        """Rebuild an `alignment_adaptive` wrapper from its serialized form."""
+        return cls(
+            inner,
+            artifact,
+            threshold=params.get("threshold", 0.0),
+            direction_index=params.get("direction_index", 0),
+            use_cosine=params.get("use_cosine", False),
+        )
 
     def modifier_wire_kind(self, core_kind: str) -> str | None:
         """`"alignment_adaptive"`, or None over a per-head core.

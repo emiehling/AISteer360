@@ -29,7 +29,7 @@ def tokenize_texts(
             maximum length.
 
     Returns:
-        Dictionary with input_ids and attention_mask tensors.
+        Dictionary with `input_ids` and `attention_mask` tensors.
     """
     enc = tokenizer(
         list(texts),
@@ -60,13 +60,13 @@ def tokenize_pairs(
     Args:
         tokenizer: Tokenizer to use.
         pos_texts: List of positive text strings.
-        neg_texts: List of negative text strings (same length as pos_texts).
+        neg_texts: List of negative text strings (same length as `pos_texts`).
         device: Target device.
         add_special_tokens: Whether to add special tokens (e.g. BOS). Pass False
             for chat-templated text that already contains them.
 
     Returns:
-        Tuple of (enc_pos, enc_neg) dictionaries with input_ids and attention_mask.
+        Tuple of `(enc_pos, enc_neg)` dictionaries with `input_ids` and `attention_mask`.
     """
     # interleave: [pos0, neg0, pos1, neg1, ...]
     interleaved = []
@@ -83,7 +83,7 @@ def tokenize_pairs(
     )
     enc = {k: v.to(device) for k, v in enc.items()}
 
-    # de-interleave: even indices are positive, odd indices are negative
+    # split the interleaved batch back apart: even indices are positive, odd indices are negative
     enc_pos = {k: v[0::2] for k, v in enc.items()}
     enc_neg = {k: v[1::2] for k, v in enc.items()}
 

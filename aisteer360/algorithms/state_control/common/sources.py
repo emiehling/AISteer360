@@ -203,6 +203,131 @@ class _Precomputed:
         return self._steering_vector.clone()
 
 
+class VerifiedPrecomputed:
+    """A precomputed source that enforces recorded provenance at resolve time.
+
+    Wraps a concrete `SteeringVector` together with the fingerprints of the side that produced
+    it. Resolution is model-free (`ModelAccess.FACTS`) and reads structural facts from the
+    session layout (or the live model when one is given): the vector's `model_type` and width
+    are always checked, and the recorded model fingerprint is checked per the policy. A
+    `"calibrated"` artifact on a mismatched model raises under `policy="strict"` and warns
+    under `"warn"`; a `"direction"` artifact warns under both, since transferring a direction
+    across fine-tunes of one architecture is a deliberate act. `policy="off"` skips every
+    check. Checks that cannot run (no layout available, or no recorded value) are skipped.
+
+    Args:
+        steering_vector: The concrete artifact.
+        provenance: Producing-side fingerprints (mapping or `ArtifactProvenance`-shaped), with
+            keys `model_fingerprint`, `backend_spec_hash`, `tokenizer_fingerprint`.
+        artifact_class: `"direction"` or `"calibrated"`.
+        policy: `"strict"`, `"warn"`, or `"off"`.
+    """
+
+    access: ClassVar[ModelAccess] = ModelAccess.FACTS
+
+    def __init__(
+        self,
+        steering_vector: SteeringVector,
+        provenance: Mapping | None = None,
+        artifact_class: str = "direction",
+        policy: str = "strict",
+    ):
+        if policy not in ("strict", "warn", "off"):
+            raise ValueError(f"policy must be 'strict', 'warn', or 'off'; got {policy!r}.")
+        self.steering_vector = steering_vector
+        self.provenance = dict(provenance or {})
+        self.artifact_class = artifact_class
+        self.policy = policy
+
+    @property
+    def produces_positional(self) -> bool:
+        return self.steering_vector.is_positional
+
+    def _report(self, message: str, *, hard: bool) -> None:
+        if self.policy == "off":
+            return
+        if hard and self.policy == "strict":
+            raise ValueError(message)
+        warnings.warn(message, UserWarning)
+
+    def _check(self, layout) -> None:
+        vector = self.steering_vector
+        if layout is None:
+            return
+
+        layout_type = getattr(layout, "model_type", None)
+        if vector.model_type not in ("unknown", None) and layout_type not in (None, "unknown") \
+                and vector.model_type != layout_type:
+            self._report(
+                f"Precomputed steering artifact was produced for model_type "
+                f"{vector.model_type!r} but this pipeline serves {layout_type!r}.",
+                hard=True,
+            )
+
+        if vector.num_heads is not None and vector.head_dim is not None:
+            num_heads = getattr(layout, "num_attention_heads", None)
+            head_dim = getattr(layout, "head_dim", None)
+            if (num_heads is not None and vector.num_heads != num_heads) or \
+                    (head_dim is not None and vector.head_dim != head_dim):
+                self._report(
+                    f"Precomputed per-head artifact has num_heads={vector.num_heads}, "
+                    f"head_dim={vector.head_dim} but the model has num_heads={num_heads}, "
+                    f"head_dim={head_dim}.",
+                    hard=True,
+                )
+        elif vector.directions:
+            width = next(iter(vector.directions.values())).size(-1)
+            hidden_size = getattr(layout, "hidden_size", None)
+            if hidden_size and width != hidden_size:
+                self._report(
+                    f"Precomputed steering artifact has width {width} but the model's hidden "
+                    f"size is {hidden_size}.",
+                    hard=True,
+                )
+
+        recorded = self.provenance.get("model_fingerprint")
+        live = getattr(layout, "model_fingerprint", None)
+        if recorded and live and recorded != live:
+            self._report(
+                f"Precomputed {self.artifact_class} artifact was produced on a different "
+                f"model (fingerprint {recorded!r} vs {live!r})."
+                + ("" if self.artifact_class == "calibrated"
+                   else " Direction artifacts may transfer across fine-tunes of one "
+                        "architecture; verify the behavior."),
+                hard=(self.artifact_class == "calibrated"),
+            )
+
+    def resolve(
+        self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, *, session=None
+    ) -> SteeringVector:
+        """Check provenance against the resolution venue and return a fresh clone.
+
+        Args:
+            model: The live model, or None when a session layout supplies the facts.
+            tokenizer: Unused.
+            session: Optional `SteeringSession` whose `layout` supplies structural facts.
+
+        Returns:
+            An independent `SteeringVector` clone the caller owns.
+
+        Raises:
+            ValueError: Under `policy="strict"`, if the model type or width mismatches, or a
+                `"calibrated"` artifact's recorded fingerprint differs from the live model's.
+        """
+        layout = None
+        if session is not None:
+            try:
+                layout = session.layout
+            except Exception:
+                layout = None
+        if layout is None and model is not None:
+            from aisteer360.algorithms.state_control.common.layout_facts import resolve_layout
+
+            layout = resolve_layout(model, None)
+        self._check(layout)
+        return self.steering_vector.clone()
+
+
 def _as_artifact_source(x) -> ArtifactSource:
     """Coerce a concrete artifact or source into an `ArtifactSource` (internal).
 

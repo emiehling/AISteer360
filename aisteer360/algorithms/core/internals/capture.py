@@ -4,6 +4,8 @@ from typing import Callable, Literal
 import torch
 from transformers import PreTrainedModel
 
+from .model_layout import resolve_model_layout
+
 HiddenStateLocation = Literal["layer_output", "layer_input"]
 
 
@@ -16,11 +18,11 @@ def capture_hidden(
     on_batch: Callable[[], None] | None = None,
     location: HiddenStateLocation = "layer_output",
 ) -> tuple[dict[int, torch.Tensor], torch.Tensor | None]:
-    """Per-layer hidden states for `enc` through the in-process funnel or a capture session.
+    """Extract per-layer hidden states for `enc` using a live model or a capture session.
 
     With a live model (given directly, or reachable through an in-process session), the
     extraction runs `layerwise_tokenwise_hidden` with the caller's batch size and progress
-    callback, preserving the in-process layout: the returned mask is `enc`'s own. With a
+    callback, preserving the in-process layout, i.e., the returned mask is `enc`'s own. With a
     remote capture-capable session, each row of `enc` becomes a token-id prompt (padding
     positions dropped) served by `session.capture` over every decoder layer; the returned
     tensors are right-padded to the batch's longest prompt and the returned mask describes
@@ -98,15 +100,15 @@ def layerwise_tokenwise_hidden(
 
     Args:
         model: The model to extract from.
-        enc: Tokenized input with input_ids and attention_mask.
+        enc: Tokenized input with `input_ids` and `attention_mask`.
         batch_size: Batch size for forward passes.
         on_batch: Optional callable invoked after each batch finishes. Used by callers to surface
             progress to the UI.
         location: Which residual-stream boundary each layer key maps to.
 
     Returns:
-        Dict mapping layer_id (`0 .. num_layers - 1`) to tensor of shape [N, T, H]. Rows outside
-        `attention_mask` are zeroed when a mask is provided.
+        Dict mapping `layer_id` (`0 .. num_layers - 1`) to tensor of shape `[N, T, H]`. Rows
+        outside `attention_mask` are zeroed when a mask is provided.
 
     Raises:
         ValueError: If `location` is unsupported or the number of mapped states does not equal the
@@ -122,10 +124,7 @@ def layerwise_tokenwise_hidden(
     if location == "layer_output":
         # the last `hidden_states` entry is post-final-norm; recover the final layer's raw output
         # boundary with a forward hook on the last decoder layer
-        from aisteer360.algorithms.state_control.common.hook_utils import get_model_layer_list
-
-        layer_modules, _ = get_model_layer_list(model)
-        final_layer_module = layer_modules[-1]
+        final_layer_module = model.get_submodule(resolve_model_layout(model).layer_names[-1])
 
     # collect states per layer
     all_hidden: dict[int, list[torch.Tensor]] = {}
@@ -171,7 +170,7 @@ def layerwise_tokenwise_hidden(
         batch_row_mask = batch_mask.unsqueeze(-1) if batch_mask is not None else None
         for layer_idx, hs in enumerate(layer_states):
             if batch_row_mask is not None:
-                # zero rows outside the attention mask; they carry computed but meaningless values
+                # zero rows outside the attention mask; their values are computed but unused
                 hs = hs * batch_row_mask.to(device=hs.device)
             all_hidden.setdefault(layer_idx, []).append(hs.cpu())
 

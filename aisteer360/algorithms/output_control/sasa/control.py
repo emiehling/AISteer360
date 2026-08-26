@@ -10,6 +10,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.internals.data import LabeledExamples
+from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
 from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec, fit_probe
 from aisteer360.algorithms.core.internals.probes.probe import Probe
 from aisteer360.algorithms.output_control.base import OutputControl
@@ -107,6 +108,34 @@ class SASA(OutputControl):
         per-step value forwards (the generate phase is in-process)."""
         return ModelAccess.MODULE
 
+    def export_state(self) -> dict:
+        """The fitted value-subspace probe under the `"probe"` key (after `steer()`)."""
+        return {"probe": self.probe} if self.probe is not None else {}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class frozen form: `wv_path` points at the exported probe directory and the
+        fit-only `gen_wv_*` fields are dropped."""
+        from aisteer360.spipe.codec import AsPath
+
+        return "output_control/sasa", {
+            "beta": self.beta,
+            "wv_path": AsPath(state["probe"]),
+            "gen_wv_data": None,
+            "max_candidates": self.max_candidates,
+        }
+
+    def fit_identity(self):
+        """The probe-fitting inputs (`gen_wv_*` fields), or None when a saved probe is
+        loaded."""
+        if getattr(self, "wv_path", None):
+            return None
+        return {
+            "gen_wv_data": self.gen_wv_data,
+            "gen_wv_data_path": self.gen_wv_data_path,
+            "gen_wv_length": self.gen_wv_length,
+            "gen_wv_batch_size": self.gen_wv_batch_size,
+        }
+
     def steer(
             self,
             model: PreTrainedModel,
@@ -141,7 +170,7 @@ class SASA(OutputControl):
             else:
                 self.tokenizer.add_special_tokens({"pad_token": "<pad>"})
 
-        final_layer = int(model.config.num_hidden_layers) - 1
+        final_layer = resolve_model_layout(model).num_layers - 1
         if getattr(self, "wv_path", None):
             logger.info("Loading SASA probe.")
             if os.path.isdir(self.wv_path):

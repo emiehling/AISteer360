@@ -32,16 +32,48 @@ See Also:
 """
 import copy
 from abc import abstractmethod
-from typing import Callable
+from typing import Any, Callable
 
 import torch
 import torch.nn as nn
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from aisteer360.algorithms.core.base_args import BaseArgs
-from aisteer360.algorithms.core.base_control import BaseControl
+from aisteer360.algorithms.core.base_control import BaseControl, NotFreezableError
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import Requirements
+
+
+def _fit_ingredients(source) -> Any:
+    """The encodable fit-identity form of one fit source.
+
+    Sources exposing `fit_ingredients()` return that; dataclass sources pass through
+    unchanged.
+    """
+    ingredients = getattr(source, "fit_ingredients", None)
+    if callable(ingredients):
+        return ingredients()
+    return source
+
+
+def _core_artifact_view(core):
+    """A `SteeringVector` view of a bound core transform's artifact, or None.
+
+    Transforms storing a per-layer directions mapping are viewed as a `SteeringVector` with
+    `model_type="unknown"`; transforms storing a `SteeringVector` return it directly.
+    """
+    from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+
+    vector = getattr(core, "steering_vector", None)
+    if vector is not None:
+        return vector
+    directions = getattr(core, "directions", None)
+    if directions is not None:
+        return SteeringVector(
+            model_type="unknown", directions=dict(directions), meta=dict(core.artifact_meta or {}),
+        )
+    return None
+
 
 PreHook = Callable[[nn.Module, tuple], tuple | torch.Tensor]
 ForwardHook = Callable[[nn.Module, tuple, torch.Tensor], torch.Tensor]
@@ -175,8 +207,8 @@ class InterventionControl(StateControl):
         Returns:
             The input model, unchanged.
         """
+        from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
         from aisteer360.algorithms.state_control.common.layout_facts import resolve_layout
-        from aisteer360.algorithms.state_control.common.model_layout import resolve_model_layout
 
         layout = resolve_layout(model, session)
         self._num_layers = layout.num_layers
@@ -216,7 +248,7 @@ class InterventionControl(StateControl):
         """The module-path layout, resolved from the module tree on first use."""
         layout = getattr(self, "_module_layout", None)
         if layout is None:
-            from aisteer360.algorithms.state_control.common.model_layout import resolve_model_layout
+            from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
 
             if model is None:
                 raise RuntimeError(
@@ -325,15 +357,107 @@ class InterventionControl(StateControl):
             access = max(access, getattr(source, "access", ModelAccess.MODULE))
         return access
 
+    def _fit_sources(self):
+        """Yield the template's fit sources: unbound sources carrying an `artifact_class`
+        whose resolution does model-side work (`access` above `ModelAccess.FACTS`)."""
+        for source in self._unbound_sources():
+            if getattr(source, "artifact_class", None) is None:
+                continue
+            if getattr(source, "access", ModelAccess.MODULE) == ModelAccess.FACTS:
+                continue
+            yield source
+
     def steer_fits(self) -> tuple[tuple[str, str], ...]:
         """The template's fit artifacts, i.e. every unbound source carrying an
         `artifact_class`, as `(artifact, artifact_class)` pairs in template order."""
-        fits: list[tuple[str, str]] = []
-        for source in self._unbound_sources():
-            artifact_class = getattr(source, "artifact_class", None)
-            if artifact_class is not None:
-                fits.append((type(source).__name__, artifact_class))
-        return tuple(fits)
+        return tuple(
+            (type(source).__name__, source.artifact_class) for source in self._fit_sources()
+        )
+
+    def fit_identity(self) -> Any | None:
+        """The template's fit sources in template order, each in its encodable form, or None
+        when the template declares no fits."""
+        sources = list(self._fit_sources())
+        if not sources:
+            return None
+        return tuple(_fit_ingredients(source) for source in sources)
+
+    def export_state(self) -> dict[str, Any]:
+        """Bound steering artifacts, keyed by intervention position.
+
+        For intervention `i`, the core transform's artifact exports as
+        `"intervention_{i}/transform"` (a `SteeringVector` view), each wrapper's own artifact
+        as `"intervention_{i}/modifier_{j}"`, and the resolved gate as
+        `"intervention_{i}/gate"` when the template's gate slot held a source. Must be called
+        after `steer()`.
+
+        Returns:
+            Mapping from logical name to artifact value.
+        """
+        from aisteer360.algorithms.state_control.common.gating import Gate
+        from aisteer360.algorithms.state_control.common.transforms.base import BaseTransform, unwrap_modifiers
+
+        state: dict[str, Any] = {}
+        for i, intervention in enumerate(self.interventions):
+            if isinstance(intervention.transform, BaseTransform):
+                core, wrappers = unwrap_modifiers(intervention.transform)
+                view = _core_artifact_view(core)
+                if view is not None:
+                    state[f"intervention_{i}/transform"] = view
+                for j, wrapper in enumerate(wrappers):
+                    own = getattr(wrapper, "steering_vector", None)
+                    if own is not None:
+                        state[f"intervention_{i}/modifier_{j}"] = own
+            template_gate = self._template[i].gate if i < len(self._template) else None
+            if isinstance(intervention.gate, Gate) and template_gate is not None \
+                    and not _is_concrete_gate(template_gate):
+                state[f"intervention_{i}/gate"] = intervention.gate
+        return state
+
+    def frozen_form(self, state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """One `activation_adapter` entry per bound intervention, in intervention order.
+
+        Each entry's args mirror the intervention: the bound transform, the resolved behavior
+        layers, the hook point, the resolved gate, and the token scope. Must be called after
+        `steer()`.
+
+        Returns:
+            List of `("state_control/activation_adapter", kwargs)` pairs.
+
+        Raises:
+            NotFreezableError: If the control is unsteered, an intervention hooks the
+                `norm_input` site (no `activation_adapter` form), or an intervention follows
+                an externally driven shared gate (an in-memory relationship that does not
+                serialize).
+        """
+        if not self.interventions:
+            raise NotFreezableError(
+                f"{type(self).__name__} has no bound interventions; call steer() before freezing."
+            )
+        entries: list[tuple[str, dict[str, Any]]] = []
+        for intervention in self.interventions:
+            if intervention.resolved_site() == "norm_input":
+                raise NotFreezableError(
+                    f"{type(self).__name__} hooks the norm_input site, which has no "
+                    "activation_adapter form; configure the layer_output intervention point "
+                    "to freeze this control."
+                )
+            if intervention.gate_driven_externally:
+                raise NotFreezableError(
+                    f"{type(self).__name__} follows an externally driven shared gate, an "
+                    "in-memory relationship that does not serialize; freeze the driving "
+                    "control's pipeline without the follower, or gate this control directly."
+                )
+            entries.append(("state_control/activation_adapter", {
+                "transform": intervention.transform,
+                "layer_ids": [int(lid) for lid in intervention.layers],
+                "hook_point": intervention.boundary,
+                "gate": intervention.gate,
+                "token_scope": intervention.scope.kind,
+                "last_k": intervention.scope.last_k,
+                "from_position": intervention.scope.from_position,
+            }))
+        return entries
 
     def requirements(self) -> Requirements:
         """Backend requirements derived from the declared interventions, per phase.

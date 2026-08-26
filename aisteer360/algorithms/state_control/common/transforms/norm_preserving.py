@@ -54,6 +54,14 @@ class NormPreservingTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return self._inner.covered_layer_ids
 
+    def to_config(self) -> tuple[dict, object | None, BaseTransform | None]:
+        """The `(params, artifact, inner)` serialized form under the `norm_preserving` kind."""
+        return {}, None, self._inner
+
+    @classmethod
+    def from_config(cls, params: dict, *, artifact=None, inner=None) -> "NormPreservingTransform":
+        """Rebuild a `norm_preserving` wrapper around its decoded inner transform."""
+        return cls(inner)
 
     def modifier_wire_kind(self, core_kind: str) -> str | None:
         """`"norm_preserving"`, or None over a per-head core.

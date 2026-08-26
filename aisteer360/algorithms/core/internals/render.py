@@ -1,7 +1,7 @@
 """Render `ContrastivePairs` into model-ready text.
 
 The general, tokenizer-level rendering primitives live in
-`aisteer360.utils.rendering`; this module only adds the data-specific renderer
+`aisteer360.utils.rendering`; this module adds the data-specific renderer
 that turns a `ContrastivePairs` into model-ready text under a `PromptFormat`.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RenderedContrastive:
-    """Rendered text for a ContrastivePairs, plus tokenization policy.
+    """Rendered text for a `ContrastivePairs`, plus tokenization policy.
 
     Attributes:
         pos_texts: Rendered positive examples.
@@ -54,12 +54,12 @@ def render_contrastive(
 
     Args:
         tokenizer: Tokenizer whose chat template defines the rendering.
-        data: ContrastivePairs (with `positives`, `negatives`, and optional
-            `prompts`) or LabeledExamples.
+        data: `ContrastivePairs` (with `positives`, `negatives`, and optional
+            `prompts`) or `LabeledExamples`.
         mode: Requested rendering policy.
 
     Returns:
-        A RenderedContrastive with rendered texts and tokenization policy.
+        A `RenderedContrastive` with rendered texts and tokenization policy.
 
     Raises:
         ValueError: If `mode` is `"chat_completion"` and `data` is
@@ -107,7 +107,7 @@ def render_contrastive(
             for p, c in zip(prompts, data.negatives)
         ]
         prompt_texts = [render_for_model(tokenizer, prompt=p, mode="chat_prompt") for p in prompts]
-    else:  # chat_prompt: each positive/negative IS a standalone prompt
+    else:  # chat_prompt mode, where each positive/negative is a standalone prompt
         pos = [render_for_model(tokenizer, prompt=t, mode="chat_prompt") for t in data.positives]
         neg = [render_for_model(tokenizer, prompt=t, mode="chat_prompt") for t in data.negatives]
         prompt_texts = None  # no separate prompt/completion split

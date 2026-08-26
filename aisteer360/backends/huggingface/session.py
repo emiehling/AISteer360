@@ -20,6 +20,7 @@ from aisteer360.algorithms.core.execution.payloads import (
     ScoringItem,
     StackEntry,
 )
+from aisteer360.algorithms.core.internals.model_layout import text_config
 from aisteer360.algorithms.core.output import Output, infer_finish_reasons
 from aisteer360.algorithms.output_control.base import stack_generate_kwargs
 from aisteer360.algorithms.output_control.common.criteria import StopOnSubstring, StopOnTokens
@@ -150,20 +151,22 @@ class ExclusiveSession:
         """Structural facts derived from the loaded model, computed on every access so weight
         edits and model replacements are always reflected.
 
-        `num_layers` comes from the resolved decoder layer list, `hidden_size` and
-        `num_attention_heads` from the model config, `head_dim` from the config with a
-        `hidden_size // num_attention_heads` fallback, `dtype` from the model, and
-        `model_fingerprint` from the weight/config fingerprint.
+        `num_layers` comes from the resolved decoder layer list; `hidden_size`,
+        `num_attention_heads`, and `head_dim` come from the text config (`text_config(model)`,
+        the text sub-config on composite multimodal models), with a
+        `hidden_size // num_attention_heads` fallback for `head_dim`; `dtype` from the model;
+        `model_fingerprint` from the weight/config fingerprint; and `model_type` from the
+        composite config, so a multimodal checkpoint keeps its wrapper `model_type`.
         """
         model = self.model
 
         from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 
         _, layer_names = get_model_layer_list(model)
-        config = model.config
-        hidden_size = config.hidden_size
-        num_heads = getattr(config, "num_attention_heads", None)
-        head_dim = getattr(config, "head_dim", None)
+        text_cfg = text_config(model)
+        hidden_size = text_cfg.hidden_size
+        num_heads = getattr(text_cfg, "num_attention_heads", None)
+        head_dim = getattr(text_cfg, "head_dim", None)
         if head_dim is None and num_heads:
             head_dim = hidden_size // num_heads
         return ModelFacts(
@@ -173,7 +176,7 @@ class ExclusiveSession:
             head_dim=head_dim,
             dtype=str(model.dtype).removeprefix("torch."),
             model_fingerprint=model_fingerprint(model),
-            model_type=getattr(config, "model_type", None),
+            model_type=getattr(model.config, "model_type", None),
             model_ref=getattr(model, "name_or_path", None),
         )
 

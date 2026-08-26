@@ -510,25 +510,22 @@ class TestGetModelLayerList:
 
     def test_llama_style_model(self, model_and_tokenizer):
         """Test layer extraction from llama-style model."""
+        from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
+
         model, _ = model_and_tokenizer
         model_type = model.config.model_type
 
-        # skip if not the right architecture
-        if not (hasattr(model, "model") and hasattr(model.model, "layers")) and not (
-            hasattr(model, "transformer") and hasattr(model.transformer, "h")
-        ):
+        # skip if the resolver does not recognize the architecture
+        try:
+            layout = resolve_model_layout(model)
+        except ValueError:
             pytest.skip(f"Model {model_type} has unknown architecture")
 
         modules, names = get_model_layer_list(model)
 
         assert len(modules) > 0
         assert len(names) == len(modules)
-
-        # check naming convention
-        if hasattr(model, "model") and hasattr(model.model, "layers"):
-            assert all(n.startswith("model.layers.") for n in names)
-        else:
-            assert all(n.startswith("transformer.h.") for n in names)
+        assert all(n.startswith(layout.layer_prefix + ".") for n in names)
 
 
 class TestProjectedCosineSimilarity:

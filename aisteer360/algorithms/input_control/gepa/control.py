@@ -87,15 +87,43 @@ class GEPA(InputControl):
     proposer_gen_kwargs: dict | None = None
     progress_callback: Any = None
     seed: int | None = None
+    memory: TextMemory | None = None
 
     # state
-    memory: TextMemory | None = None
     tokenizer: Any = None
     _formatter: SystemPromptFormatter | None = None
 
+    def export_state(self) -> dict:
+        """The optimized instruction memory under the `"memory"` key (after `steer()`)."""
+        return {"memory": self.memory} if self.memory is not None else {}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class frozen form: the recipe args with `memory=` set to the optimized
+        memory (the search-only args stay inert)."""
+        from dataclasses import fields
+
+        kwargs = {f.name: getattr(self.args, f.name) for f in fields(self.args) if f.init}
+        kwargs["memory"] = state["memory"]
+        return "input_control/gepa", kwargs
+
+    def fit_identity(self):
+        """The optimizer-relevant args (everything except `memory` and `progress_callback`),
+        or None when the recipe already carries a memory."""
+        from dataclasses import fields
+
+        if self.args.memory is not None:
+            return None
+        return {
+            f.name: getattr(self.args, f.name)
+            for f in fields(self.args) if f.init and f.name not in ("memory", "progress_callback")
+        }
+
     def steer_access(self) -> ModelAccess:
         """`ModelAccess.ROLLOUTS`; task rollouts and reflection generate through the session,
-        and adaptation is a formatter."""
+        and adaptation is a formatter. With a precomputed `memory`, steering is model-free
+        (`ModelAccess.FACTS`)."""
+        if getattr(getattr(self, "args", None), "memory", None) is not None:
+            return ModelAccess.FACTS
         return ModelAccess.ROLLOUTS
 
     def steer(
@@ -105,8 +133,13 @@ class GEPA(InputControl):
         session=None,
         **kwargs,
     ) -> None:
-        rng = random.Random(self.seed) if self.seed is not None else random.Random()
         self.tokenizer = tokenizer
+        if self.args.memory is not None:
+            self.memory = self.args.memory
+            self._formatter = SystemPromptFormatter()
+            return
+
+        rng = random.Random(self.seed) if self.seed is not None else random.Random()
         task_lm = SessionLM(session) if session is not None else model
 
         if self.reflection_lm is None:

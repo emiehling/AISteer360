@@ -44,10 +44,13 @@ class CAA(InterventionControl):
 
     def _configure(self):
         if self.steering_vector is not None:
-            artifact = self.steering_vector.clone()
-            if self.normalize_vector:
-                artifact = artifact.normalized()
-            source = _Precomputed(artifact)
+            if isinstance(self.steering_vector, SteeringVector):
+                artifact = self.steering_vector.clone()
+                if self.normalize_vector:
+                    artifact = artifact.normalized()
+                source = _Precomputed(artifact)
+            else:
+                source = self.steering_vector
         else:
             source = ContrastiveFit(
                 data=self.data,
@@ -88,3 +91,26 @@ class CAA(InterventionControl):
             directions=core.directions,
             meta=core.artifact_meta or {},
         )
+
+    def export_state(self) -> dict:
+        """The bound steering vector under the `"steering_vector"` key (after `steer()`)."""
+        vector = self._steering_vector
+        return {"steering_vector": vector} if vector is not None else {}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class frozen form: the bound vector plus the resolved layer.
+
+        The frozen args carry the exported `steering_vector`, the resolved `layer_id`, and the
+        recipe's application parameters; `normalize_vector` is cleared since the exported
+        vector is already in its applied form.
+        """
+        return "state_control/caa", {
+            "steering_vector": state["steering_vector"],
+            "layer_id": self._layer_id,
+            "multiplier": self.multiplier,
+            "token_scope": self.token_scope,
+            "last_k": self.last_k,
+            "from_position": self.from_position,
+            "normalize_vector": False,
+            "use_norm_preservation": self.use_norm_preservation,
+        }

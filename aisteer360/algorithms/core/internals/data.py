@@ -40,20 +40,21 @@ class ContrastivePairs:
 
 
 def as_contrastive_pairs(x) -> ContrastivePairs:
-    """Normalize input to ContrastivePairs.
+    """Normalize input to `ContrastivePairs`.
 
     Accepts:
-        - An existing ContrastivePairs instance (returned as-is).
-        - A dict with keys "positives", "negatives", and optionally "prompts".
+
+        - An existing `ContrastivePairs` instance (returned as-is).
+        - A dict with keys `"positives"`, `"negatives"`, and optionally `"prompts"`.
 
     Args:
         x: Input to normalize.
 
     Returns:
-        ContrastivePairs instance.
+        A `ContrastivePairs` instance.
 
     Raises:
-        TypeError: If input is neither ContrastivePairs nor a suitable dict.
+        TypeError: If input is neither `ContrastivePairs` nor a suitable dict.
     """
     if isinstance(x, ContrastivePairs):
         return x
@@ -66,7 +67,7 @@ def as_contrastive_pairs(x) -> ContrastivePairs:
 class LabeledExamples:
     """Independent positive/negative text data with binary labels.
 
-    The positive and negative lists need not be the same length. Useful for methods where
+    The positive and negative lists need not be the same length. Applies to methods where
     positive and negative examples are independent and unpaired, and the estimator concatenates
     them.
 
@@ -84,21 +85,22 @@ class LabeledExamples:
 
 
 def as_labeled_examples(x) -> LabeledExamples:
-    """Normalize input to LabeledExamples.
+    """Normalize input to `LabeledExamples`.
 
     Accepts:
-        - An existing LabeledExamples instance (returned as-is).
-        - A ContrastivePairs instance (converted; pairing is dropped).
-        - A dict with keys "positives" and "negatives".
+
+        - An existing `LabeledExamples` instance (returned as-is).
+        - A `ContrastivePairs` instance (converted; pairing is dropped).
+        - A dict with keys `"positives"` and `"negatives"`.
 
     Args:
         x: Input to normalize.
 
     Returns:
-        LabeledExamples instance.
+        A `LabeledExamples` instance.
 
     Raises:
-        TypeError: If input is not LabeledExamples, ContrastivePairs, or a suitable dict.
+        TypeError: If input is not `LabeledExamples`, `ContrastivePairs`, or a suitable dict.
     """
     if isinstance(x, LabeledExamples):
         return x

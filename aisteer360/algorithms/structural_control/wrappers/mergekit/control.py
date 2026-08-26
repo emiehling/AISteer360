@@ -54,6 +54,22 @@ class MergeKit(StructuralControl):
         """The merged checkpoint directory written (or reused) by `steer()`."""
         return CheckpointArtifact(path=str(self.args.out_path))
 
+    def export_state(self) -> dict:
+        """The merged checkpoint under the `"artifact"` key, for freezing."""
+        return {"artifact": self.export_artifact()}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """The merged checkpoint as a `load_checkpoint` entry."""
+        return "structural_control/load_checkpoint", {"path": state["artifact"]}
+
+    def fit_identity(self) -> dict:
+        """The merge-relevant args projection: the merge configuration and the dtype."""
+        return {
+            "config_path": str(self.args.config_path) if self.args.config_path else None,
+            "config_dict": self.args.config_dict,
+            "dtype": self.args.dtype,
+        }
+
     def steer(
             self,
             model: PreTrainedModel,

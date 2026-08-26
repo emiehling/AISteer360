@@ -189,6 +189,39 @@ class TestArchAndFailFast:
         for path in pasta._attn_module_names.values():
             model.get_submodule(path)
 
+    def test_composite_wrapper_resolves_nested_attention(self):
+        """PASTA resolves the text-decoder attention modules on a composite multimodal wrapper."""
+        from tests.utils.tiny_models import tiny_gemma3_conditional
+
+        model = tiny_gemma3_conditional(num_layers=4, hidden=32, heads=4)
+        tokenizer = wordlevel_tokenizer()
+        _, pasta = _pasta_pipeline(model, tokenizer, head_config=[0, 1], alpha=2.0)
+        assert pasta._attn_module_names == {
+            0: "model.language_model.layers.0.self_attn",
+            1: "model.language_model.layers.1.self_attn",
+        }
+        for path in pasta._attn_module_names.values():
+            model.get_submodule(path)
+
+    def test_lora_wrapper_resolves_adapted_attention(self):
+        """PASTA resolves attention modules through an unmerged LoRA wrapper and generates."""
+        from tests.utils.tiny_models import tiny_lora
+
+        model = tiny_lora(tiny_llama(num_layers=3, hidden=32, heads=4))
+        tokenizer = wordlevel_tokenizer()
+        pipeline, pasta = _pasta_pipeline(model, tokenizer, head_config=[0, 1], alpha=2.0)
+        assert pasta._attn_module_names == {
+            0: "base_model.model.model.layers.0.self_attn",
+            1: "base_model.model.model.layers.1.self_attn",
+        }
+        for path in pasta._attn_module_names.values():
+            model.get_submodule(path)
+        input_ids = tokenizer("the cat sat on mat", return_tensors="pt").input_ids
+        out = pipeline.generate(
+            input_ids=input_ids, max_new_tokens=4, runtime_kwargs={"substrings": ["cat sat"]},
+        )
+        assert out.size(1) >= 1
+
     def test_flash_attention_fails_fast_at_steer(self):
         """A model reporting flash_attention_2 raises an informative error at steer(), not at gen."""
         model = tiny_llama()
@@ -199,6 +232,58 @@ class TestArchAndFailFast:
         pipeline = SteeringPipeline(controls=[pasta], model=model, tokenizer=tokenizer)
         with pytest.raises(ValueError, match="eager"):
             pipeline.steer()
+
+
+class TestHeadGeometryPerLayer:
+    """PASTA sizes its per-layer head map and synthesized mask from each layer's own head count."""
+
+    def test_num_heads_by_layer_matches_config_on_uniform_model(self):
+        model = tiny_llama(num_layers=4, hidden=32, heads=4)
+        tokenizer = wordlevel_tokenizer()
+        _, pasta = _pasta_pipeline(model, tokenizer, head_config=[0, 1, 2, 3], alpha=2.0)
+        assert pasta._num_heads_by_layer == {0: 4, 1: 4, 2: 4, 3: 4}
+
+    def test_heterogeneous_num_heads_by_layer(self):
+        """On a stub whose layers alternate head dim, the head count differs across layers."""
+        from tests.utils.tiny_models import heterogeneous_head_stub
+
+        stub = heterogeneous_head_stub(num_layers=4, hidden=32)  # head_dim 4/8 -> heads 8/4
+        pasta = PASTA(head_config=[0, 1], alpha=2.0)
+        pasta.steer(stub, wordlevel_tokenizer())
+        assert pasta._num_heads_by_layer[0] == 8
+        assert pasta._num_heads_by_layer[1] == 4
+
+    def test_head_index_rejected_per_layer(self):
+        """A head index valid on a wider layer but not a narrower one is rejected for that layer."""
+        from tests.utils.tiny_models import heterogeneous_head_stub
+
+        stub = heterogeneous_head_stub(num_layers=4, hidden=32)  # layer 0 has 8 heads, layer 1 has 4
+        pasta = PASTA(head_config={0: [7], 1: [7]}, alpha=2.0)  # head 7 valid on layer 0, not layer 1
+        with pytest.raises(ValueError, match="out of range for layer 1"):
+            pasta.steer(stub, wordlevel_tokenizer())
+
+    def test_synthesized_mask_head_axis_follows_layer(self):
+        """`_attention_pre_hook` sizes the synthesized mask's head axis by the layer's head count."""
+        from tests.utils.tiny_models import heterogeneous_head_stub
+
+        stub = heterogeneous_head_stub(num_layers=4, hidden=32)
+        pasta = PASTA(head_config=[0, 1], alpha=2.0, scale_position="include")
+        pasta.steer(stub, wordlevel_tokenizer())
+        pasta._scale_constant = torch.tensor([pasta.alpha]).log()  # normally set lazily in get_hooks
+
+        token_ranges = [torch.tensor([[0, 1]])]
+        for layer_idx, expected_heads in ((0, 8), (1, 4)):
+            hidden_states = torch.zeros(1, 3, 32)
+            _, out_kwargs = pasta._attention_pre_hook(
+                module=None,
+                input_args=(hidden_states,),
+                input_kwargs={},
+                head_idx=pasta._head_map[layer_idx],
+                token_ranges=token_ranges,
+                input_len=3,
+                layer_idx=layer_idx,
+            )
+            assert out_kwargs["attention_mask"].shape[1] == expected_heads
 
 
 class TestSideEffects:

@@ -6,7 +6,7 @@ from transformers import PreTrainedModel
 
 
 def model_fingerprint(model: PreTrainedModel) -> str:
-    """Deterministic identity digest of a model's configuration, dtype, and sampled weights.
+    """Compute a deterministic digest identifying a model, from its configuration, dtype, and a sample of its weights.
 
     The digest is a sha256 over (a) `model.config.to_json_string()`, (b) `str(model.dtype)`, and
     (c) for up to 8 evenly spaced named parameters, the parameter name plus its first 64 elements

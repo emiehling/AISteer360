@@ -13,18 +13,18 @@ maintainers     = [
 keywords = [
     "language models",
     "steerability",
+    "composite steering",
     "prompt engineering",
     "activation steering",
     "parameter-efficient fine-tuning",
     "decoding-time alignment"
 ]
 
-requires-python = ">=3.11.0"
-
 classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Software Development",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "License :: OSI Approved :: Apache Software License",

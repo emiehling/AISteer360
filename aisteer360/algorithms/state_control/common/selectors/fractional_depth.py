@@ -1,4 +1,6 @@
 """Selector that picks a layer at a given fractional depth of the model."""
+from typing import ClassVar
+
 from .base import BaseSelector
 
 
@@ -15,6 +17,8 @@ class FractionalDepthSelector(BaseSelector[int]):
             very early layers should be excluded (e.g., ActAdd avoids layer 0).
     """
 
+    component_kind: ClassVar[str] = "fractional_depth"
+
     def __init__(self, fraction: float, minimum: int = 0):
         if not 0.0 < fraction < 1.0:
             raise ValueError(f"fraction must be in (0, 1), got {fraction}.")
@@ -22,6 +26,15 @@ class FractionalDepthSelector(BaseSelector[int]):
             raise ValueError(f"minimum must be >= 0, got {minimum}.")
         self.fraction = fraction
         self.minimum = minimum
+
+    def to_config(self) -> dict:
+        """The selector's serialized parameters."""
+        return {"fraction": float(self.fraction), "minimum": int(self.minimum)}
+
+    @classmethod
+    def from_config(cls, params: dict) -> "FractionalDepthSelector":
+        """Rebuild the selector from its serialized parameters."""
+        return cls(fraction=params["fraction"], minimum=params.get("minimum", 0))
 
     def select(self, *, num_layers: int) -> int:
         """Compute and return the target layer id.
@@ -43,6 +56,17 @@ class LateThirdSelector(BaseSelector[list[int]]):
 
     The default behavior-layer heuristic for conditional activation steering.
     """
+
+    component_kind: ClassVar[str] = "late_third"
+
+    def to_config(self) -> dict:
+        """The selector's serialized parameters (none)."""
+        return {}
+
+    @classmethod
+    def from_config(cls, params: dict) -> "LateThirdSelector":
+        """Rebuild the selector from its serialized parameters."""
+        return cls()
 
     def select(self, *, num_layers: int) -> list[int]:
         """Return the last third of the layer indices.

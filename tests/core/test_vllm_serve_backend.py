@@ -711,3 +711,30 @@ class TestSharedFsVisibility:
 
         monkeypatch.setattr(VLLMServeBackend, "_head_ok", _fail)
         backend.stage_artifacts({"sha256:" + "ab" * 32: {}})
+
+
+class TestConfigLayout:
+    """`_config_layout` reads the text sub-config of a composite checkpoint from disk."""
+
+    def test_gemma3_config_dir_reports_text_facts(self, tmp_path):
+        from transformers import Gemma3Config, Gemma3TextConfig, SiglipVisionConfig
+
+        from aisteer360.backends.vllm.backend import _config_layout
+
+        text = Gemma3TextConfig(
+            hidden_size=32, intermediate_size=64, num_hidden_layers=4,
+            num_attention_heads=4, num_key_value_heads=4, head_dim=8, vocab_size=100,
+        )
+        vision = SiglipVisionConfig(
+            hidden_size=16, intermediate_size=32, num_hidden_layers=1, num_attention_heads=2,
+            image_size=16, patch_size=8,
+        )
+        Gemma3Config(text_config=text, vision_config=vision, mm_tokens_per_image=4).save_pretrained(tmp_path)
+
+        facts = _config_layout(str(tmp_path))
+        assert facts is not None
+        assert facts.num_layers == 4
+        assert facts.hidden_size == 32
+        assert facts.num_attention_heads == 4
+        assert facts.head_dim == 8
+        assert facts.model_type == "gemma3"

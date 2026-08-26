@@ -1,4 +1,4 @@
-"""Ambient activation statistics: per-layer moments and residual-norm characterization."""
+"""Estimate per-layer activation moments and characterize residual-stream norms."""
 import hashlib
 import json
 import logging
@@ -70,11 +70,11 @@ class ActivationStats:
     """Per-layer mean and variance of a model's ambient activation distribution.
 
     The statistics support per-coordinate centering and scaling of pooled activations
-    (`standardize`), the whitening used by diagonal-LDA probe fitting. Covariance is diagonal:
-    the dominant pathologies of residual-stream geometry (a large shared component in every
+    (`standardize`), the whitening used by diagonal-LDA probe fitting. Covariance is diagonal,
+    since the dominant effects in residual-stream geometry (a large shared component in every
     activation and rogue dimensions dominating inner products) are axis-aligned, so per-coordinate
-    centering and scaling removes most of the damage, and a full covariance is fragile to estimate
-    and expensive to invert at a few thousand samples.
+    centering and scaling removes most of the effect, and a full covariance is hard to estimate
+    reliably and expensive to invert at a few thousand samples.
 
     Under `pooling="tokens"`, every retained real token position is one sample of the ambient
     distribution, and `exclude_first_n` (default 1) drops the leading real positions per sequence,
@@ -420,12 +420,12 @@ def measure_residual_norms(
         location: Residual-stream boundary each layer key maps to. `"layer_output"` (default)
             measures the output of each layer; `"layer_input"` measures the input of each layer, the
             boundary a layer pre-hook observes.
-        stat: Aggregation over the pooled real-token norms, `"median"` (default, robust) or `"mean"`.
+        stat: Aggregation over the pooled real-token norms, `"median"` (default) or `"mean"`.
         prompt_format: How each prompt is rendered into model-ready text (via `render_for_model`).
         batch_size: Batch size for the extraction forward passes.
 
     Returns:
-        Mapping from layer id to the aggregated per-token residual norm (a plain float).
+        Mapping from layer id to the aggregated per-token residual norm, as a Python `float`.
 
     Raises:
         ValueError: If `prompts` is empty, `stat` is unsupported, or any requested layer id is out of

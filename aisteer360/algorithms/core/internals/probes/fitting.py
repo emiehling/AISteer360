@@ -16,6 +16,7 @@ from aisteer360.algorithms.core.internals.fingerprint import (
     model_fingerprint,
     session_artifact_identity,
 )
+from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
 from aisteer360.algorithms.core.internals.probes.probe import POLARITY_MARKER, Probe
 from aisteer360.algorithms.core.internals.render import render_contrastive
@@ -198,7 +199,7 @@ def _resolve_num_layers(model: PreTrainedModel | None, session) -> int:
         except (AttributeError, RuntimeError):
             live_model = None
     if live_model is not None:
-        return int(live_model.config.num_hidden_layers)
+        return resolve_model_layout(live_model).num_layers
     if session is not None and getattr(session, "layout", None) is not None:
         return int(session.layout.num_layers)
     raise ValueError("Layer resolution requires a live model or a capture-capable session.")
@@ -439,8 +440,8 @@ def fit_probe(
         cal_pos_scores = cal_pos_features[lid] @ w
         cal_neg_scores = cal_neg_features[lid] @ w
         if float(cal_pos_scores.mean()) < float(cal_neg_scores.mean()):
-            # the fit-set direction anti-generalizes to the calibration pool at this
-            # layer; record the layer as unusable and keep sweeping rather than
+            # the fit-set direction does not generalize to the calibration pool at
+            # this layer; record the layer as unusable and keep sweeping rather than
             # aborting the whole fit (calibrate_bias would raise on these scores)
             sweep.append({
                 "layer_id": lid,

@@ -134,6 +134,31 @@ class AdditiveTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.directions.keys()) if self.directions is not None else None
 
+    def to_config(self) -> tuple[dict, object | None, "BaseTransform | None"]:
+        """The `(params, artifact, inner)` serialized form under the `additive` kind.
+
+        The artifact slot carries the concrete directions as a `SteeringVector` when bound,
+        or the unresolved source when not.
+        """
+        params = {"strength": float(self.strength), "alignment": int(self.alignment),
+                  "positional": bool(self.positional)}
+        if self.directions is not None:
+            artifact = SteeringVector(
+                model_type="unknown", directions=dict(self.directions), meta=dict(self._artifact_meta or {}),
+            )
+        else:
+            artifact = self._source
+        return params, artifact, None
+
+    @classmethod
+    def from_config(cls, params: dict, *, artifact=None, inner=None) -> "AdditiveTransform":
+        """Rebuild an `additive` transform from its serialized form."""
+        return cls(
+            artifact,
+            strength=params.get("strength", 1.0),
+            alignment=params.get("alignment", 0),
+            positional=params.get("positional", False),
+        )
 
     def wire_plan(self) -> str | None:
         """`"additive"` for broadcast transforms; None when `positional` is True.

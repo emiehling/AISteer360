@@ -17,6 +17,7 @@ from aisteer360.algorithms.state_control.angular_steering.control import Angular
 from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
 from aisteer360.algorithms.state_control.common.transforms import AlignmentAdaptiveTransform, RotationTransform
 from tests.utils.sweep import build_param_grid
+from tests.utils.tiny_models import tiny_gemma3_conditional, tiny_llama, wordlevel_tokenizer
 
 PROMPT_TEXT = "Give me a short set of instructions to follow when you respond."
 
@@ -308,3 +309,30 @@ def test_angular_estimation_path(model_and_tokenizer, device: torch.device):
     assert isinstance(out_ids, torch.Tensor)
     assert out_ids.ndim == 2
     assert out_ids.size(1) >= 1
+
+
+def _norm_suffixes(control, model, num_layers):
+    """The distinct sub-module suffixes the `norm_input` pre-hooks target after steering."""
+    control_pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=wordlevel_tokenizer())
+    control_pipeline.steer()
+    input_ids = torch.arange(1, 5, dtype=torch.long).unsqueeze(0)
+    hooks = control.get_hooks(input_ids, {}, model=model)
+    return {spec["module"].rsplit(".", 1)[-1] for spec in hooks["pre"]}
+
+
+def test_norm_input_site_targets_gemma_residual_norms():
+    """On a Gemma wrapper, the default norm_input pre-hooks target the two Gemma residual norms."""
+    model = tiny_gemma3_conditional(num_layers=4, hidden=16, heads=2)
+    steering_vector = _basis_vector(16, 4, seed=17)
+    angular = AngularSteering(steering_vector=steering_vector, target_degree=90.0)
+    suffixes = _norm_suffixes(angular, model, num_layers=4)
+    assert suffixes == {"input_layernorm", "pre_feedforward_layernorm"}
+
+
+def test_norm_input_site_targets_llama_residual_norms():
+    """On Llama, the default norm_input pre-hooks target the two Llama residual norms."""
+    model = tiny_llama(num_layers=4, hidden=16, heads=2)
+    steering_vector = _basis_vector(16, 4, seed=18)
+    angular = AngularSteering(steering_vector=steering_vector, target_degree=90.0)
+    suffixes = _norm_suffixes(angular, model, num_layers=4)
+    assert suffixes == {"input_layernorm", "post_attention_layernorm"}

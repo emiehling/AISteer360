@@ -100,9 +100,9 @@ class CPO(InputControl):
     refinement_meta_prompt: str | None = None
     proposer_gen_kwargs: dict | None = None
     eval_gen_kwargs: dict | None = None
+    memory: CPOMemory | None = None
 
     # method-owned state
-    memory: CPOMemory | None = None
     tokenizer: Any = None
     _formatter: SystemPromptFormatter | None = None
     _proposer: LLMMetaPromptProposer | None = None
@@ -125,10 +125,37 @@ class CPO(InputControl):
     def steer_access(self) -> ModelAccess:
         """`ModelAccess.ROLLOUTS` with `prompt_lm` supplied (offline data generation rides the
         session); `ModelAccess.MODULE` with `prompt_lm` unset (the live model is bound as the
-        proposer)."""
+        proposer). A precomputed `memory` with `prompt_lm` supplied needs only structural
+        facts (`ModelAccess.FACTS`)."""
         if self.prompt_lm is not None:
-            return ModelAccess.ROLLOUTS
+            has_memory = getattr(getattr(self, "args", None), "memory", None) is not None
+            return ModelAccess.FACTS if has_memory else ModelAccess.ROLLOUTS
         return ModelAccess.MODULE
+
+    def export_state(self) -> dict:
+        """The trained scorer memory under the `"memory"` key (after `steer()`)."""
+        return {"memory": self.memory} if self.memory is not None else {}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class frozen form: the recipe args with `memory=` set to the trained memory
+        (the training-only args stay inert)."""
+        from dataclasses import fields
+
+        kwargs = {f.name: getattr(self.args, f.name) for f in fields(self.args) if f.init}
+        kwargs["memory"] = state["memory"]
+        return "input_control/cpo", kwargs
+
+    def fit_identity(self):
+        """The optimizer-relevant args (everything except `memory` and the per-query search
+        knobs), or None when the recipe already carries a memory."""
+        from dataclasses import fields
+
+        if self.args.memory is not None:
+            return None
+        return {
+            f.name: getattr(self.args, f.name)
+            for f in fields(self.args) if f.init and f.name != "memory"
+        }
 
     def steer(
         self,
@@ -158,6 +185,14 @@ class CPO(InputControl):
             gen_kwargs=self.proposer_gen_kwargs,
             parse_fn=parse_concise_instruction,
         )
+
+        if self.args.memory is not None:
+            memory = self.args.memory
+            if isinstance(memory, (str, Path)):
+                memory = CPOMemory.load(Path(memory), encoder=self._encoder)
+            self.memory = memory
+            self._formatter = SystemPromptFormatter()
+            return
 
         task_lm = model if model is not None else (SessionLM(session) if session is not None else None)
         offline_data = self.offline_data or self._generate_offline_data(task_lm, tokenizer)

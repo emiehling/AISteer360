@@ -42,20 +42,27 @@ Vocabulary used throughout the codebase:
 ```
 aisteer360/
 ├── algorithms/
-│   ├── core/                    # SteeringPipeline, registry, ControlSpec, BaseArgs, shared types;
-│   │   │                        # identity.py (config identity), sweeps.py (configuration sweeps,
-│   │   │                        # PipelineFactory), scoring.py (SampleScorer)
-│   │   ├── execution/           # backend seam: spec, contracts, payloads, backend/session/registry, params, fanout
-│   │   ├── internals/           # activation capture, pooling, stats; probes/ (detection)
-│   │   └── utils/               # control merging, generation helpers, auxiliary_pass
+│   ├── core/                    # SteeringPipeline, registry, ControlSpec (specs.py), BaseArgs, BaseControl,
+│   │   │                        # Output; identity.py (config identity, trial seeds), sweeps.py
+│   │   │                        # (configuration sweeps, PipelineFactory), scoring.py (SampleScorer)
+│   │   ├── execution/           # backend seam: spec, contracts, payloads, backend/session/registry, params,
+│   │   │                        # fanout; access (ModelAccess, SteerPlan), session_utils (scoped sessions), staging
+│   │   ├── internals/           # activation capture, pooling, stats, model_layout (decoder-stack resolution,
+│   │   │                        # text_config), fingerprint, data/encoding/render; probes/ (detection)
+│   │   └── utils/               # control merging, generation helpers, auxiliary_pass, assembly (per-generation
+│   │                            # hook/spec/processor entry assembly)
 │   ├── input_control/           # each category: base.py + one folder per method (triplet layout below)
-│   │   └── common/             # building blocks: memory, formatters, proposers, scorers, selectors
+│   │   └── common/             # building blocks: memory, formatters, proposers, scorers, selectors, budget, pareto
 │   ├── state_control/
-│   │   └── common/             # building blocks: transforms, estimators, gating, selectors, hook runtime
+│   │   └── common/             # building blocks: intervention IR (specs.py), transforms, estimators, sources,
+│   │                            # gating, selectors, token scopes, steering vectors, hook runtime, lowering
 │   ├── output_control/          # methods incl. routed_decoding/ (control, routing.py, actions.py)
-│   │   └── common/             # building blocks: drivers, processors, scorers, values, criteria
-│   └── structural_control/
-│       └── wrappers/            # trl/ (sft, dpo, ppo, grpo, apo) and mergekit/
+│   │   └── common/             # building blocks: drivers, processors, scorers, values, criteria, kv_cache,
+│   │                            # candidates
+│   └── structural_control/      # load_checkpoint/ and load_lora/ (artifact loaders; frozen forms of trained
+│       └── wrappers/            # structural controls); wrappers/: trl/ (sft, dpo, ppo, grpo, apo) and mergekit/
+├── spipe/                       # .spipe serialization: SPipe, manifest format, value codec,
+│                                # content-addressed artifact store, freeze orchestration
 ├── backends/                    # huggingface/ (HFBackend, ExclusiveSession); vllm/ (VLLMBackend, VLLMServeBackend)
 ├── evaluation/                  # Inspect AI stack (optional `inspect` extra; __init__ stays empty)
 │   ├── provider.py              # ProviderOptions, SteeringPipelineModelAPI, as_inspect_model
@@ -63,28 +70,34 @@ aisteer360/
 │   ├── solvers.py               # runtime_kwargs_solver (per-sample runtime kwargs)
 │   ├── scorers.py               # sample_scorer_from_inspect (Inspect scorers as SampleScorer rewards)
 │   ├── suite.py                 # InspectSuite (task sets over eval_set)
-│   └── runner.py                # SteeringEval (configs x trials x suites, results frame)
-└── utils/                       # tokenization, rendering, thinking, optional-dependency guard
+│   ├── runner.py                # SteeringEval (configs x trials x suites, results frame, runs_frame)
+│   └── plotting.py              # summary-frame plots over runs_frame output (optional `viz` extra)
+└── utils/                       # tokenization, rendering, thinking, optional-dependency guard, verbosity
+                                 # (opt-in package logging)
 
-docs/                            # MkDocs site: home/, concepts/, tutorials/, reference/, .nav.yml
+docs/                            # MkDocs site: home/, concepts/, tutorials/ (incl. add_method_by_category/),
+                                 # reference/, .nav.yml
 examples/                        # notebooks/{algorithms,generics,studies,recipes}/, index.md
 tests/                           # controls/, core/, internals/, evaluation/, utils/; conftest.py
 ```
 
 ## Setup and commands
 
-Python 3.11+ with `uv` as the package manager:
+Python 3.12+ with `uv` as the package manager:
 
 ```bash
-uv venv --python 3.11 && uv pip install -e ".[dev]"
+uv venv --python 3.12 && uv pip install -e ".[dev]"
 source .venv/bin/activate
 ```
 
 On Windows, run the two chained commands separately. Optional extras: `merging` (MergeKit), `cpo` (econml),
 `inspect` (Inspect AI evaluation stack), `vllm` (the vLLM backends plus the `vllm_hook_plugins` core, git-pinned until
-its PyPI release), `guided` (xgrammar, for in-process constrained decoding), `all` (`cpo` plus `inspect`), `dev`
-(`all` plus the plugin core, pytest, pre-commit, notebook), `docs` (site tooling). `merging` cannot share an
-environment with `inspect` (MergeKit pins an older pydantic than Inspect requires), so it stays out of `all`.
+its PyPI release), `guided` (xgrammar, for in-process constrained decoding), `viz` (matplotlib and seaborn, for
+`evaluation/plotting.py`), `all` (`cpo`, `inspect`, and `viz`), `dev` (`all` plus the plugin core, pytest, pre-commit,
+notebook), `docs` (site tooling). `merging` cannot share an environment with `inspect` (MergeKit pins an older pydantic
+than Inspect requires), so it stays out of `all`, `dev`, `docs`, and `vllm`; `pyproject.toml` declares these as
+`[tool.uv] conflicts`. The optional-module-to-extra mapping lives in `OPTIONAL_MODULE_EXTRAS`
+(`aisteer360/utils/optional.py`).
 
 Hugging Face access uses a `.env` file at the repo root containing `HUGGINGFACE_TOKEN=hf_***` (see
 `.env.example`). Some models (e.g. `meta-llama/*`) are gated; the account behind the token needs access on the
@@ -102,7 +115,7 @@ pytest tests/controls/                    # all control tests
 pytest tests/controls/test_pasta.py       # one control
 pytest tests/core/ tests/internals/       # pipeline, registry, probes
 pre-commit install                        # once per clone
-pre-commit run --all-files                # detect-secrets, whitespace, isort (black profile)
+pre-commit run --all-files                # detect-secrets, whitespace/EOF fixers, large files, isort (black profile)
 uv pip install -e ".[docs]" && uv run mkdocs serve   # docs at localhost:8000
 ```
 
@@ -152,7 +165,7 @@ construction. For lightweight controls `steer()` only attaches artifacts like th
 | Goal | Category | Base class |
 | --- | --- | --- |
 | Change the prompt (few-shot, rewriting, prompt search) | input | `InputControl` |
-| Change the weights (fine-tune, DPO, merge) | structural | `StructuralControl` |
+| Change the weights (fine-tune, DPO, merge, load a checkpoint or adapter) | structural | `StructuralControl` |
 | Edit activations or attention at runtime | state | `StateControl` |
 | Shape decoding (rerank, guided sampling, custom loops) | output | `OutputControl` / `DecodingDriver` |
 
@@ -174,7 +187,8 @@ The registered names at the time of writing:
 - output: `best_of_n`, `budget_forcing`, `constrained_decoding`, `contrastive_decoding`, `contrastive_guidance`,
   `deal`, `dexperts`, `phased_decoding`, `rad`, `routed_decoding`, `sasa`, `search_decoding`, `stopping_rules`,
   `value_guidance`
-- structural: `mergekit`, `sft`, `dpo`, `ppo`, `grpo`, `apo` (MergeKit and TRL wrappers)
+- structural: `load_checkpoint`, `load_lora` (artifact loaders, also the frozen forms of trained structural controls
+  in a `.spipe`), `mergekit`, `sft`, `dpo`, `ppo`, `grpo`, `apo` (MergeKit and TRL wrappers)
 
 ### Pipeline semantics
 
@@ -266,7 +280,14 @@ pipeline = SteeringPipeline(
   `include_in_scoring=True` keeps scoring in-process.
 - Discarding a pipeline that booted a vLLM engine should go through `release_backends()` (or a
   `with` block over the pipeline) rather than relying on garbage collection, which is not prompt at
-  freeing the engine. `PipelineFactory` (and so `SteeringEval`) does this per configuration.
+  freeing the engine. A failed `steer()` releases the backends it constructed before re-raising, so a
+  retried steer re-boots. `PipelineFactory` (and so `SteeringEval`) releases per configuration.
+- Spec options the vLLM backends read: `hook_plugin`, `artifact_dir`, `engine_kwargs` (offline engine),
+  `base_url`, `api_key`, `max_concurrency`, `request_timeout`, `max_retries`, `retry_backoff` (server),
+  and `tokenizer_name_or_path` / `trust_remote_code` for the client-side tokenizer. Options must be plain
+  data; `BackendSpec` canonicalizes them and its hash is the backend identity. A spec combining
+  `hook_plugin` with speculative decoding, or an offline `hook_plugin` engine with
+  `enforce_eager=False`, is rejected at construction.
 
 ### Composition rules
 
@@ -282,6 +303,21 @@ pipeline = SteeringPipeline(
   versus add then ablate) are order sensitive.
 - Structural controls thread the model: each receives the model returned by the previous one, with no implicit
   reconciliation between stages.
+
+State controls and hidden-state capture resolve the decoder stack at one of the roots `model.layers` (text-only
+decoder models: Llama, Mistral, Qwen, Gemma text), `model.language_model.layers` (composite multimodal wrappers such
+as Gemma 3/4 and Qwen3.5 loaded under `AutoModelForCausalLM`), and `transformer.h` (GPT-2), selecting the per-layer
+naming convention (`llama_style`, `gemma_style`, `gpt2_style`) whose norm markers exist on the first decoder layer and
+whose attention module exists on at least one layer. A hybrid stack that interleaves attention layers with another
+token mixer (Qwen3.5 and Qwen3-Next, where three Gated DeltaNet `linear_attn` layers precede each `self_attn` layer)
+resolves to its attention layers' family, with `ModelLayout.attention_layer_ids` recording which layers carry
+attention. Residual-stream controls (`caa`, `act_add`, `angular_steering`, `activation_adapter`) and hidden-state
+capture work unchanged on such a stack; `head_geometry`, o_proj-site interventions, and `pasta` refuse the other
+layers with a message naming the attention layers, and `iti` refuses hybrid stacks. A multimodal checkpoint is steered
+on its text decoder under text-only prompting; images and audio stay out. An unmerged LoRA adapter
+(`LoadLoRA(merge=False)`, or a TRL LoRA run without `merge_lora_after_train`) is hooked through the PEFT wrapper, so a
+state control listed after it steers the adapted model. Register a detector with `register_layout_detector` (from
+`aisteer360.algorithms.core.internals`) for an architecture not on this list.
 
 ### Runtime kwargs
 
@@ -300,6 +336,30 @@ pipeline.generate(
     runtime_kwargs={"substrings": ["The answer must be in JSON."]},  # e.g. pasta's emphasis spans
     max_new_tokens=128,
 )
+```
+
+### Saving and loading pipelines (`.spipe`)
+
+`pipeline.to_spipe()` serializes a pipeline as an `SPipe`: the model reference plus the controls as constructed
+(the recipe), and, once the pipeline is steered, the frozen resolution (fitted vectors, probes, adapters, optimized
+prompts) in a content-addressed artifact store with a lock section (fingerprints, per-fit digests).
+`spipe.save(path)` writes a zip when `path` ends in `.spipe` and a directory otherwise; `artifacts="thin"` writes the
+manifest only, with artifact ids resolved at load through `artifact_store=`. `SPipe.load(path)` reads either form.
+`spipe.pipeline()` reconstructs a `SteeringPipeline` (frozen entries instantiate from their resolution, so `steer()` is
+cheap and model-free; `prefer="recipe"` forces re-fits instead); backend, device, dtype, and `hf_model_kwargs` stay the
+caller's. `verify()` is the model-free report, `thaw()` drops the resolution, and `allow_code=True` at load gates
+callable references, non-toolkit dataclass imports, and pickle-backed memories. Loading a stale bundle (fit-relevant
+recipe fields edited after freezing) raises unless `allow_stale=True`. Trained structural controls freeze as
+`load_checkpoint` / `load_lora` entries; intervention controls freeze as `activation_adapter` entries unless they
+declare a same-class frozen form (as `caa`, `act_add`, and `iti` do).
+
+```python
+pipeline.steer()
+pipeline.to_spipe().save("formal_tone.spipe")
+
+from aisteer360.spipe import SPipe
+loaded = SPipe.load("formal_tone.spipe").pipeline()
+loaded.steer()
 ```
 
 ### Evaluation
@@ -327,7 +387,12 @@ runner = SteeringEval(
 )
 results = runner.run()       # {config_name: [{trial_id, seed, config_id, params, suites, provenance}, ...]}
 frame = runner.results()     # one row per (config, trial, suite, task, scorer/metric)
+runs = runner.runs_frame(metrics={"accuracy": "choice/accuracy"})  # one row per (pipeline, trial)
 ```
+
+`summarize_runs` (in `evaluation/runner.py`) aggregates the per-trial frame into one row per configuration with
+`{metric}_mean` / `{metric}_std` columns, the contract every function in `evaluation/plotting.py` consumes (`viz`
+extra).
 
 Every generation flows through `pipeline.generate()`: prompts enter as `messages=` when the tokenizer has a chat
 template (so `adapt_messages` input controls fire exactly as in deployment) and as rendered `text=` otherwise, with
@@ -350,8 +415,8 @@ scorer into that shape. See `docs/tutorials/evaluate_steering_pipelines.md` for 
 authoring and grader-model guidance.
 
 The core sweep layer (`algorithms/core/sweeps.py`: `expand_configurations`, `preflight`, `PipelineFactory`;
-`algorithms/core/identity.py`: canonical config identity and trial seeds) has no Inspect dependency; the planned
-`aisteer360/optimization/` package composes the same pieces with a suite as its objective.
+`algorithms/core/identity.py`: canonical config identity and trial seeds) has no Inspect dependency; a planned
+`aisteer360/optimization/` package (not yet in the tree) is to compose the same pieces with a suite as its objective.
 
 ## Developer guide
 
@@ -435,6 +500,17 @@ steps run on a temporary in-process model that is freed before the engine starts
 handoff. Do not hold the model past `steer()` unless your generate phase requires `IN_PROCESS_TORCH`. Generate- and
 score-phase requirements are unchanged.
 
+A control whose steer step produces fits or other state must also say how it freezes into a `.spipe`. `steer_fits()`
+lists the fit artifacts the step will produce as `(artifact, artifact_class)` pairs (the steer plan reads it, and
+`"calibrated"` artifacts get cross-venue notices); `export_state()` returns the steer-time products by logical name
+(a `SteeringVector`, `Probe`, `ProbeSet`, `Memory`, `CheckpointArtifact`, `LoRAArtifact`, tensor, or on-disk `Path`);
+`frozen_form(state)` returns the `(registry method key, constructor kwargs)` of a constructor-valid frozen form, which
+may be the control's own class (`caa`) or another registered method (`activation_adapter`, `load_lora`); and
+`fit_identity()` returns the object whose canonical form digests the fit-relevant recipe inputs, so staleness
+detection excludes inert application parameters. `InterventionControl` derives all four from its template, and the
+TRL and MergeKit wrappers freeze to `load_lora` / `load_checkpoint`; a control that produces state and overrides none
+of them raises `NotFreezableError` at freeze. Controls whose recipe is their frozen form need nothing.
+
 `__init__.py` exports the discovery dict:
 
 ```python
@@ -460,21 +536,26 @@ when the dependency is absent instead of failing.
 Before writing new components, check the category's `common/` library and compose from it:
 
 - **state**: transforms (`AdditiveTransform`, `ProjectionTransform`, `RotationTransform`,
-  `HeadAdditiveTransform`, `NormPreservingTransform`, `AlignmentAdaptiveTransform`), estimators
-  (`MeanDifferenceEstimator`, `ContrastiveDirectionEstimator`, `SinglePairEstimator`, `SteeringPlaneEstimator`),
-  gating (`Gate` over an `Evidence` and a rule; readouts `AffineReadout`, `CosineReadout`,
-  `ProjectedCosineReadout`, `CallableReadout`; rules `SumThreshold`, `PerKeyThreshold`; `gate_from_probe`),
-  selectors (`FixedLayerSelector`, `FractionalDepthSelector`, `TopKHeadSelector`, `ConditionPointSelector`),
-  token scopes, `SteeringVector`, and `TransformHookRuntime`.
+  `HeadAdditiveTransform`, `NormPreservingTransform`, `AlignmentAdaptiveTransform`), artifact sources
+  (`ContrastiveFit`, `SinglePairFit`, `ConditionPointSearch`, `LayerFilteredFit`, `VerifiedPrecomputed`; each
+  declares its `access` and `artifact_class`), estimators (`MeanDifferenceEstimator`,
+  `ContrastiveDirectionEstimator`, `SinglePairEstimator`, `SteeringPlaneEstimator`), gating (`Gate` over an
+  `Evidence` and a rule; readouts `AffineReadout`, `CosineReadout`, `ProjectedCosineReadout`, `CallableReadout`;
+  rules `SumThreshold`, `PerKeyThreshold`; `gate_from_probe`), selectors (`FixedLayerSelector`,
+  `FractionalDepthSelector`, `TopKHeadSelector`, `ConditionPointSelector`), token scopes, `SteeringVector`, and
+  `TransformHookRuntime`.
 - **output**: `SearchDriver` (propose, score, keep, iterate) and `PhasedDriver` (`Fixed` / `Generated` phase plans),
-  processors (`PrefixKeyedProcessor` base, constraint, contrastive mixture, value-guided), scorers (reward model,
-  metric, majority vote), value functions, criteria (`StopOnSubstring`, `BudgetTokens`), and KV-cache utilities.
+  processors (`PrefixKeyedProcessor` base, constraint, contrastive mixture, value-guided), sequence scorers
+  (`RewardModelScorer`, `MajorityVoteScorer`, `SampleSequenceScorer` over a per-row `SampleScorer`), value
+  functions (callable, classifier, reward model, subspace margin), criteria (`StopOnSubstring`, `BudgetTokens`),
+  and KV-cache utilities.
 - **input**: memories (text, pool), formatters (system prompt, few-shot block, prepend, chat-template slot),
   proposers (LLM meta-prompt, retrieval), scorers, selectors (random, top-k, MMR, dense retrieval), and
-  budget/Pareto utilities.
-- **detection**: probes live in `core/internals/probes` (`fit_probe`, `calibrate_bias`, `ProbeSet`); prefer these
-  over ad hoc classifiers, and consume their decisions through `Probe.as_gate()` for gated interventions or
-  `routed_decoding`'s `Router` (ordered `Route`s with `P(name)` predicates) for routing.
+  `RolloutBudget` / `ParetoFrontier` utilities.
+- **detection**: probes live in `core/internals/probes` (`fit_probe`, `calibrate_bias`, `ProbeSet`, and
+  `ProbeSetFit` for fitting deferred to steer time); prefer these over ad hoc classifiers, and consume their
+  decisions through `Probe.as_gate()` for gated interventions or `routed_decoding`'s `Router` (ordered `Route`s
+  with `P(name)` predicates over the actions `respond`, `prefix`, `generate`) for routing.
 
 Published methods are frequently presets over generics (`deal` presets `SearchDriver`; `budget_forcing`
 presets `PhasedDriver`; `caa` composes an estimator with `AdditiveTransform`). Driver presets map their `Args` onto
@@ -499,20 +580,24 @@ the pipeline under evaluation. Controls that consume a per-row reward accept a `
 Fixtures in `tests/conftest.py` provide a parametrized `device` fixture (`cpu` / `cuda` / `mps`, skipping unavailable
 devices), a session-scoped `model_and_tokenizer` fixture over the tiny models in `tests/utils/ci_models.yaml`, mock
 controls for every category, and mock model/tokenizer factories. A new control needs `tests/controls/test_<method>.py` following
-the existing pattern: a parameter grid expanded with `build_param_grid()`, then build the control, wrap it in a
-`SteeringPipeline`, `steer()`, `generate()`, and assert on the output. Unit-test any new generics directly
-(`tests/controls/` for control components, `tests/internals/` for the probes substrate, `tests/core/` for pipeline
-behavior).
+the existing pattern: a parameter grid expanded with `build_param_grid()` (from `tests/utils/sweep.py`), then build the
+control, wrap it in a `SteeringPipeline`, `steer()`, `generate()`, and assert on the output. Unit-test any new generics
+directly (`tests/controls/` for control components, `tests/internals/` for the probes substrate, `tests/core/` for
+pipeline behavior).
 
 ### Code style
 
-- Python 3.11+ with modern typing (`list`, `dict`, `T | None`); line length 120; snake_case variables, PascalCase
+- Python 3.12+ with modern typing (`list`, `dict`, `T | None`); line length 120; snake_case variables, PascalCase
   classes, UPPER_SNAKE_CASE constants; descriptive, not overly abbreviated, names.
 - Comments describe current functionality only, in lowercase, with two spaces before inline comments
   (`a = 1  # some comment`) and no decorative formatting. Do not narrate edits or prior designs.
 - Use a module logger (`logger = logging.getLogger(__name__)`) instead of `print` in library code.
 - Keep imports simple; use the optional-dependency guard rather than broad try/except import fallbacks. Import order
   is enforced by isort (black profile) via pre-commit.
+- Read structural facts (`hidden_size`, `num_attention_heads`, `head_dim`, `num_hidden_layers`) through
+  `text_config(model)` (from `aisteer360.algorithms.core.internals`), which returns the text sub-config on composite
+  multimodal models; never read `model.config.hidden_size` directly, and never default a missing fact to `0`. Resolve
+  decoder module paths through `resolve_model_layout(model)` rather than by matching `model.model.layers`.
 
 ### Docstrings and documentation
 
@@ -606,11 +691,16 @@ Rules that hold regardless of task:
     reconstructs a control's configuration by inspecting another representation of it.
 14. Prompt-relative scope kinds (`after_prompt`, `last_k`) are client-side sugar; their wire form inside a driver
     generation is absolute (`from_position` at the generation's original prompt boundary).
+15. A control's freezable state is exactly `export_state()`; the frozen form returned by `frozen_form()` is
+    constructor-valid for its declared method; and the recipe is never discarded (a frozen `.spipe` entry keeps the
+    original args for provenance and `thaw()`).
 
 ## Pointers
 
-- `docs/concepts/`: conceptual guides on controls, steering pipelines, and probes.
-- `docs/tutorials/`: step-by-step guides for adding a steering method and evaluating steering pipelines.
+- `docs/concepts/`: conceptual guides on controls (with each control's `Backends` line), steering pipelines,
+  probes, and the `.spipe` format.
+- `docs/tutorials/`: step-by-step guides for adding a steering method (with per-category walkthroughs under
+  `add_method_by_category/`) and evaluating steering pipelines.
 - `examples/notebooks/`: runnable references for every method, the generic controls, and use-case studies.
 - `tests/index.md`: test-suite layout and the pattern for adding control tests.
 - Hosted documentation: <https://ibm.github.io/AISteer360/>.

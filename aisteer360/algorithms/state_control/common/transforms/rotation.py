@@ -114,6 +114,16 @@ class RotationTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.steering_vector.directions.keys()) if self.steering_vector is not None else None
 
+    def to_config(self) -> tuple[dict, object | None, "BaseTransform | None"]:
+        """The `(params, artifact, inner)` serialized form under the `rotation` kind."""
+        params = {"angle": float(self.angle), "mode": self.mode}
+        artifact = self.steering_vector if self.steering_vector is not None else self._source
+        return params, artifact, None
+
+    @classmethod
+    def from_config(cls, params: dict, *, artifact=None, inner=None) -> "RotationTransform":
+        """Rebuild a `rotation` transform from its serialized form."""
+        return cls(artifact, angle=params.get("angle", 0.0), mode=params.get("mode", "target"))
 
     def export(self, layer_id: int) -> "WireForm | None":
         """The `rotation` wire form for `layer_id` (angle, mode, and the `[2, H]` basis)."""

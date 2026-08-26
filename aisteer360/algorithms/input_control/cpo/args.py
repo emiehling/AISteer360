@@ -129,10 +129,21 @@ class CPOArgs(BaseArgs):
         metadata={"help": "Generation kwargs used during offline data scoring."},
     )
 
+    memory: Any = field(
+        default=None,
+        metadata={
+            "help": (
+                "Precomputed memory: a `CPOMemory`, or a path to a directory saved with "
+                "`CPOMemory.save`. When provided, steer() installs (or loads) it directly and "
+                "skips offline-data generation and scorer training."
+            )
+        },
+    )
+
     def __post_init__(self) -> None:
         if not isinstance(self.seed_prompt, str) or not self.seed_prompt:
             raise ValueError("`seed_prompt` must be a non-empty str.")
-        if self.offline_data is None:
+        if self.memory is None and self.offline_data is None:
             if not self.train_dataset:
                 raise ValueError("Either `offline_data` or `train_dataset` must be supplied.")
             if self.row_scorer is None:

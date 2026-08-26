@@ -110,7 +110,7 @@ class ActivationBiasHooks(HookControl):
             self,
             input_ids: torch.Tensor,
             runtime_kwargs,
-            **__
+            **kwargs,
     ) -> dict[str, list[HookSpec]]:
         """Returns a forward hook that adds alpha to a specific layer's output.
 
@@ -137,10 +137,13 @@ class ActivationBiasHooks(HookControl):
             else:  # direct tensor
                 return output + self.alpha
 
+        from aisteer360.algorithms.core.internals import resolve_model_layout
+
+        layer_name = resolve_model_layout(kwargs["model"]).layer_names[self.layer_idx]
         return {
             "pre": [],
             "forward": [{
-                "module": f"model.layers.{self.layer_idx}",
+                "module": layer_name,
                 "hook_func": fwd_hook,
             }],
             "backward": [],

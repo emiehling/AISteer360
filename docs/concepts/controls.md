@@ -87,6 +87,12 @@ Examples of structural control methods include: fine-tuning methods (full, param
 tuning, p-tuning), and model merging. Many of the structural control methods in the toolkit are implemented as wrappers
 around existing libraries. The toolkit implements:
 
+- `LoadCheckpoint` ([API reference](../reference/algorithms/structural_control/load_checkpoint.md))
+    - *Description*: installs a saved full-weights checkpoint as the pipeline model; the frozen form of trained structural controls in a [`.spipe`](spipe.md) bundle.
+    - *Backends*: HF, vLLM (the checkpoint is served).
+- `LoadLoRA` ([API reference](../reference/algorithms/structural_control/load_lora.md))
+    - *Description*: attaches a saved LoRA adapter to the pipeline model (optionally merging it into the base weights), verifying the adapter's recorded base model; the frozen form of adapter-producing structural controls in a [`.spipe`](spipe.md) bundle.
+    - *Backends*: HF, vLLM (the adapter is served).
 - `MergeKit` ([API reference](../reference/algorithms/structural_control/mergekit_wrapper.md), [notebook](../examples/notebooks/algorithms/mergekit.ipynb))
     - *Description*: model merging via MergeKit[@goddard-etal-2024-arcees]; combines multiple checkpoints with strategies such as linear interpolation, SLERP, and TIES from a YAML/dict config.
     - *Backends*: HF, vLLM (the merged checkpoint is served).
@@ -156,6 +162,22 @@ optional gate), stated once and compiled per backend: to torch hooks on the in-p
 intervention spec for engines that host activation edits, so the same steered configuration generates on vLLM. A
 configuration either serializes exactly or stays in-process only; the pipeline's `check()` reports which, with a
 verdict naming the gap and the fix. The per-control support boundary is recorded on each control's `Backends` line above.
+
+State controls resolve the decoder stack at one of the roots `model.layers` (text-only decoder models like
+Llama, Mistral, Qwen, and Gemma text), `model.language_model.layers` (composite multimodal wrappers such as Gemma 3/4
+and Qwen3.5 loaded under `AutoModelForCausalLM`), and `transformer.h` (GPT-2), and select the per-layer naming
+convention (`llama_style`, `gemma_style`, `gpt2_style`) whose norm markers exist on the first decoder layer and whose
+attention module exists on at least one layer. A hybrid stack that interleaves attention layers with another token
+mixer (Qwen3.5 and Qwen3-Next, where three Gated DeltaNet `linear_attn` layers precede each `self_attn` layer)
+resolves to its attention layers' family, with `ModelLayout.attention_layer_ids` recording which layers carry
+attention. Residual-stream controls (`CAA`, `ActAdd`, `AngularSteering`, `ActivationAdapter`) and hidden-state capture
+work unchanged on such a stack; `head_geometry`, o_proj-site interventions, and `PASTA` refuse the other layers with a
+message naming the attention layers, and `ITI` refuses hybrid stacks. A multimodal checkpoint is steered on its text
+decoder under text-only prompting (`text=`, `messages=`, `input_ids=`); images and audio are out of scope. An unmerged
+LoRA adapter (`LoadLoRA(merge=False)`, or a TRL LoRA run without `merge_lora_after_train`) is hooked through the PEFT
+wrapper, so a state control listed after such an adapter steers the adapted model. For an architecture not on this
+list, register a detector with `register_layout_detector` (from `aisteer360.algorithms.core.internals`) rather than
+waiting on a release.
 
 A gate makes an intervention conditional, and it factors into three parts: evidence (which layers are read and how
 their hidden states are pooled), a readout (how each pooled state becomes a per-prompt value, e.g. an affine score,

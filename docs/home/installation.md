@@ -1,6 +1,6 @@
 # Installation
 
-The toolkit uses [uv](https://docs.astral.sh/uv/) as the package manager (Python 3.11+). For Mac/Linux, `uv` is installed via:
+The toolkit uses [uv](https://docs.astral.sh/uv/) as the package manager (Python 3.12+). For Mac/Linux, `uv` is installed via:
 
 === "standalone installer"
     ```bash
@@ -26,7 +26,7 @@ See the uv page for details and other installation options.
 Once `uv` is installed, install the `aisteer360` package via:
 
 ```commandline
-uv venv --python 3.11 && uv pip install .
+uv venv --python 3.12 && uv pip install .
 ```
 
 The above creates a `.venv` (if missing), installs `aisteer360` (in non-editable mode), and installs all dependencies
@@ -36,16 +36,18 @@ To install an optional dependency group from `[project.optional-dependencies]`, 
 square brackets to the `install` command as follows:
 
 ```commandline
-uv venv --python 3.11 && uv pip install '.[docs]'
+uv venv --python 3.12 && uv pip install '.[docs]'
 ```
 
 By default, pipelines load and run the model in process (via Hugging Face `transformers`); installing the `vllm` extra
 additionally enables inference through vLLM (either the offline engine or a server). The feature extras are: `merging`
 (MergeKit structural control), `cpo` (causal DML reward estimation for CPO; CPO itself runs without it via a
-gradient-boosting fallback), `plots` (benchmark visualization utilities), `guided` (xgrammar, for in-process
-constrained decoding), and `vllm` (the vLLM execution backends plus the `vllm_hook_plugins` core, git-pinned until its
-PyPI release). The umbrella `all` extra installs `merging`, `cpo`, and `plots`; install `guided` and `vllm` by name,
-e.g., `uv pip install '.[vllm]'`.
+gradient-boosting fallback), `inspect` (the Inspect AI evaluation stack), `viz` (matplotlib and seaborn, for the
+evaluation plotting utilities), `guided` (xgrammar, for in-process constrained decoding), and `vllm` (the vLLM
+execution backends plus the `vllm_hook_plugins` core, git-pinned until its PyPI release). The umbrella `all` extra
+installs `cpo`, `inspect`, and `viz`; install `guided`, `merging`, and `vllm` by name, e.g., `uv pip install '.[vllm]'`.
+Note that `merging` cannot share an environment with `inspect` (MergeKit pins an older pydantic than Inspect requires),
+so it stays out of `all`.
 
 ## Accessing Hugging Face models
 

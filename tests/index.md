@@ -15,7 +15,7 @@ The test tree is organized by area:
 
 Running tests requires that the toolkit is installed with `dev` dependencies. First, run:
 ```commandline
-uv venv --python 3.11 && uv pip install '.[dev]'
+uv venv --python 3.12 && uv pip install '.[dev]'
 ```
 To execute tests for all controls, run:
 ```commandline

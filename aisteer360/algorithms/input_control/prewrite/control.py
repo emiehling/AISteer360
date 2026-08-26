@@ -76,8 +76,36 @@ class PRewrite(InputControl):
 
     def steer_access(self) -> ModelAccess:
         """`ModelAccess.ROLLOUTS`; rewriting and dev-set scoring generate through the
-        session, and adaptation is a formatter."""
+        session, and adaptation is a formatter. With a precomputed `memory`, steering is
+        model-free (`ModelAccess.FACTS`)."""
+        if getattr(getattr(self, "args", None), "memory", None) is not None:
+            return ModelAccess.FACTS
         return ModelAccess.ROLLOUTS
+
+    def export_state(self) -> dict:
+        """The optimized instruction memory under the `"memory"` key (after `steer()`)."""
+        return {"memory": self.memory} if self.memory is not None else {}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class frozen form: the recipe args with `memory=` set to the optimized
+        memory (the search-only args stay inert)."""
+        from dataclasses import fields
+
+        kwargs = {f.name: getattr(self.args, f.name) for f in fields(self.args) if f.init}
+        kwargs["memory"] = state["memory"]
+        return "input_control/prewrite", kwargs
+
+    def fit_identity(self):
+        """The optimizer-relevant args (everything except `memory`), or None when the recipe
+        already carries a memory."""
+        from dataclasses import fields
+
+        if self.args.memory is not None:
+            return None
+        return {
+            f.name: getattr(self.args, f.name)
+            for f in fields(self.args) if f.init and f.name != "memory"
+        }
 
     def steer(
         self,
@@ -87,6 +115,11 @@ class PRewrite(InputControl):
         **kwargs,
     ) -> None:
         self.tokenizer = tokenizer
+
+        if self.args.memory is not None:
+            self.memory = self.args.memory
+            self._formatter = SystemPromptFormatter()
+            return
 
         task_lm = SessionLM(session) if session is not None else model
         rewriter_lm, rewriter_tok = self._resolve_rewriter(task_lm, tokenizer)

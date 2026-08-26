@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-live-brightgreen)](https://ibm.github.io/AISteer360/)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
-![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue)
+![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue)
 [![GitHub License](https://img.shields.io/github/license/IBM/AISteer360)](https://github.com/IBM/AISteer360/blob/main/LICENSE)
 
 ---
@@ -21,11 +21,11 @@ To get started, please see the documentation at <https://ibm.github.io/AISteer36
 
 ## Installation
 
-The toolkit uses [uv](https://docs.astral.sh/uv/) as the package manager (Python 3.11+). After installing `uv` and cloning the repo,
+The toolkit uses [uv](https://docs.astral.sh/uv/) as the package manager (Python 3.12+). After installing `uv` and cloning the repo,
 install the toolkit by running:
 
 ```commandline
-uv venv --python 3.11 && uv pip install .
+uv venv --python 3.12 && uv pip install .
 ```
 
 By default, pipelines load and run the model *in process* (via Hugging Face `transformers`). The toolkit additionally provides

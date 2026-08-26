@@ -134,6 +134,26 @@ class RoutedDecoding(PhasedDriver):
             return (("ProbeSetFit", "calibrated"),)
         return ()
 
+    def export_state(self) -> dict:
+        """The fitted probe set under the `"probes"` key (after `steer()`)."""
+        if self.probes is not None and not isinstance(self.probes, ProbeSetFit):
+            return {"probes": self.probes}
+        return {}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class frozen form: the fitted `ProbeSet` plus the recipe's routing rules."""
+        return "output_control/routed_decoding", {
+            "probes": state["probes"],
+            "rules": self.args.rules,
+            "allow_model_mismatch": self.allow_model_mismatch,
+        }
+
+    def fit_identity(self):
+        """The `ProbeSetFit` recipe, or None when the probes arrived fitted."""
+        if isinstance(self.args.probes, ProbeSetFit):
+            return self.args.probes
+        return None
+
     def steer(
         self,
         model: PreTrainedModel | None = None,

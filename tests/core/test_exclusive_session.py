@@ -90,6 +90,26 @@ class TestLayout:
         assert layout.hidden_size == 32
         assert layout.head_dim == 8
 
+    def test_composite_wrapper_layout_and_capture(self, tokenizer):
+        """A composite multimodal wrapper reports its text-decoder facts and captures per layer."""
+        from tests.utils.tiny_models import tiny_gemma3_conditional
+
+        gemma = tiny_gemma3_conditional(num_layers=4, hidden=32, heads=4)
+        backend = HFBackend.adopt(HF_SPEC, lambda: gemma, lambda: tokenizer)
+        with backend.open_session() as session:
+            layout = session.layout
+            captured = session.capture(
+                [PreparedPrompt.from_token_ids(torch.tensor([[3, 4, 5, 6]]))],
+                layers=list(range(4)),
+                mode="all_tokens",
+            )
+        assert layout.num_layers == 4
+        assert layout.hidden_size == 32
+        assert layout.num_attention_heads == 4
+        assert layout.head_dim == 8
+        assert layout.model_type == "gemma3"
+        assert set(captured.hidden) == {0, 1, 2, 3}
+
 
 class TestGenerate:
 

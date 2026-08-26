@@ -10,8 +10,8 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from aisteer360.algorithms.core.execution.access import ModelAccess
 from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, SpecConstraint, needs
 from aisteer360.algorithms.core.execution.spec import BackendSpec
+from aisteer360.algorithms.core.internals.model_layout import head_geometry, resolve_model_layout
 from aisteer360.algorithms.state_control.base import HookControl
-from aisteer360.algorithms.state_control.common.model_layout import resolve_model_layout
 from aisteer360.algorithms.state_control.pasta.args import PASTAArgs
 
 logger = logging.getLogger(__name__)
@@ -100,6 +100,7 @@ class PASTA(HookControl):
     _head_map: dict[int, list[int]] | None = None
     _layers: list[int] | None = None
     _attn_module_names: dict[int, str] | None = None
+    _num_heads_by_layer: dict[int, int] | None = None
     _scale_constant: torch.Tensor | None = None
 
     def requirements(self) -> Requirements:
@@ -158,28 +159,40 @@ class PASTA(HookControl):
         self.model = model
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
         self.device = next(model.parameters()).device
-        self._setup_head_config(self.head_config)
+        self._setup_layers(self.head_config)
         self._resolve_attention_modules(model)
+        self._finalize_head_map()
         self._check_attention_implementation(model)
         return model
 
     def _resolve_attention_modules(self, model: PreTrainedModel) -> None:
-        """Resolve the per-layer attention module path from the model layout.
+        """Resolve the per-layer attention module path and head count from the model layout.
 
         The per-layer attention module paths come from `resolve_model_layout` (`.self_attn` for
         `model.layers.*`, `.attn` for `transformer.h.*`). Validates every configured layer's module
-        exists so registration cannot fail mid-generation.
+        exists so registration cannot fail mid-generation, and records each configured layer's head
+        count (read per layer from the module tree, so a model whose head count varies across layers
+        is sized per layer).
 
         Raises:
-            ValueError: If the architecture is unrecognized or a configured module path is absent.
+            ValueError: If the architecture is unrecognized, a configured layer carries no attention
+                module (a non-attention layer of a hybrid stack), or a configured module path is
+                absent.
         """
-        attn_names = resolve_model_layout(model).attn_names
+        layout = resolve_model_layout(model)
+        attn_names = layout.attn_names
 
         self._attn_module_names = {}
+        self._num_heads_by_layer = {}
         for layer in self._layers:
             if layer < 0 or layer >= len(attn_names):
                 raise ValueError(
                     f"PASTA layer {layer} out of range for model with {len(attn_names)} layers."
+                )
+            if not layout.has_attention(layer):
+                raise ValueError(
+                    f"PASTA layer {layer} carries no attention module; attention layers of this "
+                    f"model are {list(layout.attention_layers)}."
                 )
             path = attn_names[layer]
             try:
@@ -187,6 +200,7 @@ class PASTA(HookControl):
             except AttributeError as error:
                 raise ValueError(f"PASTA could not resolve attention module {path!r}.") from error
             self._attn_module_names[layer] = path
+            self._num_heads_by_layer[layer] = head_geometry(model, layout, layer).num_heads
 
     @staticmethod
     def _check_attention_implementation(model: PreTrainedModel) -> None:
@@ -375,10 +389,11 @@ class PASTA(HookControl):
             groups.append(group)
         return groups
 
-    def _setup_head_config(self, head_config):
-        """Parse and validate attention head configuration.
+    def _setup_layers(self, head_config) -> None:
+        """Derive the configured layer set (and explicit head lists for the dict form).
 
-        Converts various configuration formats into internal layer-head mappings and validates against model architecture.
+        The head map is finalized in `_finalize_head_map` once the per-layer head counts are
+        known; the list form defers to that step for its all-heads default.
 
         Args:
             head_config: Configuration specifying which layers/heads to modify:
@@ -387,26 +402,39 @@ class PASTA(HookControl):
                 - list: Layer indices (applies to all heads in those layers)
 
         Raises:
-            ValueError: If configuration format invalid or heads out of range.
+            ValueError: If the configuration format is invalid.
         """
         if isinstance(head_config, dict):
-            self._head_map = {int(l): list(h) for l, h in head_config.items()}
+            self._head_map = {int(layer): list(heads) for layer, heads in head_config.items()}
             self._layers = sorted(self._head_map.keys())
         elif isinstance(head_config, list):
-            self._layers = [int(l) for l in head_config]
-            self._head_map = {
-                l: list(range(self.model.config.num_attention_heads))
-                for l in self._layers
-            }
+            self._layers = [int(layer) for layer in head_config]
+            self._head_map = None
         else:
             raise ValueError(f"Invalid head configuration: {head_config!r}")
 
-        num_heads = self.model.config.num_attention_heads
+    def _finalize_head_map(self) -> None:
+        """Fill the all-heads default and validate head indices against per-layer head counts.
+
+        The list form of `head_config` expands to every head of each configured layer, sized by
+        that layer's own head count (`_num_heads_by_layer`, recorded in `_resolve_attention_modules`);
+        the dict form's explicit head lists are validated against the same per-layer counts. Models
+        whose head count varies across layers are handled per layer.
+
+        Raises:
+            ValueError: If a head index is out of range for its layer.
+        """
+        if self._head_map is None:  # list form: all heads of each configured layer
+            self._head_map = {
+                layer: list(range(self._num_heads_by_layer[layer])) for layer in self._layers
+            }
+
         for layer, heads in self._head_map.items():
+            num_heads = self._num_heads_by_layer[layer]
             for head in heads:
                 if not 0 <= head < num_heads:
                     raise ValueError(
-                        f"Head {head} out of range for layer {layer} (0–{num_heads-1})"
+                        f"Head {head} out of range for layer {layer} (0-{num_heads - 1})"
                     )
 
     @staticmethod
@@ -549,7 +577,7 @@ class PASTA(HookControl):
         attention_mask = input_kwargs.get("attention_mask")
         if attention_mask is None:  # build it
             batch_size, query_len, _ = hidden_states.size()
-            num_heads = self.model.config.num_attention_heads
+            num_heads = self._num_heads_by_layer[layer_idx]
 
             # during decoding the query attends to the full kv cache, so the mask spans the cached key
             # positions rather than just the current query window. transformers v4 exposes the key axis
@@ -593,12 +621,8 @@ class PASTA(HookControl):
             )
         attention_mask = attention_mask.to(hidden_states.dtype).contiguous().clone()
         if attention_mask.size(1) == 1:
-            attention_mask = attention_mask.expand(
-                -1,
-                self.model.config.num_attention_heads,
-                -1,
-                -1,
-            ).contiguous()
+            num_heads = self._num_heads_by_layer[layer_idx]
+            attention_mask = attention_mask.expand(-1, num_heads, -1, -1).contiguous()
 
         batch_size = attention_mask.size(0)
 

@@ -1,4 +1,4 @@
-"""Calibrated affine readout over pooled hidden states, with canonical polarity."""
+"""A calibrated linear probe on the pooled hidden states with scores oriented in a consistent direction."""
 import json
 import logging
 from collections.abc import Mapping
@@ -234,7 +234,7 @@ class Probe:
         Returns:
             A `Gate` for an `Intervention`'s gate slot (e.g. `ActivationAdapter`'s `gate=`).
         """
-        # the single sanctioned function-local import from core/internals into a category package
+        # function-local import to avoid a core/internals -> category package import at module load
         from aisteer360.algorithms.state_control.common.gating import gate_from_probe
 
         return gate_from_probe(self, allow_model_mismatch=allow_model_mismatch)

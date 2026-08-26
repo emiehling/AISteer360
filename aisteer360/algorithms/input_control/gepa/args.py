@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from aisteer360.algorithms.core.base_args import BaseArgs
+from aisteer360.algorithms.input_control.common.memory.text import TextMemory
 
 
 @dataclass
@@ -128,7 +129,24 @@ class GEPAArgs(BaseArgs):
         metadata={"help": "Optional RNG seed for the genetic loop (sampling + minibatching)."},
     )
 
+    memory: TextMemory | dict | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Precomputed memory (`TextMemory(slots={'instruction': ...})` or a plain "
+                "`{'slots': {...}}` dict). When provided, steer() installs it directly and "
+                "skips the reflective search; the search-only args stay inert."
+            )
+        },
+    )
+
     def __post_init__(self) -> None:
+        if isinstance(self.memory, dict):
+            self.memory = TextMemory(slots=dict(self.memory.get("slots", self.memory)))
+        if self.memory is not None:
+            if "instruction" not in self.memory:
+                raise ValueError("`memory` must carry an 'instruction' slot.")
+            return  # a precomputed memory makes the search args inert
         if not isinstance(self.seed_instruction, str) or not self.seed_instruction:
             raise ValueError("`seed_instruction` must be a non-empty str.")
 

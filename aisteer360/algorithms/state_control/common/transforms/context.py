@@ -7,7 +7,8 @@ from typing import Callable, Mapping, Sequence
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from ..hook_utils import get_model_layer_list
+from aisteer360.algorithms.core.internals.model_layout import head_geometry, resolve_model_layout, text_config
+
 from ..sources import ArtifactSource, _as_artifact_source
 from ..steering_vector import SteeringVector
 from .base import BaseTransform
@@ -57,26 +58,35 @@ def _build_context(
 ) -> TransformContext:
     """Build the `TransformContext` for the given behavior layers.
 
-    With a live model, reads device/dtype/layer-count from the model and
-    `hidden_size`/`num_heads`/`head_dim` from its config (deriving `head_dim` as
-    `hidden_size // num_heads` when absent), then wraps a resolve closure that coerces any
-    artifact to a source, resolves it against the model, and moves the result onto the model's
-    device and dtype. With `model=None`, sizes come from `layout` (a structural
-    `core.execution.ModelFacts`), the device is CPU, and the resolve closure serves concrete
-    artifacts only, since fitting a source requires a live model.
+    With a live model, reads device/dtype/layer-count from the model and `hidden_size` from the
+    text config; `num_heads`/`head_dim` come from the first behavior layer's head geometry read
+    off the module tree (`head_geometry`), so a per-head transform reshapes with the geometry that
+    layer actually uses. With no behavior layer given, or when no behavior layer carries an
+    attention module (a residual-stream transform on the non-attention layers of a hybrid stack),
+    the head geometry falls back to the text config. The resolve closure coerces any artifact to a
+    source, resolves it against the model,
+    and moves the result onto the model's device and dtype. With `model=None`, sizes come from
+    `layout` (a structural `core.execution.ModelFacts`), the device is CPU, and the resolve
+    closure serves concrete artifacts only, since fitting a source requires a live model.
     """
     if model is not None:
         device = next(model.parameters()).device
         dtype = model.dtype
-        _, layer_names = get_model_layer_list(model)
-        num_layers = len(layer_names)
+        module_layout = resolve_model_layout(model)
+        num_layers = module_layout.num_layers
 
-        config = model.config
-        hidden_size = getattr(config, "hidden_size")
-        num_heads = getattr(config, "num_attention_heads", None)
-        head_dim = getattr(config, "head_dim", None)
-        if head_dim is None and num_heads:
-            head_dim = hidden_size // num_heads
+        text_cfg = text_config(model)
+        hidden_size = text_cfg.hidden_size
+        attention_layer = next((lid for lid in layer_ids if module_layout.has_attention(lid)), None)
+        if attention_layer is not None:
+            geometry = head_geometry(model, module_layout, attention_layer)
+            num_heads = geometry.num_heads
+            head_dim = geometry.head_dim
+        else:
+            num_heads = getattr(text_cfg, "num_attention_heads", None)
+            head_dim = getattr(text_cfg, "head_dim", None)
+            if head_dim is None and num_heads:
+                head_dim = hidden_size // num_heads
     else:
         if layout is None:
             raise ValueError("Building a TransformContext requires a live model or a structural layout.")

@@ -38,6 +38,17 @@ class _HeadSelectionBuild:
     def artifact_class(self) -> str | None:
         return getattr(self._source, "artifact_class", None)
 
+    def fit_ingredients(self) -> dict:
+        """The encodable fit-identity form: the source's ingredients plus the head selection."""
+        from aisteer360.algorithms.state_control.base import _fit_ingredients
+
+        return {
+            "kind": "head_selection",
+            "source": _fit_ingredients(self._source),
+            "selected_heads": self._selected_heads,
+            "num_heads": self._num_heads,
+        }
+
     def __call__(self, ctx) -> BaseTransform:
         steering_vector = ctx.resolve(self._source)
 
@@ -76,6 +87,10 @@ class _ProbeMassShiftFit:
     def __init__(self, data, train_spec):
         self._data = data
         self._train_spec = train_spec
+
+    def fit_ingredients(self) -> dict:
+        """The encodable fit-identity form: the labeled data and the train spec."""
+        return {"kind": "probe_mass_shift", "data": self._data, "train_spec": self._train_spec}
 
     def resolve(self, model, tokenizer, *, session=None) -> SteeringVector:
         if model is None:
@@ -123,7 +138,10 @@ class ITI(InterventionControl):
 
     def _configure(self):
         if self.steering_vector is not None:
-            source = _Precomputed(self.steering_vector.clone())
+            if isinstance(self.steering_vector, SteeringVector):
+                source = _Precomputed(self.steering_vector.clone())
+            else:
+                source = self.steering_vector
         else:
             source = _ProbeMassShiftFit(self.data, self.train_spec)
 
@@ -172,3 +190,27 @@ class ITI(InterventionControl):
             return None
         core, _ = unwrap_modifiers(self.interventions[0].transform)
         return getattr(core, "steering_vector", None)
+
+    def export_state(self) -> dict:
+        """The bound per-head steering vector under the `"steering_vector"` key (after `steer()`)."""
+        vector = self._steering_vector
+        return {"steering_vector": vector} if vector is not None else {}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class frozen form: the bound per-head vector plus the resolved head selection."""
+        core, _ = unwrap_modifiers(self.interventions[0].transform)
+        selected = sorted(
+            (int(layer_id), int(head_id))
+            for layer_id, heads in core.active_heads.items()
+            for head_id in heads
+        )
+        return "state_control/iti", {
+            "steering_vector": state["steering_vector"],
+            "selected_heads": selected,
+            "num_heads": self.num_heads,
+            "alpha": self.alpha,
+            "token_scope": self.token_scope,
+            "last_k": self.last_k,
+            "from_position": self.from_position,
+            "use_norm_preservation": self.use_norm_preservation,
+        }

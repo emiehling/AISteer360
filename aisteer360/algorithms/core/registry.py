@@ -138,3 +138,54 @@ def _crawl_methods(root: Path = ROOT, package_prefix: str = "aisteer360.algorith
 
 
 _crawl_methods()
+
+
+def method_key_for(control_cls: type) -> str:
+    """The registry key `"<category>_control/<name>"` of a registered control class.
+
+    Args:
+        control_cls: The control class to look up.
+
+    Returns:
+        The method key.
+
+    Raises:
+        RegistryError: If `control_cls` is not a registered control class.
+    """
+    for category, bucket in REGISTRY.items():
+        for name, method in bucket.items():
+            if method.control_cls is control_cls:
+                return f"{category}/{name}"
+    raise RegistryError(
+        f"{control_cls.__module__}.{control_cls.__qualname__} is not a registered steering "
+        "method; register it via a STEERING_METHOD export before serializing it."
+    )
+
+
+def resolve_method_key(key: str) -> SteeringMethod:
+    """The `SteeringMethod` registered under a `"<category>_control/<name>"` key.
+
+    Args:
+        key: The method key to resolve.
+
+    Returns:
+        The registered method.
+
+    Raises:
+        RegistryError: If the key is malformed or names no registered method; the message
+            lists the registered names of the category (or the known categories).
+    """
+    category, _, name = key.partition("/")
+    bucket = REGISTRY.get(category)
+    if not name or bucket is None:
+        raise RegistryError(
+            f"Unknown method key {key!r}; expected '<category>_control/<name>' with category "
+            f"one of {sorted(REGISTRY)}."
+        )
+    method = bucket.get(name)
+    if method is None:
+        raise RegistryError(
+            f"Unknown method {name!r} in category {category!r}; registered names are "
+            f"{sorted(bucket)}."
+        )
+    return method

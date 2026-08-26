@@ -92,6 +92,21 @@ class ProjectionTransform(BaseTransform):
     def covered_layer_ids(self) -> set[int] | None:
         return set(self.directions.keys()) if self.directions is not None else None
 
+    def to_config(self) -> tuple[dict, object | None, "BaseTransform | None"]:
+        """The `(params, artifact, inner)` serialized form under the `projection` kind."""
+        params = {"alpha": float(self.alpha)}
+        if self.directions is not None:
+            artifact = SteeringVector(
+                model_type="unknown", directions=dict(self.directions), meta=dict(self._artifact_meta or {}),
+            )
+        else:
+            artifact = self._source
+        return params, artifact, None
+
+    @classmethod
+    def from_config(cls, params: dict, *, artifact=None, inner=None) -> "ProjectionTransform":
+        """Rebuild a `projection` transform from its serialized form."""
+        return cls(artifact, alpha=params.get("alpha", 1.0))
 
     def wire_plan(self) -> str | None:
         """`"projection"` for single-direction full removal; None otherwise.

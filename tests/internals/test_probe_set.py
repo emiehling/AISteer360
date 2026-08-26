@@ -327,3 +327,18 @@ class TestProbeSetFit:
         )
         readout = probes.read(model, torch.tensor([[3, 4, 5]]))
         assert set(readout.decisions) == {"topic"}
+
+    def test_fit_and_read_on_composite_wrapper(self, tokenizer):
+        """ProbeSet.fit and read succeed on a composite multimodal wrapper (nested decoder root)."""
+        from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
+        from tests.utils.tiny_models import tiny_gemma3_conditional
+
+        model = tiny_gemma3_conditional(num_layers=LAYERS, hidden=HIDDEN, heads=4)
+        probes = ProbeSet.fit(
+            model, tokenizer, data=DATA, spec=ProbeFitSpec(method="mean_diff", candidate_layers=[1])
+        )
+        assert resolve_model_layout(model).layer_names == [
+            f"model.language_model.layers.{i}" for i in range(LAYERS)
+        ]
+        readout = probes.read(model, torch.tensor([[3, 4, 5]]))
+        assert set(readout.decisions) == {"topic"}

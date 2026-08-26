@@ -110,11 +110,12 @@ def resolve_value(spec, *, model, tokenizer, device) -> BaseCandidateValue:
             import os
 
             from aisteer360.algorithms.core.internals.data import as_labeled_examples
+            from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
             from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec, fit_probe
             from aisteer360.algorithms.core.internals.probes.probe import Probe
             from aisteer360.algorithms.output_control.common.values.subspace_margin import load_single_file_probe
 
-            final_layer = int(model.config.num_hidden_layers) - 1
+            final_layer = resolve_model_layout(model).num_layers - 1
             if spec.get("probe_path") is not None:
                 path = spec["probe_path"]
                 if os.path.isdir(path):

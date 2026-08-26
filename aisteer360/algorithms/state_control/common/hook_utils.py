@@ -2,14 +2,15 @@
 import torch
 from transformers import PreTrainedModel
 
-from .model_layout import resolve_model_layout
+from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
 
 
 def get_model_layer_list(model: PreTrainedModel) -> tuple[list, list[str]]:
     """Return (layer_modules, layer_name_strings) for a HuggingFace model.
 
-    Supports llama/mistral/gemma-style (model.model.layers) and
-    GPT2-style (model.transformer.h) architectures.
+    Supports the decoder-stack roots `model.layers` (Llama/Mistral/Qwen/Gemma text),
+    `model.language_model.layers` (composite multimodal wrappers), and `transformer.h` (GPT-2),
+    including PEFT-wrapped models.
 
     Args:
         model: A HuggingFace causal LM.
@@ -29,11 +30,11 @@ def get_model_layer_list(model: PreTrainedModel) -> tuple[list, list[str]]:
 def get_norm_module_names(model: PreTrainedModel) -> list[tuple[int, str]]:
     """Return (layer_id, module_path) pairs for the per-layer normalization sub-modules.
 
-    Supports:
+    Returns the residual-stream normalization sub-modules named by the resolved layout:
 
-    - llama/mistral/qwen/gemma-style (`model.model.layers[i]`): `input_layernorm`,
-        `post_attention_layernorm`.
-    - GPT-2-style (`model.transformer.h[i]`): `ln_1`, `ln_2`.
+    - `gemma_style`: `input_layernorm`, `pre_feedforward_layernorm`.
+    - `llama_style` (Llama/Mistral/Qwen): `input_layernorm`, `post_attention_layernorm`.
+    - `gpt2_style`: `ln_1`, `ln_2`.
 
     Only names that exist on the module are returned, sorted by (layer_id, module_path).
 
