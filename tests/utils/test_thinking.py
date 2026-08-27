@@ -1,7 +1,7 @@
 """Tests for `split_thinking`, one per normative case in the design (§5.1) plus edge cases."""
 import pytest
 
-from aisteer360.utils.thinking import DEFAULT_THINK_TAGS, ThinkingSplit, split_thinking
+from steerability.utils.thinking import DEFAULT_THINK_TAGS, ThinkingSplit, split_thinking
 
 
 class TestSplitThinking:

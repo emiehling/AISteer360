@@ -1,6 +1,6 @@
 # LoadCheckpoint
 
-::: aisteer360.algorithms.structural_control.load_checkpoint
+::: steerability.algorithms.structural_control.load_checkpoint
     handler: python
     options:
         show_if_no_docstring: true

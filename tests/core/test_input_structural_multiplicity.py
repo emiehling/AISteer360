@@ -16,10 +16,10 @@ import pytest
 import torch
 import torch.nn as nn
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.state_control.base import StateControl
-from aisteer360.algorithms.structural_control.base import StructuralControl
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.input_control.base import InputControl
+from steerability.algorithms.state_control.base import StateControl
+from steerability.algorithms.structural_control.base import StructuralControl
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 # renders message contents joined by spaces so WordLevel vocab words map to stable ids
@@ -239,7 +239,7 @@ class TestOutPathBackwardsScan:
         third = _OutPathStructuralControl(out_path=None)
         pipeline = SteeringPipeline(controls=[first, second, third])
 
-        with caplog.at_level(logging.INFO, logger="aisteer360.algorithms.core.steering_pipeline"):
+        with caplog.at_level(logging.INFO, logger="steerability.algorithms.core.steering_pipeline"):
             resolved = pipeline._structural_out_path()
 
         assert str(resolved) == "path/two"

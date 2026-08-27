@@ -6,7 +6,7 @@ import dataclasses
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution import (
+from steerability.algorithms.core.execution import (
     BackendSpec,
     Capability,
     CheckpointArtifact,
@@ -22,26 +22,26 @@ from aisteer360.algorithms.core.execution import (
     run_bounded,
     with_transport_retries,
 )
-from aisteer360.algorithms.core.execution.access import ModelAccess
-from aisteer360.algorithms.core.execution.session_utils import session_generate
-from aisteer360.algorithms.core.output import Output, infer_finish_reasons, truncate_at_stop_strings
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.input_control.gepa.control import GEPA
-from aisteer360.algorithms.input_control.prewrite.control import PRewrite
-from aisteer360.algorithms.output_control.base import DecodingDriver, stack_generate_kwargs
-from aisteer360.algorithms.output_control.best_of_n.control import BestOfN
-from aisteer360.algorithms.output_control.budget_forcing.control import BudgetForcing
-from aisteer360.algorithms.output_control.deal.control import DeAL
-from aisteer360.algorithms.output_control.phased_decoding.control import PhasedDecoding
-from aisteer360.algorithms.output_control.search_decoding.control import SearchDecoding
-from aisteer360.algorithms.output_control.stopping_rules.control import StoppingRules
-from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
-from aisteer360.algorithms.state_control.base import StateControl
-from aisteer360.algorithms.state_control.common.runtime import TransformHookRuntime
-from aisteer360.algorithms.structural_control.base import StructuralControl
-from aisteer360.backends.huggingface import HFBackend
-from aisteer360.backends.vllm import extract_ref_logprobs, map_vllm_finish_reason, render_vllm_sampling_args
+from steerability.algorithms.core.execution.access import ModelAccess
+from steerability.algorithms.core.execution.session_utils import session_generate
+from steerability.algorithms.core.output import Output, infer_finish_reasons, truncate_at_stop_strings
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.input_control.base import InputControl
+from steerability.algorithms.input_control.gepa.control import GEPA
+from steerability.algorithms.input_control.prewrite.control import PRewrite
+from steerability.algorithms.output_control.base import DecodingDriver, stack_generate_kwargs
+from steerability.algorithms.output_control.best_of_n.control import BestOfN
+from steerability.algorithms.output_control.budget_forcing.control import BudgetForcing
+from steerability.algorithms.output_control.deal.control import DeAL
+from steerability.algorithms.output_control.phased_decoding.control import PhasedDecoding
+from steerability.algorithms.output_control.search_decoding.control import SearchDecoding
+from steerability.algorithms.output_control.stopping_rules.control import StoppingRules
+from steerability.algorithms.state_control.activation_adapter.control import ActivationAdapter
+from steerability.algorithms.state_control.base import StateControl
+from steerability.algorithms.state_control.common.runtime import TransformHookRuntime
+from steerability.algorithms.structural_control.base import StructuralControl
+from steerability.backends.huggingface import HFBackend
+from steerability.backends.vllm import extract_ref_logprobs, map_vllm_finish_reason, render_vllm_sampling_args
 from tests.utils.runtime_helpers import RecordingTransform
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
@@ -185,7 +185,7 @@ class TestVLLMRendering:
         assert "seed" not in render_vllm_sampling_args(GenerationParams(seed=7))
 
     def test_seed_scope_never_rendered_by_hf_or_vllm(self):
-        from aisteer360.backends.huggingface.session import render_hf_gen_kwargs
+        from steerability.backends.huggingface.session import render_hf_gen_kwargs
 
         params = GenerationParams(seed=7, seed_scope="dispatch", max_new_tokens=4)
         assert "seed_scope" not in render_hf_gen_kwargs(params)
@@ -443,7 +443,7 @@ class TestSessionBatchedFastPath:
             for i in range(2)
         ]
         seeded = GenerationParams(max_new_tokens=4, greedy=False, temperature=1.0, seed=42)
-        with caplog.at_level("INFO", logger="aisteer360.backends.huggingface.session"):
+        with caplog.at_level("INFO", logger="steerability.backends.huggingface.session"):
             with backend.open_session() as session:
                 session.generate(seeded_items, seeded)
             with backend.open_session() as session:
@@ -459,7 +459,7 @@ class TestSessionBatchedFastPath:
             )
             for i in range(2)
         ]
-        with caplog.at_level("INFO", logger="aisteer360.backends.huggingface.session"):
+        with caplog.at_level("INFO", logger="steerability.backends.huggingface.session"):
             with backend.open_session() as session:
                 session.generate(items, GenerationParams(max_new_tokens=4, greedy=True))
         entry_records = [r for r in caplog.records if "distinct state or output entries" in r.message]
@@ -481,7 +481,7 @@ class TestSessionBatchedFastPath:
     def test_score_batched_matches_serial(self, backend, tokenizer):
         encoded = tokenizer(["the cat", "the dog ran"], return_tensors="pt", padding=True)
         ref = torch.tensor([[5, 6], [7, 3]])
-        from aisteer360.algorithms.core.execution import ScoringItem
+        from steerability.algorithms.core.execution import ScoringItem
 
         items = [
             ScoringItem(
@@ -825,7 +825,7 @@ class TestTRLArtifactDerivation:
     def _mixin(self, **attrs):
         from peft import PeftType
 
-        from aisteer360.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin
+        from steerability.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin
 
         control = object.__new__(type("_TRLDouble", (TRLMixin,), {}))
         control.training_args = {}
@@ -935,7 +935,7 @@ class TestSerialSeedStateHooks:
         assert all(mask.size(0) == 1 for mask in transform.masks)
 
     def test_clone_for_call_isolates_gate_state(self, model, tokenizer):
-        from aisteer360.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
+        from steerability.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
 
         gate = Gate(
             Evidence((0,), CallableReadout(lambda pooled, layer_id: pooled.mean(dim=-1))),

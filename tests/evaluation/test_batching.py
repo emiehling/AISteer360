@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("inspect_ai")
 
-from aisteer360.evaluation.batching import LockLeaderCollator
+from steerability.evaluation.batching import LockLeaderCollator
 from tests.evaluation.conftest import StubSteeringPipeline
 
 
@@ -208,7 +208,7 @@ class TestPoisonIsolation:
         pipeline.fail_above_batch_size = 1  # every member succeeds serially
         collator, _ = _collator(pipeline, max_batch_size=4)
         records = [_admit(collator, [{"role": "user", "content": f"q{i}"}]) for i in range(3)]
-        with caplog.at_level("WARNING", logger="aisteer360.evaluation.batching"):
+        with caplog.at_level("WARNING", logger="steerability.evaluation.batching"):
             results, errors = _run_concurrent(collator, records, release=release)
         assert all(error is None for error in errors)
         assert all(result is not None for result in results)

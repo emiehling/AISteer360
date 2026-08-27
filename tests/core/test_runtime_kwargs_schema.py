@@ -2,8 +2,8 @@
 enforcement on the pipeline."""
 import pytest
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.core.utils.controls import runtime_kwargs_schema
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.core.utils.controls import runtime_kwargs_schema
 from tests.conftest import MockInputControl, MockStateControl
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

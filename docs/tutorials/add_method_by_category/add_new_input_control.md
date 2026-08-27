@@ -34,7 +34,7 @@ The control requires two arguments: a list of `blocked_words` to filter, and a `
 by the following `args.py` file:
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.core.base_args import BaseArgs
 
 
 @dataclass
@@ -70,8 +70,8 @@ import re
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.input_control.prompt_censor.args import PromptCensorArgs
+from steerability.algorithms.input_control.base import InputControl
+from steerability.algorithms.input_control.prompt_censor.args import PromptCensorArgs
 
 
 class PromptCensor(InputControl):
@@ -132,8 +132,8 @@ declare the same name.
 Once the above files are in place, the prompt censor control can be initialized and exercised:
 
 ```python
-from aisteer360.algorithms.input_control.prompt_censor.control import PromptCensor
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.input_control.prompt_censor.control import PromptCensor
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "microsoft/Phi-3.5-mini-instruct"
 
@@ -192,7 +192,7 @@ applied twice. Token-level methods can supply a best-effort fallback in `adapt`;
 
 ## Reusable building blocks
 
-The `aisteer360.algorithms.input_control.common` package collects components shared across input controls:
+The `steerability.algorithms.input_control.common` package collects components shared across input controls:
 
 - `memory/`: `TextMemory` (named JSON-serializable text slots) and `PoolMemory[T]` (typed pool with parallel
   metadata). Place persistent state on `self.memory`; the framework treats it as opaque but recognizes it for

@@ -139,7 +139,7 @@ Where an algorithm notebook demonstrates one control, a recipe builds a new capa
 
     This notebook fits a CAA control, freezes the steered pipeline into a portable `.spipe` bundle (the recipe plus the fitted artifacts, content-addressed), and reconstructs the pipeline from the file alone with matching greedy generations.
 
-    [:octicons-arrow-right-24: See the recipe](./notebooks/recipes/spipe_share.ipynb)
+    [:octicons-arrow-right-24: See the recipe](./notebooks/recipes/spipe.ipynb)
 
 </div>
 

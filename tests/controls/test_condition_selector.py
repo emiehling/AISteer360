@@ -5,17 +5,17 @@ import warnings
 import pytest
 import torch
 
-from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
-from aisteer360.algorithms.core.internals.data import ContrastivePairs
-from aisteer360.algorithms.state_control.common.estimators import MeanDifferenceEstimator
-from aisteer360.algorithms.state_control.common.estimators.contrastive_direction import ContrastiveDirectionEstimator
-from aisteer360.algorithms.state_control.common.fit_specs import ConditionSearchSpec, VectorTrainSpec
-from aisteer360.algorithms.state_control.common.gating import (
+from steerability.algorithms.core.internals.capture import layerwise_tokenwise_hidden
+from steerability.algorithms.core.internals.data import ContrastivePairs
+from steerability.algorithms.state_control.common.estimators import MeanDifferenceEstimator
+from steerability.algorithms.state_control.common.estimators.contrastive_direction import ContrastiveDirectionEstimator
+from steerability.algorithms.state_control.common.fit_specs import ConditionSearchSpec, VectorTrainSpec
+from steerability.algorithms.state_control.common.gating import (
     projected_cosine_similarity,
     projected_cosine_similarity_tensor,
     rank_one_projector,
 )
-from aisteer360.algorithms.state_control.common.selectors.condition_point import (
+from steerability.algorithms.state_control.common.selectors.condition_point import (
     ConditionPointSelector,
     _best_point_for_layer,
     _threshold_grid,

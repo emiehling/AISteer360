@@ -18,12 +18,12 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.base_args import BaseArgs
-from aisteer360.algorithms.core.execution.access import ModelAccess
-from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.output_control.base import OutputControl
-from aisteer360.algorithms.state_control.base import StateControl
-from aisteer360.algorithms.structural_control.base import StructuralControl
+from steerability.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.core.execution.access import ModelAccess
+from steerability.algorithms.input_control.base import InputControl
+from steerability.algorithms.output_control.base import OutputControl
+from steerability.algorithms.state_control.base import StateControl
+from steerability.algorithms.structural_control.base import StructuralControl
 from tests.utils.load_ci_models import get_models
 
 # Real Model/Device Fixtures (for integration tests)

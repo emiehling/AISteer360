@@ -27,7 +27,7 @@ Next, define the arguments class. This is where we define the required arguments
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.core.base_args import BaseArgs
 
 
 @dataclass
@@ -60,10 +60,10 @@ have a wire form run on vLLM backends through the vLLM-Hook plugin with no extra
 ```python
 import torch
 
-from aisteer360.algorithms.state_control.common.specs import Intervention, TokenScope
-from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
-from aisteer360.algorithms.state_control.base import InterventionControl
-from aisteer360.algorithms.state_control.activation_bias.args import ActivationBiasArgs
+from steerability.algorithms.state_control.common.specs import Intervention, TokenScope
+from steerability.algorithms.state_control.common.transforms import AdditiveTransform
+from steerability.algorithms.state_control.base import InterventionControl
+from steerability.algorithms.state_control.activation_bias.args import ActivationBiasArgs
 
 HIDDEN_SIZE = 4096  # or resolve from the artifact you steer with
 
@@ -97,8 +97,8 @@ session that executes forwards owns registration, so `get_hooks` must fully re-d
 ```python
 import torch
 
-from aisteer360.algorithms.state_control.base import HookControl, HookSpec
-from aisteer360.algorithms.state_control.activation_bias.args import ActivationBiasArgs
+from steerability.algorithms.state_control.base import HookControl, HookSpec
+from steerability.algorithms.state_control.activation_bias.args import ActivationBiasArgs
 
 
 class ActivationBiasHooks(HookControl):
@@ -137,7 +137,7 @@ class ActivationBiasHooks(HookControl):
             else:  # direct tensor
                 return output + self.alpha
 
-        from aisteer360.algorithms.core.internals import resolve_model_layout
+        from steerability.algorithms.core.internals import resolve_model_layout
 
         layer_name = resolve_model_layout(kwargs["model"]).layer_names[self.layer_idx]
         return {
@@ -191,8 +191,8 @@ The session executing the generation registers the hooks for exactly the span of
 used like any other:
 
 ```python
-from aisteer360.algorithms.state_control.activation_bias.control import ActivationBias
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.activation_bias.control import ActivationBias
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
 

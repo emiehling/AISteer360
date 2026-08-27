@@ -2,12 +2,12 @@
 import pytest
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.execution.contracts import Capability
-from aisteer360.algorithms.core.execution.payloads import CheckpointArtifact, LoRAArtifact
-from aisteer360.algorithms.core.registry import REGISTRY
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.structural_control.load_checkpoint.control import LoadCheckpoint
-from aisteer360.algorithms.structural_control.load_lora.control import LoadLoRA
+from steerability.algorithms.core.execution.contracts import Capability
+from steerability.algorithms.core.execution.payloads import CheckpointArtifact, LoRAArtifact
+from steerability.algorithms.core.registry import REGISTRY
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.structural_control.load_checkpoint.control import LoadCheckpoint
+from steerability.algorithms.structural_control.load_lora.control import LoadLoRA
 
 TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 

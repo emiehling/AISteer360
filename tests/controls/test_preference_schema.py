@@ -9,7 +9,9 @@ from __future__ import annotations
 import pytest
 from datasets import Dataset
 
-from aisteer360.algorithms.structural_control.wrappers.trl.utils.preference_schema import standardize_preference_dataset
+from steerability.algorithms.structural_control.wrappers.trl.utils.preference_schema import (
+    standardize_preference_dataset,
+)
 
 
 def test_string_columns_pass_through_and_extras_dropped():

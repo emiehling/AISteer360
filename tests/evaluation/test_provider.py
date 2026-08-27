@@ -25,7 +25,7 @@ from inspect_ai.model import (
     GenerateConfig,
 )
 
-from aisteer360.evaluation.provider import (
+from steerability.evaluation.provider import (
     MAPPED_FIELDS,
     POLICY_FIELDS,
     REFUSED_FIELDS,
@@ -52,7 +52,7 @@ def _generate(api, messages, config=GenerateConfig(max_tokens=8, temperature=0))
 class TestRegistrationAndConstruction:
     def test_model_renders_with_registry_prefix(self):
         model = as_inspect_model(StubSteeringPipeline(), model_name="steering-pipeline")
-        assert str(model) == "aisteer/steering-pipeline"
+        assert str(model) == "steerability/steering-pipeline"
 
     def test_missing_pipeline_raises_actionable_error(self):
         with pytest.raises(ValueError, match="as_inspect_model"):
@@ -82,7 +82,7 @@ class TestRegistrationAndConstruction:
         api = _api(options=ProviderOptions(max_batch_size=3, default_max_tokens=77))
         assert api.max_tokens() == 77
         assert api.max_connections() == 3
-        assert api.connection_key().startswith("aisteer:")
+        assert api.connection_key().startswith("steerability:")
         assert api.should_retry(RuntimeError()) is False
         assert api.is_auth_failure(RuntimeError()) is False
         assert api.tools_required() is False
@@ -283,7 +283,7 @@ class TestOutputAssembly:
     def test_unclosed_reasoning_yields_empty_answer_and_warns(self, caplog):
         pipeline = StubSteeringPipeline(decode_texts=["<think>still thinking"])
         api = _api(pipeline)
-        with caplog.at_level("WARNING", logger="aisteer360.evaluation.provider"):
+        with caplog.at_level("WARNING", logger="steerability.evaluation.provider"):
             model_output = api._assemble_model_output(make_output([[0]], [1, 2], (None,)), stop_strings=())
         content = model_output.choices[0].message.content
         assert content[0].reasoning == "still thinking"

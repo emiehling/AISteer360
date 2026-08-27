@@ -1,7 +1,7 @@
 [project]
-name            = "aisteer360"
+name            = "steerability"
 version         = "0.5.0"
-description     = "AI Steerability 360 Toolkit"
+description     = "Steerability Toolkit"
 readme          = "README.md"
 license         = { text = "Apache-2.0" }
 authors         = [{ name = "IBM Research" }]
@@ -79,10 +79,10 @@ vllm = [
     "vllm-hook-plugins @ git+https://github.com/IBM/vLLM-Hook.git@steerability-challenge#subdirectory=vllm_hook_plugins",
 ]
 all = [
-    "aisteer360[cpo,inspect,viz]",
+    "steerability[cpo,inspect,viz]",
 ]
 docs = [
-    "aisteer360[all]",
+    "steerability[all]",
     "mkdocs-material",
     "mkdocs-jupyter",
     "mkdocs-click",
@@ -96,7 +96,7 @@ docs = [
 ]
 
 dev = [
-    "aisteer360[all]",
+    "steerability[all]",
     "vllm-hook-plugins @ git+https://github.com/IBM/vLLM-Hook.git@steerability-challenge#subdirectory=vllm_hook_plugins",
     "notebook>=7.4.5",
     "ipywidgets>=8.1.0,<9.0.0",
@@ -119,7 +119,7 @@ conflicts = [
 
 [tool.uv.build-backend]
 module-root = ""
-module-name = "aisteer360"
+module-name = "steerability"
 
 [tool.isort]
 profile = "black"

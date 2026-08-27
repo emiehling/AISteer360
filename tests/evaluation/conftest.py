@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from aisteer360.algorithms.core.output import Output
+from steerability.algorithms.core.output import Output
 
 CHAT_TEMPLATE = "{% for message in messages %}{{ message['content'] }} {% endfor %}"
 

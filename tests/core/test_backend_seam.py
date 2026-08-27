@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution import (
+from steerability.algorithms.core.execution import (
     Backend,
     BackendCapabilities,
     BackendSpec,
@@ -23,13 +23,13 @@ from aisteer360.algorithms.core.execution import (
     capabilities_for_spec,
     needs,
 )
-from aisteer360.algorithms.core.execution.session_utils import ScopedSession
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.output_control.base import OutputControl
-from aisteer360.algorithms.state_control.pasta import PASTA
-from aisteer360.algorithms.structural_control.base import StructuralControl
-from aisteer360.backends.huggingface import ExclusiveSession
+from steerability.algorithms.core.execution.session_utils import ScopedSession
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.input_control.base import InputControl
+from steerability.algorithms.output_control.base import OutputControl
+from steerability.algorithms.state_control.pasta import PASTA
+from steerability.algorithms.structural_control.base import StructuralControl
+from steerability.backends.huggingface import ExclusiveSession
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 
@@ -312,7 +312,7 @@ class TestCheck:
     )
     def test_steer_on_vllm_backend_requires_vllm_extra(self):
         pipeline = SteeringPipeline(backend=BackendSpec(kind="vllm", model="m"))
-        with pytest.raises(ModuleNotFoundError, match=r"aisteer360\[vllm\]"):
+        with pytest.raises(ModuleNotFoundError, match=r"steerability\[vllm\]"):
             pipeline.steer()
 
     def test_compute_logprobs_raises_on_score_failure(self):
@@ -442,6 +442,6 @@ class TestBackendRelease:
         backend.release()
 
     def test_vllm_serve_inherits_the_noop_default(self):
-        from aisteer360.backends.vllm import VLLMServeBackend
+        from steerability.backends.vllm import VLLMServeBackend
 
         assert VLLMServeBackend.release is Backend.release

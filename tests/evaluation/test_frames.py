@@ -1,4 +1,4 @@
-"""Tests for the reshaping bridge in `aisteer360.evaluation.runner`: `runs_frame`,
+"""Tests for the reshaping bridge in `steerability.evaluation.runner`: `runs_frame`,
 `summarize_runs`, and `SteeringEval.runs_frame`.
 
 Pure pandas, no models and no Inspect imports; the runner-method test drives a duck-typed stub
@@ -9,7 +9,7 @@ import math
 import pandas
 import pytest
 
-from aisteer360.evaluation.runner import SteeringEval, runs_frame, summarize_runs
+from steerability.evaluation.runner import SteeringEval, runs_frame, summarize_runs
 
 _RESULTS_COLUMNS = [
     "config", "config_id", "trial", "seed", "suite", "task", "scorer", "metric", "value", "n", "log",

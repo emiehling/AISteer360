@@ -8,9 +8,9 @@ import warnings
 import pytest
 import torch
 
-from aisteer360.algorithms.core.output import Output
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control.base import InputControl
+from steerability.algorithms.core.output import Output
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.input_control.base import InputControl
 from tests.utils.runtime_helpers import script_session_generate
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

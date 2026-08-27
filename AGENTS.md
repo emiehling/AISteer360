@@ -6,7 +6,7 @@ code disagree, the code is authoritative; verify against the source before actin
 
 ## Overview
 
-AISteer360 is a toolkit for steering large language models (Hugging Face causal LMs). It provides steering methods
+Steerability is a toolkit for steering large language models (Hugging Face causal LMs). It provides steering methods
 ("controls") across four model control surfaces, a `SteeringPipeline` that composes controls from any categories into
 one operation on a model, and an Inspect AI evaluation stack (a registered model provider, task suites, and a sweep
 runner) for comparing steering pipelines.
@@ -40,7 +40,7 @@ Vocabulary used throughout the codebase:
 ## Repository map
 
 ```
-aisteer360/
+steerability/
 ├── algorithms/
 │   ├── core/                    # SteeringPipeline, registry, ControlSpec (specs.py), BaseArgs, BaseControl,
 │   │   │                        # Output; identity.py (config identity, trial seeds), sweeps.py
@@ -97,7 +97,7 @@ its PyPI release), `guided` (xgrammar, for in-process constrained decoding), `vi
 notebook), `docs` (site tooling). `merging` cannot share an environment with `inspect` (MergeKit pins an older pydantic
 than Inspect requires), so it stays out of `all`, `dev`, `docs`, and `vllm`; `pyproject.toml` declares these as
 `[tool.uv] conflicts`. The optional-module-to-extra mapping lives in `OPTIONAL_MODULE_EXTRAS`
-(`aisteer360/utils/optional.py`).
+(`steerability/utils/optional.py`).
 
 Hugging Face access uses a `.env` file at the repo root containing `HUGGINGFACE_TOKEN=hf_***` (see
 `.env.example`). Some models (e.g. `meta-llama/*`) are gated; the account behind the token needs access on the
@@ -131,8 +131,8 @@ Every use of the toolkit follows the same loop: instantiate controls, wrap them 
 `steer()` once, then call `generate()` for inference.
 
 ```python
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control.few_shot.control import FewShot
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.input_control.few_shot.control import FewShot
 
 few_shot = FewShot(
     directive="Answer in a formal, professional tone.",
@@ -174,7 +174,7 @@ construction. For lightweight controls `steer()` only attaches artifacts like th
 Enumerate the live registry rather than trusting any static list:
 
 ```python
-from aisteer360.algorithms.core.registry import REGISTRY  # import triggers discovery
+from steerability.algorithms.core.registry import REGISTRY  # import triggers discovery
 
 for category, methods in REGISTRY.items():
     print(category, sorted(methods))
@@ -224,7 +224,7 @@ Behaviors that differ from bare Hugging Face usage:
 - `generate(..., return_output=True)` returns an `Output` object (or list of them) with fields `output_ids`,
   `adapted_input_ids` (the prompt after input controls, useful for inspecting the steered prompt), a per-item
   `finish_reason` (`"stop"`, `"eos"`, `"length"`, or `None`, with that precedence), and `finish_reasons` (one reason
-  per candidate for `n > 1`). Import it via `from aisteer360.algorithms.core import Output`.
+  per candidate for `n > 1`). Import it via `from steerability.algorithms.core import Output`.
 - A seeded `generate()` call maps its `seed` onto the items of a multi-item dispatch by `seed_scope`
   (default `"item"`): `"item"` derives one seed per row, and on the Hugging Face backend the dispatch then
   decodes one row at a time; `"dispatch"` derives one seed for the whole dispatch and batches it in one pass
@@ -249,7 +249,7 @@ backend, and pipelines that never name a backend behave exactly as before. `fit=
 selects the fit venue policy.
 
 ```python
-from aisteer360.algorithms.core.execution import BackendSpec
+from steerability.algorithms.core.execution import BackendSpec
 
 pipeline = SteeringPipeline(
     controls=[caa],
@@ -317,7 +317,7 @@ layers with a message naming the attention layers, and `iti` refuses hybrid stac
 on its text decoder under text-only prompting; images and audio stay out. An unmerged LoRA adapter
 (`LoadLoRA(merge=False)`, or a TRL LoRA run without `merge_lora_after_train`) is hooked through the PEFT wrapper, so a
 state control listed after it steers the adapted model. Register a detector with `register_layout_detector` (from
-`aisteer360.algorithms.core.internals`) for an architecture not on this list.
+`steerability.algorithms.core.internals`) for an architecture not on this list.
 
 ### Runtime kwargs
 
@@ -357,7 +357,7 @@ declare a same-class frozen form (as `caa`, `act_add`, and `iti` do).
 pipeline.steer()
 pipeline.to_spipe().save("formal_tone.spipe")
 
-from aisteer360.spipe import SPipe
+from steerability.spipe import SPipe
 loaded = SPipe.load("formal_tone.spipe").pipeline()
 loaded.steer()
 ```
@@ -370,9 +370,9 @@ set of tasks; `SteeringEval` runs configurations (fixed controls, `ControlSpec` 
 arm) x trials x suites, sequentially, one GPU-resident pipeline at a time:
 
 ```python
-from aisteer360.evaluation.provider import ProviderOptions
-from aisteer360.evaluation.runner import SteeringEval
-from aisteer360.evaluation.suite import InspectSuite
+from steerability.evaluation.provider import ProviderOptions
+from steerability.evaluation.runner import SteeringEval
+from steerability.evaluation.suite import InspectSuite
 
 runner = SteeringEval(
     pipelines={"baseline": [], "few_shot": [few_shot], "caa_sweep": [ControlSpec(control_cls=CAA, ...)]},
@@ -401,7 +401,7 @@ multimodal content are refused with actionable messages. Concurrent Inspect requ
 calls when every enabled control is batch-safe; a seeded dispatch carries `seed_scope` from `ProviderOptions`
 (default `"dispatch"`), so a seeded batch decodes in one pass on the Hugging Face backend, and bitwise
 reproducibility of stochastic sampling is not preserved under concurrency (see the
-`aisteer360/evaluation/batching.py` module docstring for the full contract).
+`steerability/evaluation/batching.py` module docstring for the full contract).
 
 There is no results checkpoint: the `.eval` logs under `save_dir/inspect_logs/` are the store, and `eval_set`
 resumes each (config, trial, suite) cell from them at sample granularity and matches task identity only, so a
@@ -416,7 +416,7 @@ authoring and grader-model guidance.
 
 The core sweep layer (`algorithms/core/sweeps.py`: `expand_configurations`, `preflight`, `PipelineFactory`;
 `algorithms/core/identity.py`: canonical config identity and trial seeds) has no Inspect dependency; a planned
-`aisteer360/optimization/` package (not yet in the tree) is to compose the same pieces with a suite as its objective.
+`steerability/optimization/` package (not yet in the tree) is to compose the same pieces with a suite as its objective.
 
 ## Developer guide
 
@@ -425,7 +425,7 @@ The core sweep layer (`algorithms/core/sweeps.py`: `expand_configurations`, `pre
 A method is a sub-package of its category directory with a three-file layout:
 
 ```
-aisteer360/algorithms/<category>_control/<method_name>/
+steerability/algorithms/<category>_control/<method_name>/
 ├── __init__.py    # exports STEERING_METHOD for registry discovery
 ├── args.py        # hyperparameter dataclass (single source of truth)
 ├── control.py     # the control class; all steering behavior lives here
@@ -437,7 +437,7 @@ aisteer360/algorithms/<category>_control/<method_name>/
 ```python
 from dataclasses import dataclass, field
 
-from aisteer360.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.core.base_args import BaseArgs
 
 
 @dataclass
@@ -527,8 +527,8 @@ STEERING_METHOD = {
 
 The registry crawls the category directories at import time, requires the `name`, `control`, and `args` keys, and
 rejects duplicate names. For a method with a heavy optional dependency, import it through
-`aisteer360.utils.optional.require("<module>")` at the module boundary and add the extra to `pyproject.toml` (and to
-`OPTIONAL_MODULE_EXTRAS` in `aisteer360/utils/optional.py`); discovery then skips the method with an actionable hint
+`steerability.utils.optional.require("<module>")` at the module boundary and add the extra to `pyproject.toml` (and to
+`OPTIONAL_MODULE_EXTRAS` in `steerability/utils/optional.py`); discovery then skips the method with an actionable hint
 when the dependency is absent instead of failing.
 
 ### Generics before new machinery
@@ -568,7 +568,7 @@ selector, gate, token scope) already covers the behavior.
 Target-behavior evaluations are ordinary Inspect `Task`s; the toolkit ships no task, scorer, or metric classes of its
 own (working examples are defined inside the study notebooks under `examples/notebooks/studies/`). A task whose samples carry per-sample steering inputs puts
 them on `Sample.metadata` as `{"runtime_kwargs": {...}}`, with each value in the consuming control's per-row form,
-and uses `runtime_kwargs_solver()` from `aisteer360/evaluation/solvers.py` as its generation step; each key must be
+and uses `runtime_kwargs_solver()` from `steerability/evaluation/solvers.py` as its generation step; each key must be
 declared `"row"`-scoped in the consuming control's `RUNTIME_KWARGS_SCHEMA` or the provider rejects it at admission.
 Tasks with model-graded scorers take the grader model through their own arguments (`task_args`); the grader is never
 the pipeline under evaluation. Controls that consume a per-row reward accept a `SampleScorer`; use
@@ -595,7 +595,7 @@ pipeline behavior).
 - Keep imports simple; use the optional-dependency guard rather than broad try/except import fallbacks. Import order
   is enforced by isort (black profile) via pre-commit.
 - Read structural facts (`hidden_size`, `num_attention_heads`, `head_dim`, `num_hidden_layers`) through
-  `text_config(model)` (from `aisteer360.algorithms.core.internals`), which returns the text sub-config on composite
+  `text_config(model)` (from `steerability.algorithms.core.internals`), which returns the text sub-config on composite
   multimodal models; never read `model.config.hidden_size` directly, and never default a missing fact to `0`. Resolve
   decoder module paths through `resolve_model_layout(model)` rather than by matching `model.model.layers`.
 
@@ -703,4 +703,4 @@ Rules that hold regardless of task:
   `add_method_by_category/`) and evaluating steering pipelines.
 - `examples/notebooks/`: runnable references for every method, the generic controls, and use-case studies.
 - `tests/index.md`: test-suite layout and the pattern for adding control tests.
-- Hosted documentation: <https://ibm.github.io/AISteer360/>.
+- Hosted documentation: <https://ibm.github.io/steerability/>.

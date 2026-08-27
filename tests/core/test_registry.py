@@ -1,4 +1,4 @@
-"""Tests for steering-method discovery in `aisteer360.algorithms.core.registry`.
+"""Tests for steering-method discovery in `steerability.algorithms.core.registry`.
 
 Each case builds a synthetic `fakepkg` package tree under `tmp_path`, puts it on
 `sys.path`, and crawls it with the parameterized `_crawl_methods` signature so the
@@ -22,8 +22,8 @@ import textwrap
 
 import pytest
 
-import aisteer360.algorithms.core.registry as registry
-from aisteer360.algorithms.core.registry import RegistryError, _crawl_methods
+import steerability.algorithms.core.registry as registry
+from steerability.algorithms.core.registry import RegistryError, _crawl_methods
 
 
 def _write(path, text):
@@ -110,7 +110,7 @@ def test_absent_recognized_optional_dependency_skipped_with_info(synthetic_env, 
     assert any(
         record.levelno == logging.INFO
         and "totally_fake_optional" in record.getMessage()
-        and 'aisteer360[fakeextra]' in record.getMessage()
+        and 'steerability[fakeextra]' in record.getMessage()
         for record in caplog.records
     )
 

@@ -7,11 +7,11 @@ the inner model's facts, and that the CAA hook fires on the adapted decoder laye
 """
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.caa.control import CAA
-from aisteer360.algorithms.state_control.common.layout_facts import resolve_layout
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
-from aisteer360.algorithms.structural_control.load_lora.control import LoadLoRA
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.caa.control import CAA
+from steerability.algorithms.state_control.common.layout_facts import resolve_layout
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+from steerability.algorithms.structural_control.load_lora.control import LoadLoRA
 from tests.utils.tiny_models import tiny_llama, tiny_lora, wordlevel_tokenizer
 
 LAYERS = 4

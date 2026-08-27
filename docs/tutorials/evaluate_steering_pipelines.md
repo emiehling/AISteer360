@@ -19,7 +19,7 @@ The `as_inspect_model` function wraps a steered pipeline as an Inspect model:
 
 ```python
 from inspect_ai import eval as inspect_eval
-from aisteer360.evaluation.provider import ProviderOptions, as_inspect_model
+from steerability.evaluation.provider import ProviderOptions, as_inspect_model
 
 pipeline.steer()
 model = as_inspect_model(pipeline, options=ProviderOptions(max_batch_size=8))
@@ -84,8 +84,8 @@ An `InspectSuite` names a set of tasks evaluated together. `SteeringEval` runs e
 building and releasing one GPU-resident pipeline at a time:
 
 ```python
-from aisteer360.evaluation.runner import SteeringEval
-from aisteer360.evaluation.suite import InspectSuite
+from steerability.evaluation.runner import SteeringEval
+from steerability.evaluation.suite import InspectSuite
 
 capability = InspectSuite(name="capability", tasks=("inspect_evals/gsm8k",), limit=200)
 target = InspectSuite(name="target", tasks=("target_task.py",))
@@ -159,7 +159,7 @@ solver:
 from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.scorer import includes
-from aisteer360.evaluation.solvers import runtime_kwargs_solver
+from steerability.evaluation.solvers import runtime_kwargs_solver
 
 @task
 def target_qa() -> Task:
@@ -192,7 +192,7 @@ carries `"input"`, optionally `"reference"`, and any other dataset columns.
 
 ```python
 from inspect_ai.scorer import model_graded_fact
-from aisteer360.evaluation.scorers import sample_scorer_from_inspect
+from steerability.evaluation.scorers import sample_scorer_from_inspect
 
 row_scorer = sample_scorer_from_inspect(model_graded_fact(model="openai/gpt-4o-mini"))
 prewrite = PRewrite(initial_instruction="...", dev_set=dev_rows, row_scorer=row_scorer)

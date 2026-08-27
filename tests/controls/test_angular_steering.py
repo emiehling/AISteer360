@@ -11,11 +11,11 @@ import math
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.angular_steering.args import AngularSteeringArgs
-from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control.common.transforms import AlignmentAdaptiveTransform, RotationTransform
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.angular_steering.args import AngularSteeringArgs
+from steerability.algorithms.state_control.angular_steering.control import AngularSteering
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+from steerability.algorithms.state_control.common.transforms import AlignmentAdaptiveTransform, RotationTransform
 from tests.utils.sweep import build_param_grid
 from tests.utils.tiny_models import tiny_gemma3_conditional, tiny_llama, wordlevel_tokenizer
 
@@ -186,7 +186,7 @@ class TestAngularSteeringArgs:
             AngularSteeringArgs(steering_vector=bad)
 
     def test_dict_data_coerced_to_contrastive_pairs(self):
-        from aisteer360.algorithms.core.internals.data import ContrastivePairs
+        from steerability.algorithms.core.internals.data import ContrastivePairs
 
         args = AngularSteeringArgs(data={"positives": ["p1", "p2"], "negatives": ["n1", "n2"]})
         assert isinstance(args.data, ContrastivePairs)

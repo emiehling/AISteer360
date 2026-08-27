@@ -6,10 +6,10 @@ import warnings
 import pytest
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control.cpo import CPO, CPOArgs
-from aisteer360.algorithms.input_control.cpo.control import CPOMemory
-from aisteer360.algorithms.input_control.cpo.utils import causal_reward, refinement_meta_prompt
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.input_control.cpo import CPO, CPOArgs
+from steerability.algorithms.input_control.cpo.control import CPOMemory
+from steerability.algorithms.input_control.cpo.utils import causal_reward, refinement_meta_prompt
 
 TINY_LM = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 TINY_BERT = "hf-internal-testing/tiny-random-BertModel"
@@ -370,7 +370,7 @@ class TestCPOBackendPosture:
         assert adapted[0][0]["role"] == "system"
 
     def test_module_configuration_verdict_on_engine(self):
-        from aisteer360.algorithms.core.execution import BackendSpec, ModelAccess
+        from steerability.algorithms.core.execution import BackendSpec, ModelAccess
 
         cpo = CPO(
             seed_prompt="be helpful",
@@ -387,7 +387,7 @@ class TestCPOBackendPosture:
         )
 
     def test_aux_prompt_lm_configuration_is_supported_on_engines(self, tiny_lm):
-        from aisteer360.algorithms.core.execution import BackendSpec, ModelAccess
+        from steerability.algorithms.core.execution import BackendSpec, ModelAccess
 
         model, _ = tiny_lm
         cpo = CPO(

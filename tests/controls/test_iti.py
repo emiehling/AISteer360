@@ -6,10 +6,10 @@ a model with heterogeneous head geometry before running any forward pass.
 """
 import pytest
 
-from aisteer360.algorithms.core.internals.data import LabeledExamples
-from aisteer360.algorithms.core.internals.model_layout import head_geometry, resolve_model_layout
-from aisteer360.algorithms.state_control.common.fit_specs import VectorTrainSpec
-from aisteer360.algorithms.state_control.iti.utils.estimator import ProbeMassShiftEstimator
+from steerability.algorithms.core.internals.data import LabeledExamples
+from steerability.algorithms.core.internals.model_layout import head_geometry, resolve_model_layout
+from steerability.algorithms.state_control.common.fit_specs import VectorTrainSpec
+from steerability.algorithms.state_control.iti.utils.estimator import ProbeMassShiftEstimator
 from tests.utils.tiny_models import heterogeneous_head_stub, tiny_gpt2, tiny_llama, tiny_lora
 
 LAYERS = 3

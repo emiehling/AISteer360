@@ -15,7 +15,7 @@ model name via `model_name_or_path` along with instantiated controls, e.g.,
 [`few_shot`](../examples/notebooks/algorithms/few_shot.ipynb) and [`dpo`](../examples/notebooks/algorithms/trl.ipynb), as follows:
 
 ```python
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 
 pipeline = SteeringPipeline(
     model_name_or_path="meta-llama/Llama-2-7b-hf",
@@ -98,7 +98,7 @@ fix, and `steer()` runs the same check and raises before any work happens. The p
 recorded on each control's `Backends` line in [steering controls](controls.md).
 
 ```python
-from aisteer360.algorithms.core.execution import BackendSpec
+from steerability.algorithms.core.execution import BackendSpec
 
 pipeline = SteeringPipeline(
     controls=[caa],
@@ -175,7 +175,7 @@ Start a server with `vllm serve <model> --port 8000` (any extra engine flags as 
 carrying `base_url`:
 
 ```python
-from aisteer360.algorithms.core.execution import BackendSpec
+from steerability.algorithms.core.execution import BackendSpec
 
 spec = BackendSpec(
     kind="vllm-serve",

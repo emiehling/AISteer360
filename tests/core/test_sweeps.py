@@ -11,9 +11,9 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, needs
-from aisteer360.algorithms.core.specs import ControlSpec
-from aisteer360.algorithms.core.sweeps import PipelineFactory, expand_configurations, preflight
+from steerability.algorithms.core.execution.contracts import Capability, Requirements, needs
+from steerability.algorithms.core.specs import ControlSpec
+from steerability.algorithms.core.sweeps import PipelineFactory, expand_configurations, preflight
 from tests.conftest import (
     MockInputControl,
     MockStateControl,
@@ -134,7 +134,7 @@ class TestPreflight:
 @pytest.fixture
 def tiny_base(monkeypatch):
     """Patch `_ensure_base_model` to install a real tiny model and record loads."""
-    from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
+    from steerability.algorithms.core.internals.fingerprint import model_fingerprint
     from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
     record = {"loads": []}
@@ -162,8 +162,8 @@ def patched_pipeline_loaders(monkeypatch):
     model_loader.from_pretrained.return_value = model
     tokenizer_loader = MagicMock()
     tokenizer_loader.from_pretrained.return_value = tokenizer
-    monkeypatch.setattr("aisteer360.algorithms.core.steering_pipeline.AutoModelForCausalLM", model_loader)
-    monkeypatch.setattr("aisteer360.algorithms.core.steering_pipeline.AutoTokenizer", tokenizer_loader)
+    monkeypatch.setattr("steerability.algorithms.core.steering_pipeline.AutoModelForCausalLM", model_loader)
+    monkeypatch.setattr("steerability.algorithms.core.steering_pipeline.AutoTokenizer", tokenizer_loader)
     return model_loader, tokenizer_loader, model, tokenizer
 
 
@@ -213,7 +213,7 @@ class TestPipelineFactory:
 
     def test_fingerprint_tripwire_warns_and_quarantines(self, tiny_base, caplog):
         factory = PipelineFactory(BASE)
-        with caplog.at_level("WARNING", logger="aisteer360.algorithms.core.sweeps"):
+        with caplog.at_level("WARNING", logger="steerability.algorithms.core.sweeps"):
             with factory.steered([_MutatingStateControl(scale_factor=0.5)]):
                 pass
         messages = [record.getMessage() for record in caplog.records]
@@ -228,7 +228,7 @@ class TestPipelineFactory:
 
     def test_clean_configuration_does_not_trip(self, tiny_base, caplog):
         factory = PipelineFactory(BASE)
-        with caplog.at_level("WARNING", logger="aisteer360.algorithms.core.sweeps"):
+        with caplog.at_level("WARNING", logger="steerability.algorithms.core.sweeps"):
             with factory.steered([MockStateControl()]):
                 pass
         assert not any("Shared base model changed" in record.getMessage() for record in caplog.records)
@@ -236,7 +236,7 @@ class TestPipelineFactory:
 
     def test_finally_discipline_under_raising_body(self, tiny_base, monkeypatch):
         released = []
-        from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+        from steerability.algorithms.core.steering_pipeline import SteeringPipeline
         original_release = SteeringPipeline.release_backends
         monkeypatch.setattr(
             SteeringPipeline, "release_backends",

@@ -1,6 +1,6 @@
 # Solvers
 
-::: aisteer360.evaluation.solvers
+::: steerability.evaluation.solvers
     handler: python
     options:
         show_if_no_docstring: true

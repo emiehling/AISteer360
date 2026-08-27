@@ -14,17 +14,17 @@ Two tiers:
 import pytest
 import torch
 
-from aisteer360.algorithms.core.internals.data import ContrastivePairs, LabeledExamples
-from aisteer360.algorithms.core.internals.model_layout import head_geometry, resolve_model_layout
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
-from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
-from aisteer360.algorithms.state_control.caa.control import CAA
-from aisteer360.algorithms.state_control.common.fit_specs import VectorTrainSpec
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control.common.transforms import HeadAdditiveTransform
-from aisteer360.algorithms.state_control.iti.utils.estimator import ProbeMassShiftEstimator
-from aisteer360.algorithms.state_control.pasta.control import PASTA
+from steerability.algorithms.core.internals.data import ContrastivePairs, LabeledExamples
+from steerability.algorithms.core.internals.model_layout import head_geometry, resolve_model_layout
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.activation_adapter.control import ActivationAdapter
+from steerability.algorithms.state_control.angular_steering.control import AngularSteering
+from steerability.algorithms.state_control.caa.control import CAA
+from steerability.algorithms.state_control.common.fit_specs import VectorTrainSpec
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+from steerability.algorithms.state_control.common.transforms import HeadAdditiveTransform
+from steerability.algorithms.state_control.iti.utils.estimator import ProbeMassShiftEstimator
+from steerability.algorithms.state_control.pasta.control import PASTA
 from tests.utils.tiny_models import hybrid_attention_stub, tiny_qwen3_next, wordlevel_tokenizer
 
 LAYERS = 4

@@ -80,7 +80,7 @@ time when two controls declare the same name.
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.core.base_args import BaseArgs
 
 
 @dataclass
@@ -102,8 +102,8 @@ The control returns a **fresh** processor from `get_logits_processors` on every 
 ```python
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.output_control.base import OutputControl
-from aisteer360.algorithms.output_control.keyword_booster.args import KeywordBoosterArgs
+from steerability.algorithms.output_control.base import OutputControl
+from steerability.algorithms.output_control.keyword_booster.args import KeywordBoosterArgs
 
 
 class KeywordBooster(OutputControl):
@@ -163,8 +163,8 @@ from dataclasses import dataclass, field
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.core.base_args import BaseArgs
-from aisteer360.algorithms.output_control.base import DecodingDriver, stack_generate_kwargs
+from steerability.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.output_control.base import DecodingDriver, stack_generate_kwargs
 
 
 @dataclass
@@ -238,8 +238,8 @@ for the pattern. An argument-free control (no hyper-parameters) sets `Args = Non
 Either mode is instantiated and added to a pipeline the same way:
 
 ```python
-from aisteer360.algorithms.output_control.keyword_booster.control import KeywordBooster
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.output_control.keyword_booster.control import KeywordBooster
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "microsoft/Phi-3.5-mini-instruct"
 

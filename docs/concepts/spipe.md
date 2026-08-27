@@ -28,7 +28,7 @@ spipe.save("formal_tone.spipe")      # a .spipe path writes a zip; any other pat
 ```
 
 ```python
-from aisteer360.spipe import SPipe
+from steerability.spipe import SPipe
 
 spipe = SPipe.load("formal_tone.spipe")
 pipeline = spipe.pipeline()          # backend, device, and dtype stay the caller's choice

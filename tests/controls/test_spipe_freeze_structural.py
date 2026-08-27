@@ -5,9 +5,9 @@ import pytest
 from datasets import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.structural_control.wrappers.trl.sfttrainer.control import SFT
-from aisteer360.spipe import SPipe, SpipeSaveError
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.structural_control.wrappers.trl.sfttrainer.control import SFT
+from steerability.spipe import SPipe, SpipeSaveError
 
 TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 

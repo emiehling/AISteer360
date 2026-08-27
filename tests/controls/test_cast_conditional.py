@@ -8,12 +8,12 @@ import warnings
 import pytest
 import torch
 
-from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.cast.args import CASTArgs
-from aisteer360.algorithms.state_control.cast.control import CAST
-from aisteer360.algorithms.state_control.common.fit_specs import ConditionSearchSpec, VectorTrainSpec
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from steerability.algorithms.core.internals.pooling import aggregate_condition_hidden
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.cast.args import CASTArgs
+from steerability.algorithms.state_control.cast.control import CAST
+from steerability.algorithms.state_control.common.fit_specs import ConditionSearchSpec, VectorTrainSpec
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32
@@ -235,7 +235,7 @@ class TestConditionMaskThreading:
         return control
 
     def _built_prompt_mask(self, control, ids, attention_mask, monkeypatch):
-        import aisteer360.algorithms.state_control.common.runtime as runtime_module
+        import steerability.algorithms.state_control.common.runtime as runtime_module
 
         captured = {}
         original = runtime_module.build_hooks
@@ -331,7 +331,7 @@ class TestConditionalBehaviorTransform:
         return _unit_vector(self.DIRECTION_SEED + layer_id)
 
     def _build_ablation_cast(self, condition_threshold, comparator="ge"):
-        from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform
+        from steerability.algorithms.state_control.common.transforms import ProjectionTransform
 
         directions = {l: self._direction(l).unsqueeze(0) for l in (0, 1)}
         condition_vec = _steering_vector(seed=200, layers=[1])
@@ -377,7 +377,7 @@ class TestConditionalBehaviorTransform:
 
     def test_unconditional_ablation_applies_to_all_rows(self):
         # no condition -> gate always open -> ablation applied everywhere it is masked
-        from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform
+        from steerability.algorithms.state_control.common.transforms import ProjectionTransform
 
         directions = {l: self._direction(l).unsqueeze(0) for l in (0, 1)}
         control = CAST(

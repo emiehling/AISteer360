@@ -1,6 +1,6 @@
 # Batching
 
-::: aisteer360.evaluation.batching
+::: steerability.evaluation.batching
     handler: python
     options:
         show_if_no_docstring: true

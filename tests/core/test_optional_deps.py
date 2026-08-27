@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from aisteer360.utils.optional import OPTIONAL_MODULE_EXTRAS, require
+from steerability.utils.optional import OPTIONAL_MODULE_EXTRAS, require
 
 PYPROJECT = Path(__file__).parents[2] / "pyproject.toml"
 
@@ -36,11 +36,11 @@ def test_require_missing_module_raises_naming_package():
 
 
 def test_require_missing_optional_names_extra():
-    """A mapped module's error message carries the `aisteer360[<extra>]` install hint."""
+    """A mapped module's error message carries the `steerability[<extra>]` install hint."""
     try:
         require("mergekit")
     except ImportError as exc:
-        assert 'aisteer360[merging]' in str(exc)
+        assert 'steerability[merging]' in str(exc)
     else:
         pytest.skip("mergekit installed; can't test the missing-optional hint path.")
 

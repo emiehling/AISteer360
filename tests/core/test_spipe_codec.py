@@ -2,10 +2,10 @@
 import pytest
 import torch
 
-from aisteer360.algorithms.core.internals.data import ContrastivePairs
-from aisteer360.spipe.codec import CodeRef, DataRef, DecodeContext, EncodeContext, decode, digest_of, encode
-from aisteer360.spipe.errors import SpipeCodeRefError, SpipeSaveError
-from aisteer360.spipe.store import ArtifactStore
+from steerability.algorithms.core.internals.data import ContrastivePairs
+from steerability.spipe.codec import CodeRef, DataRef, DecodeContext, EncodeContext, decode, digest_of, encode
+from steerability.spipe.errors import SpipeCodeRefError, SpipeSaveError
+from steerability.spipe.store import ArtifactStore
 
 
 def module_level_scorer(response, row):
@@ -61,7 +61,7 @@ def test_tensor_roundtrip_via_store(store):
 
 
 def test_steering_vector_roundtrip(store):
-    from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+    from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 
     vector = SteeringVector(
         model_type="llama",
@@ -80,8 +80,8 @@ def test_steering_vector_roundtrip(store):
 
 
 def test_direction_class_artifacts_decode_verified(store):
-    from aisteer360.algorithms.state_control.common.sources import VerifiedPrecomputed
-    from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+    from steerability.algorithms.state_control.common.sources import VerifiedPrecomputed
+    from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 
     vector = SteeringVector(model_type="llama", directions={1: torch.randn(1, 8)})
     ctx = EncodeContext(store=store)
@@ -159,7 +159,7 @@ def test_hf_dataset_encodes_opaque(store):
 
 
 def test_component_transform_roundtrip(store):
-    from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
+    from steerability.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
 
     transform = NormPreservingTransform(AdditiveTransform({1: torch.randn(1, 8)}, strength=2.5))
     ctx = EncodeContext(store=store)
@@ -173,7 +173,7 @@ def test_component_transform_roundtrip(store):
 
 
 def test_component_gate_roundtrip(store):
-    from aisteer360.algorithms.state_control.common.gating import (
+    from steerability.algorithms.state_control.common.gating import (
         Evidence,
         Gate,
         PerKeyThreshold,
@@ -197,7 +197,7 @@ def test_component_gate_roundtrip(store):
 
 
 def test_callable_readout_gate_refused(store):
-    from aisteer360.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate, SumThreshold
+    from steerability.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate, SumThreshold
 
     gate = Gate(Evidence((1,), CallableReadout(lambda pooled, lid: pooled[:, 0])), SumThreshold())
     with pytest.raises(ValueError, match="CallableReadout"):
@@ -205,7 +205,7 @@ def test_callable_readout_gate_refused(store):
 
 
 def test_selector_roundtrip(store):
-    from aisteer360.algorithms.state_control.common.selectors import FractionalDepthSelector
+    from steerability.algorithms.state_control.common.selectors import FractionalDepthSelector
 
     decoded, encoded = roundtrip(FractionalDepthSelector(fraction=0.4, minimum=1), store)
     assert encoded["$component"] == "fractional_depth"
@@ -216,7 +216,7 @@ def test_as_path_decodes_to_payload_path(store, tmp_path):
     src = tmp_path / "product"
     src.mkdir()
     (src / "weights.bin").write_bytes(b"abc")
-    from aisteer360.algorithms.core.execution.payloads import CheckpointArtifact
+    from steerability.algorithms.core.execution.payloads import CheckpointArtifact
 
     encoded = encode(CheckpointArtifact(path=str(src)), EncodeContext(store=store))
     assert encoded.get("as") == "path"
@@ -225,7 +225,7 @@ def test_as_path_decodes_to_payload_path(store, tmp_path):
 
 
 def test_pickle_backed_memory_gated_behind_allow_code(store):
-    from aisteer360.algorithms.input_control.common.memory.pool import PoolMemory
+    from steerability.algorithms.input_control.common.memory.pool import PoolMemory
 
     pool = PoolMemory(items=["a", "b"], metadata={"score": [1.0, 2.0]})
     encoded = encode(pool, EncodeContext(store=store))

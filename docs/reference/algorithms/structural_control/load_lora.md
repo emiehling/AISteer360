@@ -1,6 +1,6 @@
 # LoadLoRA
 
-::: aisteer360.algorithms.structural_control.load_lora
+::: steerability.algorithms.structural_control.load_lora
     handler: python
     options:
         show_if_no_docstring: true

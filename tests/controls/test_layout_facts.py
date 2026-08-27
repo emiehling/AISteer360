@@ -7,8 +7,8 @@ lacking a fact raises instead of defaulting.
 import pytest
 import torch
 
-from aisteer360.algorithms.core.internals.model_layout import text_config
-from aisteer360.algorithms.state_control.common.layout_facts import resolve_layout
+from steerability.algorithms.core.internals.model_layout import text_config
+from steerability.algorithms.state_control.common.layout_facts import resolve_layout
 from tests.utils.tiny_models import tiny_gemma3_conditional
 
 LAYERS = 4
@@ -27,8 +27,8 @@ def test_resolve_layout_reads_text_config_on_composite():
 
 
 def test_resolve_layout_matches_session_layout():
-    from aisteer360.algorithms.core.execution.spec import BackendSpec
-    from aisteer360.backends.huggingface import HFBackend
+    from steerability.algorithms.core.execution.spec import BackendSpec
+    from steerability.backends.huggingface import HFBackend
 
     model = tiny_gemma3_conditional(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
     backend = HFBackend.adopt(BackendSpec(kind="huggingface"), lambda: model, lambda: None)

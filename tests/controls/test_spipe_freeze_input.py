@@ -4,12 +4,12 @@ import warnings
 import pytest
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.execution.access import ModelAccess
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control.common.memory.text import TextMemory
-from aisteer360.algorithms.input_control.gepa.control import GEPA
-from aisteer360.algorithms.input_control.prewrite.control import PRewrite
-from aisteer360.spipe import SPipe, SpipeCodeRefError
+from steerability.algorithms.core.execution.access import ModelAccess
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.input_control.common.memory.text import TextMemory
+from steerability.algorithms.input_control.gepa.control import GEPA
+from steerability.algorithms.input_control.prewrite.control import PRewrite
+from steerability.spipe import SPipe, SpipeCodeRefError
 
 TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 

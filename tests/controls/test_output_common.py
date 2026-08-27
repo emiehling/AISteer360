@@ -12,23 +12,23 @@ import pytest
 import torch
 from transformers import LogitsProcessorList, StoppingCriteriaList
 
-from aisteer360.algorithms.core.internals.data import LabeledExamples
-from aisteer360.algorithms.core.internals.probes.fitting import ProbeFitSpec, fit_probe
-from aisteer360.algorithms.core.internals.probes.probe import Probe
-from aisteer360.algorithms.output_control.common.candidate_forward import CandidateForward
-from aisteer360.algorithms.output_control.common.candidates import select_candidates
-from aisteer360.algorithms.output_control.common.criteria import BudgetTokens, StopOnSubstring, StopOnTokens
-from aisteer360.algorithms.output_control.common.drivers.frontier import Frontier
-from aisteer360.algorithms.output_control.common.drivers.phased import Fixed, Generated, PhasedDriver
-from aisteer360.algorithms.output_control.common.drivers.search import SearchDriver
-from aisteer360.algorithms.output_control.common.kv_cache import repeat_cache, select_cache
-from aisteer360.algorithms.output_control.common.logit_sources import BaseLogitSource
-from aisteer360.algorithms.output_control.common.processors.base import PrefixKeyedProcessor
-from aisteer360.algorithms.output_control.common.processors.constraint import ConstraintProcessor
-from aisteer360.algorithms.output_control.common.processors.contrastive_mixture import ContrastiveMixtureProcessor
-from aisteer360.algorithms.output_control.common.processors.value_guided import ValueGuidedProcessor, _normalize
-from aisteer360.algorithms.output_control.common.values.base import BaseCandidateValue, StepContext
-from aisteer360.algorithms.output_control.common.values.subspace_margin import SubspaceMarginValue
+from steerability.algorithms.core.internals.data import LabeledExamples
+from steerability.algorithms.core.internals.probes.fitting import ProbeFitSpec, fit_probe
+from steerability.algorithms.core.internals.probes.probe import Probe
+from steerability.algorithms.output_control.common.candidate_forward import CandidateForward
+from steerability.algorithms.output_control.common.candidates import select_candidates
+from steerability.algorithms.output_control.common.criteria import BudgetTokens, StopOnSubstring, StopOnTokens
+from steerability.algorithms.output_control.common.drivers.frontier import Frontier
+from steerability.algorithms.output_control.common.drivers.phased import Fixed, Generated, PhasedDriver
+from steerability.algorithms.output_control.common.drivers.search import SearchDriver
+from steerability.algorithms.output_control.common.kv_cache import repeat_cache, select_cache
+from steerability.algorithms.output_control.common.logit_sources import BaseLogitSource
+from steerability.algorithms.output_control.common.processors.base import PrefixKeyedProcessor
+from steerability.algorithms.output_control.common.processors.constraint import ConstraintProcessor
+from steerability.algorithms.output_control.common.processors.contrastive_mixture import ContrastiveMixtureProcessor
+from steerability.algorithms.output_control.common.processors.value_guided import ValueGuidedProcessor, _normalize
+from steerability.algorithms.output_control.common.values.base import BaseCandidateValue, StepContext
+from steerability.algorithms.output_control.common.values.subspace_margin import SubspaceMarginValue
 from tests.utils.runtime_helpers import ScriptedSession, script_session_generate
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
@@ -529,7 +529,7 @@ class TestCandidateForward:
 
     def test_end_to_end_linear_in_length(self):
         # SASA e2e: total model forwards must be linear in N (pins the O(T^2) regression)
-        from aisteer360.algorithms.output_control.sasa.control import SASA
+        from steerability.algorithms.output_control.sasa.control import SASA
 
         def _forward_count_for(n_new):
             torch.manual_seed(0)
@@ -542,7 +542,7 @@ class TestCandidateForward:
                     "neg": ["mat on fast", "span attention", "fast mat sat"],
                 },
             )
-            from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+            from steerability.algorithms.core.steering_pipeline import SteeringPipeline
             pipeline = SteeringPipeline(controls=[sasa], model=model, tokenizer=tokenizer)
             pipeline.steer()
             prompt = tokenizer("the cat", return_tensors="pt").input_ids
@@ -653,7 +653,7 @@ class TestSASAWvPathCompatibility:
         return tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB), wordlevel_tokenizer()
 
     def test_directory_artifact_round_trips_through_steer(self, tmp_path):
-        from aisteer360.algorithms.output_control.sasa.control import SASA
+        from steerability.algorithms.output_control.sasa.control import SASA
 
         model, tokenizer = self._model_and_tokenizer()
         probe = Probe(
@@ -669,7 +669,7 @@ class TestSASAWvPathCompatibility:
         assert sasa.probe.bias == pytest.approx(probe.bias)
 
     def test_probe_json_margins_equal_midpoint_margin(self, tmp_path):
-        from aisteer360.algorithms.output_control.sasa.control import SASA
+        from steerability.algorithms.output_control.sasa.control import SASA
 
         model, tokenizer = self._model_and_tokenizer()
         direction = torch.randn(16)
@@ -691,7 +691,7 @@ class TestSASAWvPathCompatibility:
         assert torch.allclose(margins[0], expected, rtol=1e-4, atol=1e-4)
 
     def test_legacy_checkpoint_margins_equal_midpoint_margin(self, tmp_path):
-        from aisteer360.algorithms.output_control.sasa.control import SASA
+        from steerability.algorithms.output_control.sasa.control import SASA
 
         model, tokenizer = self._model_and_tokenizer()
         wv = {"wv": torch.randn(16), "mu_mu": torch.randn(16)}
@@ -711,7 +711,7 @@ class TestSASAWvPathCompatibility:
         assert torch.allclose(margins[0], expected, rtol=1e-4, atol=1e-4)
 
     def test_space_mismatch_raises_at_steer(self, tmp_path):
-        from aisteer360.algorithms.output_control.sasa.control import SASA
+        from steerability.algorithms.output_control.sasa.control import SASA
 
         model, tokenizer = self._model_and_tokenizer()
         cases = [
@@ -731,7 +731,7 @@ class TestSASAWvPathCompatibility:
                 sasa.steer(model, tokenizer=tokenizer)
 
     def test_unrecognized_single_file_checkpoint_raises(self, tmp_path):
-        from aisteer360.algorithms.output_control.sasa.control import SASA
+        from steerability.algorithms.output_control.sasa.control import SASA
 
         model, tokenizer = self._model_and_tokenizer()
         path = str(tmp_path / "junk.pt")
@@ -780,7 +780,7 @@ class TestValueGuidedMaxCandidates:
         assert value.seen_k[-1] == 3
 
     def test_warn_once_for_model_forward_value(self, monkeypatch):
-        import aisteer360.algorithms.output_control.common.processors.value_guided as vg
+        import steerability.algorithms.output_control.common.processors.value_guided as vg
         monkeypatch.setattr(vg, "LARGE_CANDIDATE_SET_WARN_THRESHOLD", 8)
         value = _ModelForwardScriptedValue()
         proc = vg.ValueGuidedProcessor(
@@ -796,7 +796,7 @@ class TestValueGuidedMaxCandidates:
             proc(torch.tensor([[0]]), scores.clone())  # would raise if it warned
 
     def test_no_warn_for_aux_forward_value(self, monkeypatch):
-        import aisteer360.algorithms.output_control.common.processors.value_guided as vg
+        import steerability.algorithms.output_control.common.processors.value_guided as vg
         monkeypatch.setattr(vg, "LARGE_CANDIDATE_SET_WARN_THRESHOLD", 8)
 
         class _AuxValue(_CheapScriptedValue):
@@ -811,7 +811,7 @@ class TestValueGuidedMaxCandidates:
             proc(torch.tensor([[0]]), torch.zeros(1, VOCAB))  # no warning despite large K
 
     def test_sasa_forwards_max_candidates(self):
-        from aisteer360.algorithms.output_control.sasa.control import SASA
+        from steerability.algorithms.output_control.sasa.control import SASA
 
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         tokenizer = wordlevel_tokenizer()
@@ -819,7 +819,7 @@ class TestValueGuidedMaxCandidates:
             "pos": ["the cat sat", "the dog ran", "the cat ran on"],
             "neg": ["mat on fast", "span attention", "fast mat sat"],
         })
-        from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+        from steerability.algorithms.core.steering_pipeline import SteeringPipeline
         pipeline = SteeringPipeline(controls=[sasa], model=model, tokenizer=tokenizer)
         pipeline.steer()
         proc = sasa.get_logits_processors(torch.tensor([[0, 3]]), {})[0]
@@ -828,8 +828,8 @@ class TestValueGuidedMaxCandidates:
 
 class TestSASASteerNoModelMutation:
     def test_steer_leaves_generation_config_pad_token_unset(self):
-        from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-        from aisteer360.algorithms.output_control.sasa.control import SASA
+        from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+        from steerability.algorithms.output_control.sasa.control import SASA
 
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         tokenizer = wordlevel_tokenizer()
@@ -848,7 +848,7 @@ class TestSASASteerNoModelMutation:
 
 
 # AuxModelSource / PromptVariantSource mask correctness (P3.5 F4)
-from aisteer360.algorithms.output_control.common.logit_sources import AuxModelSource, PromptVariantSource
+from steerability.algorithms.output_control.common.logit_sources import AuxModelSource, PromptVariantSource
 
 
 class TestAuxSourceMaskCorrectness:

@@ -1,6 +1,6 @@
 # SPipe
 
-::: aisteer360.spipe
+::: steerability.spipe
     handler: python
     options:
         show_if_no_docstring: true

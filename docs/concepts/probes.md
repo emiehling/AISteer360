@@ -47,8 +47,8 @@ ambient activation statistics before taking the difference in class means. The s
 estimated once per model from generic texts and can be saved and reused across probes.
 
 ```python
-from aisteer360.algorithms.core.internals import StatsSpec
-from aisteer360.algorithms.core.internals.probes import ProbeSet
+from steerability.algorithms.core.internals import StatsSpec
+from steerability.algorithms.core.internals.probes import ProbeSet
 
 stats = StatsSpec(texts=generic_texts).estimate(model, tokenizer)
 probes = ProbeSet.fit(

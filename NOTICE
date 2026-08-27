@@ -2,8 +2,8 @@ NOTICE
 
 This distribution contains code licensed under multiple open source licenses.
 
-1. Original Toolkit Code
-   Name: aisteer360 — AI Steerability 360 Toolkit
+1. Toolkit Code
+   Name: steerability — Steerability Toolkit
    Version: 0.5.0
    Copyright © 2026 IBM Research
    Licensed under the Apache License, Version 2.0
@@ -40,7 +40,7 @@ This distribution contains code licensed under multiple open source licenses.
    Source: https://github.com/UKGovernmentBEIS/inspect_evals
 
 License Summary:
-- The original aisteer360 toolkit code is licensed under Apache 2.0.
+- The steerability toolkit code is licensed under Apache 2.0.
 - MergeKit (>= 0.1.4) is licensed under LGPL-3.0-only and included as an unmodified dependency.
 - TRL (>= 1.0.0) is licensed under Apache 2.0 and included as an unmodified dependency.
 - Inspect AI (>= 0.3.260) and Inspect Evals (>= 0.18.0) are licensed under MIT and included as

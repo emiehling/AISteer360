@@ -1,6 +1,6 @@
 # Scorers
 
-::: aisteer360.evaluation.scorers
+::: steerability.evaluation.scorers
     handler: python
     options:
         show_if_no_docstring: true

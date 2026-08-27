@@ -5,12 +5,12 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from aisteer360.algorithms.core.execution.access import ModelAccess
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.caa.control import CAA
-from aisteer360.algorithms.state_control.cast.control import CAST
-from aisteer360.algorithms.state_control.common.fit_specs import ConditionSearchSpec
-from aisteer360.spipe import SPipe
+from steerability.algorithms.core.execution.access import ModelAccess
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.caa.control import CAA
+from steerability.algorithms.state_control.cast.control import CAST
+from steerability.algorithms.state_control.common.fit_specs import ConditionSearchSpec
+from steerability.spipe import SPipe
 
 LLAMA = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 MISTRAL = "hf-internal-testing/tiny-random-MistralForCausalLM"
@@ -102,8 +102,8 @@ def test_cast_lowers_to_activation_adapter(tmp_path, llama):
 
 def test_iti_and_act_add_same_class(tmp_path, llama):
     model, tokenizer = llama
-    from aisteer360.algorithms.state_control.act_add.control import ActAdd
-    from aisteer360.algorithms.state_control.iti.control import ITI
+    from steerability.algorithms.state_control.act_add.control import ActAdd
+    from steerability.algorithms.state_control.iti.control import ITI
 
     iti = ITI(
         data={"positives": [f"true {i}" for i in range(8)], "negatives": [f"false {i}" for i in range(8)]},
@@ -221,11 +221,11 @@ def test_verify_warn_downgrades_gate_mismatch(tmp_path):
 
 
 def test_shared_gate_follower_refuses_to_save(llama):
-    from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
-    from aisteer360.algorithms.state_control.common.gating import Evidence, Gate, ProjectedCosineReadout, SumThreshold
-    from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
-    from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
-    from aisteer360.spipe import SpipeSaveError
+    from steerability.algorithms.state_control.activation_adapter.control import ActivationAdapter
+    from steerability.algorithms.state_control.common.gating import Evidence, Gate, ProjectedCosineReadout, SumThreshold
+    from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+    from steerability.algorithms.state_control.common.transforms import AdditiveTransform
+    from steerability.spipe import SpipeSaveError
 
     model, tokenizer = llama
     hidden = model.config.hidden_size
@@ -244,7 +244,7 @@ def test_shared_gate_follower_refuses_to_save(llama):
 
 
 def test_precomputed_recipe_refreezes(tmp_path, llama):
-    from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+    from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 
     model, tokenizer = llama
     hidden = model.config.hidden_size
@@ -268,8 +268,8 @@ def test_precomputed_recipe_refreezes(tmp_path, llama):
 
 
 def test_norm_site_configuration_refuses_to_freeze(llama):
-    from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
-    from aisteer360.spipe import SpipeSaveError
+    from steerability.algorithms.state_control.angular_steering.control import AngularSteering
+    from steerability.spipe import SpipeSaveError
 
     model, tokenizer = llama
     angular = AngularSteering(

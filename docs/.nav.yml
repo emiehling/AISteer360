@@ -69,7 +69,7 @@ nav:
         - ValueGuidance: "examples/notebooks/generics/value_guidance.ipynb"
     - Recipes:
       - Routed decoding: "examples/notebooks/recipes/routed_decoding.ipynb"
-      - Sharing pipelines (.spipe): "examples/notebooks/recipes/spipe_share.ipynb"
+      - Sharing pipelines (.spipe): "examples/notebooks/recipes/spipe.ipynb"
     - Studies:
       - Commonsense MCQA: "examples/notebooks/studies/commonsense_mcqa/commonsense_mcqa.ipynb"
       - Instruction following: "examples/notebooks/studies/instruction_following/instruction_following.ipynb"
@@ -128,6 +128,8 @@ nav:
             - StoppingRules: reference/algorithms/output_control/stopping_rules.md
             - ValueGuidance: reference/algorithms/output_control/value_guidance.md
     - SPipe: reference/spipe.md
+    - Backends: reference/backends.md
+    - Utils: reference/utils.md
     - Evaluation:
         - Provider: reference/evaluation/provider.md
         - Batching: reference/evaluation/batching.md

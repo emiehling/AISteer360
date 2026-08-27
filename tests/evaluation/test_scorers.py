@@ -9,7 +9,7 @@ pytest.importorskip("inspect_ai")
 
 from inspect_ai.scorer import Score, accuracy, includes, match, scorer
 
-from aisteer360.evaluation.scorers import sample_scorer_from_inspect
+from steerability.evaluation.scorers import sample_scorer_from_inspect
 
 
 class TestSampleScorerFromInspect:

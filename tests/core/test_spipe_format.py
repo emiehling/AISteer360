@@ -4,8 +4,9 @@ import zipfile
 
 import pytest
 
-from aisteer360.spipe.errors import SpipeFormatError
-from aisteer360.spipe.format import pack_zip, unpack_zip, validate_manifest
+from steerability.spipe.errors import SpipeFormatError
+from steerability.spipe.format import pack_zip, unpack_zip, validate_manifest
+from steerability.spipe.freeze import _package_versions
 
 
 def minimal_manifest(**overrides):
@@ -24,6 +25,23 @@ def minimal_manifest(**overrides):
 
 def test_minimal_manifest_validates():
     validate_manifest(minimal_manifest())
+
+
+def test_lock_versions_records_the_toolkit_under_its_package_name():
+    versions = _package_versions()
+    assert "steerability" in versions
+    lock = {
+        "config_id": "cfg",
+        "recipe_id": "rec",
+        "model_fingerprint": None,
+        "tokenizer_fingerprint": None,
+        "torch_dtype": None,
+        "steer_backend_spec_hash": None,
+        "fit": "auto",
+        "seed": None,
+        "versions": versions,
+    }
+    validate_manifest(minimal_manifest(lock=lock))
 
 
 def test_version_refusal_names_versions():

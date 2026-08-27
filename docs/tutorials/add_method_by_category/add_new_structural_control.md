@@ -29,7 +29,7 @@ mutable default, such as a non-empty list of patterns, would need `default_facto
 
 ```python
 from dataclasses import dataclass, field
-from aisteer360.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.core.base_args import BaseArgs
 
 
 @dataclass
@@ -68,8 +68,8 @@ scaled Gaussian noise to their parameters in place.
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from aisteer360.algorithms.structural_control.base import StructuralControl
-from aisteer360.algorithms.structural_control.noise_injection.args import NoiseInjectionArgs
+from steerability.algorithms.structural_control.base import StructuralControl
+from steerability.algorithms.structural_control.noise_injection.args import NoiseInjectionArgs
 
 
 class NoiseInjection(StructuralControl):
@@ -111,8 +111,8 @@ class NoiseInjection(StructuralControl):
 The control can then be called via:
 
 ```python
-from aisteer360.algorithms.structural_control.noise_injection.control import NoiseInjection
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.structural_control.noise_injection.control import NoiseInjection
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 
 MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 

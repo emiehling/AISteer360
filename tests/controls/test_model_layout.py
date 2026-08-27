@@ -12,15 +12,15 @@ import pytest
 import torch
 import torch.nn as nn
 
-from aisteer360.algorithms.core.internals import model_layout as layout_mod
-from aisteer360.algorithms.core.internals.model_layout import (
+from steerability.algorithms.core.internals import model_layout as layout_mod
+from steerability.algorithms.core.internals.model_layout import (
     ModelLayout,
     head_geometry,
     register_layout_detector,
     resolve_model_layout,
     text_config,
 )
-from aisteer360.algorithms.state_control.common.hook_utils import (
+from steerability.algorithms.state_control.common.hook_utils import (
     extract_hidden_states,
     get_model_layer_list,
     get_norm_module_names,

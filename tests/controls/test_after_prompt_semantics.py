@@ -14,12 +14,12 @@ Runs hub-free on a tiny randomly-initialized Llama.
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
-from aisteer360.algorithms.state_control.caa.control import CAA
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
-from aisteer360.algorithms.state_control.iti.control import ITI
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.angular_steering.control import AngularSteering
+from steerability.algorithms.state_control.caa.control import CAA
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+from steerability.algorithms.state_control.directional_ablation.control import DirectionalAblation
+from steerability.algorithms.state_control.iti.control import ITI
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32

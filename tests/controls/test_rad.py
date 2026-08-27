@@ -12,15 +12,15 @@ import pytest
 import torch
 from transformers import BertConfig, BertForSequenceClassification, LlamaConfig, LlamaForSequenceClassification
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.output_control.common.values.base import BaseCandidateValue, StepContext
-from aisteer360.algorithms.output_control.common.values.reward_model import (
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.output_control.common.values.base import BaseCandidateValue, StepContext
+from steerability.algorithms.output_control.common.values.reward_model import (
     CachedRewardModelValue,
     RewardModelValue,
     extract_score,
 )
-from aisteer360.algorithms.output_control.rad.args import RADArgs
-from aisteer360.algorithms.output_control.rad.control import RAD
+from steerability.algorithms.output_control.rad.args import RADArgs
+from steerability.algorithms.output_control.rad.control import RAD
 from tests.utils.sweep import build_param_grid
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
@@ -177,7 +177,7 @@ class TestScoreExtraction:
 
     def test_reward_model_value_shape(self, tmp_path):
         rm_path = _decoder_classifier(tmp_path, num_labels=3)
-        from aisteer360.algorithms.output_control.common.loading import load_sequence_classifier
+        from steerability.algorithms.output_control.common.loading import load_sequence_classifier
         rm, rm_tok = load_sequence_classifier(rm_path, device="cpu")
         value = RewardModelValue(rm, rm_tok, score_index=1, score_transform="softmax", shared_vocab=True)
         ctx = StepContext(
@@ -194,7 +194,7 @@ class TestScoreExtraction:
 class TestCachedEquivalence:
     def _values(self, tmp_path):
         rm_path = _decoder_classifier(tmp_path)
-        from aisteer360.algorithms.output_control.common.loading import load_sequence_classifier
+        from steerability.algorithms.output_control.common.loading import load_sequence_classifier
         rm, rm_tok = load_sequence_classifier(rm_path, device="cpu")
         cached = CachedRewardModelValue(rm, rm_tok, score_index=0, score_transform="none")
         stateless = RewardModelValue(rm, rm_tok, score_index=0, score_transform="none", shared_vocab=True)

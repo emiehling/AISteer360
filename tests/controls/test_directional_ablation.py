@@ -9,11 +9,11 @@ Two tiers:
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform
-from aisteer360.algorithms.state_control.directional_ablation.args import DirectionalAblationArgs
-from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+from steerability.algorithms.state_control.common.transforms import ProjectionTransform
+from steerability.algorithms.state_control.directional_ablation.args import DirectionalAblationArgs
+from steerability.algorithms.state_control.directional_ablation.control import DirectionalAblation
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = "Give me a short set of instructions to follow when you respond."
@@ -175,7 +175,7 @@ class TestDirectionalAblationArgs:
             assert args.steering_vector.directions[0].size(0) == k
 
     def test_dict_data_coerced_to_contrastive_pairs(self):
-        from aisteer360.algorithms.core.internals.data import ContrastivePairs
+        from steerability.algorithms.core.internals.data import ContrastivePairs
 
         args = DirectionalAblationArgs(data={"positives": ["p1", "p2"], "negatives": ["n1", "n2"]})
         assert isinstance(args.data, ContrastivePairs)

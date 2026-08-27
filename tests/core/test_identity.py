@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from aisteer360.algorithms.core.base_args import BaseArgs
-from aisteer360.algorithms.core.identity import (
+from steerability.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.core.identity import (
     canonical_value,
     config_descriptor_from_controls,
     config_descriptor_from_specs,
@@ -20,8 +20,8 @@ from aisteer360.algorithms.core.identity import (
     derive_trial_seed,
     qualname,
 )
-from aisteer360.algorithms.core.internals.data import ContrastivePairs
-from aisteer360.algorithms.input_control.base import InputControl
+from steerability.algorithms.core.internals.data import ContrastivePairs
+from steerability.algorithms.input_control.base import InputControl
 
 
 @dataclass

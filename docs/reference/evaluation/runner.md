@@ -1,6 +1,6 @@
 # Runner
 
-::: aisteer360.evaluation.runner
+::: steerability.evaluation.runner
     handler: python
     options:
         show_if_no_docstring: true

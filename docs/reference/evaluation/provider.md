@@ -1,6 +1,6 @@
 # Provider
 
-::: aisteer360.evaluation.provider
+::: steerability.evaluation.provider
     handler: python
     options:
         show_if_no_docstring: true

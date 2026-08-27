@@ -9,12 +9,12 @@ from dataclasses import dataclass
 
 import pytest
 
-from aisteer360.algorithms.core.base_args import BaseArgs
-from aisteer360.algorithms.core.base_control import BaseControl
-from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.output_control.base import OutputControl
-from aisteer360.algorithms.state_control.base import StateControl
-from aisteer360.algorithms.structural_control.base import StructuralControl
+from steerability.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.core.base_control import BaseControl
+from steerability.algorithms.input_control.base import InputControl
+from steerability.algorithms.output_control.base import OutputControl
+from steerability.algorithms.state_control.base import StateControl
+from steerability.algorithms.structural_control.base import StructuralControl
 
 
 @dataclass

@@ -15,18 +15,18 @@ from pathlib import Path
 import pytest
 import torch
 
-from aisteer360.algorithms.state_control.common import (
+from steerability.algorithms.state_control.common import (
     ContrastivePairs,
     SteeringVector,
     VectorTrainSpec,
     as_contrastive_pairs,
 )
-from aisteer360.algorithms.state_control.common.hook_utils import (
+from steerability.algorithms.state_control.common.hook_utils import (
     extract_hidden_states,
     get_model_layer_list,
     replace_hidden_states,
 )
-from aisteer360.algorithms.state_control.common.token_scope import compute_prompt_lens, make_token_mask
+from steerability.algorithms.state_control.common.token_scope import compute_prompt_lens, make_token_mask
 
 
 class TestSteeringVector:
@@ -510,7 +510,7 @@ class TestGetModelLayerList:
 
     def test_llama_style_model(self, model_and_tokenizer):
         """Test layer extraction from llama-style model."""
-        from aisteer360.algorithms.core.internals.model_layout import resolve_model_layout
+        from steerability.algorithms.core.internals.model_layout import resolve_model_layout
 
         model, _ = model_and_tokenizer
         model_type = model.config.model_type
@@ -533,7 +533,7 @@ class TestProjectedCosineSimilarity:
 
     def test_known_values(self):
         """Test against known values."""
-        from aisteer360.algorithms.state_control.common.gating import projected_cosine_similarity
+        from steerability.algorithms.state_control.common.gating import projected_cosine_similarity
 
         # create a simple case
         hidden = torch.tensor([1.0, 0.0, 0.0])
@@ -551,7 +551,7 @@ class TestProjectedCosineSimilarity:
 
     def test_orthogonal_vectors(self):
         """Test with orthogonal vectors."""
-        from aisteer360.algorithms.state_control.common.gating import projected_cosine_similarity
+        from steerability.algorithms.state_control.common.gating import projected_cosine_similarity
 
         hidden = torch.tensor([1.0, 0.0, 0.0])
         direction = torch.tensor([0.0, 1.0, 0.0])
@@ -571,7 +571,7 @@ class TestAdditiveTransform:
 
     def test_applies_direction_with_mask(self):
         """Test that direction is added only where mask is True."""
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
 
         hidden = torch.zeros(1, 4, 8)  # [B=1, T=4, H=8]
         directions = {0: torch.ones(8)}  # layer 0: all ones
@@ -592,7 +592,7 @@ class TestAdditiveTransform:
 
     def test_no_direction_returns_unchanged(self):
         """Test that missing layer direction returns hidden unchanged."""
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
 
         hidden = torch.randn(2, 5, 16)
         transform = AdditiveTransform({0: torch.randn(16)}, strength=1.0)
@@ -604,7 +604,7 @@ class TestAdditiveTransform:
 
     def test_strength_scaling(self):
         """Test that strength parameter scales correctly."""
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
 
         hidden = torch.zeros(1, 1, 4)
         directions = {0: torch.tensor([1.0, 2.0, 3.0, 4.0])}
@@ -617,7 +617,7 @@ class TestAdditiveTransform:
 
     def test_positional_mode_with_alignment(self):
         """Test positional mode with alignment parameter."""
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
 
         hidden = torch.zeros(1, 6, 4)  # [B=1, T=6, H=4]
         # positional steering vector with T=3 tokens
@@ -644,7 +644,7 @@ class TestAdditiveTransform:
 
     def test_positional_mode_clips_at_seq_end(self):
         """Test that positional mode clips steering vectors at sequence end."""
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
 
         hidden = torch.zeros(1, 4, 4)  # [B=1, T=4, H=4]
         # steering vector with T=3, but aligned at position 2 so only 2 fit
@@ -664,7 +664,7 @@ class TestAdditiveTransform:
 
     def test_positional_mode_skips_when_out_of_range(self):
         """Test that positional mode returns unchanged when alignment is beyond seq_len."""
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
 
         hidden = torch.zeros(1, 3, 4)  # [B=1, T=3, H=4]
         directions = {0: torch.tensor([
@@ -686,7 +686,7 @@ class TestNormPreservingTransform:
 
     def test_preserves_norm_when_increased(self):
         """Test that norm is preserved when it would increase."""
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
 
         # start with unit norm vectors
         hidden = torch.tensor([[[1.0, 0.0, 0.0, 0.0]]])  # norm = 1
@@ -704,7 +704,7 @@ class TestNormPreservingTransform:
 
     def test_does_not_scale_when_norm_decreases(self):
         """Test that scaling doesn't happen when norm decreases."""
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
 
         # large initial norm
         hidden = torch.tensor([[[3.0, 0.0, 0.0, 0.0]]])  # norm = 3
@@ -722,8 +722,8 @@ class TestNormPreservingTransform:
 
     def test_raises_on_nan(self):
         """Test that NaN detection raises ValueError."""
-        from aisteer360.algorithms.state_control.common.transforms import NormPreservingTransform
-        from aisteer360.algorithms.state_control.common.transforms.base import BaseTransform
+        from steerability.algorithms.state_control.common.transforms import NormPreservingTransform
+        from steerability.algorithms.state_control.common.transforms.base import BaseTransform
 
         class NaNTransform(BaseTransform):
             def apply(self, hidden_states, *, layer_id, token_mask, **kwargs):
@@ -745,13 +745,13 @@ class TestTransformBinding:
         return SteeringVector(model_type="x", directions={0: torch.randn(k, self.HIDDEN), 1: torch.randn(k, self.HIDDEN)})
 
     def _stub_source(self, sv):
-        from aisteer360.algorithms.state_control.common.sources import _Precomputed
+        from steerability.algorithms.state_control.common.sources import _Precomputed
         return _Precomputed(sv)
 
     def _ctx(self, resolve_result=None):
         """A minimal TransformContext whose resolve returns a fixed vector (or coerces its input)."""
-        from aisteer360.algorithms.state_control.common.sources import _as_artifact_source
-        from aisteer360.algorithms.state_control.common.transforms.context import TransformContext
+        from steerability.algorithms.state_control.common.sources import _as_artifact_source
+        from steerability.algorithms.state_control.common.transforms.context import TransformContext
 
         def resolve(artifact):
             if resolve_result is not None:
@@ -764,19 +764,19 @@ class TestTransformBinding:
         )
 
     def test_additive_bound_from_dict_and_sv(self):
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
         sv = self._sv()
         assert AdditiveTransform(sv).is_bound is True
         assert AdditiveTransform(sv).covered_layer_ids == {0, 1}
         assert AdditiveTransform({0: torch.randn(1, self.HIDDEN)}).covered_layer_ids == {0}
 
     def test_additive_bound_bind_returns_self(self):
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
         t = AdditiveTransform(self._sv(), strength=2.0)
         assert t.bind(self._ctx()) is t
 
     def test_additive_source_binds_functionally(self):
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
         sv = self._sv()
         src = self._stub_source(sv)
         t = AdditiveTransform(src, strength=2.0)
@@ -787,24 +787,24 @@ class TestTransformBinding:
         assert t.is_bound is False  # template untouched
 
     def test_unbound_apply_raises(self):
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
         t = AdditiveTransform(self._stub_source(self._sv()))
         with pytest.raises(RuntimeError, match="unbound"):
             t.apply(torch.randn(1, 3, self.HIDDEN), layer_id=0, token_mask=torch.ones(1, 3, dtype=torch.bool))
 
     def test_directional_ablation_junk_positional(self):
-        from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform
+        from steerability.algorithms.state_control.common.transforms import ProjectionTransform
         with pytest.raises(TypeError, match="alpha"):
             ProjectionTransform(0.5)
 
     def test_additive_junk_positional(self):
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
         with pytest.raises(TypeError, match="strength"):
             AdditiveTransform(2.0)
 
     def test_fresh_caches_per_bound_instance(self):
         """One template bound against two ctxs with different directions -> independent bases."""
-        from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform
+        from steerability.algorithms.state_control.common.transforms import ProjectionTransform
         src = self._stub_source(self._sv())
         template = ProjectionTransform(src, alpha=1.0)
 
@@ -822,7 +822,7 @@ class TestTransformBinding:
 
     def test_rotation_deferred_validation(self):
         """A [1, H] (non-basis-pair) resolve errors at bind, matching the concrete __init__ error."""
-        from aisteer360.algorithms.state_control.common.transforms import RotationTransform
+        from steerability.algorithms.state_control.common.transforms import RotationTransform
         bad = SteeringVector(model_type="x", directions={0: torch.randn(1, self.HIDDEN)})
         # concrete bad shape errors at __init__
         with pytest.raises(ValueError, match=r"\[2, H\]"):
@@ -834,12 +834,12 @@ class TestTransformBinding:
             t.bind(self._ctx())
 
     def test_head_additive_rejects_bare_mapping(self):
-        from aisteer360.algorithms.state_control.common.transforms import HeadAdditiveTransform
+        from steerability.algorithms.state_control.common.transforms import HeadAdditiveTransform
         with pytest.raises(ValueError, match="num_heads and head_dim"):
             HeadAdditiveTransform({0: torch.randn(2, 4)}, active_heads={0: {0}})
 
     def test_norm_preserving_delegates_binding(self):
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform, NormPreservingTransform
         inner = AdditiveTransform(self._stub_source(self._sv()))
         wrapper = NormPreservingTransform(inner)
         assert wrapper.is_bound is False and wrapper.covered_layer_ids is None
@@ -848,7 +848,10 @@ class TestTransformBinding:
         assert bound.covered_layer_ids == {0, 1}
 
     def test_alignment_adaptive_two_part_binding(self):
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, AlignmentAdaptiveTransform
+        from steerability.algorithms.state_control.common.transforms import (
+            AdditiveTransform,
+            AlignmentAdaptiveTransform,
+        )
         sv = self._sv()
         # own concrete, inner unbound -> not bound (inner unbound)
         inner_unbound = AdditiveTransform(self._stub_source(sv))
@@ -870,7 +873,7 @@ class TestLayerHeuristics:
 
     def test_late_third(self):
         """Test late_third returns correct layer range."""
-        from aisteer360.algorithms.state_control.common.selectors import late_third
+        from steerability.algorithms.state_control.common.selectors import late_third
 
         # 12 layers -> last third is layers 8-11
         result = late_third(12)
@@ -904,19 +907,19 @@ class TestResolveTransformSlot:
         )
 
     def _stub_source(self, sv):
-        from aisteer360.algorithms.state_control.common.sources import _Precomputed
+        from steerability.algorithms.state_control.common.sources import _Precomputed
 
         return _Precomputed(sv)
 
     def test_bound_instance_passes_through(self):
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, resolve_transform_slot
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform, resolve_transform_slot
 
         transform = AdditiveTransform(self._sv(layers=(0, 1)), strength=1.5)
         built = resolve_transform_slot(transform, self._model(), None, [0, 1])
         assert built is transform  # already bound -> used as-is
 
     def test_source_carrying_instance_comes_back_bound(self):
-        from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform, resolve_transform_slot
+        from steerability.algorithms.state_control.common.transforms import ProjectionTransform, resolve_transform_slot
 
         template = ProjectionTransform(self._stub_source(self._sv(layers=(0, 1))), alpha=0.7)
         assert template.is_bound is False
@@ -927,7 +930,7 @@ class TestResolveTransformSlot:
         assert template.is_bound is False  # template untouched
 
     def test_factory_returning_bound_transform(self):
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, resolve_transform_slot
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform, resolve_transform_slot
 
         sv = self._sv(layers=(0, 1))
         built = resolve_transform_slot(
@@ -939,7 +942,7 @@ class TestResolveTransformSlot:
 
     def test_factory_returning_source_carrying_transform_is_bound(self):
         # an unbound factory result is bound here
-        from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform, resolve_transform_slot
+        from steerability.algorithms.state_control.common.transforms import ProjectionTransform, resolve_transform_slot
 
         source = self._stub_source(self._sv(layers=(0, 1)))
         built = resolve_transform_slot(
@@ -950,20 +953,20 @@ class TestResolveTransformSlot:
         assert built.is_bound is True
 
     def test_factory_returning_non_transform_raises(self):
-        from aisteer360.algorithms.state_control.common.transforms import resolve_transform_slot
+        from steerability.algorithms.state_control.common.transforms import resolve_transform_slot
 
         with pytest.raises(TypeError, match="must return a BaseTransform"):
             resolve_transform_slot(lambda ctx: object(), self._model(), None, [0, 1])
 
     def test_coverage_passes_when_layers_covered(self):
-        from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform, resolve_transform_slot
+        from steerability.algorithms.state_control.common.transforms import ProjectionTransform, resolve_transform_slot
 
         transform = ProjectionTransform(self._sv(layers=(0, 1, 2)))
         built = resolve_transform_slot(transform, self._model(), None, [0, 1])
         assert built is transform
 
     def test_coverage_raises_when_layer_missing(self):
-        from aisteer360.algorithms.state_control.common.transforms import ProjectionTransform, resolve_transform_slot
+        from steerability.algorithms.state_control.common.transforms import ProjectionTransform, resolve_transform_slot
 
         transform = ProjectionTransform(self._sv(layers=(0,)))
         with pytest.raises(ValueError, match="no direction for layer"):
@@ -971,8 +974,8 @@ class TestResolveTransformSlot:
 
     def test_coverage_opts_out_when_none(self):
         # a transform reporting covered_layer_ids=None is not coverage-checked
-        from aisteer360.algorithms.state_control.common.transforms import resolve_transform_slot
-        from aisteer360.algorithms.state_control.common.transforms.base import BaseTransform
+        from steerability.algorithms.state_control.common.transforms import resolve_transform_slot
+        from steerability.algorithms.state_control.common.transforms.base import BaseTransform
 
         class _NoCoverage(BaseTransform):
             def apply(self, hidden_states, *, layer_id, token_mask, **kwargs):
@@ -984,7 +987,7 @@ class TestResolveTransformSlot:
         assert built is transform
 
     def test_context_exposes_resolved_layers_and_working_resolve(self):
-        from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform, resolve_transform_slot
+        from steerability.algorithms.state_control.common.transforms import AdditiveTransform, resolve_transform_slot
 
         seen = {}
 

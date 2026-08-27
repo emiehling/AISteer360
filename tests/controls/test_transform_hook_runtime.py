@@ -14,10 +14,10 @@ import warnings
 import pytest
 import torch
 
-from aisteer360.algorithms.core.utils.auxiliary_pass import auxiliary_pass
-from aisteer360.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
-from aisteer360.algorithms.state_control.common.runtime import TransformHookRuntime
-from aisteer360.algorithms.state_control.common.token_scope import compute_prompt_lens
+from steerability.algorithms.core.utils.auxiliary_pass import auxiliary_pass
+from steerability.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
+from steerability.algorithms.state_control.common.runtime import TransformHookRuntime
+from steerability.algorithms.state_control.common.token_scope import compute_prompt_lens
 from tests.utils.runtime_helpers import NeverCompleteRule
 from tests.utils.runtime_helpers import RecordingTransform as _RecordingTransform
 from tests.utils.runtime_helpers import strip_clock

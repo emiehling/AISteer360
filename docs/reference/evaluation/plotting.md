@@ -1,6 +1,6 @@
 # Plotting
 
-::: aisteer360.evaluation.plotting
+::: steerability.evaluation.plotting
     handler: python
     options:
         show_if_no_docstring: true

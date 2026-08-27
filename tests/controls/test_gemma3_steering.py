@@ -6,9 +6,9 @@ decoder layer.
 """
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.caa.control import CAA
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.caa.control import CAA
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 from tests.utils.tiny_models import tiny_gemma3_conditional, wordlevel_tokenizer
 
 LAYERS = 4

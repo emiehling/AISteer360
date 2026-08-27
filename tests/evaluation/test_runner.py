@@ -8,10 +8,10 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from aisteer360.algorithms.core.execution.contracts import Capability, Requirements, needs
-from aisteer360.algorithms.core.specs import ControlSpec
-from aisteer360.algorithms.core.sweeps import PipelineFactory
-from aisteer360.evaluation.runner import SteeringEval
+from steerability.algorithms.core.execution.contracts import Capability, Requirements, needs
+from steerability.algorithms.core.specs import ControlSpec
+from steerability.algorithms.core.sweeps import PipelineFactory
+from steerability.evaluation.runner import SteeringEval
 from tests.conftest import MockInputControl, MockStateControl
 
 SUITE_CALLS: list[dict] = []
@@ -165,7 +165,7 @@ class TestProgressAndDisplay:
         assert all(call["display"] == "none" for call in SUITE_CALLS)
 
     def test_progress_summary_and_cell_lines_logged(self, tiny_base, tmp_path, caplog):
-        with caplog.at_level("INFO", logger="aisteer360.evaluation.runner"):
+        with caplog.at_level("INFO", logger="steerability.evaluation.runner"):
             _runner(
                 {"baseline": [], "steered": [MockInputControl()]},
                 num_trials=2, save_dir=tmp_path,
@@ -205,7 +205,7 @@ class TestPreflightPolicy:
             {"good": [MockInputControl()], "gated": [_RaisingStateControl()]},
             on_unsupported="skip", save_dir=tmp_path,
         )
-        with caplog.at_level("WARNING", logger="aisteer360.evaluation.runner"):
+        with caplog.at_level("WARNING", logger="steerability.evaluation.runner"):
             results = runner.run()
         assert len(results["good"]) == 1
         assert results["gated"] == []

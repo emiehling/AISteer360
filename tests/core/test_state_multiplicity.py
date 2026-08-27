@@ -10,11 +10,11 @@ Runs hub-free on a tiny randomly-initialized Llama.
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.core.utils.assembly import collect_state_entries
-from aisteer360.algorithms.core.utils.controls import merge_controls
-from aisteer360.algorithms.input_control.base import InputControl
-from aisteer360.algorithms.state_control.base import HookControl
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.core.utils.assembly import collect_state_entries
+from steerability.algorithms.core.utils.controls import merge_controls
+from steerability.algorithms.input_control.base import InputControl
+from steerability.algorithms.state_control.base import HookControl
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 

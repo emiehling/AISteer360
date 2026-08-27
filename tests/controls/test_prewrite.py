@@ -4,8 +4,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.input_control.prewrite import PRewrite, PRewriteArgs
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.input_control.prewrite import PRewrite, PRewriteArgs
 
 
 def _constant_scorer(value: float = 0.5):

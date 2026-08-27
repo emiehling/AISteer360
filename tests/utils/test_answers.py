@@ -1,7 +1,7 @@
 """Tests for `extract_numeric_answer`: anchored extraction, canonicalization, and fallbacks."""
 import pytest
 
-from aisteer360.utils.answers import extract_numeric_answer
+from steerability.utils.answers import extract_numeric_answer
 
 
 class TestExtractNumericAnswer:

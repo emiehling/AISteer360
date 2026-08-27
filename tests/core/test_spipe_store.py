@@ -4,9 +4,9 @@ import json
 import pytest
 import torch
 
-from aisteer360.algorithms.state_control.common.lowering import artifact_id_for
-from aisteer360.spipe.errors import SpipeIntegrityError, SpipeSaveError
-from aisteer360.spipe.store import ArtifactStore, tree_id_for
+from steerability.algorithms.state_control.common.lowering import artifact_id_for
+from steerability.spipe.errors import SpipeIntegrityError, SpipeSaveError
+from steerability.spipe.store import ArtifactStore, tree_id_for
 
 
 @pytest.fixture

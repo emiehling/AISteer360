@@ -1,19 +1,19 @@
 # Contributing
 
-[fork]: https://github.com/IBM/AISteer360/fork
-[pr]: https://github.com/IBM/AISteer360/compare
+[fork]: https://github.com/IBM/steerability/fork
+[pr]: https://github.com/IBM/steerability/compare
 [released]: https://help.github.com/articles/github-terms-of-service/
 
-We are pleased that you would like to contribute to AISteer360. We welcome both reporting issues and submitting pull requests.
+We are pleased that you would like to contribute to Steerability. We welcome both reporting issues and submitting pull requests.
 
 ## Reporting issues
 Please make sure to include any potentially useful information in the issue, so we can pinpoint the issue faster without going back and forth.
 
-- What SHA of AISteer360 are you running? If this is not the latest SHA on the main branch, please try if the problem persists with the latest version.
+- What SHA of Steerability are you running? If this is not the latest SHA on the main branch, please try if the problem persists with the latest version.
 - Python versions
 
 ## Contributing a change
-Contributions to this project are [released][released] to the public under the project's [opensource license](https://github.com/IBM/AISteer360/blob/main/LICENSE).
+Contributions to this project are [released][released] to the public under the project's [opensource license](https://github.com/IBM/steerability/blob/main/LICENSE).
 
 Contributors must _sign off_ that they adhere to these requirements by adding a `Signed-off-by` line to all commit messages with an email address that matches the commit author:
 

@@ -12,31 +12,31 @@ Runs hub-free on a tiny randomly-initialized Llama.
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.core.utils.assembly import collect_state_entries
-from aisteer360.algorithms.state_control.activation_adapter import (
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.core.utils.assembly import collect_state_entries
+from steerability.algorithms.state_control.activation_adapter import (
     ActivationAdapter,
     ActivationAdapterArgs,
     TransformContext,
 )
-from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter as _AA
-from aisteer360.algorithms.state_control.caa.control import CAA
-from aisteer360.algorithms.state_control.common.gating import (
+from steerability.algorithms.state_control.activation_adapter.control import ActivationAdapter as _AA
+from steerability.algorithms.state_control.caa.control import CAA
+from steerability.algorithms.state_control.common.gating import (
     CallableReadout,
     CosineReadout,
     Evidence,
     Gate,
     PerKeyThreshold,
 )
-from aisteer360.algorithms.state_control.common.sources import ContrastiveFit
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control.common.transforms import (
+from steerability.algorithms.state_control.common.sources import ContrastiveFit
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+from steerability.algorithms.state_control.common.transforms import (
     AdditiveTransform,
     NormPreservingTransform,
     ProjectionTransform,
 )
-from aisteer360.algorithms.state_control.common.transforms.base import BaseTransform
-from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
+from steerability.algorithms.state_control.common.transforms.base import BaseTransform
+from steerability.algorithms.state_control.directional_ablation.control import DirectionalAblation
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 HIDDEN = 32
@@ -197,7 +197,7 @@ class TestValidationSurface:
         assert "AdditiveTransform" in str(ei.value)  # replacement hint for 'strength'
 
     def test_both_placements(self):
-        from aisteer360.algorithms.state_control.common.selectors import FixedLayerSelector
+        from steerability.algorithms.state_control.common.selectors import FixedLayerSelector
         with pytest.raises(ValueError, match="exactly one of layer_ids or layer_selector"):
             ActivationAdapterArgs(transform=AdditiveTransform(_sv()), layer_ids=1, layer_selector=FixedLayerSelector(1))
 
@@ -214,7 +214,7 @@ class TestValidationSurface:
         ActivationAdapterArgs(transform=AdditiveTransform(_sv()), layer_ids=1, gate=gate, gate_driven_externally=True)
 
     def test_follower_flag_with_gate_source_raises(self):
-        from aisteer360.algorithms.state_control.common.sources import ConditionPointSearch
+        from steerability.algorithms.state_control.common.sources import ConditionPointSearch
 
         with pytest.raises(ValueError, match="pass the driver's Gate"):
             ActivationAdapterArgs(
@@ -262,7 +262,7 @@ class TestValidationSurface:
             adapter.steer(model, wordlevel_tokenizer())
 
     def test_condition_selector_rejected_for_placement(self):
-        from aisteer360.algorithms.state_control.common.selectors import ConditionPointSelector
+        from steerability.algorithms.state_control.common.selectors import ConditionPointSelector
         with pytest.raises(ValueError, match="ConditionPointSelector returns"):
             ActivationAdapter(transform=AdditiveTransform(_sv()), layer_selector=ConditionPointSelector())
 
@@ -562,7 +562,7 @@ class TestSupportsBatching:
 # registry discovery
 class TestRegistry:
     def test_activation_adapter_registered(self):
-        from aisteer360.algorithms.core.registry import REGISTRY
+        from steerability.algorithms.core.registry import REGISTRY
         assert "activation_adapter" in REGISTRY.get("state_control", {})
         method = REGISTRY["state_control"]["activation_adapter"]
         assert method.control_cls is _AA
@@ -571,7 +571,7 @@ class TestRegistry:
 # ControlSpec sweep + shared-source memoization
 class TestControlSpecSweep:
     def test_grid_over_strength_and_layer(self):
-        from aisteer360.algorithms.core.specs import ControlSpec
+        from steerability.algorithms.core.specs import ControlSpec
 
         sv = _sv(17)
         spec = ControlSpec(
@@ -595,7 +595,7 @@ class TestControlSpecSweep:
 
     def test_shared_source_fits_once_per_model(self):
         """One ContrastiveFit across two adapter configs fits once per model; templates clean."""
-        from aisteer360.algorithms.state_control.common.estimators.base import BaseEstimator
+        from steerability.algorithms.state_control.common.estimators.base import BaseEstimator
 
         class _CountingEstimator(BaseEstimator):
             def __init__(self):

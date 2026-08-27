@@ -6,8 +6,8 @@ import pytest
 
 pytest.importorskip("inspect_ai")
 
-import aisteer360.evaluation.suite as suite_module
-from aisteer360.evaluation.suite import InspectSuite
+import steerability.evaluation.suite as suite_module
+from steerability.evaluation.suite import InspectSuite
 from tests.evaluation.conftest import StubSteeringPipeline
 
 
@@ -83,7 +83,7 @@ class TestRun:
         assert call["task_args"] == {"grader_model": "openai/x"}
         assert call["temperature"] == 0
         assert call["max_tokens"] == 64  # suite overrides beat runner defaults
-        assert str(call["model"]) == "aisteer/cfg-1"
+        assert str(call["model"]) == "steerability/cfg-1"
         assert set(results) == {"a", "b"}
 
     def test_display_defaults_to_none_and_forwards_when_given(self, recorded_eval_set, tmp_path):

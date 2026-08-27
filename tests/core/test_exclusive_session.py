@@ -2,7 +2,7 @@
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution import (
+from steerability.algorithms.core.execution import (
     BackendSpec,
     GenerationItem,
     GenerationParams,
@@ -14,9 +14,9 @@ from aisteer360.algorithms.core.execution import (
     StackEntry,
     UnsupportedOperationError,
 )
-from aisteer360.algorithms.core.internals.capture import layerwise_tokenwise_hidden
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.backends.huggingface import HFBackend
+from steerability.algorithms.core.internals.capture import layerwise_tokenwise_hidden
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.backends.huggingface import HFBackend
 from tests.utils.tiny_models import tiny_gpt2, tiny_llama, wordlevel_tokenizer
 
 HF_SPEC = BackendSpec(kind="huggingface")

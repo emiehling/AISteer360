@@ -1,6 +1,6 @@
 # Suite
 
-::: aisteer360.evaluation.suite
+::: steerability.evaluation.suite
     handler: python
     options:
         show_if_no_docstring: true

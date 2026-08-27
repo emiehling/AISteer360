@@ -1,4 +1,4 @@
-"""Smoke tests for `aisteer360.evaluation.plotting`: every public function renders on the Agg
+"""Smoke tests for `steerability.evaluation.plotting`: every public function renders on the Agg
 backend under warnings-as-errors, the multi-configuration reference guard raises, and the Pareto
 direction handling is pinned.
 """
@@ -10,7 +10,7 @@ import pytest
 matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")
 
-from aisteer360.evaluation import plotting  # noqa: E402
+from steerability.evaluation import plotting  # noqa: E402
 
 
 def _summary() -> pandas.DataFrame:

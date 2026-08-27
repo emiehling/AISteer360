@@ -8,8 +8,8 @@ import copy
 import pytest
 import torch
 
-from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
-from aisteer360.algorithms.state_control.pasta.control import PASTA
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.pasta.control import PASTA
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 

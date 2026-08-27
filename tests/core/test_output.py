@@ -6,7 +6,7 @@ and `core.output`).
 """
 import torch
 
-from aisteer360.algorithms.core.output import Output, infer_finish_reasons
+from steerability.algorithms.core.output import Output, infer_finish_reasons
 from tests.utils.tiny_models import wordlevel_tokenizer
 
 
@@ -99,6 +99,6 @@ class TestModuleHome:
     """`Output` lives at `core.output` and is re-exported from `core`."""
 
     def test_importable_from_core(self):
-        from aisteer360.algorithms.core import Output as CoreOutput
+        from steerability.algorithms.core import Output as CoreOutput
 
         assert CoreOutput is Output

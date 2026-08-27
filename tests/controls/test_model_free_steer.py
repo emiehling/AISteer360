@@ -4,7 +4,7 @@ from the module tree at `get_hooks()` time."""
 import pytest
 import torch
 
-from aisteer360.algorithms.core.execution import (
+from steerability.algorithms.core.execution import (
     BackendSpec,
     GenerationItem,
     GenerationParams,
@@ -12,15 +12,15 @@ from aisteer360.algorithms.core.execution import (
     ModelFacts,
     PreparedPrompt,
 )
-from aisteer360.algorithms.state_control.act_add.control import ActAdd
-from aisteer360.algorithms.state_control.activation_adapter.control import ActivationAdapter
-from aisteer360.algorithms.state_control.angular_steering.control import AngularSteering
-from aisteer360.algorithms.state_control.caa.control import CAA
-from aisteer360.algorithms.state_control.common.steering_vector import SteeringVector
-from aisteer360.algorithms.state_control.common.transforms import AdditiveTransform
-from aisteer360.algorithms.state_control.directional_ablation.control import DirectionalAblation
-from aisteer360.algorithms.state_control.iti.control import ITI
-from aisteer360.backends.huggingface import HFBackend
+from steerability.algorithms.state_control.act_add.control import ActAdd
+from steerability.algorithms.state_control.activation_adapter.control import ActivationAdapter
+from steerability.algorithms.state_control.angular_steering.control import AngularSteering
+from steerability.algorithms.state_control.caa.control import CAA
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+from steerability.algorithms.state_control.common.transforms import AdditiveTransform
+from steerability.algorithms.state_control.directional_ablation.control import DirectionalAblation
+from steerability.algorithms.state_control.iti.control import ITI
+from steerability.backends.huggingface import HFBackend
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 LAYERS = 4

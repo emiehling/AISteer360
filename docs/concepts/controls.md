@@ -176,7 +176,7 @@ message naming the attention layers, and `ITI` refuses hybrid stacks. A multimod
 decoder under text-only prompting (`text=`, `messages=`, `input_ids=`); images and audio are out of scope. An unmerged
 LoRA adapter (`LoadLoRA(merge=False)`, or a TRL LoRA run without `merge_lora_after_train`) is hooked through the PEFT
 wrapper, so a state control listed after such an adapter steers the adapted model. For an architecture not on this
-list, register a detector with `register_layout_detector` (from `aisteer360.algorithms.core.internals`) rather than
+list, register a detector with `register_layout_detector` (from `steerability.algorithms.core.internals`) rather than
 waiting on a release.
 
 A gate makes an intervention conditional, and it factors into three parts: evidence (which layers are read and how
@@ -239,7 +239,7 @@ The toolkit implements the following step-level controls:
     - *Backends*: HF (model-backed per-step logit math is in-process only).
 - `ConstrainedDecoding` ([API reference](../reference/algorithms/output_control/constrained_decoding.md))
     - *Description*: constrained decoding from one declarative source (JSON schema, regex, EBNF grammar, or a choice set); every logit the grammar forbids is masked at each step.
-    - *Backends*: HF (client-side automaton, `aisteer360[guided]`), vLLM (native structured outputs); a control constructed with a live automaton object is HF-only. On vLLM versions predating the structured-outputs surface the engine grammar is not whitespace-compact, so engine and in-process outputs agree structurally rather than byte-for-byte.
+    - *Backends*: HF (client-side automaton, `steerability[guided]`), vLLM (native structured outputs); a control constructed with a live automaton object is HF-only.
 - `ValueGuidance` ([API reference](../reference/algorithms/output_control/value_guidance.md), [notebook](../examples/notebooks/generics/value_guidance.ipynb))
     - *Description*: the config-first generic over the step shape (candidates → value → normalize → shift); FUDGE, ARGS, RAD, and SASA are assignments of its config.
     - *Backends*: HF (model-backed per-step logit math is in-process only).
