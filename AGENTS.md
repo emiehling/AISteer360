@@ -458,7 +458,9 @@ own in the common case. Required hooks per category:
 - **input**: `adapt(input_ids, runtime_kwargs) -> input_ids` (required); optionally `adapt_messages(messages,
   runtime_kwargs) -> messages | None` for pre-template chat editing. A non-`None` return from `adapt_messages` skips
   that control's token-level `adapt` for the call, so implementing both does not double-apply.
-- **structural**: `steer(model, tokenizer, **kwargs) -> PreTrainedModel`; return the new or modified model.
+- **structural**: `steer(model, tokenizer, **kwargs) -> PreTrainedModel`; return the new or modified model. The
+  TRL wrappers forward `training_args` verbatim to the installed TRL config, so a convenience field loses to a
+  `training_args` entry of the same name, and a key the config does not declare raises at construction.
 - **state**: residual-stream methods subclass `InterventionControl` and declare an unbound intervention template
   in `_configure()` (a tuple of `Intervention` objects from `state_control/common/specs.py`: layers or a selector,
   a transform possibly carrying an `ArtifactSource`, a `TokenScope`, an optional gate); the base `steer()`

@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass, field
 
 from steerability.algorithms.structural_control.wrappers.trl.args import TRLArgs
@@ -55,6 +56,17 @@ class PPOArgs(TRLArgs):
             "response_length",
             "local_rollout_forward_batch_size",
         ):
-            self.training_args[key] = getattr(self, key)
+            self.training_args.setdefault(key, getattr(self, key))
         if self.missing_eos_penalty is not None:
-            self.training_args["missing_eos_penalty"] = self.missing_eos_penalty
+            self.training_args.setdefault("missing_eos_penalty", self.missing_eos_penalty)
+
+        # PPOConfig lives under trl.experimental; validate at construction when it is importable
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                from trl.experimental.ppo import PPOConfig
+        except ImportError:
+            return
+        from steerability.algorithms.structural_control.wrappers.trl.base_mixin import resolve_config_kwargs
+
+        resolve_config_kwargs(PPOConfig, self.training_args)

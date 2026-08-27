@@ -347,7 +347,11 @@ class ExclusiveSession:
         return True
 
     def _stack_prompt_rows(self, rows: list[tuple[torch.Tensor, torch.Tensor]]):
-        """Stack resolved single-row prompts into one right-padded batch."""
+        """Stack resolved single-row prompts into one right-padded batch.
+
+        The batched generate and score paths both left-pack the result via `to_left_pad` before
+        the forward pass.
+        """
         pad_token_id = getattr(self.tokenizer, "pad_token_id", None) or 0
         max_len = max(ids.size(1) for ids, _ in rows)
         device = rows[0][0].device
@@ -380,10 +384,8 @@ class ExclusiveSession:
         """Generate one result per item, each under its own hook registrations.
 
         Items sharing identical state entries, identical output entries, and identical-or-absent
-        effective seeds execute in one batched `model.generate` pass; otherwise items decode
-        serially. When those rows are of differing lengths they pack left so each continuation
-        starts after its row's last real token, and a batch the caller already padded to one width
-        keeps the caller's layout. Caller-supplied `logits_processor` and
+        effective seeds execute in one batched `model.generate` pass (right-padded to a common
+        prompt length, then left-packed together); otherwise items decode serially. Caller-supplied `logits_processor` and
         `stopping_criteria` entries in `params.extra` append after the items' own contributions,
         and the normalized stop fields compose as stop rules anchored at the prompt length. A
         seeded item decodes inside a seeded RNG fork, so seeded runs are reproducible and the
@@ -478,18 +480,15 @@ class ExclusiveSession:
         user_criteria: tuple,
         seed: int | None,
     ) -> list[ItemResult]:
-        """One `model.generate` pass over all items (identical entries, one shared seed)."""
+        """One `model.generate` pass over all items (identical entries, one shared seed).
+
+        The stacked prompts left-pack (pad positions move before the real tokens), so every row's
+        first generated token is predicted from its last real token rather than from a trailing pad.
+        """
         model = self.model
         rows = [self._resolve_prompt_tensors(item.prompt) for item in items]
         input_ids, attention_mask = self._stack_prompt_rows(rows)
-        # rows this session padded pack left, so each continuation starts after the row's last
-        # real token; pre-padded equal-width batches keep the caller's layout, as with
-        # model.generate (and as the pipeline's hook masks assume)
-        if (
-            len({ids.size(1) for ids, _ in rows}) > 1
-            and not getattr(model.config, "is_encoder_decoder", False)
-        ):
-            input_ids, attention_mask = to_left_pad(input_ids, attention_mask)
+        input_ids, attention_mask = to_left_pad(input_ids, attention_mask)
         processors, criteria = self._compose_entry_stacks(
             items[0].output_entries, extra_processors=user_processors, extra_criteria=user_criteria,
         )

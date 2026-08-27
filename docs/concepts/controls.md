@@ -97,7 +97,7 @@ around existing libraries. The toolkit implements:
     - *Description*: model merging via MergeKit[@goddard-etal-2024-arcees]; combines multiple checkpoints with strategies such as linear interpolation, SLERP, and TIES from a YAML/dict config.
     - *Backends*: HF, vLLM (the merged checkpoint is served).
 - `TRL` ([API reference](../reference/algorithms/structural_control/trl_wrapper.md), [notebook](../examples/notebooks/algorithms/trl.ipynb))
-    - *Description*: weight-level training via Hugging Face TRL[@vonwerra2022trl]; exposes SFT, DPO, APO, PPO, and GRPO trainers, with optional LoRA/PEFT and a post-training merge.
+    - *Description*: weight-level training via Hugging Face TRL[@vonwerra2022trl]; exposes SFT, DPO, APO, PPO, and GRPO trainers, with optional LoRA/PEFT and a post-training merge. `training_args` is forwarded verbatim to the installed TRL config, so a key the config does not declare raises at control construction.
     - *Backends*: HF, vLLM (serves the steer-time artifact, a checkpoint or LoRA adapter; an output directory must be configured).
 
 

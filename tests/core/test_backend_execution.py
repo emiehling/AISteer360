@@ -38,7 +38,9 @@ from steerability.algorithms.output_control.search_decoding.control import Searc
 from steerability.algorithms.output_control.stopping_rules.control import StoppingRules
 from steerability.algorithms.state_control.activation_adapter.control import ActivationAdapter
 from steerability.algorithms.state_control.base import StateControl
+from steerability.algorithms.state_control.caa.control import CAA
 from steerability.algorithms.state_control.common.runtime import TransformHookRuntime
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 from steerability.algorithms.structural_control.base import StructuralControl
 from steerability.backends.huggingface import HFBackend
 from steerability.backends.vllm import extract_ref_logprobs, map_vllm_finish_reason, render_vllm_sampling_args
@@ -326,7 +328,9 @@ class TestStopSemantics:
 class TestSessionBatchedFastPath:
 
     def test_batched_matches_direct_batched_generate(self, backend, model, tokenizer):
-        encoded = tokenizer(["the cat", "the dog ran"], return_tensors="pt", padding=True)
+        # equal-length prompts: the batch carries no padding, so the session's left-packing is a
+        # no-op and the batched pass matches a direct `model.generate` on the stacked batch
+        encoded = tokenizer(["the cat", "the dog"], return_tensors="pt", padding=True)
         items = [
             GenerationItem(prompt=PreparedPrompt.from_token_ids(
                 encoded["input_ids"][i:i + 1], encoded["attention_mask"][i:i + 1],
@@ -343,6 +347,31 @@ class TestSessionBatchedFastPath:
         for i, result in enumerate(results):
             assert torch.equal(result.output.output_ids, direct[i:i + 1, prompt_len:])
             assert torch.equal(result.output.adapted_input_ids, encoded["input_ids"][i:i + 1])
+
+    def test_ragged_batch_rows_match_single_row_generation(self, backend, tokenizer):
+        # a ragged batch left-packs before the batched `model.generate`, so every row continues
+        # from its last real token; each continuation must equal the prompt generated on its own
+        prompts = ["the cat sat on the mat", "the dog"]
+        encoded = tokenizer(prompts, return_tensors="pt", padding=True)  # right-padded
+        items = [
+            GenerationItem(prompt=PreparedPrompt.from_token_ids(
+                encoded["input_ids"][i:i + 1], encoded["attention_mask"][i:i + 1],
+            ))
+            for i in range(2)
+        ]
+        params = GenerationParams(max_new_tokens=4, greedy=True, extra={"eos_token_id": None})
+        with backend.open_session() as session:
+            batched = session.generate(items, params)
+        singles = []
+        with backend.open_session() as session:
+            for prompt in prompts:
+                single = tokenizer(prompt, return_tensors="pt")
+                item = GenerationItem(prompt=PreparedPrompt.from_token_ids(
+                    single["input_ids"], single["attention_mask"],
+                ))
+                singles.append(session.generate([item], params)[0])
+        for row in range(2):
+            assert torch.equal(batched[row].output.output_ids, singles[row].output.output_ids)
 
     def test_shared_params_seed_derives_distinct_item_seeds(self, backend, tokenizer):
         encoded = tokenizer(["the cat", "the cat"], return_tensors="pt", padding=True)
@@ -516,6 +545,37 @@ class TestSessionBatchedFastPath:
                 )
         for one, many in zip(serial, batched):
             assert torch.equal(one.output.output_ids, many.output.output_ids)
+
+
+class TestStateControlRaggedBatch:
+    """`after_prompt` state controls steer a ragged batch exactly as they steer each row singly.
+
+    The session left-packs a ragged batch before the batched `model.generate`; `after_prompt`
+    positions key off the common prompt width, so the steered continuations must match steering
+    each prompt on its own.
+    """
+
+    def test_after_prompt_additive_ragged_batch_matches_serial(self, model, tokenizer):
+        generator = torch.Generator().manual_seed(11)
+        steering_vector = SteeringVector(
+            model_type="llama",
+            directions={layer: torch.randn(1, 16, generator=generator) for layer in range(2)},
+        )
+        control = CAA(
+            steering_vector=steering_vector, layer_id=1, multiplier=8.0, token_scope="after_prompt",
+        )
+        pipeline = _pipeline(model, tokenizer, [control])
+        prompts = ["the cat sat on the mat", "the dog"]
+        gen_kwargs = dict(max_new_tokens=4, do_sample=False, eos_token_id=None, return_output=True)
+
+        batched = pipeline.generate(text=prompts, **gen_kwargs)
+        singles = [pipeline.generate(text=prompt, **gen_kwargs) for prompt in prompts]
+        for row in range(2):
+            assert torch.equal(batched[row].output_ids, singles[row].output_ids)
+
+        # the steered continuation differs from the unsteered one, so the equality above is not vacuous
+        unsteered = _pipeline(model, tokenizer).generate(text=prompts[0], **gen_kwargs)
+        assert not torch.equal(singles[0].output_ids, unsteered.output_ids)
 
 
 class TestPadTokenDefaulting:

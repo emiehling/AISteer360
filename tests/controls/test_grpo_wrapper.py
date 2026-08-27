@@ -155,7 +155,6 @@ class TestGRPOWrapperSmoke:
             num_generations=2,
             per_device_train_batch_size=2,
             max_completion_length=4,
-            max_prompt_length=32,
             beta=0.0,
             training_args={"max_steps": 1, "logging_steps": 1},
         )

@@ -85,7 +85,7 @@ extra_javascript:
   - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
 
 hooks:
-  - mkdocs_hooks/bibtex_warnings.py
+  - docs/_hooks/bibtex_warnings.py
 
 plugins:
   - awesome-nav:

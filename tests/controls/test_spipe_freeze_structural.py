@@ -29,7 +29,7 @@ def make_sft(tmp_path, **overrides):
         per_device_train_batch_size=2,
         logging_steps=100,
         load_best_model_at_end=False,
-        max_seq_length=32,
+        max_length=32,
     )
     kwargs.update(overrides)
     return SFT(**kwargs)

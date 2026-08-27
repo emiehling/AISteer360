@@ -5,7 +5,7 @@ from transformers import DataCollatorForLanguageModeling, PreTrainedModel, PreTr
 from trl import SFTConfig, SFTTrainer
 
 from steerability.algorithms.structural_control.base import StructuralControl
-from steerability.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin
+from steerability.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin, resolve_config_kwargs
 
 
 class SFTTrainerMixin(TRLMixin, StructuralControl):
@@ -26,7 +26,7 @@ class SFTTrainerMixin(TRLMixin, StructuralControl):
         model, self.tokenizer = self._resolve_model_tokenizer(model, self.tokenizer)
 
         # build TRL config
-        config_kwargs = self._filter_kwargs_for_class_or_callable(SFTConfig, self.training_args)
+        config_kwargs = resolve_config_kwargs(SFTConfig, self.training_args)
         training_config = SFTConfig(**config_kwargs)
 
         # build PEFT config

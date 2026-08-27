@@ -1,13 +1,48 @@
-import inspect
-from dataclasses import fields, is_dataclass
+import difflib
+from dataclasses import fields
 from typing import Any
 
+import trl
 from peft import PeftType
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
 from steerability.algorithms.core.base_control import NotFreezableError
 from steerability.algorithms.core.execution.contracts import Capability
 from steerability.algorithms.core.execution.payloads import Artifact, CheckpointArtifact, LoRAArtifact
+
+
+def resolve_config_kwargs(config_cls: type, training_args: dict[str, Any]) -> dict[str, Any]:
+    """The kwargs to construct `config_cls` from `training_args`.
+
+    Every key must be a dataclass field of `config_cls`; `None` values are dropped so the config's
+    own default applies. The toolkit forwards `training_args` verbatim to TRL, so a key the config
+    does not declare would otherwise be passed to a constructor that does not accept it.
+
+    Args:
+        config_cls: A TRL config dataclass (`DPOConfig`, `SFTConfig`, `GRPOConfig`, `PPOConfig`).
+        training_args: The composed training arguments.
+
+    Returns:
+        The accepted kwargs, in `training_args` order, without `None` values.
+
+    Raises:
+        ValueError: If any key is not a field of `config_cls`. The message names the config class,
+            the installed TRL version, and the unknown keys, with a closest-field suggestion when
+            one is close.
+    """
+    allowed = {field.name for field in fields(config_cls)}
+    unknown = sorted(key for key in training_args if key not in allowed)
+    if unknown:
+        details = []
+        for key in unknown:
+            close = difflib.get_close_matches(key, allowed, n=1)
+            details.append(f"{key!r} (did you mean {close[0]!r}?)" if close else repr(key))
+        raise ValueError(
+            f"{config_cls.__name__} (trl {trl.__version__}) does not accept training_args key(s): "
+            f"{', '.join(details)}. training_args is forwarded verbatim to TRL; remove these keys or "
+            f"use a field the installed {config_cls.__name__} declares."
+        )
+    return {key: value for key, value in training_args.items() if value is not None}
 
 
 class TRLMixin:
@@ -83,18 +118,6 @@ class TRLMixin:
 
         self.device = next(model.parameters()).device
         return model, self.tokenizer
-
-    @staticmethod
-    def _filter_kwargs_for_class_or_callable(target: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
-        """Keep only kwargs accepted by a dataclass or callable."""
-        if is_dataclass(target):
-            allowed = {f.name for f in fields(target)}
-        else:
-            try:
-                allowed = set(inspect.signature(target).parameters.keys())
-            except (TypeError, ValueError):
-                allowed = set(kwargs.keys())
-        return {k: v for k, v in kwargs.items() if k in allowed and v is not None}
 
     def _post_train_freeze(self, model: PreTrainedModel) -> PreTrainedModel:
         """Put `model` in eval mode, freeze its parameters, and return it.

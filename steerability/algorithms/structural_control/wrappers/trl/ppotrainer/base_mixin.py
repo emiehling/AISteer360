@@ -13,7 +13,7 @@ with warnings.catch_warnings():
     from trl.experimental.ppo import PPOConfig, PPOTrainer
 
 from steerability.algorithms.structural_control.base import StructuralControl
-from steerability.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin
+from steerability.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin, resolve_config_kwargs
 from steerability.algorithms.structural_control.wrappers.trl.utils.prompt_schema import standardize_prompt_dataset
 from steerability.utils.tokenization import ensure_pad_token
 
@@ -69,7 +69,7 @@ class PPOTrainerMixin(TRLMixin, StructuralControl):
         train_dataset = self._prepare_dataset(self.train_dataset) if self.train_dataset is not None else None
         eval_dataset = self._prepare_dataset(self.eval_dataset) if self.eval_dataset is not None else None
 
-        config_kwargs = self._filter_kwargs_for_class_or_callable(PPOConfig, self.training_args)
+        config_kwargs = resolve_config_kwargs(PPOConfig, self.training_args)
         training_config = PPOConfig(**config_kwargs)
 
         peft_config = None

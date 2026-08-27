@@ -208,6 +208,9 @@ output = pipeline.generate(
 )
 ```
 
+On the Hugging Face backend, batched prompts are left-packed internally for correct causal generation. Callers do
+not need to set the tokenizer's `padding_side`.
+
 For reasoning models that toggle thinking through a chat-template keyword, we pass `chat_template_kwargs` alongside
 `messages=`. This mapping is forwarded to `apply_chat_template` and is not interpreted by the toolkit, so the keys
 are whatever the model family expects (for example `enable_thinking`). It is valid only with `messages=`, and pairing

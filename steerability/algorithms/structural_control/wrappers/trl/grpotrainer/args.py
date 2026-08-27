@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field
 from typing import Callable
 
+from trl import GRPOConfig
+
 from steerability.algorithms.structural_control.wrappers.trl.args import TRLArgs
+from steerability.algorithms.structural_control.wrappers.trl.base_mixin import resolve_config_kwargs
 
 
 @dataclass
@@ -15,8 +18,10 @@ class GRPOArgs(TRLArgs):
     group-relative advantage; `beta` is the KL-to-reference coefficient (set `beta=0.0` to disable the
     reference model entirely).
 
-    `GRPOTrainer` reads a text `"prompt"` column directly with no pre-tokenization, and
-    `num_generations` must be >= 2 and evenly divide the global train batch size.
+    `GRPOTrainer` reads a text `"prompt"` column directly with no pre-tokenization and uses each
+    prompt as provided, so prompts are pre-truncated in the dataset when a cap is needed.
+    `num_generations` must be >= 2 and evenly divide the global train batch size. The convenience
+    fields supply defaults; an entry of the same name in `training_args` overrides the field.
     """
 
     reward_funcs: Callable | list[Callable] | None = field(
@@ -36,10 +41,6 @@ class GRPOArgs(TRLArgs):
     max_completion_length: int = field(
         default=64,
         metadata={"help": "Max generated tokens per completion during rollouts."},
-    )
-    max_prompt_length: int = field(
-        default=512,
-        metadata={"help": "Max prompt tokens; longer prompts are left-truncated by the trainer."},
     )
     temperature: float = field(
         default=0.9,
@@ -73,5 +74,7 @@ class GRPOArgs(TRLArgs):
                 "so the (single-process) global train batch size is a multiple of num_generations."
             )
 
-        for key in ("num_generations", "max_completion_length", "max_prompt_length", "temperature", "beta"):
-            self.training_args[key] = getattr(self, key)
+        for key in ("num_generations", "max_completion_length", "temperature", "beta"):
+            self.training_args.setdefault(key, getattr(self, key))
+
+        resolve_config_kwargs(GRPOConfig, self.training_args)

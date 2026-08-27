@@ -5,19 +5,26 @@ from steerability.algorithms.structural_control.wrappers.trl.dpotrainer.args imp
 
 @dataclass
 class APOArgs(DPOArgs):
+    """Arguments for APO training via TRL's `DPOTrainer`.
 
-    loss_type: str = field(
+    APO uses one of the anchored preference losses, `"apo_zero"` or `"apo_down"`, in place of the
+    sigmoid loss. `loss_type` may name that loss directly or lead a list combined with `loss_weights`
+    (for example `["apo_zero", "sft"]`), in which case the first entry is the APO loss.
+    """
+
+    loss_type: str | list[str] = field(
         default="apo_zero",
         metadata={
-            "help": "Type of loss to use: 'apo_zero' or 'apo_down'.",
+            "help": "APO loss: 'apo_zero' or 'apo_down', optionally leading a list combined with loss_weights.",
             "choices": ["apo_zero", "apo_down"],
         },
     )
 
     def __post_init__(self) -> None:
-        if hasattr(super(), "__post_init__"):
-            super().__post_init__()
-        if self.loss_type in ["apo_zero", "apo_down"]:
-            self.training_args['loss_type'] = self.loss_type
-        else:
-            raise ValueError(f"Loss type was set to '{self.loss_type}'. It must be set to either 'apo_zero' or 'apo_down'.")
+        super().__post_init__()
+        effective = self.training_args["loss_type"]
+        loss_types = [effective] if isinstance(effective, str) else list(effective)
+        if not loss_types or loss_types[0] not in ("apo_zero", "apo_down"):
+            raise ValueError(
+                f"Loss type was set to '{effective}'. It must be set to either 'apo_zero' or 'apo_down'."
+            )

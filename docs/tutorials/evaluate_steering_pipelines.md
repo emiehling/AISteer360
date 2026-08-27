@@ -64,6 +64,11 @@ provider clamps the ceiling to 1 otherwise. Input, state, and structural arms ba
 controls only `phased_decoding`, `routed_decoding`, and `stopping_rules` declare batch safety
 (`rad` and `value_guidance` compute it). Most driver-based arms therefore run one sample at a time.
 
+Rows of one batch need not share a prompt length. A ragged batch (an arm whose per-row prompt
+length varies, e.g. few-shot with per-row exemplar draws) is left-packed internally on the
+Hugging Face backend, and each row's continuation is predicted from its own last real token
+rather than from a trailing pad.
+
 We recommend greedy decoding (`temperature=0`) as the default since it is the norm for capability
 benchmarks and avoids seed sensitivity. Which samples are evaluated is fixed by the suite,
 independent of batch composition. A seeded dispatch carries `seed_scope` from `ProviderOptions`
