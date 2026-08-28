@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from functools import partial
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -13,6 +13,10 @@ from steerability.algorithms.core.execution.spec import BackendSpec
 from steerability.algorithms.core.internals.model_layout import head_geometry, resolve_model_layout
 from steerability.algorithms.state_control.base import HookControl
 from steerability.algorithms.state_control.pasta.args import PASTAArgs
+from steerability.algorithms.state_control.pasta.profiling import HeadProfile
+
+if TYPE_CHECKING:
+    from steerability.algorithms.state_control.pasta.profiling import HeadProfileResult
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +53,14 @@ class PASTA(HookControl):
     This approach enables real-time control over model focus and can be used for tasks like concept amplification, bias
     mitigation, or content filtering without architectural changes.
 
+    The `head_config` argument accepts a dict (layer index to head indices), a list (layer indices,
+    all heads), or a `HeadProfile` recipe. A `HeadProfile` moves the paper's one-time head-profiling
+    stage into `steer()`: each candidate head is steered on its own on a task-agnostic set of
+    profiling prompts, scored by a `SampleScorer`, and ranked by the paired lift over an unsteered
+    baseline; the selected heads become the dict head map, and the resolution is available as
+    `head_profile` (a `HeadProfileResult`). Profiling runs on the live model through the pipeline's
+    session, and the resolved head map freezes into a `.spipe` as a plain-dict PASTA.
+
     Note:
         PASTA injects a 4D additive attention mask, which only the `"eager"` and `"sdpa"` attention
         implementations consume. Load the model with `attn_implementation="eager"` (or `"sdpa"`);
@@ -82,12 +94,13 @@ class PASTA(HookControl):
     model: PreTrainedModel | None = None
     tokenizer: PreTrainedTokenizerBase | None = None
     device: torch.device | str | None = None
+    head_profile: "HeadProfileResult | None" = None
 
     _head_map: dict[int, list[int]] | None = None
     _layers: list[int] | None = None
     _attn_module_names: dict[int, str] | None = None
     _num_heads_by_layer: dict[int, int] | None = None
-    _scale_constant: torch.Tensor | None = None
+    _layout = None
 
     def requirements(self) -> Requirements:
         """Backend requirements for attention-map editing.
@@ -121,64 +134,71 @@ class PASTA(HookControl):
         return ModelAccess.MODULE
 
     def steer(
-        self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase | None = None, **__
+        self,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizerBase | None = None,
+        session=None,
+        **__,
     ) -> PreTrainedModel:
         """Initialize PASTA by configuring attention head mappings and model references.
 
-        Sets up the layer and head configurations that will be modified during generation,
-        resolves the architecture-specific attention module paths, and fails fast on unsupported
-        layers or attention implementations (rather than deep inside generation).
+        Resolves the attention module path and head count of every attention layer of the model,
+        resolves a `HeadProfile` head map when `head_config` is a profiling recipe (steering each
+        candidate head through the pipeline's session), sets up the resolved head map, and fails
+        fast on unsupported layers or attention implementations (rather than deep inside
+        generation).
 
         Args:
             model (PreTrainedModel): The base language model to be steered.
             tokenizer (PreTrainedTokenizerBase | None): Tokenizer for substring identification.
                 If None, attempts to retrieve from model attributes.
+            session: The `ScopedSession` the pipeline hands to `steer()`, scoped to
+                `ModelAccess.MODULE`, through which a `HeadProfile` runs its rollouts.
 
         Returns:
             PreTrainedModel: The input model (unchanged).
 
         Raises:
-            ValueError: If a configured attention module path is missing on the model, or if the
-                model's attention implementation is not one of `"eager"` / `"sdpa"`.
+            ValueError: If a configured attention module path is missing on the model, if the
+                model's attention implementation is not one of `"eager"` / `"sdpa"`, or if a
+                `HeadProfile` selects no heads.
         """
         self.model = model
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
         self.device = next(model.parameters()).device
-        self._setup_layers(self.head_config)
         self._resolve_attention_modules(model)
-        self._finalize_head_map()
         self._check_attention_implementation(model)
+
+        if isinstance(self.head_config, HeadProfile):
+            self.head_profile = self.head_config.resolve(self, model, self.tokenizer, session=session)
+            head_map = self.head_profile.head_config
+        else:
+            head_map = self.head_config
+
+        self._setup_layers(head_map)
+        self._finalize_head_map()
         return model
 
     def _resolve_attention_modules(self, model: PreTrainedModel) -> None:
-        """Resolve the per-layer attention module path and head count from the model layout.
+        """Resolve every attention layer's module path and head count from the model layout.
 
         The per-layer attention module paths come from `resolve_model_layout` (`.self_attn` for
-        `model.layers.*`, `.attn` for `transformer.h.*`). Validates every configured layer's module
-        exists so registration cannot fail mid-generation, and records each configured layer's head
-        count (read per layer from the module tree, so a model whose head count varies across layers
-        is sized per layer).
+        `model.layers.*`, `.attn` for `transformer.h.*`). Every attention layer of the layout is
+        resolved (not only the configured layers), so a `HeadProfile` can enumerate candidates
+        from the same table `get_hooks` reads. Each layer's head count is read per layer from the
+        module tree, so a model whose head count varies across layers is sized per layer.
 
         Raises:
-            ValueError: If the architecture is unrecognized, a configured layer carries no attention
-                module (a non-attention layer of a hybrid stack), or a configured module path is
+            ValueError: If the architecture is unrecognized, or an attention module path is
                 absent.
         """
         layout = resolve_model_layout(model)
+        self._layout = layout
         attn_names = layout.attn_names
 
         self._attn_module_names = {}
         self._num_heads_by_layer = {}
-        for layer in self._layers:
-            if layer < 0 or layer >= len(attn_names):
-                raise ValueError(
-                    f"PASTA layer {layer} out of range for model with {len(attn_names)} layers."
-                )
-            if not layout.has_attention(layer):
-                raise ValueError(
-                    f"PASTA layer {layer} carries no attention module; attention layers of this "
-                    f"model are {list(layout.attention_layers)}."
-                )
+        for layer in layout.attention_layers:
             path = attn_names[layer]
             try:
                 model.get_submodule(path)
@@ -210,7 +230,7 @@ class PASTA(HookControl):
         """Create attention modification hooks for specified substrings.
 
         Identifies token ranges corresponding to target substrings and prepares hooks that will modify attention weights
-        during the forward pass.
+        during the forward pass, at the configured head map and the control's `alpha`.
 
         Args:
             input_ids (torch.Tensor): Input token IDs of shape [batch_size, seq_len].
@@ -231,7 +251,28 @@ class PASTA(HookControl):
         if not runtime_kwargs or "substrings" not in runtime_kwargs:
             raise ValueError("PASTA requires 'substrings' inside runtime_kwargs")
 
-        substrings = runtime_kwargs["substrings"]
+        token_ranges, input_len = self.locate_spans(input_ids, runtime_kwargs["substrings"])
+        return self.build_hooks_for(token_ranges, input_len, self._head_map, self.alpha)
+
+    def locate_spans(self, input_ids: torch.Tensor, substrings) -> tuple[list[torch.Tensor], int]:
+        """Locate the `substrings` spans in `input_ids`, in the tensor's own coordinates.
+
+        Runs the substring-to-token-range resolution once for a prepared batch, so a caller
+        steering many head maps over one batch (head profiling) locates the spans once and only
+        reassembles the hook dict per candidate. The returned ranges are in the coordinate system
+        of `input_ids` (its key axis includes any BOS/template and left-pad tokens).
+
+        Args:
+            input_ids: Prompt token ids of shape `[batch_size, seq_len]`.
+            substrings: The `substrings` runtime-kwarg value, in any of PASTA's accepted forms.
+
+        Returns:
+            A `(token_ranges, input_len)` pair, where `token_ranges` is one `[G, 2]` tensor of
+            `(start, end)` spans per row and `input_len` is the sequence length.
+
+        Raises:
+            ValueError: If `substrings` is malformed (see `_normalize_substrings`).
+        """
         batch_size = input_ids.size(0)
         groups = self._normalize_substrings(substrings, batch_size)
 
@@ -288,30 +329,103 @@ class PASTA(HookControl):
 
         # input_len is the real (padded) sequence length, matching the attention mask's key axis
         input_len = input_ids.size(1)
+        return token_ranges, input_len
 
-        if self._scale_constant is None:
-            self._scale_constant = torch.tensor(
-                [self.alpha],
-                device=self.device,
-                dtype=torch.float32,
-            ).log()
+    def build_hooks_for(
+        self,
+        token_ranges: list[torch.Tensor],
+        input_len: int,
+        head_map: dict[int, list[int]],
+        alpha: float,
+    ) -> dict[str, list]:
+        """Assemble the pre-hook dict for a head map at a strength, from located spans.
 
+        The log-alpha constant is bound into each pre-hook partial, so a profiling strength and
+        the control's own `alpha` never cross. Only `"pre"` hooks are populated.
+
+        Args:
+            token_ranges: Located spans, one `[G, 2]` tensor per row (from `locate_spans`).
+            input_len: The sequence length the ranges were located in.
+            head_map: Layer index to head indices to steer.
+            alpha: The emphasis strength for this hook set.
+
+        Returns:
+            Hook specifications with `"pre"`, `"forward"`, `"backward"` keys.
+        """
+        scale_constant = torch.tensor([alpha], device=self.device, dtype=torch.float32).log()
         hooks: dict[str, list] = {"pre": [], "forward": [], "backward": []}
-        for layer in self._layers:
+        for layer, heads in head_map.items():
             hooks["pre"].append(
                 {
                     "module": self._attn_module_names[layer],
                     "hook_func": partial(
                         self._attention_pre_hook,
-                        head_idx=self._head_map[layer],
+                        head_idx=heads,
                         token_ranges=token_ranges,
                         input_len=input_len,
                         layer_idx=layer,
+                        scale_constant=scale_constant,
                     ),
                 }
             )
-
         return hooks
+
+    def attention_layers(self) -> list[int]:
+        """The model's attention layers, ascending (available after `steer()`)."""
+        return sorted(self._num_heads_by_layer)
+
+    def num_heads_of_layer(self, layer: int) -> int:
+        """The attention head count of `layer` (available after `steer()`)."""
+        return self._num_heads_by_layer[layer]
+
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """The fit artifacts the steer step produces, for the steer plan.
+
+        A `HeadProfile` head map produces one `("HeadProfile", "direction")` fit (the lift grid,
+        classed as a translation-robust direction). A dict or list head map produces no fit. This
+        is a pure function of the args, so `check()` can read it before `steer()`.
+        """
+        if isinstance(self.head_config, HeadProfile):
+            return (("HeadProfile", "direction"),)
+        return ()
+
+    def export_state(self) -> dict:
+        """The resolved profile's lift grid under `"head_profile"` (after a profiled `steer()`).
+
+        Empty for a dict or list head map, or before `steer()` resolves a `HeadProfile`. The full
+        `HeadProfileResult` is not serialized here; it stays on `head_profile` and the caller
+        writes it through `HeadProfileResult.save`.
+        """
+        if self.head_profile is not None:
+            return {"head_profile": self.head_profile.lift}
+        return {}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class `state_control/pasta` frozen form carrying the resolved dict head map.
+
+        Only used when `head_config` is a `HeadProfile`; a dict or list head map keeps the
+        `BaseControl` default (the recipe is the frozen form). The loaded control is a plain-dict
+        PASTA whose `steer()` does no rollouts.
+        """
+        if isinstance(self.head_config, HeadProfile):
+            return "state_control/pasta", {
+                "substrings": self.substrings,
+                "head_config": self.head_profile.head_config,
+                "alpha": self.alpha,
+                "scale_position": self.scale_position,
+            }
+        return super().frozen_form(state)
+
+    def fit_identity(self):
+        """The fit-relevant recipe inputs for staleness detection, or None.
+
+        For a `HeadProfile` head map, the profile's `fit_ingredients()` together with the
+        control's `scale_position` (the profile is scored under it). None for a dict or list head
+        map. The control's own `alpha` is an application parameter and is excluded.
+        """
+        if isinstance(self.head_config, HeadProfile):
+            return {"profile": self.head_config.fit_ingredients(), "scale_position": self.scale_position}
+        return None
 
     @staticmethod
     def _normalize_substrings(substrings, batch_size: int) -> list[list[str]]:
@@ -398,16 +512,31 @@ class PASTA(HookControl):
             raise ValueError(f"Invalid head configuration: {head_config!r}")
 
     def _finalize_head_map(self) -> None:
-        """Fill the all-heads default and validate head indices against per-layer head counts.
+        """Validate the configured layers, fill the all-heads default, and check head indices.
 
-        The list form of `head_config` expands to every head of each configured layer, sized by
-        that layer's own head count (`_num_heads_by_layer`, recorded in `_resolve_attention_modules`);
-        the dict form's explicit head lists are validated against the same per-layer counts. Models
-        whose head count varies across layers are handled per layer.
+        Every configured layer must be an attention layer of the model (its head count is in
+        `_num_heads_by_layer`, recorded in `_resolve_attention_modules`); a layer out of range or
+        without an attention module raises. The list form of `head_config` then expands to every
+        head of each configured layer, and the dict form's explicit head lists are validated,
+        both against that layer's own head count. Models whose head count varies across layers are
+        handled per layer.
 
         Raises:
-            ValueError: If a head index is out of range for its layer.
+            ValueError: If a configured layer is out of range or carries no attention module, or a
+                head index is out of range for its layer.
         """
+        num_layers = self._layout.num_layers
+        for layer in self._layers:
+            if layer < 0 or layer >= num_layers:
+                raise ValueError(
+                    f"PASTA layer {layer} out of range for model with {num_layers} layers."
+                )
+            if layer not in self._num_heads_by_layer:
+                raise ValueError(
+                    f"PASTA layer {layer} carries no attention module; attention layers of this "
+                    f"model are {list(self._layout.attention_layers)}."
+                )
+
         if self._head_map is None:  # list form: all heads of each configured layer
             self._head_map = {
                 layer: list(range(self._num_heads_by_layer[layer])) for layer in self._layers
@@ -529,11 +658,19 @@ class PASTA(HookControl):
         head_idx: list[int],
         token_ranges: list[torch.Tensor],
         input_len: int,
+        scale_constant: torch.Tensor,
         layer_idx: int = 0,
     ):
         """Modify attention mask to steer focus toward/away from target tokens.
 
         Pre-forward hook that adjusts attention weights by adding scaling factors to the attention mask for specified token ranges and attention heads.
+
+        In `"include"` mode each prompt column is edited once: the highlighted span columns are
+        left untouched and `scale_constant` is subtracted from the complement (the non-span prompt
+        columns), the paper's Eq. 3 (non-highlighted prompt columns scaled by the coefficient).
+        Overlapping spans therefore net to zero, and no column is touched twice, which removes the
+        bfloat16 residue of a double touch. `"exclude"` and `"generation"` add `scale_constant` to
+        the non-span columns and the whole prompt respectively.
 
         Args:
             module: The attention module being hooked.
@@ -542,6 +679,8 @@ class PASTA(HookControl):
             head_idx: List of attention head indices to modify.
             token_ranges: Token index ranges to apply scaling to.
             input_len: Length of input sequence (for generation positioning).
+            scale_constant: The `log(alpha)` edit magnitude, bound into the hook so a profiling
+                strength and the control's own `alpha` cannot cross.
             layer_idx: Decoder layer index of the hooked attention module, used to read this
                 layer's cached key length when `cache_position` is absent (transformers v5).
 
@@ -621,33 +760,34 @@ class PASTA(HookControl):
             expand = batch_size // len(token_ranges)
             token_ranges = [token_ranges[i // expand] for i in range(batch_size)]
 
+        if self.scale_position not in ("include", "exclude", "generation"):
+            raise ValueError(f"Unknown scale_position '{self.scale_position}'")
+
         for batch_index in range(batch_size):
             ranges = token_ranges[batch_index].tolist()
             has_valid_range = any(start != end for start, end in ranges)
-            for start_idx, end_idx in ranges:
-                if start_idx == end_idx:
-                    continue
-                if self.scale_position == "include":
-                    attention_mask[
-                        batch_index, head_idx, :, start_idx:end_idx
-                    ] += self._scale_constant
-                elif self.scale_position == "exclude":
-                    attention_mask[
-                        batch_index, head_idx, :, :start_idx
-                    ] += self._scale_constant
-                    attention_mask[
-                        batch_index, head_idx, :, end_idx:input_len
-                    ] += self._scale_constant
-                elif self.scale_position == "generation":
-                    attention_mask[
-                        batch_index, head_idx, :, :input_len
-                    ] += self._scale_constant
+            if not has_valid_range:
+                continue
 
-                else:
-                    raise ValueError(f"Unknown scale_position '{self.scale_position}'")
-
-            if self.scale_position == "include" and has_valid_range:
-                attention_mask[batch_index, head_idx, :, :input_len] -= self._scale_constant
+            if self.scale_position == "include":
+                # edit each prompt column once: subtract on the complement of the highlighted
+                # span union, leaving the span columns untouched (overlapping spans net to zero).
+                # a per-column delta applied over the [:input_len] slice keeps the write a single
+                # subscription (advanced head indexing writes back only through one __setitem__)
+                delta = attention_mask.new_full((input_len,), 0.0)
+                delta[:] = -scale_constant
+                for start_idx, end_idx in ranges:
+                    if start_idx != end_idx:
+                        delta[start_idx:end_idx] = 0.0
+                attention_mask[batch_index, head_idx, :, :input_len] += delta
+            elif self.scale_position == "exclude":
+                for start_idx, end_idx in ranges:
+                    if start_idx == end_idx:
+                        continue
+                    attention_mask[batch_index, head_idx, :, :start_idx] += scale_constant
+                    attention_mask[batch_index, head_idx, :, end_idx:input_len] += scale_constant
+            else:  # generation
+                attention_mask[batch_index, head_idx, :, :input_len] += scale_constant
 
         input_kwargs["attention_mask"] = attention_mask
         return input_args, input_kwargs

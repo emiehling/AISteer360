@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from inspect_ai import eval_set
 
@@ -163,14 +165,37 @@ def _flatten_logs(logs: list, log_dir: Path) -> dict:
         for score in scores:
             for metric_name, metric in score.metrics.items():
                 metrics[f"{score.name}/{metric_name}"] = metric.value
-        location = str(log.location)
-        try:
-            location = os.path.relpath(location, log_dir)
-        except ValueError:
-            pass
+        location = _log_location(str(log.location), log_dir)
         results[log.eval.task] = {
             "metrics": metrics,
             "n": log.results.completed_samples if log.results is not None else 0,
             "log": location,
         }
     return results
+
+
+def _log_location(location: str, log_dir: Path) -> str:
+    """Normalize an Inspect log location for storage in the results record.
+
+    Inspect reports a local log location as a `file:` URI. A local path is stripped of the scheme
+    and returned relative to `log_dir` when possible, so the record stays portable if the run
+    directory moves. A remote location (e.g. an `s3://` URI) is returned unchanged.
+
+    Args:
+        location: The `location` attribute of an Inspect `EvalLog` (a `file:` URI, a plain local
+            path, or a remote URI).
+        log_dir: The directory the task's logs were written under.
+
+    Returns:
+        A path relative to `log_dir` for a local log, otherwise the location unchanged.
+    """
+    parsed = urlparse(location)
+    if parsed.scheme not in ("", "file"):
+        return location
+    path = url2pathname(parsed.path) if parsed.scheme == "file" else location
+    if os.path.isabs(path):
+        try:
+            return os.path.relpath(path, log_dir)
+        except ValueError:
+            return path
+    return path

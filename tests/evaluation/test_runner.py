@@ -4,6 +4,7 @@ sequential execution, pre-flight policy, and factory discipline under a raising 
 The runner itself imports no Inspect symbols at runtime, so these tests run against duck-typed
 stub suites and the tiny hub-free models.
 """
+import warnings
 from dataclasses import dataclass, field
 
 import pytest
@@ -219,6 +220,37 @@ class TestFactoryDiscipline:
         with pytest.raises(RuntimeError, match="suite exploded"):
             runner.run()
         assert control.cleanup_calls == 1
+
+
+class TestStaticRuntimeKwargAudit:
+    def test_static_runtime_kwarg_declared_by_no_configuration_warns(self, tiny_base, tmp_path):
+        pytest.importorskip("inspect_ai")
+        from steerability.evaluation.provider import ProviderOptions
+
+        runner = _runner(
+            {"baseline": [], "steered": [MockInputControl()]},
+            save_dir=tmp_path,
+            provider_options=ProviderOptions(runtime_kwargs={"substrings": ["x"]}),
+        )
+        with pytest.warns(UserWarning, match="inert on every arm"):
+            runner.run()
+
+    def test_static_runtime_kwarg_declared_by_one_configuration_does_not_warn(self, tiny_base, tmp_path):
+        pytest.importorskip("inspect_ai")
+        from steerability.evaluation.provider import ProviderOptions
+
+        class _RowConsumer(MockInputControl):
+            RUNTIME_KWARGS_SCHEMA = [{"name": "substrings", "type": "list[str]", "scope": "row"}]
+
+        runner = _runner(
+            {"baseline": [], "steered": [_RowConsumer()]},
+            save_dir=tmp_path,
+            provider_options=ProviderOptions(runtime_kwargs={"substrings": ["x"]}),
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            runner.run()
+        assert not any("inert on every arm" in str(w.message) for w in caught)
 
 
 class TestConstructorValidation:

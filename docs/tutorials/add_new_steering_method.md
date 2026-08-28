@@ -1,6 +1,6 @@
 # Adding your own steering method
 
-Steering methods span four categories of controls: *input*, *structural*, *state*, and *output*. The specific category of a
+Steering methods span four categories of controls: input, structural, state, and output. The specific category of a
 steering method is dictated by what aspects of the model the method influences. Please refer to the conceptual guide on
 [steering](../concepts/controls.md) for information on choosing the appropriate category for your method.
 
@@ -23,11 +23,11 @@ where `<category>` must be one of the existing directories (`input_control`, `st
 `<custom_control>` is the directory name for your method. We encourage you to keep your implementations as
 self-contained as possible (within the control class), but any additional files/utils beyond the core implementation
 can be placed in a `utils/` directory within `<custom_control>/`. The following outlines how each file (`__init__.py`,
-`args.py`, `control.py`) are constructed.
+`args.py`, `control.py`) is constructed.
 
 
 
-### 1. Registry: `__init__.py`:
+### 1. Registry: `__init__.py`
 
 The `__init__.py` file exposes the method to the toolkit's registry.
 
@@ -43,7 +43,7 @@ STEERING_METHOD = {
 }
 ```
 
-### 2. Arguments dataclass: `args.py`:
+### 2. Arguments dataclass: `args.py`
 
 The args file holds a dataclass that specifies the method's required arguments along with any associated validation
 logic.
@@ -71,10 +71,10 @@ class CustomControlArgs(BaseArgs):
             raise ValueError("`prefix` must be non-empty.")
 ```
 
-List all parameters that your method takes as input. Each parameter is written as a `field` with args: `default`
-(included only if the parameter is optional; omit it if the parameter is required) and `metadata` (a dictionary
-containing the description of the argument under key `help`). Include all validation logic for your method's parameters
-in the `__post_init__` method to ensure that validation is run automatically (upon class initialization).
+List all parameters that your method takes as input. Each parameter is written as a `field` with two arguments,
+`default` (included only if the parameter is optional and omitted if the parameter is required) and `metadata` (a
+dictionary containing the description of the argument under the key `help`). Include all validation logic for your
+method's parameters in the `__post_init__` method so that validation runs automatically upon initialization.
 
 !!! warning
     Immutable defaults are safe with `default=`, i.e., `int`, `float`, `str`, and `bool` can be given directly (`default=5`, `default=True`, ...), but mutable defaults need `default_factory`. For example, for a `list`, `dict`, `set`, or any custom object you expect to mutate, you must write:
@@ -84,9 +84,9 @@ in the `__post_init__` method to ensure that validation is run automatically (up
     See the [example output control](./add_method_by_category/add_new_output_control.md) implementation for details.
 
 
-### 3. Control implementation: `control.py`:
+### 3. Control implementation: `control.py`
 
-The control file holds the method's main implementation. The control class **does not** contain an `__init__` method.
+The control file holds the method's main implementation. The control class does not contain an `__init__` method.
 Instead, the method's parameters are handled by the args class via the line `Args = CustomControlArgs`.[^1] The
 `__init__` method of the control's base class automatically validates these fields (via `Args.validate`) and converts
 them into class attributes.
@@ -94,22 +94,22 @@ them into class attributes.
 [^1]: This is intended to minimize boilerplate code (parameter/argument parsing and validation) that would otherwise need to live in each control's `__init__` method.
 
 Any one-time preparation of the steering method is done in the `.steer()` method of the control. This is optional for all
-control categories except structural control methods; the `.steer()` method in a structural control method contains
-the necessary logic for modifying the model's weights/architecture. Note that while including a steer method is optional
+control categories except structural control methods, where the `.steer()` method contains the necessary logic for
+modifying the model's weights/architecture. Note that while including a steer method is optional
 in every control type other than structural, it is often useful to include one for attaching necessary objects to the
 control for later use (e.g., the tokenizer). This is illustrated in the tutorials below.
 
 A control's steer step declares one of four access levels via `steer_access()`: `facts` (layout and tokenizer),
 `rollouts` (generate and score through the session), `capture` (hidden states), or `module` (the model as a live
-`torch.nn.Module`). Declare the highest rung your steer touches; intervention templates derive it from their sources,
+`torch.nn.Module`). Declare the highest rung your steer touches. Intervention templates derive it from their sources,
 and structural controls are `module` by definition. The pipeline hands your `steer()` a session scoped to that rung
 (and the model itself only at `module`), and arranges residency so that on an engine backend, module-level steps run on
 a temporary in-process model that is freed before the engine starts, with exported artifacts as the handoff. Do not hold
 the model past `steer()` unless your generate phase requires `IN_PROCESS_TORCH`. Generate- and score-phase
 requirements are unchanged.
 
-The implementation of a control method depends on its steering category. Specific instructions for how to add a method
-under each of the four categories, via a simple example implementation, is detailed below:
+The implementation of a control method depends on its steering category. Specific instructions for adding a method
+under each of the four categories, via a small example implementation, are given below:
 
 <div class="grid cards" markdown>
 
@@ -156,17 +156,16 @@ under each of the four categories, via a simple example implementation, is detai
 </div>
 
 !!! note
-    If your steering method requires two distinct control knobs, e.g., both tweaks the prompt and constrains
+    If your steering method requires two distinct control knobs, e.g., it both rewrites the prompt and constrains
     decoding, split it into two small controls and chain them together in `controls=[...]`.
 
 
 ## Testing your method
 
 To ensure your method is operating as intended, we ask that you write a small unit test in `./tests/controls/`. We
-advise that these tests are written using a lightweight models (e.g., via
+advise that these tests are written using lightweight models (e.g., via
 [Hugging Face internal testing](https://huggingface.co/hf-internal-testing/tiny-random-LlamaForCausalLM)). This allows
-for the tests to be run locally (on your CPU) before submitting your PR. See the `tests/` directory for examples of
-well-written tests.
+the tests to be run locally (on your CPU) before submitting your PR. See the `tests/` directory for examples.
 
 
 ## Document it and write a notebook
@@ -218,12 +217,12 @@ https://arxiv.org/abs/2402.06147
 ```
 
 
-Demonstrate your method by writing a notebook (in `../examples/notebooks/algorithms/`). A good notebook
+Demonstrate your method by writing a notebook (in `examples/notebooks/algorithms/`). A good notebook
 should contain the following:
 
 - A description of what the method does and how it works
 - How to initialize the control using the toolkit
-- A simple example of it working; it's helpful to illustrate how the steered behavior compares with the baseline
+- A small example of it working, ideally illustrating how the steered behavior compares with the baseline
 (non-steered) behavior
 
 See the [DeAL notebook](../examples/notebooks/algorithms/deal.ipynb) for an example.

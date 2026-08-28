@@ -22,8 +22,8 @@ STEERING_METHOD = {
 }
 ```
 
-Next, define the arguments class. This is where we define the required arguments; the transformer layer (via
-`layer_idx`) and the bias (via `alpha`):
+Next, define the arguments class. This is where we define the required arguments, i.e., the transformer layer (via
+`layer_idx`) and the bias magnitude (via `alpha`):
 
 ```python
 from dataclasses import dataclass, field
@@ -50,12 +50,12 @@ class ActivationBiasArgs(BaseArgs):
 
 A declarative control subclasses `InterventionControl` and maps its validated args onto an intervention template in
 `_configure`. An `Intervention` names the behavior layers (explicit ids or a selector resolved at steer time), a
-transform (which may carry an `ArtifactSource` fitted at steer time), a `TokenScope`, and optionally a gate and
-condition. The base class does the rest: `steer()` binds the template against the model (or a remote session's
+transform (which may carry an `ArtifactSource` fitted at steer time), a `TokenScope`, and optionally a gate, i.e.,
+the condition under which the edit applies. The base class does the rest: `steer()` binds the template against the model (or a remote session's
 structural facts), hooks are built once per generation by the pipeline, and configurations whose components all
 have a wire form run on vLLM backends through the vLLM-Hook plugin with no extra code.
 
-`ActivationBias` is an additive edit, so its template is one intervention over an `AdditiveTransform`:
+Since `ActivationBias` is an additive edit, its template is one intervention over an `AdditiveTransform`:
 
 ```python
 import torch
@@ -84,7 +84,7 @@ class ActivationBias(InterventionControl):
 
 There is no hook code, no per-generation state, and no backend knowledge in the control. The shipped residual-stream
 methods (`caa`, `act_add`, `directional_ablation`, `angular_steering`, `cast`, `iti`, and the composable
-`activation_adapter`) all follow this pattern; read them for templates that fit artifacts from data
+`activation_adapter`) all follow this pattern. Read them for templates that fit artifacts from data
 (`ContrastiveFit`), select layers at steer time (`FractionalDepthSelector`, `CoveredLayers`), or gate
 conditionally (`ConditionPointSearch`, `gate_from_probe`).
 
@@ -92,7 +92,7 @@ conditionally (`ConditionPointSearch`, `gate_from_probe`).
 
 A method that hooks a mechanism the intervention vocabulary does not cover (for example attention weights, as in
 PASTA) subclasses `HookControl` and implements `get_hooks`. The hooks travel as entries on session items and the
-session that executes forwards owns registration, so `get_hooks` must fully re-derive its state on every call:
+session that executes forwards owns registration. `get_hooks` must therefore fully re-derive its state on every call:
 
 ```python
 import torch
@@ -152,14 +152,14 @@ class ActivationBiasHooks(HookControl):
 
 ## Position tracking in hooks
 
-Scoped intervention controls get position tracking for free. `build_hooks` compiles every intervention through the
+Scoped intervention controls need no position tracking of their own. `build_hooks` compiles every intervention through the
 shared `TransformHookRuntime`, which reads each pass's absolute offset from the `cache_position` kwarg when the
 hooked module receives it and falls back to pass counting otherwise, with exactly one designated pass-opener hook
 advancing the shared offset per forward pass.
 
 A custom `HookControl` honoring `token_scope="after_prompt"` or `"from_position"` needs the same care. During
-prefill the hook sees the whole prompt (`seq_len == prompt_len`); during KV-cached decode it sees only the newly
-generated token(s) (`seq_len == 1`). Do **not** infer the phase by comparing `seq_len` to the prompt length, since a
+prefill the hook sees the whole prompt (`seq_len == prompt_len`). During KV-cached decode it sees only the newly
+generated token(s) (`seq_len == 1`). Do not infer the phase by comparing `seq_len` to the prompt length, since a
 length-1 prompt makes prefill and decode indistinguishable and steering would then silently never fire. Track the phase
 in state the hook closures own, created fresh inside `get_hooks` so every generation starts clean:
 
@@ -181,13 +181,13 @@ mask = make_token_mask(self.token_scope, seq_len=seq_len, prompt_lens=prompt_len
                        position_offset=position_offset)
 ```
 
-If a control registers several hooks per pass (e.g. one per layer), designate a single hook to advance the
-shared counter and gate both the advance and the flag flip on it, so earlier hooks in the same prefill pass
+If a control registers several hooks per pass (e.g., one per layer), designate a single hook to advance the
+shared counter and gate both the advance and the flag flip on it. Earlier hooks in the same prefill pass then
 still read `position_offset = 0`.
 
 ## Using the control
 
-The session executing the generation registers the hooks for exactly the span of the work, so the control can be
+The session executing the generation registers the hooks for exactly the span of the work, and the control can be
 used like any other:
 
 ```python

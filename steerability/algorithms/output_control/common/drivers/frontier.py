@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import torch
 
+from steerability.algorithms.core.output import infer_finish_reasons
+
 
 @dataclass
 class FrontierStep:
@@ -24,17 +26,26 @@ class FrontierStep:
 class Frontier:
     """Keep top-k beams by score, track per-beam finished flags and best-so-far.
 
+    Because beams arrive right-padded to a common length, a kept beam's continuation is first
+    stripped of trailing `pad_token_id` positions to recover its true length. The beam is
+    finished when the stripped continuation ends in a token of the eos set, or when its
+    stripped length reaches `max_new_tokens`. A beam cut by a caller-supplied stopping
+    criterion classifies as unfinished.
+
     Args:
         keep_k: Number of beams to retain each iteration.
-        eos_token_id: Token id that marks a finished beam (None disables the EOS check).
-        input_length: Prompt length, used for the budget check.
+        eos_token_id: Finished-beam token id(s), as an int, a list of ints, or None (disables
+            the EOS check).
+        input_length: Prompt length, used to slice each beam's continuation.
         max_new_tokens: Global token budget (None disables the budget check).
+        pad_token_id: Padding token id stripped from continuation tails, or None (no stripping).
     """
 
-    def __init__(self, keep_k: int, eos_token_id: int | None, input_length: int,
-                 max_new_tokens: int | None):
+    def __init__(self, keep_k: int, eos_token_id: int | list[int] | None, input_length: int,
+                 max_new_tokens: int | None, pad_token_id: int | None = None):
         self.keep_k = keep_k
         self.eos_token_id = eos_token_id
+        self.pad_token_id = pad_token_id
         self.input_length = input_length
         self.max_new_tokens = max_new_tokens
         self.best_ids: torch.Tensor | None = None
@@ -44,7 +55,7 @@ class Frontier:
         """Select the top-k beams, update best-so-far, and compute finished flags.
 
         Args:
-            beams: Candidate beam sequences `[N, T]`.
+            beams: Candidate beam sequences `[N, T]`, right-padded to a common length.
             scores: One score per beam.
 
         Returns:
@@ -56,14 +67,13 @@ class Frontier:
         kept = beams[top_idx]
         kept_scores = score_tensor[top_idx].tolist()
 
-        finished_flags = []
-        for beam in kept:
-            eos_hit = self.eos_token_id is not None and beam[..., -1] == self.eos_token_id
-            len_hit = (
-                self.max_new_tokens is not None
-                and beam.size(0) - self.input_length >= self.max_new_tokens
-            )
-            finished_flags.append(bool(eos_hit or len_hit))
+        reasons = infer_finish_reasons(
+            kept[:, self.input_length:],
+            {"max_new_tokens": self.max_new_tokens},
+            eos_token_id=self.eos_token_id,
+            pad_token_id=self.pad_token_id,
+        )
+        finished_flags = [reason is not None for reason in reasons]
 
         best_local = int(torch.argmax(torch.tensor(kept_scores)))
         if kept_scores[best_local] > self.best_score:

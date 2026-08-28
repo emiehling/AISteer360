@@ -8,7 +8,7 @@ One format holds two layers of information:
 - **The recipe**: the model reference plus the controls exactly as constructed. Every `.spipe` carries the recipe.
   Loading a recipe-only bundle and calling `steer()` re-runs any fits and training. Results may differ across
   machines because of GPU nondeterminism.
-- **The frozen resolution**: what the steer step actually produced, i.e. fitted steering vectors, probes, LoRA
+- **The frozen resolution**: what the steer step actually produced, i.e., fitted steering vectors, probes, LoRA
   adapters, and optimized prompts, stored content-addressed alongside the recipe. A lock section pins fingerprints of
   the producing model and per-fit digests of the recipe fields each artifact came from. Loading a frozen bundle
   yields controls in precomputed form, where `steer()` still runs but is cheap and model-free.
@@ -24,7 +24,7 @@ Loading therefore takes the same construction and `steer()` path as any hand-bui
 ```python
 pipeline.steer()
 spipe = pipeline.to_spipe()          # frozen by default once steered
-spipe.save("formal_tone.spipe")      # a .spipe path writes a zip; any other path writes a directory
+spipe.save("formal_tone.spipe")      # a .spipe path writes a zip (any other path writes a directory)
 ```
 
 ```python
@@ -32,7 +32,7 @@ from steerability.spipe import SPipe
 
 spipe = SPipe.load("formal_tone.spipe")
 pipeline = spipe.pipeline()          # backend, device, and dtype stay the caller's choice
-pipeline.steer()                     # cheap: installs the frozen artifacts, fits nothing
+pipeline.steer()                     # installs the frozen artifacts and fits nothing
 response = pipeline.generate(...)
 ```
 
@@ -55,7 +55,7 @@ against the model they are being installed on, under a policy chosen at `pipelin
 
 - `"strict"` (default): a wrong architecture or width is an error. A calibrated artifact (a probe, a gate threshold)
   on a model with a different weight fingerprint is an error. A direction artifact on different weights of the same
-  architecture is a warning, since transferring a direction across fine-tunes is a legitimate, deliberate act.
+  architecture is a warning, since a direction can be transferred across fine-tunes deliberately.
 - `"warn"`: every mismatch is a warning.
 - `"off"`: no checks.
 
@@ -65,7 +65,7 @@ A `.spipe` from someone else is untrusted input. Loading never unpickles by defa
 safetensors, archives are extracted behind zip-safety guards, and every artifact is verified against its content
 hash. Two things require an explicit `allow_code=True` at load, mirroring the `trust_remote_code` posture:
 
-- References to Python callables, e.g. a scorer function a prompt optimizer was configured with. The manifest's
+- References to Python callables, e.g., a scorer function a prompt optimizer was configured with. The manifest's
   `code_dependent` flag says up front whether a bundle needs this, and the referenced modules must be on the import
   path.
 - Pickle-backed memory payloads (CPO's trained scorer memory), since unpickling executes code.

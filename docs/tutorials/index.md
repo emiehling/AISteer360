@@ -1,6 +1,6 @@
 # Tutorials
 
-We've prepared a variety of tutorials to aid in contributing to the toolkit.
+These tutorials cover extending the toolkit with new steering methods and evaluating steering pipelines.
 
 <div class="grid cards" markdown>
 
@@ -8,7 +8,7 @@ We've prepared a variety of tutorials to aid in contributing to the toolkit.
 
     ---
 
-    Steering methods facilitate control of model behavior across four control knobs: input, structural, state, and output.
+    Steering methods facilitate control of model behavior across four categories: input, structural, state, and output.
 
     [:octicons-arrow-right-24: Add your own steering method](./add_new_steering_method.md)
 

@@ -152,7 +152,7 @@ Where an algorithm notebook demonstrates one control, a recipe builds a new capa
 
     ---
 
-    This notebook studies the effect of post-hoc attention steering ([PASTA](https://arxiv.org/abs/2311.02262)) on a model's ability to follow instructions. We sweep over the steering strength and investigate the trade-off between a model's instruction following ability and general response quality.
+    This notebook studies the effect of post-hoc attention steering ([PASTA](https://arxiv.org/abs/2311.02262)) on a model's ability to follow instructions, on single-instruction prompts from [Split-IFEval](https://huggingface.co/datasets/ibm-research/Split-IFEval). The Inspect task scores each response with the strict IFEval checker and a reward-model quality score, and delivers each prompt's instruction lines to PASTA through per-sample runtime kwargs. We sweep the steering strength and investigate the trade-off between instruction following and response quality.
 
     [:octicons-arrow-right-24: See the study](./notebooks/studies/instruction_following/instruction_following.ipynb)
 
@@ -167,13 +167,5 @@ Where an algorithm notebook demonstrates one control, a recipe builds a new capa
     composes the figures from the library plotting calls.
 
     [:octicons-arrow-right-24: See the study](./notebooks/studies/commonsense_mcqa/commonsense_mcqa.ipynb)
-
--   :material-layers-triple-outline:  __Composite steering for truthfulness__
-
-    ---
-
-    One of the primary features of the toolkit is the ability to compose multiple steering methods into one model operation. This notebook composes a state control ([PASTA](https://arxiv.org/abs/2311.02262)) with an output control ([DeAL](https://arxiv.org/abs/2402.06147)) with the goal of improving the model's truthfulness (as measured on [TruthfulQA](https://huggingface.co/datasets/domenicrosati/TruthfulQA)) without significantly degrading informativeness. We sweep over the joint parameter space of the controls and study each control's performance (via the tradeoff between truthfulness and informativeness) to that of the composition.
-
-    [:octicons-arrow-right-24: See the study](./notebooks/studies/truthful_qa_composite_steering/truthful_qa_composite_steering.ipynb)
 
 </div>

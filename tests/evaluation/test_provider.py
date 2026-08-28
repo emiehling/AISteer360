@@ -34,7 +34,7 @@ from steerability.evaluation.provider import (
     SteeringPipelineModelAPI,
     as_inspect_model,
 )
-from tests.evaluation.conftest import StubSteeringPipeline, StubTokenizer, make_output
+from tests.evaluation.conftest import StubControl, StubSteeringPipeline, StubTokenizer, make_output
 
 
 def _api(pipeline=None, **kwargs) -> SteeringPipelineModelAPI:
@@ -336,12 +336,35 @@ class TestDispatchShapes:
         assert call["text"] == ["be brief\n\nhello"]
 
     def test_static_runtime_kwargs_pass_through_unmutated(self):
-        pipeline = StubSteeringPipeline()
+        control = StubControl([{"name": "canned_responses", "scope": "call"}])
+        pipeline = StubSteeringPipeline(controls=(control,))
         artifact = {"routes": {"a": "b"}}
         api = _api(pipeline, options=ProviderOptions(runtime_kwargs={"canned_responses": artifact}))
         _generate(api, [ChatMessageUser(content="q")])
         (call,) = pipeline.calls
         assert call["runtime_kwargs"]["canned_responses"] is artifact
+
+    def test_per_sample_kwarg_without_consumer_is_inert(self):
+        pipeline = StubSteeringPipeline()
+        api = _api(pipeline)
+        _generate(
+            api, [ChatMessageUser(content="q")],
+            GenerateConfig(max_tokens=4, temperature=0, extra_body={"runtime_kwargs": {"substrings": ["x"]}}),
+        )
+        (call,) = pipeline.calls
+        assert "substrings" not in call["runtime_kwargs"]
+        assert api.inert_runtime_kwargs == frozenset({"substrings"})
+
+    def test_per_sample_kwarg_with_row_consumer_is_collated(self):
+        control = StubControl([{"name": "substrings", "type": "list[str]", "scope": "row"}])
+        pipeline = StubSteeringPipeline(controls=(control,))
+        api = _api(pipeline)
+        _generate(
+            api, [ChatMessageUser(content="q")],
+            GenerateConfig(max_tokens=4, temperature=0, extra_body={"runtime_kwargs": {"substrings": ["x"]}}),
+        )
+        (call,) = pipeline.calls
+        assert call["runtime_kwargs"]["substrings"] == [["x"]]
 
     def test_close_refuses_new_requests(self):
         api = _api()

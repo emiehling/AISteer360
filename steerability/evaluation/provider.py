@@ -76,9 +76,11 @@ class ProviderOptions:
     Both `InspectSuite.run` and `SteeringEval` accept it, so the two surfaces cannot drift.
 
     Attributes:
-        runtime_kwargs: Static, call-scoped runtime kwargs applied to every dispatch. Correct for
-            catalog tasks whose datasets carry no steering columns, and for any kwarg that is a
-            property of the arm rather than the sample.
+        runtime_kwargs: Static runtime kwargs applied to every dispatch. A `"call"`-scoped key
+            passes through unchanged; a `"row"`-scoped key's value is one row's value in the
+            consuming control's per-row form and is broadcast to every row; a key that no enabled
+            control declares is inert. Correct for catalog tasks whose datasets carry no steering
+            columns, and for any kwarg that is a property of the arm rather than the sample.
         chat_template_kwargs: Forwarded to `apply_chat_template` on the messages path; must be
             None when the tokenizer has no chat template.
         max_batch_size: Collator dispatch ceiling; clamped to 1 when the pipeline does not
@@ -206,14 +208,12 @@ class SteeringPipelineModelAPI(ModelAPI):
         self._effective_max_batch = effective_max_batch
 
         schema = runtime_kwargs_schema(pipeline.controls)
-        row_scoped_keys = frozenset(
-            name for name, entry in schema.items() if entry.get("scope") == "row"
-        )
+        declared_scopes = {name: entry["scope"] for name, entry in schema.items()}
         self._collator = LockLeaderCollator(
             pipeline,
             max_batch_size=effective_max_batch,
             prompt_path=self._prompt_path,
-            row_scoped_keys=row_scoped_keys,
+            declared_scopes=declared_scopes,
             static_runtime_kwargs=self._options.runtime_kwargs,
             chat_template_kwargs=self._options.chat_template_kwargs,
         )
@@ -228,6 +228,11 @@ class SteeringPipelineModelAPI(ModelAPI):
         """The collator's dispatch ceiling after the batching clamp."""
         return self._effective_max_batch
 
+    @property
+    def inert_runtime_kwargs(self) -> frozenset[str]:
+        """Runtime kwargs delivered on either tier that no enabled control of the pipeline declares."""
+        return self._collator.inert_runtime_kwargs
+
     async def generate(
         self,
         input: list[ChatMessageSystem | ChatMessageUser | ChatMessageAssistant | ChatMessageTool],
@@ -241,7 +246,8 @@ class SteeringPipelineModelAPI(ModelAPI):
             NotImplementedError: If the request supplies tools, tool messages, multimodal content,
                 or logprob parameters.
             ValueError: If a `GenerateConfig` parameter cannot be honored (under the `"raise"`
-                policy), or a per-sample runtime kwarg fails scope validation.
+                policy), or a per-sample runtime kwarg is also supplied statically or is declared
+                `"call"`-scoped.
             RuntimeError: If the provider is closed.
         """
         if tools:

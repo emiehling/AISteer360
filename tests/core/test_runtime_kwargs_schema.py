@@ -1,9 +1,18 @@
-"""Tests for runtime-kwargs scope declarations: merging, defaults, conflicts, and steer-time
-enforcement on the pipeline."""
+"""Tests for runtime-kwargs scope declarations: merging, defaults, conflicts, steer-time
+enforcement on the pipeline, and the shipped controls' declarations of the names they read."""
 import pytest
 
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 from steerability.algorithms.core.utils.controls import runtime_kwargs_schema
+from steerability.algorithms.input_control.few_shot.control import FewShot
+from steerability.algorithms.output_control.best_of_n.control import BestOfN
+from steerability.algorithms.output_control.budget_forcing.control import BudgetForcing
+from steerability.algorithms.output_control.common.drivers.phased import PhasedDriver
+from steerability.algorithms.output_control.common.drivers.search import SearchDriver
+from steerability.algorithms.output_control.deal.control import DeAL
+from steerability.algorithms.output_control.routed_decoding.control import RoutedDecoding
+from steerability.algorithms.output_control.search_decoding.control import SearchDecoding
+from steerability.algorithms.state_control.pasta.control import PASTA
 from tests.conftest import MockInputControl, MockStateControl
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
@@ -92,3 +101,24 @@ class TestSteerTimeEnforcement:
         pipeline = self._pipeline([_RowInput(), _RowState()])
         with pytest.warns(UserWarning, match="share"):
             pipeline.steer()
+
+
+@pytest.mark.parametrize(
+    "control_cls, name, scope",
+    [
+        (FewShot, "positive_examples", "call"),
+        (FewShot, "negative_examples", "call"),
+        (SearchDriver, "reward_params", "row"),
+        (DeAL, "reward_params", "row"),
+        (BestOfN, "reward_params", "row"),
+        (SearchDecoding, "reward_params", "row"),
+        (PhasedDriver, "params", "call"),
+        (BudgetForcing, "params", "call"),
+        (PASTA, "substrings", "row"),
+        (RoutedDecoding, "canned_responses", "call"),
+    ],
+)
+def test_runtime_kwarg_readers_declare_their_names(control_cls, name, scope):
+    entries = {entry["name"]: entry for entry in control_cls.RUNTIME_KWARGS_SCHEMA}
+    assert name in entries, f"{control_cls.__name__} does not declare {name!r}"
+    assert entries[name].get("scope", "call") == scope

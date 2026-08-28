@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from steerability.algorithms.core.base_args import BaseArgs
+
+if TYPE_CHECKING:
+    from steerability.algorithms.state_control.pasta.profiling import HeadProfile
 
 
 @dataclass
@@ -11,9 +14,12 @@ class PASTAArgs(BaseArgs):
         default=None,
         metadata={"help": "List of substrings or groups of substrings to steer attention toward or away from."}
     )
-    head_config: dict[int, list[int]] | list[int] = field(
+    head_config: "dict[int, list[int]] | list[int] | HeadProfile" = field(
         default_factory=lambda: [0, 1],
-        metadata={"help": "Either a list of layer indices (to steer all heads), or a dict mapping layer index -> list of head indices."}
+        metadata={"help": (
+            "Either a list of layer indices (to steer all heads), a dict mapping layer index -> list of "
+            "head indices, or a HeadProfile recipe resolved at steer() to a dict head map."
+        )}
     )
     alpha: float = field(
         default=1.0,
@@ -43,7 +49,11 @@ class PASTAArgs(BaseArgs):
                 else:
                     raise ValueError("Each substring must be a string or a list of strings.")
 
-        if isinstance(self.head_config, dict):
+        from steerability.algorithms.state_control.pasta.profiling import HeadProfile
+
+        if isinstance(self.head_config, HeadProfile):
+            pass  # a profiling recipe validates its own fields in HeadProfile.__post_init__
+        elif isinstance(self.head_config, dict):
             converted: dict[int, list[int]] = {}
             for key, val in self.head_config.items():
                 try:
@@ -58,7 +68,9 @@ class PASTAArgs(BaseArgs):
             if not all(isinstance(h, int) for h in self.head_config):
                 raise ValueError("If head_config is a list, it must contain only integers.")
         else:
-            raise ValueError("head_config must be either a dict mapping layer->heads or a list of head indices.")
+            raise ValueError(
+                "head_config must be a dict mapping layer->heads, a list of layer indices, or a HeadProfile."
+            )
 
         if not isinstance(self.alpha, (float, int)):
             raise ValueError("alpha must be a float or int.")

@@ -28,6 +28,19 @@ class StubTokenizer:
         return [f"row-{int(row[0])}" for row in ids]
 
 
+class StubControl:
+    """Minimal control stand-in carrying only what `runtime_kwargs_schema` reads.
+
+    `runtime_kwargs_schema` consults `enabled` and `RUNTIME_KWARGS_SCHEMA` only, so a plain object
+    with those two attributes is enough to give a stub pipeline a declared runtime-kwarg scope.
+    """
+
+    enabled = True
+
+    def __init__(self, runtime_kwargs_schema: list[dict]):
+        self.RUNTIME_KWARGS_SCHEMA = runtime_kwargs_schema
+
+
 def make_output(row_ids: list[list[int]], prompt_ids: list[int], reasons: tuple[str | None, ...]) -> Output:
     """One `Output` with the given candidate rows, prompt ids, and per-row finish reasons."""
     return Output(

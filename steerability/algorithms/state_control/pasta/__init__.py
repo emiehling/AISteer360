@@ -1,7 +1,6 @@
 from .args import PASTAArgs
 from .control import PASTA
-
-# __all__ = ["PASTA", "PASTAArgs"]
+from .profiling import HeadProfile, HeadProfileResult
 
 STEERING_METHOD = {
     "category": "state_control",

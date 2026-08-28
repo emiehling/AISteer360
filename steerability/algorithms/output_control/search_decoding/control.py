@@ -25,8 +25,9 @@ class SearchDecoding(SearchDriver):
 
     `SearchDecoding` is a decoding driver: at most one enabled driver runs per pipeline, and the
     driver forwards the composed logits/stopping stacks into every rollout, so a step-level
-    control (e.g. `ValueGuidance`) steers every proposed continuation. Batch size 1 and the runtime
-    pass-throughs (`reward_params`) are inherited from `SearchDriver` unchanged.
+    control (e.g. `ValueGuidance`) steers every proposed continuation. Batch size 1 and the
+    row-scoped `reward_params` runtime kwarg (one mapping per row, merged into the scorer's params)
+    are inherited from `SearchDriver` unchanged.
 
     Reference:
 

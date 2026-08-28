@@ -39,15 +39,15 @@ square brackets to the `install` command as follows:
 uv venv --python 3.12 && uv pip install '.[docs]'
 ```
 
-By default, pipelines load and run the model in process (via Hugging Face `transformers`); installing the `vllm` extra
+By default, pipelines load and run the model in process (via Hugging Face `transformers`). Installing the `vllm` extra
 additionally enables inference through vLLM (either the offline engine or a server). The feature extras are: `merging`
-(MergeKit structural control), `cpo` (causal DML reward estimation for CPO; CPO itself runs without it via a
+(MergeKit structural control), `cpo` (causal DML reward estimation for CPO, which otherwise runs via a
 gradient-boosting fallback), `inspect` (the Inspect AI evaluation stack), `viz` (matplotlib and seaborn, for the
 evaluation plotting utilities), `guided` (xgrammar, for in-process constrained decoding), and `vllm` (the vLLM
 execution backends plus the `vllm_hook_plugins` core, git-pinned until its PyPI release). The umbrella `all` extra
-installs `cpo`, `inspect`, and `viz`; install `guided`, `merging`, and `vllm` by name, e.g., `uv pip install '.[vllm]'`.
-Note that `merging` cannot share an environment with `inspect` (MergeKit pins an older pydantic than Inspect requires),
-so it stays out of `all`.
+installs `cpo`, `inspect`, and `viz`. Install `guided`, `merging`, and `vllm` by name, e.g., `uv pip install '.[vllm]'`.
+Note that `merging` cannot share an environment with `inspect` (MergeKit pins an older pydantic than Inspect requires)
+and therefore stays out of `all`.
 
 ## Accessing Hugging Face models
 

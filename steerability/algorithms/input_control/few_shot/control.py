@@ -53,6 +53,21 @@ class FewShot(InputControl):
 
     Args = FewShotArgs
 
+    RUNTIME_KWARGS_SCHEMA = [
+        {
+            "name": "positive_examples",
+            "type": "list[dict]",
+            "scope": "call",
+            "help": "Positive examples for this call, applied to every prompt row; overrides pool-based selection.",
+        },
+        {
+            "name": "negative_examples",
+            "type": "list[dict]",
+            "scope": "call",
+            "help": "Negative examples for this call, applied to every prompt row; overrides pool-based selection.",
+        },
+    ]
+
     supports_batching: bool = True
 
     # placeholders (dataclass attrs from FewShotArgs override these at __init__ time)

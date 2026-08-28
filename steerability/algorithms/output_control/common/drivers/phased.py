@@ -63,6 +63,18 @@ class PhasedDriver(DecodingDriver):
     Plans are per example; batched inputs are handled by looping over rows.
     """
 
+    RUNTIME_KWARGS_SCHEMA = [
+        {
+            "name": "params",
+            "type": "dict",
+            "scope": "call",
+            "help": (
+                "Phase-plan parameters for this call: a mapping whose scalar values apply to every prompt row and "
+                "whose list values carry one entry per row, of batch length."
+            ),
+        },
+    ]
+
     def __init__(self, extract_after: str | None = None):
         self.extract_after = extract_after
         self.tokenizer = None  # injected by the pipeline

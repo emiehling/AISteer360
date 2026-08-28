@@ -23,7 +23,8 @@ class BestOfN(SearchDriver):
     `n` samples is a full rollout, so the composed logits/stopping stacks steer every sample (a
     step-level control such as RAD applies to every candidate). Pairing the scorer with
     `MajorityVoteScorer` recovers self-consistency (Wang et al., 2022); pairing it with
-    `SampleSequenceScorer` gives scorer-guided reranking.
+    `SampleSequenceScorer` gives scorer-guided reranking. The `reward_params` runtime override is
+    honored and is per row (one mapping merged into the scorer's params).
 
     Reference:
 

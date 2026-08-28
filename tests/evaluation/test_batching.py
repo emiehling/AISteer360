@@ -11,14 +11,14 @@ from steerability.evaluation.batching import LockLeaderCollator
 from tests.evaluation.conftest import StubSteeringPipeline
 
 
-def _collator(pipeline=None, *, max_batch_size=4, row_scoped_keys=frozenset({"spans"}),
+def _collator(pipeline=None, *, max_batch_size=4, declared_scopes=None,
               static_runtime_kwargs=None, prompt_path="messages") -> tuple[LockLeaderCollator, StubSteeringPipeline]:
     pipeline = pipeline if pipeline is not None else StubSteeringPipeline()
     collator = LockLeaderCollator(
         pipeline,
         max_batch_size=max_batch_size,
         prompt_path=prompt_path,
-        row_scoped_keys=row_scoped_keys,
+        declared_scopes={"spans": "row"} if declared_scopes is None else declared_scopes,
         static_runtime_kwargs=static_runtime_kwargs or {},
     )
     return collator, pipeline
@@ -29,13 +29,34 @@ def _admit(collator, prompt, *, gen_kwargs=None, per_sample=None, num_choices=1)
 
 
 class TestAdmission:
-    def test_undeclared_per_sample_key_raises_with_hint(self):
+    def test_call_scoped_per_sample_key_raises(self):
+        collator, _ = _collator(declared_scopes={"spans": "row", "canned_responses": "call"})
+        with pytest.raises(ValueError, match="declared 'call'-scoped.*ProviderOptions.runtime_kwargs"):
+            _admit(collator, [{"role": "user", "content": "q"}], per_sample={"canned_responses": {"a": "b"}})
+
+    def test_undeclared_per_sample_key_is_inert(self, caplog):
         collator, _ = _collator()
-        with pytest.raises(ValueError, match="not declared 'row'-scoped.*ProviderOptions.runtime_kwargs"):
-            _admit(collator, [{"role": "user", "content": "q"}], per_sample={"other": 1})
+        with caplog.at_level("INFO", logger="steerability.evaluation.batching"):
+            first = _admit(collator, [{"role": "user", "content": "q"}], per_sample={"other": 1, "spans": ["x"]})
+            _admit(collator, [{"role": "user", "content": "q2"}], per_sample={"other": 2, "spans": ["y"]})
+        assert first.per_sample_runtime_kwargs == {"spans": ["x"]}
+        assert collator.inert_runtime_kwargs == frozenset({"other"})
+        inert_lines = [r for r in caplog.records if "is inert on this arm" in r.getMessage()]
+        assert len(inert_lines) == 1
+
+    def test_inert_per_sample_key_does_not_split_batch_keys(self):
+        collator, _ = _collator()
+        with_inert = _admit(collator, [{"role": "user", "content": "a"}], per_sample={"other": 1})
+        without = _admit(collator, [{"role": "user", "content": "b"}], per_sample={})
+        assert with_inert.batch_key == without.batch_key
 
     def test_key_in_both_tiers_raises(self):
         collator, _ = _collator(static_runtime_kwargs={"spans": ["x"]})
+        with pytest.raises(ValueError, match="both per sample.*and statically"):
+            _admit(collator, [{"role": "user", "content": "q"}], per_sample={"spans": ["a"]})
+
+    def test_key_in_both_tiers_raises_even_when_undeclared(self):
+        collator, _ = _collator(declared_scopes={}, static_runtime_kwargs={"spans": ["x"]})
         with pytest.raises(ValueError, match="both per sample.*and statically"):
             _admit(collator, [{"role": "user", "content": "q"}], per_sample={"spans": ["a"]})
 
@@ -61,7 +82,7 @@ class TestBatchKeys:
         assert first.batch_key != second.batch_key
 
     def test_different_per_sample_key_sets_split_keys(self):
-        collator, _ = _collator(row_scoped_keys=frozenset({"spans", "targets"}))
+        collator, _ = _collator(declared_scopes={"spans": "row", "targets": "row"})
         first = _admit(collator, "a", per_sample={"spans": ["x"]})
         second = _admit(collator, "b", per_sample={"targets": ["y"]})
         assert first.batch_key != second.batch_key
@@ -198,6 +219,65 @@ class TestLeaderProtocol:
         second = anyio.run(one_request, "second")
         assert first is not None and second is not None
         assert len(pipeline.calls) == 2
+
+
+class TestStaticTier:
+    def test_static_row_scoped_value_broadcasts_per_row(self):
+        release = threading.Event()
+        pipeline = StubSteeringPipeline()
+        pipeline.gate = release
+        collator, _ = _collator(pipeline, max_batch_size=4, static_runtime_kwargs={"spans": ["x"]})
+        records = [_admit(collator, [{"role": "user", "content": f"q{i}"}]) for i in range(3)]
+        results, errors = _run_concurrent(collator, records, release=release)
+
+        assert all(error is None for error in errors)
+        (call,) = pipeline.calls
+        assert len(call["messages"]) == 3
+        assert call["runtime_kwargs"]["spans"] == [["x"], ["x"], ["x"]]
+
+    def test_static_call_scoped_value_passes_through(self):
+        pipeline = StubSteeringPipeline()
+        artifact = {"a": "b"}
+        collator, _ = _collator(
+            pipeline, declared_scopes={"canned_responses": "call"},
+            static_runtime_kwargs={"canned_responses": artifact},
+        )
+
+        async def main():
+            record = _admit(collator, [{"role": "user", "content": "q"}])
+            return await collator.serve(record)
+
+        anyio.run(main)
+        (call,) = pipeline.calls
+        assert call["runtime_kwargs"]["canned_responses"] is artifact
+
+    def test_undeclared_static_key_is_inert(self, caplog):
+        pipeline = StubSteeringPipeline()
+        with caplog.at_level("INFO", logger="steerability.evaluation.batching"):
+            collator, _ = _collator(pipeline, declared_scopes={}, static_runtime_kwargs={"other": 1})
+            inert_lines = [r for r in caplog.records if "is inert on this arm" in r.getMessage()]
+            assert len(inert_lines) == 1
+
+            async def main():
+                record = _admit(collator, [{"role": "user", "content": "q"}])
+                return await collator.serve(record)
+
+            anyio.run(main)
+        (call,) = pipeline.calls
+        assert "other" not in call["runtime_kwargs"]
+        assert collator.inert_runtime_kwargs == frozenset({"other"})
+
+    def test_static_row_scoped_singleton_multi_candidate_broadcasts_one_row(self):
+        pipeline = StubSteeringPipeline()
+        collator, _ = _collator(pipeline, static_runtime_kwargs={"spans": ["x"]})
+
+        async def main():
+            record = _admit(collator, [{"role": "user", "content": "q"}], num_choices=3)
+            return await collator.serve(record)
+
+        anyio.run(main)
+        (call,) = pipeline.calls
+        assert call["runtime_kwargs"]["spans"] == [["x"]]
 
 
 class TestPoisonIsolation:

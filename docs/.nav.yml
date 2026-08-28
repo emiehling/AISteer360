@@ -73,7 +73,6 @@ nav:
     - Studies:
       - Commonsense MCQA: "examples/notebooks/studies/commonsense_mcqa/commonsense_mcqa.ipynb"
       - Instruction following: "examples/notebooks/studies/instruction_following/instruction_following.ipynb"
-      - Composite steering for truthfulness: "examples/notebooks/studies/truthful_qa_composite_steering/truthful_qa_composite_steering.ipynb"
 #  - Developer notes:
 #      - Developer notes: dev_notes/index.md
 #      - "dev_notes/steering_lifecycle.md"

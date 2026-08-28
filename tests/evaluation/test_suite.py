@@ -133,3 +133,21 @@ class TestRun:
         }
         assert results["a"]["n"] == 100
         assert results["a"]["log"] == "a.eval"  # relative to log_dir
+
+    def test_file_uri_location_relativized_against_log_dir(self, recorded_eval_set, tmp_path):
+        _, plan = recorded_eval_set
+        plan["logs"]["a"] = _log(
+            "a", {"match": {"accuracy": 1.0}}, location=f"file:{tmp_path / 'a.eval'}",
+        )
+        suite = InspectSuite(name="capability", tasks=("a",))
+        results = suite.run(StubSteeringPipeline(), log_dir=tmp_path)
+        assert results["a"]["log"] == "a.eval"
+
+    def test_remote_uri_location_kept_verbatim(self, recorded_eval_set, tmp_path):
+        _, plan = recorded_eval_set
+        plan["logs"]["a"] = _log(
+            "a", {"match": {"accuracy": 1.0}}, location="s3://bucket/runs/a.eval",
+        )
+        suite = InspectSuite(name="capability", tasks=("a",))
+        results = suite.run(StubSteeringPipeline(), log_dir=tmp_path)
+        assert results["a"]["log"] == "s3://bucket/runs/a.eval"

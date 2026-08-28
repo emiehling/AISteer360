@@ -16,9 +16,17 @@ ceiling of 1 the same code path degenerates to strict serialization.
 
 Records share a dispatch only when the batched call is semantically identical to per-request calls.
 The batch key digests the canonicalized call-scoped generation kwargs (seed and stop strings
-included), the sorted key set of the record's per-sample runtime kwargs (values may differ per row;
-keys may not), and a single-candidate flag; multi-candidate requests always form singleton
+included), the sorted key set of the record's retained per-sample runtime kwargs (values may differ
+per row; keys may not), and a single-candidate flag; multi-candidate requests always form singleton
 dispatches. Per-sample values never enter the key.
+
+Runtime kwargs reach the collator on two tiers and are interpreted against the declared scopes of
+the pipeline's enabled controls. A `"row"`-scoped static value is one row's value broadcast to every
+row of the dispatch; a `"call"`-scoped static value passes through unchanged. A per-sample value of a
+`"row"`-scoped key is collated row by row across the dispatch; a per-sample key declared
+`"call"`-scoped is rejected at admission. A name that no enabled control declares is inert on either
+tier: it is dropped from the call, excluded from the batch key, recorded in `inert_runtime_kwargs`,
+and logged once per collator.
 
 A failed multi-row dispatch triggers one poison-isolation pass: the members re-run serially, once,
 so each record receives its own result or its own exception. Two consequences follow. First, the
@@ -69,8 +77,8 @@ class BatchRequest:
         prompt: One conversation (a list of chat-message dicts) on the messages path, or one
             rendered string on the text path.
         gen_kwargs: The call-scoped generation kwargs mapped from the request's config.
-        per_sample_runtime_kwargs: The request's per-sample runtime kwargs; every key is
-            row-scoped by declaration.
+        per_sample_runtime_kwargs: The request's retained per-sample runtime kwargs; every key is
+            declared `"row"`-scoped.
         num_choices: Number of candidates requested; values above 1 dispatch as a singleton.
         batch_key: Digest governing which records may share a dispatch.
         done: Event set by the leader once the record holds its result.
@@ -101,10 +109,11 @@ class LockLeaderCollator:
             to 1 when the pipeline does not support batching).
         prompt_path: `"messages"` to dispatch conversations via `messages=`, `"text"` to dispatch
             rendered strings via `text=`.
-        row_scoped_keys: Runtime-kwarg names declared `"row"`-scoped by the pipeline's enabled
-            controls; the only names admissible per sample.
-        static_runtime_kwargs: Call-scoped runtime kwargs applied to every dispatch,
-            shallow-copied and never mutated.
+        declared_scopes: Runtime-kwarg names declared by the pipeline's enabled controls, mapped
+            to their scope (`"row"` or `"call"`).
+        static_runtime_kwargs: Runtime kwargs applied to every dispatch: `"call"`-scoped values
+            pass through unchanged, `"row"`-scoped values are one row's value broadcast to every
+            row, undeclared names are inert. Shallow-copied and never mutated.
         chat_template_kwargs: Forwarded to `apply_chat_template` on the messages path, or None.
     """
 
@@ -114,20 +123,33 @@ class LockLeaderCollator:
         *,
         max_batch_size: int,
         prompt_path: Literal["messages", "text"],
-        row_scoped_keys: frozenset[str],
+        declared_scopes: Mapping[str, str],
         static_runtime_kwargs: Mapping[str, Any],
         chat_template_kwargs: Mapping[str, Any] | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._max_batch_size = int(max_batch_size)
         self._prompt_path = prompt_path
-        self._row_scoped_keys = frozenset(row_scoped_keys)
+        self._declared_scopes = dict(declared_scopes)
         self._static_runtime_kwargs = dict(static_runtime_kwargs)
         self._chat_template_kwargs = dict(chat_template_kwargs) if chat_template_kwargs is not None else None
         self._lock = anyio.Lock()
         self._queue: list[BatchRequest] = []
         self._closed = False
         self._batch_failures_logged: set[str] = set()
+        self._inert_keys: set[str] = set()
+
+        # static kwargs are partitioned once by declared scope; undeclared names are inert
+        self._static_call_kwargs: dict[str, Any] = {}
+        self._static_row_kwargs: dict[str, Any] = {}
+        for key, value in self._static_runtime_kwargs.items():
+            scope = self._declared_scopes.get(key)
+            if scope == "row":
+                self._static_row_kwargs[key] = value
+            elif scope == "call":
+                self._static_call_kwargs[key] = value
+            else:
+                self._mark_inert(key, "static")
 
     @property
     def closed(self) -> bool:
@@ -138,6 +160,21 @@ class LockLeaderCollator:
         """Refuse new admissions; an in-flight batch completes and delivers its results."""
         self._closed = True
 
+    @property
+    def inert_runtime_kwargs(self) -> frozenset[str]:
+        """Runtime kwargs seen on either tier that no enabled control declares."""
+        return frozenset(self._inert_keys)
+
+    def _mark_inert(self, key: str, tier: str) -> None:
+        """Record a runtime kwarg no enabled control declares, logging it once per collator."""
+        if key in self._inert_keys:
+            return
+        self._inert_keys.add(key)
+        logger.info(
+            "Runtime kwarg %r (%s) is declared by no enabled control of this pipeline and is inert on this arm.",
+            key, tier,
+        )
+
     def admit(
         self,
         prompt: Any,
@@ -146,6 +183,10 @@ class LockLeaderCollator:
         num_choices: int,
     ) -> BatchRequest:
         """Validate one request and build its record, without enqueueing it.
+
+        Per-sample keys are interpreted against the declared scopes: a `"row"`-scoped key is retained
+        for row-aligned collation, a `"call"`-scoped key is rejected, and an undeclared key is inert
+        (dropped from the record and the batch key, and recorded in `inert_runtime_kwargs`).
 
         Args:
             prompt: The converted prompt (a conversation or a rendered string).
@@ -158,30 +199,36 @@ class LockLeaderCollator:
 
         Raises:
             RuntimeError: If the collator is closed.
-            ValueError: If a per-sample key is also supplied statically, or names a runtime kwarg
-                that no enabled control declares `"row"`-scoped.
+            ValueError: If a per-sample key is also supplied statically, or is declared
+                `"call"`-scoped by an enabled control.
         """
         if self._closed:
             raise RuntimeError("The steering-pipeline provider is closed; build a new one.")
-        for key in per_sample_runtime_kwargs:
+        retained: dict[str, Any] = {}
+        for key, value in per_sample_runtime_kwargs.items():
             if key in self._static_runtime_kwargs:
                 raise ValueError(
                     f"Runtime kwarg {key!r} is supplied both per sample (Sample.metadata) and statically "
                     "(ProviderOptions.runtime_kwargs); a call-scoped scalar and a row-aligned stream are "
                     "incoherent. Remove it from one tier."
                 )
-            if key not in self._row_scoped_keys:
+            scope = self._declared_scopes.get(key)
+            if scope == "call":
                 raise ValueError(
-                    f"Per-sample runtime kwarg {key!r} is not declared 'row'-scoped by any enabled control. "
-                    "Pass it as a static kwarg (ProviderOptions.runtime_kwargs), or declare "
-                    "'scope': 'row' on the consuming control's RUNTIME_KWARGS_SCHEMA entry."
+                    f"Per-sample runtime kwarg {key!r} is declared 'call'-scoped by an enabled control, so it "
+                    "cannot be delivered per sample. Pass it as a static kwarg (ProviderOptions.runtime_kwargs), "
+                    "or declare 'scope': 'row' on the consuming control's RUNTIME_KWARGS_SCHEMA entry."
                 )
+            if scope is None:
+                self._mark_inert(key, "per sample")
+                continue
+            retained[key] = value
         return BatchRequest(
             prompt=prompt,
             gen_kwargs=dict(gen_kwargs),
-            per_sample_runtime_kwargs=dict(per_sample_runtime_kwargs),
+            per_sample_runtime_kwargs=retained,
             num_choices=max(1, int(num_choices)),
-            batch_key=self._batch_key(gen_kwargs, per_sample_runtime_kwargs, num_choices),
+            batch_key=self._batch_key(gen_kwargs, retained, num_choices),
         )
 
     @staticmethod
@@ -284,7 +331,9 @@ class LockLeaderCollator:
     def _run_batch(self, batch: list[BatchRequest]) -> list[Output]:
         """Issue one `pipeline.generate` call for `batch`, returning one `Output` per record."""
         leader = batch[0]
-        runtime_kwargs = dict(self._static_runtime_kwargs)
+        runtime_kwargs = dict(self._static_call_kwargs)
+        for key, value in self._static_row_kwargs.items():
+            runtime_kwargs[key] = [value] * len(batch)
         for key in leader.per_sample_runtime_kwargs:
             runtime_kwargs[key] = [member.per_sample_runtime_kwargs[key] for member in batch]
         gen_kwargs = dict(leader.gen_kwargs)

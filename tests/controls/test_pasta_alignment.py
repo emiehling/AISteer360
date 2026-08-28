@@ -124,7 +124,6 @@ class TestBeamOrderIndexing:
 
         pasta.model = SimpleNamespace(config=SimpleNamespace(num_attention_heads=2))
         pasta.scale_position = "include"
-        pasta._scale_constant = torch.tensor([2.0]).log()
 
         # two prompts with distinct ranges; beam expands each by 2
         r0 = torch.tensor([[1, 2]])
@@ -142,6 +141,7 @@ class TestBeamOrderIndexing:
             head_idx=[0, 1],
             token_ranges=token_ranges,
             input_len=seq_len,
+            scale_constant=torch.tensor([2.0]).log(),
         )
         result = out_kwargs["attention_mask"]
 
@@ -156,7 +156,6 @@ class TestBeamOrderIndexing:
         pasta = PASTA.__new__(PASTA)
         pasta.model = SimpleNamespace(config=SimpleNamespace(num_attention_heads=2))
         pasta.scale_position = "include"
-        pasta._scale_constant = torch.tensor([2.0]).log()
 
         token_ranges = [torch.tensor([[1, 2]]), torch.tensor([[3, 4]])]
         batch_size = 3  # not a multiple of 2
@@ -171,6 +170,7 @@ class TestBeamOrderIndexing:
                 head_idx=[0, 1],
                 token_ranges=token_ranges,
                 input_len=5,
+                scale_constant=torch.tensor([2.0]).log(),
             )
 
 
@@ -269,7 +269,6 @@ class TestHeadGeometryPerLayer:
         stub = heterogeneous_head_stub(num_layers=4, hidden=32)
         pasta = PASTA(head_config=[0, 1], alpha=2.0, scale_position="include")
         pasta.steer(stub, wordlevel_tokenizer())
-        pasta._scale_constant = torch.tensor([pasta.alpha]).log()  # normally set lazily in get_hooks
 
         token_ranges = [torch.tensor([[0, 1]])]
         for layer_idx, expected_heads in ((0, 8), (1, 4)):
@@ -282,6 +281,7 @@ class TestHeadGeometryPerLayer:
                 token_ranges=token_ranges,
                 input_len=3,
                 layer_idx=layer_idx,
+                scale_constant=torch.tensor([pasta.alpha]).log(),
             )
             assert out_kwargs["attention_mask"].shape[1] == expected_heads
 

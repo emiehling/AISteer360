@@ -28,8 +28,9 @@ class DeAL(SearchDriver):
     DeAL is a decoding driver, a thin preset of the generic `SearchDriver` that maps DeAL's args onto
     `(scorer, segment_len, num_candidates, keep_k, max_iterations, propose_mode="beam")`. The driver forwards the
     composed logits/stopping stacks into every lookahead rollout, so a step-level control such as RAD steers every DeAL
-    rollout. The `reward_params` runtime override is honored. The per-iteration deepcopy of `gen_kwargs`
-    is safe because the composed stacks travel as explicit `decode()` parameters and never inside `gen_kwargs`.
+    rollout. The `reward_params` runtime override is honored and is per row (one mapping merged into the scorer's
+    params). The per-iteration deepcopy of `gen_kwargs` is safe because the composed stacks travel as explicit
+    `decode()` parameters and never inside `gen_kwargs`.
 
     Reference:
 

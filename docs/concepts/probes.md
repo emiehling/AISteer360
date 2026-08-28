@@ -24,14 +24,14 @@ dot product with its weight vector, adds a bias, and decides `score >= 0`.
 Two properties define the artifact:
 
 - **Canonical polarity**: a fitted probe is always oriented so that positives score high, and its operating threshold
-  is folded into the bias during calibration. There is no comparator or threshold to configure; the decision is
+  is folded into the bias during calibration. There is no comparator or threshold to configure, and the decision is
   always `score >= 0`.
-- **Model-free**: a probe holds only weights, a bias, and provenance metadata. It runs no forward passes itself, so
-  it can be saved, loaded, and applied to cached activations offline.
+- **Model-free**: a probe holds only weights, a bias, and provenance metadata. Since it runs no forward passes
+  itself, it can be saved, loaded, and applied to cached activations offline.
 
 Reads over a live model go through a `ProbeSet`, which scores every named probe in one read-only forward and returns
-a `ProbeReadings` of per-prompt signed scores and boolean decisions. The read never edits hidden states, so probing
-leaves generation untouched.
+a `ProbeReadings` of per-prompt signed scores and boolean decisions. Since the read never edits hidden states,
+probing leaves generation untouched.
 
 
 ## Fitting and calibration
@@ -65,18 +65,18 @@ readout = probes.read(model, input_ids, attention_mask)
 ## From measurement to decisions and routes
 
 A probe's boolean decisions feed the two decision layers above it. For binary gating, `Probe.as_gate()` returns a
-steering gate that reproduces the probe's decision, so an intervention (e.g. an
+steering gate that reproduces the probe's decision, such that an intervention (e.g., an
 [`ActivationAdapter`](controls.md#state-control)) applies only when the probe fires. For categorical routing, the
 [`RoutedDecoding`](controls.md#output-control) driver evaluates a `Router` (ordered routes with predicates over
 decision names, first match wins, per row) against a probe set's decisions and executes the matched action (a canned
-response, a prefix followed by generation, or plain generation). The routing vocabulary lives with that control; see
+response, a prefix followed by generation, or plain generation). The routing vocabulary lives with that control. See
 the [routed decoding notebook](../examples/notebooks/recipes/routed_decoding.ipynb) for a worked example.
 
 
 ## Detection versus steering
 
 Conditional steering ([CAST](controls.md#state-control)) detects with the steering direction itself, i.e., it steers
-when its own direction is present, and that path is unchanged by probes. Concept detection uses probes, and the two
+when its own direction is present, and does not use probes. Concept detection uses probes, and the two
 do not share artifacts. The distinction is geometric, i.e., the direction that best detects a concept (the whitened
 difference in class means, $\Sigma^{-1}\Delta\mu$) is generally not the raw mean difference ($\Delta\mu$) used to
 steer. A direction obtained elsewhere can still be turned into a probe by calibrating a bias with `calibrate_bias`
@@ -87,6 +87,6 @@ and constructing a `Probe` directly.
 
 Probes and activation statistics record a fingerprint of the model they were estimated on, and consumers raise on a
 mismatch rather than produce miscalibrated decisions (`allow_model_mismatch=True` is the explicit override). For
-pipelines whose structural controls produce the final weights inside `steer()`, `ProbeSetFit` defers fitting; it
+pipelines whose structural controls produce the final weights inside `steer()`, `ProbeSetFit` defers fitting. It
 holds every fitting input except the model, and `RoutedDecoding` fits it at steer time on the model the pipeline
 provides.

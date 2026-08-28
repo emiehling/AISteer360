@@ -12,8 +12,10 @@ def runtime_kwargs_solver(key: str = "runtime_kwargs") -> Solver:
     The per-sample runtime kwargs travel with the request on `GenerateConfig.extra_body`, so they
     are recorded in the eval log's model events alongside the rest of the config; keep the values
     JSON-plain and modest in size. Each value must be in the consuming control's per-row form (for
-    PASTA `substrings`, one `list[str]` per sample), and each key must be declared `"row"`-scoped
-    by an enabled control or the provider rejects the request at admission.
+    PASTA `substrings`, one `list[str]` per sample). Each key must be declared `"row"`-scoped by the
+    controls that consume it (a `"call"`-scoped key is rejected per sample), and a key that no
+    enabled control of the arm declares is inert on that arm, so one task can serve every arm of an
+    experiment, including the empty baseline.
 
     This solver performs the sample's generation itself, so it takes the place of a bare
     `generate()` in the task's solver chain (typically as the last solver); do not chain both, or

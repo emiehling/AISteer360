@@ -3,15 +3,14 @@
 The toolkit evaluates steering pipelines on [Inspect AI](https://inspect.aisi.org.uk/) (UK AI
 Security Institute) and its benchmark catalog
 [`inspect_evals`](https://github.com/UKGovernmentBEIS/inspect_evals). This facilitates the evaluation
-of both the target behavior of a pipeline (did instruction following ability improve?) as well as its
+of both the target behavior of a pipeline (did instruction following ability improve?) and its
 off-target effects (degradation in math ability, coding ability, general knowledge, etc.).
 
-Note that the evaluation is on the entire pipeline (not just the model). This is because a
-steering pipeline is generally more than just a model (contains modifications to the input/prompt and
-decoding process in addition to model-level modifications like weights, activations, etc.). Additionally,
-evaluation must be done on open-ended generations (rather than logprobs). One of the primary reasons
-for this is because of output controls, i.e., a decoding driver induces a distribution over sequences
-without a per-token conditional.
+Note that the evaluation is on the entire pipeline rather than the model alone, since a steering
+pipeline generally carries modifications to the input/prompt and the decoding process in addition to
+model-level modifications (weights, activations). Additionally, evaluation must be done on open-ended
+generations rather than logprobs. One of the primary reasons for this is output controls, i.e., a
+decoding driver induces a distribution over sequences without a per-token conditional.
 
 ## The model provider
 
@@ -26,12 +25,16 @@ model = as_inspect_model(pipeline, options=ProviderOptions(max_batch_size=8))
 logs = inspect_eval("inspect_evals/gsm8k", model=model, limit=100, temperature=0)
 ```
 
-where the `ProviderOptions` dataclass carries the provider's configuration, i.e., static runtime kwargs
-applied to every request (`runtime_kwargs`), `chat_template_kwargs` for the messages path, the batching
-ceiling `max_batch_size`, the default `max_tokens` (`default_max_tokens`), the reasoning tags used to
-split thinking from the answer before scoring (`reasoning_tags=None` disables the split), and the policy
-for `GenerateConfig` parameters the pipeline cannot honor (`on_unsupported_param`, `"raise"` by default
-or `"warn"`).
+where the `ProviderOptions` dataclass carries the provider's configuration:
+
+- `runtime_kwargs`: static runtime kwargs applied to every request
+- `chat_template_kwargs`: template kwargs for the messages path
+- `max_batch_size`: the batching ceiling
+- `default_max_tokens`: the default `max_tokens`
+- `reasoning_tags`: the tags used to split thinking from the answer before scoring (`reasoning_tags=None`
+  disables the split)
+- `on_unsupported_param`: the policy for `GenerateConfig` parameters the pipeline cannot honor (`"raise"` by
+  default or `"warn"`)
 
 The provider decides its prompt path at construction. With a chat-templated tokenizer, prompts
 dispatch as `messages=` and every input control participates as it does in deployment. Base models
@@ -65,22 +68,24 @@ controls only `phased_decoding`, `routed_decoding`, and `stopping_rules` declare
 (`rad` and `value_guidance` compute it). Most driver-based arms therefore run one sample at a time.
 
 Rows of one batch need not share a prompt length. A ragged batch (an arm whose per-row prompt
-length varies, e.g. few-shot with per-row exemplar draws) is left-packed internally on the
+length varies, e.g., few-shot with per-row exemplar draws) is left-packed internally on the
 Hugging Face backend, and each row's continuation is predicted from its own last real token
 rather than from a trailing pad.
 
 We recommend greedy decoding (`temperature=0`) as the default since it is the norm for capability
 benchmarks and avoids seed sensitivity. Which samples are evaluated is fixed by the suite,
-independent of batch composition. A seeded dispatch carries `seed_scope` from `ProviderOptions`
-(default `"dispatch"`), so a seeded batch decodes in one pass on the Hugging Face backend and the
-dispatch is reproducible as a whole; under `"item"` scope each row derives its own seed and the
-dispatch decodes one row at a time. Bitwise reproducibility of stochastic sampling is not preserved
-under concurrency because a sample's dispatch membership and row index depend on async arrival
-order. A bitwise-reproducible stochastic run requires `max_batch_size=1` and Inspect
-`max_connections=1`. Even greedy outputs are not guaranteed to be bitwise-equal across batch
-compositions since padded-batch numerics can differ from single-item numerics on some kernels.
-Trial-to-trial variation under sampling is measured rather than eliminated, which is the role of
-`num_trials` and the per-metric standard error.
+independent of batch composition.
+
+A seeded dispatch carries `seed_scope` from `ProviderOptions` (default `"dispatch"`), under which a
+seeded batch decodes in one pass on the Hugging Face backend and the dispatch is reproducible as a
+whole. Under `"item"` scope each row derives its own seed and the dispatch decodes one row at a time.
+
+Bitwise reproducibility of stochastic sampling is not preserved under concurrency, because a sample's
+dispatch membership and row index depend on async arrival order. A bitwise-reproducible stochastic
+run requires `max_batch_size=1` and Inspect `max_connections=1`. Even greedy outputs are not
+guaranteed to be bitwise-equal across batch compositions, since padded-batch numerics can differ from
+single-item numerics on some kernels. Trial-to-trial variation under sampling is measured rather than
+eliminated, which is the role of `num_trials` and the per-metric standard error.
 
 ## Suites and the runner
 
@@ -109,20 +114,25 @@ results = runner.run()
 frame = runner.results()
 ```
 
-File-referenced tasks resolve relative to the working directory; the study notebooks keep their
-task files in a shared `tasks/` folder and reference them by relative path.
+File-referenced tasks resolve relative to the working directory. The study notebooks keep a
+`task.py` beside the notebook and reference it by an absolute path built from the notebook
+directory (`f"{TASK_FILE}@instruction_following"`).
 
 Each suite run goes through `inspect_ai.eval_set`, which owns task retry and log-based resume. The
 `.eval` logs under `save_dir/inspect_logs/` are the store, and a re-run completes only the missing
 samples of each (configuration, trial, suite) cell. Since `eval_set` matches task identity only, a
 changed protocol (seed, generate defaults, provider options, suites, fit, backend) needs a new
-`save_dir` rather than a re-run into the old one. Repetition is trial-based rather than epoch-based. With `seed` set, each (configuration, trial)
-pair derives one seed. The runner draws a `tqdm` bar over the (configuration, trial, suite) cells
-(`progress=True` by default) and logs a summary line and one line per cell at INFO; `display="plain"`
-streams Inspect's per-sample progress inside the cell in flight, which is the recommended setting in
-a notebook. Note that `inspect_evals` tasks download their datasets from the Hugging Face Hub (some
-are gated) and `.eval` logs can be large. Per-sample runtime kwargs are recorded with each model
-event and should be kept small.
+`save_dir` rather than a re-run into the old one.
+
+Repetition is trial-based rather than epoch-based. With `seed` set, each (configuration, trial) pair
+derives one seed.
+
+The runner draws a `tqdm` bar over the (configuration, trial, suite) cells (`progress=True` by
+default) and logs a summary line and one line per cell at INFO. `display="plain"` streams Inspect's
+per-sample progress inside the currently running cell, which is the recommended setting in a notebook. Note
+that `inspect_evals` tasks download their datasets from the Hugging Face Hub (some are gated) and
+`.eval` logs can be large. Per-sample runtime kwargs are recorded with each model event and should
+be kept small.
 
 Every arm and every trial scores the identical sample set per task, either through explicit
 `sample_ids` or through `limit=N` over the task's native dataset order. Taking the first `N`
@@ -138,9 +148,11 @@ deltas = pivot.sub(pivot["baseline"], axis=0)
 ```
 
 The raw `.eval` logs carry per-sample generations, grades, and finish behavior, enough to trace a
-drop in score to its cause (e.g., unparseable output rather than a wrong answer). Inspect's log
-viewer and the `inspect_ai.analysis` dataframes (`evals_df`, `samples_df`, `events_df`) support
-sample-level analysis.
+drop in score to its cause (e.g., unparseable output rather than a wrong answer).
+`SteeringEval.samples_frame` reads these logs into one row per (pipeline, trial, sample), with
+per-sample scores joined to the sample metadata, for per-instruction-type breakdowns and paired
+per-example comparisons. Inspect's log viewer and the `inspect_ai.analysis` dataframes (`evals_df`,
+`samples_df`, `events_df`) support sample-level analysis directly.
 
 Tasks with model-graded scorers need a grader model supplied through the task's own arguments
 (`task_args`). The grader must be a separate model (an API model or a second local model) and
@@ -152,7 +164,10 @@ with the pipeline. An API grader is preferable unless memory headroom is planned
 
 Custom target-behavior evaluations are ordinary Inspect tasks. The toolkit ships no task, scorer,
 or metric classes of its own. A working example lives in `examples/notebooks/studies/commonsense_mcqa/`,
-which defines a shuffled-choice MCQA task with a custom positional-bias metric.
+which defines a shuffled-choice MCQA task with a custom positional-bias metric. A second lives in
+`examples/notebooks/studies/instruction_following/`, whose task carries each prompt's instruction
+lines as per-sample runtime kwargs for a PASTA arm and scores every response with both the strict
+IFEval checker and a local reward model loaded inside the scorer.
 
 Controls that take per-generation parameters receive them through two tiers of runtime kwargs.
 Static kwargs (`ProviderOptions.runtime_kwargs`) apply to every request. They suit catalog tasks,
@@ -179,13 +194,15 @@ def target_qa() -> Task:
 ```
 
 `runtime_kwargs_solver()` performs the sample's generation itself, taking the place of a bare
-`generate()` in the solver chain. Each per-sample key must be declared with `"scope": "row"` in the
-consuming control's `RUNTIME_KWARGS_SCHEMA` (a control declares `"row"` for a per-prompt value and
-`"call"` for one value per generate call), and each value must be in the control's per-row form.
-For PASTA that is one `list[str]` per sample. Across a batched dispatch the collator aligns the
-per-sample values row by row. PASTA's `substrings` accepts a `str` broadcast to every row, a
-`list[list[str]]` with one group per row, or a flat `list[str]` only at batch size 1; broadcasting
-one group over a batch is done by passing `[[...]] * batch_size`. Tasks without the solver,
+`generate()` in the solver chain. The provider interprets every runtime kwarg, on either tier,
+against the arm's enabled controls. A key declared `"row"`-scoped (a per-prompt value) reaches the
+control as one value per prompt row. Per-sample values are collated row by row across a batched
+dispatch, and a static value is one row's value in the control's per-row form, broadcast to every
+row. A key declared `"call"`-scoped (one value per generate call) is delivered statically and passed
+through unchanged. Delivering it per sample is an error. A key that no enabled control of the arm
+declares is inert on that arm. It is dropped from the call and logged once per provider, allowing one
+task to carry the steering inputs of every arm in an experiment, including the empty baseline. For
+PASTA's `substrings` the per-row form is one `list[str]`, on both tiers. Tasks without the solver,
 including the entire `inspect_evals` catalog, receive static kwargs only.
 
 ## Inspect scorers as rewards inside controls
@@ -209,3 +226,39 @@ event loop (a notebook), where it applies the same `nest_asyncio2` re-entry that
 Inside a running trio task it raises instead, since re-entry is impossible there. Note that a
 model-graded scorer used this way runs grader traffic from inside a control's `steer()` or decode
 loop. We recommend running optimizers with model-graded rewards from scripts.
+
+The `PRewrite` example above rewards at steer time, from a fixed development set. A reranking
+driver instead rewards at generate time, once per sample, and its `SampleScorer` therefore needs that
+sample's row. The `SearchDriver` presets (`DeAL`, `best_of_n`, `search_decoding`) read a `reward_params`
+runtime kwarg for this, declared `"row"`-scoped, and `SampleSequenceScorer` merges it into the row
+the scorer sees (`{"input": prompt, **reward_params}`). We carry each sample's reference on
+`Sample.metadata` as one mapping and deliver it with `runtime_kwargs_solver`, exactly as for PASTA's
+`substrings`:
+
+```python
+from inspect_ai import Task, task
+from inspect_ai.dataset import MemoryDataset, Sample
+from inspect_ai.scorer import includes
+from steerability.evaluation.scorers import sample_scorer_from_inspect
+from steerability.evaluation.solvers import runtime_kwargs_solver
+from steerability.algorithms.output_control.best_of_n.control import BestOfN
+from steerability.algorithms.output_control.common.scorers.sample import SampleSequenceScorer
+
+row_scorer = sample_scorer_from_inspect(includes())          # reads row["reference"]
+control = BestOfN(n=8, scorer=SampleSequenceScorer(row_scorer))
+
+@task
+def reranked_qa() -> Task:
+    samples = [
+        Sample(
+            input="Which city is the Eiffel Tower in?",
+            target="Paris",
+            metadata={"runtime_kwargs": {"reward_params": {"reference": "Paris"}}},
+        ),
+    ]
+    return Task(dataset=MemoryDataset(samples), solver=[runtime_kwargs_solver()], scorer=includes())
+```
+
+Since the collator refuses one runtime-kwarg name on both tiers, an arm that carries per-sample
+references through `reward_params` cannot also pass per-arm reward hyperparameters under the same
+name. Put those in the scorer's constructor instead.
