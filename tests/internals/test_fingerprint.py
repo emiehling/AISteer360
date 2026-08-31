@@ -67,12 +67,14 @@ class TestSensitivity:
 
 class TestAbsentChatTemplateFingerprint:
     def test_recipe_digests_of_missing_and_empty_templates_are_absent(self):
+        pytest.importorskip("vllm_hook_plugins")
         from vllm_hook_plugins.core.fingerprints import chat_template_fingerprint
 
         assert is_absent_chat_template_fingerprint(chat_template_fingerprint(None))
         assert is_absent_chat_template_fingerprint(chat_template_fingerprint(""))
 
     def test_real_template_fingerprint_is_not_absent(self):
+        pytest.importorskip("vllm_hook_plugins")
         from vllm_hook_plugins.core.fingerprints import chat_template_fingerprint
 
         assert not is_absent_chat_template_fingerprint(chat_template_fingerprint("{{ messages }}"))

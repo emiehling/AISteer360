@@ -145,6 +145,7 @@ class TestServeFingerprintVerification:
     def test_absent_served_template_fingerprint_skips_comparison(
         self, fake_server, templated_client, tmp_path, caplog,
     ):
+        pytest.importorskip("vllm_hook_plugins")
         from vllm_hook_plugins.core.fingerprints import chat_template_fingerprint
 
         payload = _discovery_payload()
@@ -157,6 +158,7 @@ class TestServeFingerprintVerification:
     def test_differing_served_template_fingerprint_warns(
         self, fake_server, templated_client, tmp_path, caplog,
     ):
+        pytest.importorskip("vllm_hook_plugins")
         from vllm_hook_plugins.core.fingerprints import chat_template_fingerprint
 
         payload = _discovery_payload()
@@ -425,6 +427,7 @@ class TestServeSpecLowering:
         return VLLMServeBackend(_serve_spec(hook_plugin=True, artifact_dir=str(tmp_path)))
 
     def test_spec_bearing_request_carries_xargs_and_salt(self, fake_server, tmp_path):
+        pytest.importorskip("vllm_hook_plugins")
         backend = self._plugin_backend(fake_server, tmp_path)
         spec = _mini_spec()
         with backend.open_session() as session:
@@ -434,6 +437,7 @@ class TestServeSpecLowering:
         assert body["cache_salt"] == spec.salt()
 
     def test_spec_artifacts_materialize_into_artifact_dir(self, fake_server, tmp_path):
+        pytest.importorskip("vllm_hook_plugins")
         backend = self._plugin_backend(fake_server, tmp_path)
         spec = _mini_spec()
         with backend.open_session() as session:
@@ -443,6 +447,7 @@ class TestServeSpecLowering:
         assert (tmp_path / sha[:2] / f"{sha}.safetensors").exists()
 
     def test_spec_free_requests_share_constant_backend_salt(self, fake_server, tmp_path):
+        pytest.importorskip("vllm_hook_plugins")
         backend = self._plugin_backend(fake_server, tmp_path)
         items = [
             GenerationItem(prompt=PreparedPrompt.from_token_ids([0, 3])),
@@ -483,6 +488,7 @@ class TestServeSpecLowering:
                 session.generate([_spec_item(_mini_spec(kind="head_additive"))], GenerationParams())
 
     def test_scoring_remaps_after_prompt_to_from_position(self, fake_server, tmp_path):
+        pytest.importorskip("vllm_hook_plugins")
         fake_server.prompt_logprobs = -0.5
         backend = self._plugin_backend(fake_server, tmp_path)
         spec = _mini_spec(scope={"kind": "after_prompt"})
@@ -500,6 +506,7 @@ class TestServeSpecLowering:
         assert body["cache_salt"] != spec.salt()
 
     def test_scoring_all_scope_travels_unchanged(self, fake_server, tmp_path):
+        pytest.importorskip("vllm_hook_plugins")
         fake_server.prompt_logprobs = -0.5
         backend = self._plugin_backend(fake_server, tmp_path)
         spec = _mini_spec(scope={"kind": "all"})
@@ -637,6 +644,7 @@ class TestServeConstraintLowering:
 class TestStageArtifacts:
 
     def test_stage_writes_into_configured_registry(self, fake_server, tmp_path):
+        pytest.importorskip("vllm_hook_plugins")
         fake_server.discovery = _discovery_payload()
         backend = VLLMServeBackend(
             _serve_spec(hook_plugin=True, artifact_dir=str(tmp_path)),

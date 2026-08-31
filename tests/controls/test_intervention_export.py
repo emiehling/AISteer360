@@ -2,7 +2,9 @@
 artifact handling, placement mapping, and the coupling between exports and requirements."""
 import pytest
 import torch
-from vllm_hook_plugins.core.schema import parse_intervention_spec
+
+pytest.importorskip("vllm_hook_plugins")
+from vllm_hook_plugins.core.schema import parse_intervention_spec  # noqa: E402
 
 from aisteer360.algorithms.core.execution import Capability, ModelFacts
 from aisteer360.algorithms.core.internals.probes import Probe

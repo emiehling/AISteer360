@@ -158,8 +158,6 @@ class VLLMBackend(Backend):
         self.spec = spec
         self._released = False
         require("vllm")
-        import os
-
         from vllm import LLM
 
         checkpoint, lora = _split_artifacts(artifacts)
@@ -195,23 +193,30 @@ class VLLMBackend(Backend):
                     os.environ.pop("VLLM_HOOK_WORKER", None)
                 else:
                     os.environ["VLLM_HOOK_WORKER"] = previous_worker
-        self._lora_request = None
-        if lora is not None:
-            from vllm.lora.request import LoRARequest
 
-            self._lora_request = LoRARequest("steered", 1, lora.path)
+        # the pipeline records a backend only when the constructor returns, so a failure from
+        # here on must release the engine before propagating
+        try:
+            self._lora_request = None
+            if lora is not None:
+                from vllm.lora.request import LoRARequest
 
-        tokenizer_source = (
-            spec.get_option("tokenizer_name_or_path")
-            or model_ref
-        )
-        self.tokenizer = _client_tokenizer(tokenizer_source, trust_remote_code)
-        self._layout = _config_layout(model_ref, trust_remote_code)
-        self._plain_salt = uuid.uuid4().hex
-        self._artifact_uploader = _ArtifactUploader(spec.get_option("artifact_dir"))
-        self._discovery: dict | None = None
-        if spec.get_option("hook_plugin"):
-            self._discovery = self._fetch_discovery()
+                self._lora_request = LoRARequest("steered", 1, lora.path)
+
+            tokenizer_source = (
+                spec.get_option("tokenizer_name_or_path")
+                or model_ref
+            )
+            self.tokenizer = _client_tokenizer(tokenizer_source, trust_remote_code)
+            self._layout = _config_layout(model_ref, trust_remote_code)
+            self._plain_salt = uuid.uuid4().hex
+            self._artifact_uploader = _ArtifactUploader(spec.get_option("artifact_dir"))
+            self._discovery: dict | None = None
+            if spec.get_option("hook_plugin"):
+                self._discovery = self._fetch_discovery()
+        except Exception:
+            self.release()
+            raise
 
     def stage_artifacts(self, payloads) -> None:
         """Write each content-addressed artifact into the plugin registry the engine reads.
@@ -403,7 +408,7 @@ class VLLMServeBackend(Backend):
         # is verified against the server after writing (see stage_artifacts)
         self._artifact_uploader = _ArtifactUploader(spec.get_option("artifact_dir"))
         if self._discovery is not None:
-            self._verify_fingerprints(tokenizer_source)
+            self._verify_fingerprints()
 
     def _served_model_ids(self) -> list[str]:
         payload = self._get_json("/v1/models")
@@ -524,7 +529,7 @@ class VLLMServeBackend(Backend):
             ) from error
         return adapter_name
 
-    def _verify_fingerprints(self, tokenizer_source: str) -> None:
+    def _verify_fingerprints(self) -> None:
         """Verify the client tokenizer against the discovery payload's fingerprint recipes.
 
         Uses the plugin's engine-free `core.fingerprints` when the `vllm_hook_plugins` package

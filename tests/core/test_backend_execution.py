@@ -361,6 +361,22 @@ class TestSessionBatchedFastPath:
         serial = torch.cat(serial_rows, dim=0)
         assert torch.allclose(batched, serial, atol=1e-4)
 
+    def test_uneven_text_prompts_batch_like_serial(self, backend):
+        prompts = ["the cat", "the dog ran fast on the mat"]
+        params = GenerationParams(max_new_tokens=4, greedy=True, extra={"eos_token_id": None})
+        with backend.open_session() as session:
+            batched = session.generate(
+                [GenerationItem(prompt=PreparedPrompt.from_text(p)) for p in prompts], params,
+            )
+        serial = []
+        for prompt in prompts:
+            with backend.open_session() as session:
+                serial.append(
+                    session.generate([GenerationItem(prompt=PreparedPrompt.from_text(prompt))], params)[0]
+                )
+        for one, many in zip(serial, batched):
+            assert torch.equal(one.output.output_ids, many.output.output_ids)
+
 
 class TestPadTokenDefaulting:
     """The session defaults pad_token_id per call without mutating the model's generation config."""

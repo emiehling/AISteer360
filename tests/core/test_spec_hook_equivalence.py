@@ -9,9 +9,11 @@ chunked-prefill, and restart-replay evidence orderings, including batched rows w
 decisions."""
 import pytest
 import torch
-from vllm_hook_plugins.core.interpreter import apply_op, build_gate
-from vllm_hook_plugins.core.interpreter.gates import GateState
-from vllm_hook_plugins.core.schema import parse_intervention_spec
+
+pytest.importorskip("vllm_hook_plugins")
+from vllm_hook_plugins.core.interpreter import apply_op, build_gate  # noqa: E402
+from vllm_hook_plugins.core.interpreter.gates import GateState  # noqa: E402
+from vllm_hook_plugins.core.schema import parse_intervention_spec  # noqa: E402
 
 from aisteer360.algorithms.core.execution import ModelFacts
 from aisteer360.algorithms.core.internals.pooling import aggregate_condition_hidden

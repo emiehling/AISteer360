@@ -343,8 +343,10 @@ class ExclusiveSession:
         """Generate one result per item, each under its own hook registrations.
 
         Items sharing identical state entries, identical output entries, and identical-or-absent
-        effective seeds execute in one batched `model.generate` pass (right-padded to a common
-        prompt length); otherwise items decode serially. Caller-supplied `logits_processor` and
+        effective seeds execute in one batched `model.generate` pass; otherwise items decode
+        serially. When those rows are of differing lengths they pack left so each continuation
+        starts after its row's last real token, and a batch the caller already padded to one width
+        keeps the caller's layout. Caller-supplied `logits_processor` and
         `stopping_criteria` entries in `params.extra` append after the items' own contributions,
         and the normalized stop fields compose as stop rules anchored at the prompt length. A
         seeded item decodes inside a seeded RNG fork, so seeded runs are reproducible and the
@@ -441,6 +443,14 @@ class ExclusiveSession:
         model = self.model
         rows = [self._resolve_prompt_tensors(item.prompt) for item in items]
         input_ids, attention_mask = self._stack_prompt_rows(rows)
+        # rows this session padded pack left, so each continuation starts after the row's last
+        # real token; pre-padded equal-width batches keep the caller's layout, as with
+        # model.generate (and as the pipeline's hook masks assume)
+        if (
+            len({ids.size(1) for ids, _ in rows}) > 1
+            and not getattr(model.config, "is_encoder_decoder", False)
+        ):
+            input_ids, attention_mask = to_left_pad(input_ids, attention_mask)
         processors, criteria = self._compose_entry_stacks(
             items[0].output_entries, extra_processors=user_processors, extra_criteria=user_criteria,
         )

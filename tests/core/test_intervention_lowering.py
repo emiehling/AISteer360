@@ -3,7 +3,9 @@ byte-aligned with `vllm_hook_plugins.core.canonical`, and artifact-id collection
 type."""
 import pytest
 import torch
-from vllm_hook_plugins.core.canonical import canonical_bytes, request_salt, spec_hash
+
+pytest.importorskip("vllm_hook_plugins")
+from vllm_hook_plugins.core.canonical import canonical_bytes, request_salt, spec_hash  # noqa: E402
 
 from aisteer360.algorithms.core.execution import InterventionSpec
 from aisteer360.algorithms.core.utils.assembly import _lower_control
