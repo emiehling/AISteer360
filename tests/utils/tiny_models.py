@@ -6,7 +6,7 @@ that hook-level behavioral tests can run without downloading models from the HF 
 import torch
 import torch.nn as nn
 from tokenizers import Tokenizer, models, pre_tokenizers, processors
-from transformers import GPT2Config, GPT2LMHeadModel, LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
+from transformers import AddedToken, GPT2Config, GPT2LMHeadModel, LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
 
 
 def tiny_llama(num_layers=4, hidden=32, heads=4, vocab=100):
@@ -263,3 +263,38 @@ def wordlevel_tokenizer(
     return PreTrainedTokenizerFast(
         tokenizer_object=tok, bos_token="<s>", eos_token="</s>", pad_token="<pad>"
     )
+
+
+def reasoning_tag_tokenizer(
+    special_tags: tuple[str, ...] = (),
+    ordinary_tags: tuple[str, ...] = (),
+    words: tuple[str, ...] = ("R", "A", "thought", "plan", "answer", "pre", "stop", "x"),
+):
+    """Tiny WordLevel tokenizer with reasoning delimiters as configurable tokens.
+
+    The base vocabulary is a handful of whitespace-separated words plus `<pad>`/`<eos>`. Each tag in
+    `special_tags` is added as an atomic special token (stripped by `skip_special_tokens=True`, as a
+    special-token delimiter such as Gemma's `<|channel>`/`<channel|>` is). Each tag in
+    `ordinary_tags` is added as an atomic ordinary token (round-trips through
+    `skip_special_tokens=True`, as `<think>`/`</think>` do on Qwen and Granite). Tags are added
+    atomically, so they encode to a single id regardless of the whitespace pre-tokenizer.
+
+    Args:
+        special_tags: Delimiter strings to register as special tokens.
+        ordinary_tags: Delimiter strings to register as ordinary added tokens.
+        words: The base vocabulary of ordinary whitespace-separated words.
+
+    Returns:
+        A `PreTrainedTokenizerFast` with `pad_token="<pad>"` and `eos_token="<eos>"`.
+    """
+    vocab = {"<pad>": 0, "<eos>": 1, **{word: index + 2 for index, word in enumerate(words)}}
+    tok = Tokenizer(models.WordLevel(vocab, unk_token="<pad>"))
+    tok.pre_tokenizer = pre_tokenizers.Whitespace()
+    fast = PreTrainedTokenizerFast(tokenizer_object=tok, pad_token="<pad>", eos_token="<eos>")
+    if ordinary_tags:
+        fast.add_tokens([AddedToken(tag, special=False, normalized=False) for tag in ordinary_tags])
+    if special_tags:
+        fast.add_special_tokens(
+            {"additional_special_tokens": [AddedToken(tag, special=True, normalized=False) for tag in special_tags]}
+        )
+    return fast

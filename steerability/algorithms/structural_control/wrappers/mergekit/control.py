@@ -121,6 +121,7 @@ class MergeKit(StructuralControl):
             options=mk_merge.MergeOptions(
                 cuda=args.allow_cuda,
                 trust_remote_code=args.trust_remote_code,
+                **args.extra_merge_options,
             )
         )
 

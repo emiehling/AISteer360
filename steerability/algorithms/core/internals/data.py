@@ -69,19 +69,51 @@ class LabeledExamples:
 
     The positive and negative lists need not be the same length. Applies to methods where
     positive and negative examples are independent and unpaired, and the estimator concatenates
-    them.
+    them. Optional group keys mark statements that must not straddle a train/validation split
+    (e.g. the source question of each answer); estimators that do not split ignore them.
 
     Attributes:
         positives: Texts exhibiting the target behavior (label=1).
         negatives: Texts not exhibiting the target behavior (label=0).
+        positive_groups: Group key per positive, same length as `positives`, or None.
+        negative_groups: Group key per negative, same length as `negatives`, or None.
     """
 
     positives: Sequence[str]
     negatives: Sequence[str]
+    positive_groups: Sequence[str | int] | None = None
+    negative_groups: Sequence[str | int] | None = None
 
     def __post_init__(self):
         if len(self.positives) == 0 or len(self.negatives) == 0:
             raise ValueError("positives and negatives must each have at least one entry.")
+
+        given = [self.positive_groups is not None, self.negative_groups is not None]
+        if any(given) and not all(given):
+            raise ValueError(
+                "positive_groups and negative_groups must both be given or both omitted."
+            )
+
+        for name, groups, texts in (
+            ("positive_groups", self.positive_groups, self.positives),
+            ("negative_groups", self.negative_groups, self.negatives),
+        ):
+            if groups is None:
+                continue
+            if len(groups) != len(texts):
+                raise ValueError(
+                    f"{name} has length {len(groups)} but its text list has length {len(texts)}."
+                )
+            for key in groups:
+                if not isinstance(key, (str, int)) or isinstance(key, bool):
+                    raise ValueError(
+                        f"{name} keys must be str or int; got {type(key).__name__}."
+                    )
+
+    @property
+    def groups(self) -> bool:
+        """Whether the data carries group keys (positive/negative groups both present)."""
+        return self.positive_groups is not None
 
 
 def as_labeled_examples(x: LabeledExamples | ContrastivePairs | dict) -> LabeledExamples:
@@ -91,7 +123,8 @@ def as_labeled_examples(x: LabeledExamples | ContrastivePairs | dict) -> Labeled
 
         - An existing `LabeledExamples` instance (returned as-is).
         - A `ContrastivePairs` instance (converted; pairing is dropped).
-        - A dict with keys `"positives"` and `"negatives"`.
+        - A dict with keys `"positives"` and `"negatives"`, and optionally `"positive_groups"`
+          and `"negative_groups"`.
 
     Args:
         x: Input to normalize.

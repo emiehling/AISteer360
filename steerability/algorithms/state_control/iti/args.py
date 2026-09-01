@@ -26,8 +26,9 @@ class ITIArgs(BaseArgs):
         steering_vector: Pre-trained steering vector with per-head directions
             (shape [num_heads, head_dim] per layer). If provided, skip training.
         data: Labeled examples (true/false statements) for training. Unlike ContrastivePairs,
-            positives and negatives do not need to be equal length. Required if
-            steering_vector is None.
+            positives and negatives do not need to be equal length. May carry `positive_groups` /
+            `negative_groups`; when it does, the probe train/validation split is drawn over groups.
+            Required if steering_vector is None.
         train_spec: Controls extraction method and accumulation mode.
         num_heads: Number of top heads to select based on probe accuracy.
             Paper default is 48 (tuned for LLaMA-7B).

@@ -3,8 +3,7 @@
 We have prepared a collection of example notebooks for expressing the toolkit's
 functionality.
 
-- `algorithms/` contain demonstrations of the toolkit's built-in algorithms, including wrappers around existing libraries (e.g., `trl`, `mergekit`).
-- `generics/` illustrate config-based generic controls and demonstrate how modular controls can be constructed.
+- `algorithms/` contain demonstrations of the toolkit's built-in algorithms. Its `generics/` subfolder illustrates config-based generic controls and demonstrates how modular controls can be constructed, and its `wrappers/` subfolder covers the wrappers around existing libraries (e.g., `trl`, `mergekit`).
 - `recipes/` are worked examples that compose existing toolkit components into something new.
 - `studies/` demonstrate more extensive studies that compare methods on a given use case.
 
@@ -28,15 +27,19 @@ Algorithm notebooks demonstrate how each method (i.e., control) operates. The me
 
     :octicons-arrow-right-24: [PRewrite](./notebooks/algorithms/prewrite.ipynb)
 
+    :octicons-arrow-right-24: [SystemPrompt](./notebooks/algorithms/system_prompt.ipynb)
+
+    :octicons-arrow-right-24: [UserPrefix](./notebooks/algorithms/user_prefix.ipynb)
+
 -   __Structural control__
 
     ---
 
     Structural control methods adapt the model's weights or architecture, such as by fine-tuning or merging checkpoints. These notebooks use our wrappers around established training and merging libraries. Current notebooks cover:
 
-    :octicons-arrow-right-24: [MergeKit wrapper](./notebooks/algorithms/mergekit.ipynb)
+    :octicons-arrow-right-24: [MergeKit wrapper](./notebooks/algorithms/wrappers/mergekit.ipynb)
 
-    :octicons-arrow-right-24: [TRL wrapper](./notebooks/algorithms/trl.ipynb)
+    :octicons-arrow-right-24: [TRL wrapper](./notebooks/algorithms/wrappers/trl.ipynb)
 
 -   __State control__
 
@@ -87,7 +90,7 @@ Several of the methods above are specific settings of a smaller number of generi
 of the toolkit, we have prepared a collection of such config-based controls, which we call `generics`,
 to enable custom construction of (modular) controls.
 
-The notebooks below show how to configure each generic and recover named methods from it.
+The notebooks below show how to configure each generic (as well how to use them to build some of the named controls).
 
 <div class="grid cards" markdown>
 
@@ -97,7 +100,7 @@ The notebooks below show how to configure each generic and recover named methods
 
     The composable activation-steering atom; each adapter wires a transform, layer selection, and optionally a gate and token scope into one single-behavior control. Current notebooks cover:
 
-    :octicons-arrow-right-24: [ActivationAdapter](./notebooks/generics/activation_adapter.ipynb)
+    :octicons-arrow-right-24: [ActivationAdapter](./notebooks/algorithms/generics/activation_adapter.ipynb)
 
 -   __Output control__
 
@@ -105,25 +108,32 @@ The notebooks below show how to configure each generic and recover named methods
 
     The output analogues, one generic per shape: per-candidate value shifts, mixed log-prob sources, segment search, phased splicing, and stop rules. Current notebooks cover:
 
-    :octicons-arrow-right-24: [ValueGuidance](./notebooks/generics/value_guidance.ipynb)
+    :octicons-arrow-right-24: [ValueGuidance](./notebooks/algorithms/generics/value_guidance.ipynb)
 
-    :octicons-arrow-right-24: [ContrastiveGuidance](./notebooks/generics/contrastive_guidance.ipynb)
+    :octicons-arrow-right-24: [ContrastiveGuidance](./notebooks/algorithms/generics/contrastive_guidance.ipynb)
 
-    :octicons-arrow-right-24: [SearchDecoding](./notebooks/generics/search_decoding.ipynb)
+    :octicons-arrow-right-24: [SearchDecoding](./notebooks/algorithms/generics/search_decoding.ipynb)
 
-    :octicons-arrow-right-24: [PhasedDecoding](./notebooks/generics/phased_decoding.ipynb)
+    :octicons-arrow-right-24: [PhasedDecoding](./notebooks/algorithms/generics/phased_decoding.ipynb)
 
-    :octicons-arrow-right-24: [StoppingRules](./notebooks/generics/stopping_rules.ipynb)
+    :octicons-arrow-right-24: [StoppingRules](./notebooks/algorithms/generics/stopping_rules.ipynb)
 
 </div>
 
 
 ## Recipes
 
-Recipe notebooks compose existing toolkit components into something the toolkit does not ship as a named method.
-Where an algorithm notebook demonstrates one control, a recipe builds a new capability out of several.
+Recipes describe useful applications/compositions of the toolkit's functionality. Generally, recipes are where non-trivial combinations of steering methods (beyond the named controls) are demonstrated.
 
 <div class="grid cards" markdown>
+
+-   __Honest-persona prompting__
+
+    ---
+
+    This notebook reproduces some of the honest-only persona prompting from Anthropic's [evaluating honesty post](https://alignment.anthropic.com/2025/honesty-elicitation/) by composing `UserPrefix` (the `|HONEST_ONLY|` control token), `SystemPrompt` (the mode definition), `PhasedDecoding` (the `<honest_only>` tag prefill), and `StoppingRules` (the closing-tag stop). The notebook compares three prompt variants against the (unsteered) baseline on a scenario that pressures the model to misstate a fact.
+
+    [:octicons-arrow-right-24: See the recipe](./notebooks/recipes/honest_persona_prompting.ipynb)
 
 -   __Routed decoding__
 
@@ -131,7 +141,7 @@ Where an algorithm notebook demonstrates one control, a recipe builds a new capa
 
     This notebook fits calibrated probes (`ProbeSet`) on contrastive prompt pools, combines them with boolean routing rules, and routes each query to a response strategy (a canned response, a disclaimer-prefixed answer, or plain generation) via the `RoutedDecoding` driver.
 
-    [:octicons-arrow-right-24: See the recipe](./notebooks/recipes/routed_decoding.ipynb)
+    [:octicons-arrow-right-24: See the recipe](./notebooks/recipes/routed_decoding/routed_decoding.ipynb)
 
 -   __Sharing pipelines (`.spipe`)__
 
@@ -139,12 +149,14 @@ Where an algorithm notebook demonstrates one control, a recipe builds a new capa
 
     This notebook fits a CAA control, freezes the steered pipeline into a portable `.spipe` bundle (the recipe plus the fitted artifacts, content-addressed), and reconstructs the pipeline from the file alone with matching greedy generations.
 
-    [:octicons-arrow-right-24: See the recipe](./notebooks/recipes/spipe.ipynb)
+    [:octicons-arrow-right-24: See the recipe](./notebooks/recipes/working_with_spipes.ipynb)
 
 </div>
 
 
 ## Studies
+
+Studies provide in-depth comparisons of steering methods on a given use case. Note that these notebooks can be computationally heavy.
 
 <div class="grid cards" markdown>
 
@@ -167,5 +179,13 @@ Where an algorithm notebook demonstrates one control, a recipe builds a new capa
     composes the figures from the library plotting calls.
 
     [:octicons-arrow-right-24: See the study](./notebooks/studies/commonsense_mcqa/commonsense_mcqa.ipynb)
+
+-   :material-call-split:  __Routing versus prompting__
+
+    ---
+
+    This notebook compares the probe-based routing from the [routed decoding recipe](./notebooks/recipes/routed_decoding/routed_decoding.ipynb) against two prompting baselines that desribe the same referral policy, i.e., the full policy in a system prompt and a prompted classifier. 
+
+    [:octicons-arrow-right-24: See the study](./notebooks/studies/routing_vs_prompting.ipynb)
 
 </div>

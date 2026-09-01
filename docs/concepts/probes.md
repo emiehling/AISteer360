@@ -4,7 +4,7 @@
     This document provides a conceptual overview of detection in the toolkit. For the full API, please see the
     reference pages on [internals](../reference/algorithms/core/internals.md) and
     [probes](../reference/algorithms/core/probes.md). For a worked example, please see the notebook on
-    [routed decoding](../examples/notebooks/recipes/routed_decoding.ipynb).
+    [routed decoding](../examples/notebooks/recipes/routed_decoding/routed_decoding.ipynb).
 
 Some steering workflows depend on detection, i.e., reading the model's internal state to decide whether a concept is
 present in a prompt, e.g., recognizing that a question asks for medical advice so it can be routed to a referral
@@ -70,7 +70,7 @@ steering gate that reproduces the probe's decision, such that an intervention (e
 [`RoutedDecoding`](controls.md#output-control) driver evaluates a `Router` (ordered routes with predicates over
 decision names, first match wins, per row) against a probe set's decisions and executes the matched action (a canned
 response, a prefix followed by generation, or plain generation). The routing vocabulary lives with that control. See
-the [routed decoding notebook](../examples/notebooks/recipes/routed_decoding.ipynb) for a worked example.
+the [routed decoding notebook](../examples/notebooks/recipes/routed_decoding/routed_decoding.ipynb) for a worked example.
 
 
 ## Detection versus steering
@@ -81,6 +81,11 @@ do not share artifacts. The distinction is geometric, i.e., the direction that b
 difference in class means, $\Sigma^{-1}\Delta\mu$) is generally not the raw mean difference ($\Delta\mu$) used to
 steer. A direction obtained elsewhere can still be turned into a probe by calibrating a bias with `calibrate_bias`
 and constructing a `Probe` directly.
+
+The per-head classifier that [ITI](controls.md#state-control) fits to rank attention heads is also not a `Probe`.
+It scores raw per-head activation slices with held-out accuracy at fit time and is discarded once its accuracies
+have selected the top-K heads, whereas a `Probe` is a calibrated, model-free detector over pooled residual-stream
+features that gates and routers read at generation time.
 
 
 ## Provenance

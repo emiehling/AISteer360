@@ -34,7 +34,9 @@ class SteeringVector:
             variance scalar. Only meaningful for estimators that produce a
             real variance (e.g., PCA-based). None when not applicable.
         probe_accuracies: Optional mapping from (layer_id, head_id) to linear
-            probe validation accuracy (used for head selection in ITI).
+            probe validation accuracy (used for head selection in ITI). "Probe" here is
+            ITI's per-head fit-time classifier used to rank heads, distinct from the
+            toolkit's `Probe` detector.
         meta: Provenance record (model, config, tokenizer, and chat-template fingerprints,
             package version). May be empty for hand-constructed vectors, which disarms
             cross-backend fingerprint checks.

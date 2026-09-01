@@ -1,37 +1,66 @@
-"""Probe-based mass mean shift estimator for ITI."""
-import logging
+"""Probe-based mass mean shift estimator for ITI.
 
+The per-head classifiers this estimator fits are fit-time selection statistics. Their held-out
+accuracies rank heads and their weights are discarded. They are ordinary scikit-learn logistic
+regressions over per-head activation slices, unrelated to the toolkit's `Probe` detector (a
+calibrated, model-free readout over pooled residual-stream features consumed by gates and
+routers). "Probe" here means only ITI's fit-time head classifier.
+"""
+import logging
+from typing import Sequence
+
+import numpy as np
 import torch
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from steerability.algorithms.core.internals.data import LabeledExamples
 from steerability.algorithms.core.internals.encoding import tokenize_texts
+from steerability.algorithms.core.internals.fingerprint import artifact_provenance_meta
 from steerability.algorithms.core.internals.model_layout import head_geometry, resolve_model_layout
-from steerability.algorithms.core.internals.pooling import get_last_token_positions, select_at_positions
+from steerability.algorithms.core.internals.pooling import get_last_token_positions, masked_mean, select_at_positions
 from steerability.algorithms.state_control.common.estimators.base import BaseEstimator
 from steerability.algorithms.state_control.common.fit_specs import VectorTrainSpec
 from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 
 logger = logging.getLogger(__name__)
 
+_VAL_FRACTION = 0.2
+_SPLIT_SEED = 42
+
+
+class _MaskHolder:
+    """Carries the current chunk's attention mask so capture hooks can pool per row."""
+
+    __slots__ = ("mask",)
+
+    def __init__(self):
+        self.mask: torch.Tensor | None = None
+
 
 class ProbeMassShiftEstimator(BaseEstimator[SteeringVector]):
     """Learns per-head direction vectors using probe-based mass mean shift.
 
-    For each (layer, head) pair:
+    The fit has three parts, run per attention head across every layer:
 
-    1. Extract pre-o_proj attention head outputs (individual head activations before the output projection).
-    2. Train a binary logistic regression probe to classify positive vs negative samples.
-    3. Record the probe's validation accuracy (80/20 split) for later head selection.
-    4. Compute the mass mean shift: direction = mean(activations_true) - mean(activations_false).
+    1. Extract the head's pre-`o_proj` activation on labeled positive/negative statements, pooled
+       to one vector per statement.
+    2. Fit a logistic-regression probe on an 80/20 held-out split and record its validation
+       accuracy for later head selection. The split is drawn over groups when the data carries
+       group keys, so no group's statements straddle the train/validation partition.
+    3. Compute the mass-mean-shift direction as `mean(positives) - mean(negatives)`, L2-normalize
+       it to a unit direction, and scale it by the standard deviation of all statements projected
+       onto that direction.
 
-    Returns a unified SteeringVector with directions shaped [num_heads, head_dim]
-    per layer and probe_accuracies populated for all (layer, head) pairs.
+    Returns a `SteeringVector` with directions shaped `[num_heads, head_dim]` per layer,
+    `num_heads`/`head_dim` metadata, and `probe_accuracies` populated for every `(layer, head)`
+    pair. "Probe" here is the fit-time head classifier used to rank heads, not the toolkit's
+    `Probe` detector.
 
-    This estimator captures attention outputs using temporary forward pre-hooks on o_proj
-    modules. The hooks are registered only during fit() and removed after extraction.
+    Per-token activations are pooled inside the capture hook and never retained beyond the chunk
+    that produced them, so host memory scales with the number of statements rather than their
+    length.
 
     Reference:
 
@@ -48,24 +77,27 @@ class ProbeMassShiftEstimator(BaseEstimator[SteeringVector]):
         data: LabeledExamples,
         spec: VectorTrainSpec,
     ) -> SteeringVector:
-        """Extract head steering vectors using probe-based mass mean shift.
+        """Extract per-head steering directions and probe accuracies from labeled statements.
 
         Args:
             model: Model to extract attention outputs from.
             tokenizer: Tokenizer for encoding the labeled examples.
-            data: Independent positive/negative texts (true/false statements for ITI).
-                Unlike ContrastivePairs, these do not need to be equal length.
-            spec: Training configuration (accumulate mode and batch_size).
+            data: Independent positive/negative statements (true/false statements for ITI). Unlike
+                `ContrastivePairs`, these do not need to be equal length. When the data carries
+                group keys, the probe train/validation split is drawn over groups.
+            spec: Training configuration (`accumulate` mode and `batch_size`).
 
         Returns:
-            SteeringVector with directions shaped [num_heads, head_dim] per layer,
-            num_heads/head_dim metadata, and probe_accuracies for all heads.
+            A `SteeringVector` with directions shaped `[num_heads, head_dim]` per layer,
+            `num_heads`/`head_dim` metadata, `probe_accuracies` for every head, and
+            `meta["probe_split"]` recording whether the split was drawn over groups
+            (`"group"`) or statements (`"statement"`).
 
         Raises:
             ValueError: If the model is a hybrid attention stack (some decoder layers carry no
-                attention module), or its attention head geometry is not uniform across layers.
+                attention module), its attention head geometry is not uniform across layers,
+                `spec.accumulate` is unsupported, or the probe partition cannot be drawn.
         """
-        device = next(model.parameters()).device
         model_type = getattr(model.config, "model_type", "unknown")
 
         # ITI reshapes every layer's o_proj input with one head geometry, so every layer must carry
@@ -82,9 +114,7 @@ class ProbeMassShiftEstimator(BaseEstimator[SteeringVector]):
         geometries = {lid: head_geometry(model, layout, lid) for lid in range(layout.num_layers)}
         distinct = {(g.num_heads, g.head_dim) for g in geometries.values()}
         if len(distinct) > 1:
-            differing = sorted(
-                (lid, g.num_heads, g.head_dim) for lid, g in geometries.items()
-            )
+            differing = sorted((lid, g.num_heads, g.head_dim) for lid, g in geometries.items())
             raise ValueError(
                 "ITI requires uniform attention head geometry across layers, but the model has "
                 f"heterogeneous heads: {differing} as (layer, num_heads, head_dim). Models such as "
@@ -94,168 +124,178 @@ class ProbeMassShiftEstimator(BaseEstimator[SteeringVector]):
         num_heads = geometry.num_heads
         head_dim = geometry.head_dim
 
+        if spec.accumulate not in ("last_token", "all"):
+            raise ValueError(f"ProbeMassShiftEstimator does not support accumulate='{spec.accumulate}'.")
+
+        device = next(model.parameters()).device
         pos_texts = list(data.positives)
         neg_texts = list(data.negatives)
         n_pos = len(pos_texts)
         n_neg = len(neg_texts)
 
-        logger.debug("Tokenizing %d positive and %d negative examples", n_pos, n_neg)
-
-        # tokenize independently (no interleaving needed for ITI)
+        logger.debug("Tokenizing %d positive and %d negative statements", n_pos, n_neg)
         enc_pos = tokenize_texts(tokenizer, pos_texts, device)
         enc_neg = tokenize_texts(tokenizer, neg_texts, device)
 
-        # extract attention outputs via temporary hooks
-        logger.debug("Extracting attention outputs with batch_size=%d", spec.batch_size)
-        attn_out_pos = self._extract_attention_outputs(model, enc_pos, spec.batch_size)
-        attn_out_neg = self._extract_attention_outputs(model, enc_neg, spec.batch_size)
+        logger.debug("Extracting pooled head features with batch_size=%d", spec.batch_size)
+        feats_pos = _extract_pooled_head_features(model, enc_pos, spec.batch_size, spec.accumulate)
+        feats_neg = _extract_pooled_head_features(model, enc_neg, spec.batch_size, spec.accumulate)
 
-        num_layers = len(attn_out_pos)
+        labels = np.array([1] * n_pos + [0] * n_neg)
+        groups = None
+        if data.groups:
+            groups = list(data.positive_groups) + list(data.negative_groups)
+        train_idx, val_idx = _probe_partition(labels, groups)
+
+        num_layers = len(feats_pos)
         logger.debug("Computing probe-based directions for %d layers x %d heads", num_layers, num_heads)
-
-        # get attention masks for position selection
-        attn_mask_pos = enc_pos.get("attention_mask")
-        attn_mask_neg = enc_neg.get("attention_mask")
-        if attn_mask_pos is not None:
-            attn_mask_pos = attn_mask_pos.cpu()
-        if attn_mask_neg is not None:
-            attn_mask_neg = attn_mask_neg.cpu()
 
         directions: dict[int, torch.Tensor] = {}
         probe_accuracies: dict[tuple[int, int], float] = {}
 
         for layer_id in range(num_layers):
-            ap = attn_out_pos[layer_id]  # [n_pos, T_pos, H]
-            an = attn_out_neg[layer_id]  # [n_neg, T_neg, H]
-
-            # aggregate based on accumulate mode
-            if spec.accumulate == "last_token":
-                pos_positions = get_last_token_positions(attn_mask_pos, ap.size(1), n_pos)
-                neg_positions = get_last_token_positions(attn_mask_neg, an.size(1), n_neg)
-                ap_agg = select_at_positions(ap, pos_positions)  # [n_pos, H]
-                an_agg = select_at_positions(an, neg_positions)  # [n_neg, H]
-            elif spec.accumulate == "all":
-                ap_agg = ap.mean(dim=1)  # [n_pos, H]
-                an_agg = an.mean(dim=1)  # [n_neg, H]
-            else:
-                raise ValueError(f"ProbeMassShiftEstimator does not support accumulate='{spec.accumulate}'")
-
-            # reshape to [N, num_heads, head_dim]
-            ap_heads = ap_agg.view(n_pos, num_heads, head_dim)
-            an_heads = an_agg.view(n_neg, num_heads, head_dim)
+            pos_heads = feats_pos[layer_id].view(n_pos, num_heads, head_dim)
+            neg_heads = feats_neg[layer_id].view(n_neg, num_heads, head_dim)
 
             layer_directions = []
             for head_id in range(num_heads):
-                hp = ap_heads[:, head_id, :].float().numpy()  # [n_pos, head_dim]
-                hn = an_heads[:, head_id, :].float().numpy()  # [n_neg, head_dim]
+                hp = pos_heads[:, head_id, :].float()  # [n_pos, head_dim]
+                hn = neg_heads[:, head_id, :].float()  # [n_neg, head_dim]
+                x = torch.cat([hp, hn], dim=0)  # [N, head_dim]
+                features = x.numpy()
 
-                # concatenate for probe training: positive=1, negative=0
-                X = torch.cat([ap_heads[:, head_id, :], an_heads[:, head_id, :]], dim=0).float().numpy()
-                y = [1] * n_pos + [0] * n_neg
-
-                # train logistic regression probe with 80/20 train/val split
-                X_train, X_val, y_train, y_val = train_test_split(
-                    X, y, test_size=0.2, random_state=42, stratify=y,
-                )
                 probe = LogisticRegression(max_iter=1000, solver="lbfgs")
-                probe.fit(X_train, y_train)
-                accuracy = probe.score(X_val, y_val)
+                probe.fit(features[train_idx], labels[train_idx])
+                probe_accuracies[(layer_id, head_id)] = float(probe.score(features[val_idx], labels[val_idx]))
 
-                # compute mass mean shift (raw direction)
-                raw_direction = torch.from_numpy(hp.mean(axis=0) - hn.mean(axis=0)).to(dtype=torch.float32)
+                raw = hp.mean(dim=0) - hn.mean(dim=0)  # [head_dim]
+                norm = raw.norm()
+                theta_hat = raw / norm if norm > 0 else raw
+                sigma = (x @ theta_hat).std()
+                layer_directions.append((sigma * theta_hat).to(dtype=torch.float32))
 
-                # L2-normalize to get unit direction theta_hat
-                norm = raw_direction.norm()
-                if norm > 0:
-                    theta_hat = raw_direction / norm
-                else:
-                    theta_hat = raw_direction
-
-                # compute sigma: std of ALL activations projected onto theta_hat
-                all_activations = torch.cat([ap_heads[:, head_id, :], an_heads[:, head_id, :]], dim=0).float()
-                proj_vals = all_activations @ theta_hat
-                sigma = proj_vals.std()
-
-                # store sigma * theta_hat so that downstream transform applies alpha * sigma * theta_hat
-                direction = theta_hat * sigma
-                layer_directions.append(direction)
-
-                probe_accuracies[(layer_id, head_id)] = accuracy
-
-            # stack all head directions into [num_heads, head_dim]
-            directions[layer_id] = torch.stack(layer_directions, dim=0)
+            directions[layer_id] = torch.stack(layer_directions, dim=0)  # [num_heads, head_dim]
 
         logger.debug("Finished fitting probe-based head directions")
+        meta = {
+            **artifact_provenance_meta(model, tokenizer),
+            "probe_split": "group" if groups is not None else "statement",
+        }
         return SteeringVector(
             model_type=model_type,
             directions=directions,
             num_heads=num_heads,
             head_dim=head_dim,
             probe_accuracies=probe_accuracies,
+            meta=meta,
         )
 
-    @torch.no_grad()
-    def _extract_attention_outputs(
-        self,
-        model: PreTrainedModel,
-        enc: dict[str, torch.Tensor],
-        batch_size: int,
-    ) -> dict[int, torch.Tensor]:
-        """Extract pre-o_proj attention head outputs from all layers using temporary hooks.
 
-        Registers forward pre-hooks on each layer's output projection (o_proj / c_proj)
-        to capture the concatenated per-head attention outputs BEFORE the output projection
-        mixes them. This matches the probing point described in the ITI paper (Section 3.1):
-        activations x^h_l after Att and before Q^h_l.
+@torch.no_grad()
+def _extract_pooled_head_features(
+    model: PreTrainedModel,
+    enc: dict[str, torch.Tensor],
+    batch_size: int,
+    accumulate: str,
+) -> dict[int, torch.Tensor]:
+    """Extract pooled pre-`o_proj` head features from every layer via temporary hooks.
 
-        Args:
-            model: The model to extract from.
-            enc: Tokenized input with input_ids and attention_mask.
-            batch_size: Batch size for forward passes.
+    Registers one `forward_pre_hook` on each layer's output projection (`o_proj` / `c_proj`),
+    which captures the concatenated per-head attention output before the projection mixes it. Each
+    chunk's `[b, T, D]` input is pooled to `[b, D]` on the model's device inside the hook, then
+    moved to CPU in the captured dtype and appended to the layer's list. Nothing 3-D is ever
+    retained, so host memory scales with the number of statements rather than their length.
 
-        Returns:
-            Dict mapping layer_id to tensor of shape [N, T, num_heads * head_dim].
-        """
-        input_ids = enc["input_ids"]
-        attention_mask = enc.get("attention_mask")
-        N = input_ids.size(0)
+    Args:
+        model: The model to extract from.
+        enc: Tokenized input with `input_ids` and (optionally) `attention_mask`.
+        batch_size: Chunk size for the forward passes.
+        accumulate: `"last_token"` selects the last non-pad position per row; `"all"` mean-pools
+            over the non-pad positions.
 
-        layout = resolve_model_layout(model)
-        oproj_names = layout.oproj_names
-        num_layers = layout.num_layers
+    Returns:
+        A mapping from `layer_id` to a `[N, num_heads * head_dim]` CPU tensor in the captured dtype.
+    """
+    input_ids = enc["input_ids"]
+    attention_mask = enc.get("attention_mask")
+    num_examples = input_ids.size(0)
 
-        storage: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
-        handles: list[torch.utils.hooks.RemovableHandle] = []
+    layout = resolve_model_layout(model)
+    oproj_names = layout.oproj_names
+    num_layers = layout.num_layers
 
-        def make_pre_hook(layer_id: int):
-            def hook(_module, args, kwargs):
-                # o_proj input is the first positional arg: [B, T, num_heads * head_dim]
-                oproj_input = args[0] if args else kwargs.get("input")
-                storage[layer_id].append(oproj_input.detach().cpu())
-            return hook
+    storage: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
+    holder = _MaskHolder()
+    handles: list[torch.utils.hooks.RemovableHandle] = []
 
-        try:
-            for layer_id, oproj_name in enumerate(oproj_names):
-                oproj_module = model.get_submodule(oproj_name)
-                handle = oproj_module.register_forward_pre_hook(make_pre_hook(layer_id), with_kwargs=True)
-                handles.append(handle)
+    def make_pre_hook(layer_id: int):
+        def hook(_module, args, kwargs):
+            x = args[0] if args else kwargs.get("input")  # [b, T, D]
+            mask = holder.mask
+            batch = x.size(0)
+            if accumulate == "last_token":
+                positions = get_last_token_positions(mask, x.size(1), batch)
+                pooled = select_at_positions(x, positions.to(x.device))  # [b, D]
+            else:
+                pooled = masked_mean(x, mask)  # [b, D]
+            storage[layer_id].append(pooled.detach().to("cpu"))
+        return hook
 
-            for start in range(0, N, batch_size):
-                end = min(start + batch_size, N)
-                batch_ids = input_ids[start:end]
-                batch_mask = attention_mask[start:end] if attention_mask is not None else None
+    try:
+        for layer_id, oproj_name in enumerate(oproj_names):
+            oproj_module = model.get_submodule(oproj_name)
+            handles.append(oproj_module.register_forward_pre_hook(make_pre_hook(layer_id), with_kwargs=True))
 
-                model(
-                    input_ids=batch_ids,
-                    attention_mask=batch_mask,
-                    use_cache=False,
-                )
-        finally:
-            for handle in handles:
-                handle.remove()
+        for start in range(0, num_examples, batch_size):
+            end = min(start + batch_size, num_examples)
+            batch_ids = input_ids[start:end]
+            batch_mask = attention_mask[start:end] if attention_mask is not None else None
+            holder.mask = batch_mask
+            model(input_ids=batch_ids, attention_mask=batch_mask, use_cache=False)
+    finally:
+        for handle in handles:
+            handle.remove()
 
-        result = {}
-        for layer_id, tensors in storage.items():
-            result[layer_id] = torch.cat(tensors, dim=0)
+    return {layer_id: torch.cat(tensors, dim=0) for layer_id, tensors in storage.items()}
 
-        return result
+
+def _probe_partition(
+    labels: np.ndarray,
+    groups: Sequence[str | int] | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Draw one train/validation partition over the concatenated positives-then-negatives space.
+
+    One partition is computed before the head loop and shared by every head. Without groups the
+    split is stratified by label; with groups it is drawn over groups so that no group's statements
+    appear on both sides.
+
+    Args:
+        labels: Binary labels over the concatenated index space (positives then negatives).
+        groups: Group key per statement in the same index space, or None for a stratified split.
+
+    Returns:
+        A `(train_idx, val_idx)` pair of integer index arrays.
+
+    Raises:
+        ValueError: If a grouped partition has fewer than two distinct groups, or either side of
+            the resulting partition lacks a class.
+    """
+    indices = np.arange(len(labels))
+    if groups is None:
+        train_idx, val_idx = train_test_split(
+            indices, test_size=_VAL_FRACTION, random_state=_SPLIT_SEED, stratify=labels
+        )
+        return train_idx, val_idx
+
+    groups = np.asarray(groups)
+    if len(np.unique(groups)) < 2:
+        raise ValueError(
+            "Grouped probe split requires at least two distinct groups; add data or regroup."
+        )
+    splitter = GroupShuffleSplit(n_splits=1, test_size=_VAL_FRACTION, random_state=_SPLIT_SEED)
+    train_idx, val_idx = next(splitter.split(indices, labels, groups))
+    if len(np.unique(labels[train_idx])) < 2 or len(np.unique(labels[val_idx])) < 2:
+        raise ValueError(
+            "Grouped probe split left one side without both classes; add data or regroup."
+        )
+    return train_idx, val_idx

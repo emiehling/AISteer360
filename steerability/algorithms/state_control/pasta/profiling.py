@@ -118,7 +118,9 @@ class HeadProfile:
             enough to push a true positive out of a stage-2 pool sized exactly to the target.
         gen_kwargs: Profiling generation parameters, normalized through
             `GenerationParams.from_gen_kwargs`. Greedy by default.
-        batch_size: Number of rows generated per session call.
+        batch_size: Number of rows generated per session call. Rows in a batch share one hook entry
+            and generate in one batched pass, so larger values trade memory for wall-clock; excluded
+            from the fit digest.
         seed: Fixes the stage-1 subsample.
         progress_callback: Optional callback invoked once per scored candidate with a small dict
             (`stage`, `candidate`, `completed`, `total`, `lift`). Opt-in; no-op when None.

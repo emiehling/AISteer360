@@ -14,15 +14,32 @@ CHAT_TEMPLATE = "{% for message in messages %}{{ message['content'] }} {% endfor
 
 
 class StubTokenizer:
-    """Tokenizer stub: optional chat template, pad id 0, and an id-derived batch decode."""
+    """Tokenizer stub: optional chat template, pad id 0, and an id-derived batch decode.
+
+    `encode`/`decode` intern each distinct string to a reversible id sequence, so a tag encoded and
+    decoded round-trips to itself and reasoning-split resolution treats the tags as ordinary
+    (text mode). The batch path (a 2D tensor of `output_ids`) keeps the canned per-row decode.
+    """
 
     def __init__(self, chat_template: str | None = CHAT_TEMPLATE, decode_texts: list[str] | None = None):
         self.chat_template = chat_template
         self.pad_token_id = 0
         self.eos_token_id = 1
         self._decode_texts = decode_texts
+        self._intern: dict[str, int] = {}
+        self._reverse: dict[int, str] = {}
+
+    def encode(self, text, add_special_tokens=False):
+        token_id = self._intern.get(text)
+        if token_id is None:
+            token_id = 1000 + len(self._intern)
+            self._intern[text] = token_id
+            self._reverse[token_id] = text
+        return [token_id]
 
     def decode(self, ids, skip_special_tokens=True):
+        if isinstance(ids, list) and (not ids or isinstance(ids[0], int)):
+            return "".join(self._reverse.get(int(token_id), "") for token_id in ids)
         if self._decode_texts is not None:
             return [self._decode_texts[int(row[0]) % len(self._decode_texts)] for row in ids]
         return [f"row-{int(row[0])}" for row in ids]

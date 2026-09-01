@@ -426,6 +426,47 @@ class TestProfiledPASTAThroughPipeline:
         assert out.size(1) >= 1
 
 
+class TestHeadProfileBatchSize:
+    """`batch_size` changes dispatch granularity only: the rollout accounting and the resolved
+    profile are the same, and the number of `model.generate` calls scales down with the batch."""
+
+    def _resolve(self, model, tokenizer, rows, batch_size):
+        from unittest.mock import patch
+
+        profile = HeadProfile(
+            rows=rows, scorer=contains_target, alpha=100.0, num_heads=2, layers=[0, 1],
+            min_lift=-1.0, gen_kwargs={"max_new_tokens": 4, "do_sample": False},
+            batch_size=batch_size,
+        )
+        pasta = PASTA(head_config=profile, alpha=100.0, scale_position="include")
+        pipeline = SteeringPipeline(controls=[pasta], model=model, tokenizer=tokenizer)
+        with patch.object(model, "generate", wraps=model.generate) as spy:
+            pipeline.steer()
+        return spy.call_count, pasta.head_profile, profile.budget(2, 3)
+
+    def test_batch_size_changes_dispatch_only(self):
+        model = tiny_llama(num_layers=2, hidden=12, heads=3)
+        tokenizer = wordlevel_tokenizer()
+        # identical prompts, so every chunk is padding-free and batching is numerically inert
+        rows = [
+            {"input": "the cat sat on mat", "substrings": ["cat sat"], "target": "cat"}
+            for _ in range(6)
+        ]
+
+        serial_calls, serial, budget = self._resolve(model, tokenizer, rows, batch_size=1)
+        batched_calls, batched, _ = self._resolve(model, tokenizer, rows, batch_size=6)
+
+        # one generate call per rollout when serial; one per (baseline or candidate) when batched
+        assert serial_calls == budget["total"]                      # 6 baseline + 6 candidates * 6 rows = 42
+        assert batched_calls == 1 + budget["candidates"]            # 7
+
+        assert torch.equal(serial.n, batched.n)
+        assert torch.equal(serial.stage, batched.stage)
+        torch.testing.assert_close(serial.lift, batched.lift, equal_nan=True)
+        assert serial.selected == batched.selected
+        assert serial.head_config == batched.head_config
+
+
 class TestBuildHooksMatchesGetHooks:
     def test_build_hooks_matches_get_hooks(self):
         model = tiny_llama(num_layers=2, hidden=12, heads=3)
@@ -523,6 +564,47 @@ class TestProfiledPASTAFreezes:
         with pytest.raises(SpipeStaleError):
             SPipe.load(path, allow_code=True)
         SPipe.load(path, allow_code=True, allow_stale=True)  # bypass
+
+    def test_frozen_load_when_scorer_module_absent(self, tmp_path):
+        # the profiling scorer is loaded from a file into a module name that is not on the import
+        # path, mirroring a notebook that loads its task module via spec_from_file_location; the
+        # staleness check on the allow_code=True load must digest the scorer's $ref without
+        # importing that module, so the frozen resolved head map loads
+        import importlib.util
+        import sys
+
+        from steerability.spipe import SPipe
+
+        scorer_source = (
+            "from typing import Mapping\n"
+            "def strict_follow(response: str, row: Mapping) -> float:\n"
+            "    return 1.0 if row.get('target', '\\0') in response else 0.0\n"
+        )
+        scorer_file = tmp_path / "notebook_task.py"
+        scorer_file.write_text(scorer_source)
+        module_name = "notebook_task_absent_from_path"
+        spec = importlib.util.spec_from_file_location(module_name, scorer_file)
+        task_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(task_module)
+        assert module_name not in sys.modules
+
+        model = tiny_llama(num_layers=2, hidden=12, heads=3)
+        tokenizer = wordlevel_tokenizer()
+        rows = [{"input": "the cat sat on mat", "substrings": ["cat sat"], "target": "cat"} for _ in range(3)]
+        profile = HeadProfile(
+            rows=rows, scorer=task_module.strict_follow, alpha=100.0, num_heads=2, layers=[0, 1],
+            min_lift=-1.0, gen_kwargs={"max_new_tokens": 4, "do_sample": False},
+        )
+        pasta = PASTA(head_config=profile, alpha=100.0, scale_position="include")
+        pipeline = SteeringPipeline(controls=[pasta], model=model, tokenizer=tokenizer)
+        pipeline.steer()
+        resolved = pasta.head_profile.head_config
+
+        path = tmp_path / "profiled.spipe"
+        pipeline.to_spipe(model_ref="tiny-llama").save(path)
+
+        loaded = SPipe.load(path, allow_code=True).pipeline()
+        assert loaded.state_controls[0].head_config == resolved
 
 
 def _edit_spipe(path, mutate) -> None:

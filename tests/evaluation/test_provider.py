@@ -14,6 +14,7 @@ import pytest
 
 pytest.importorskip("inspect_ai")
 
+import torch
 from inspect_ai.model import (
     ChatMessageAssistant,
     ChatMessageSystem,
@@ -25,6 +26,7 @@ from inspect_ai.model import (
     GenerateConfig,
 )
 
+from steerability.algorithms.core.output import Output
 from steerability.evaluation.provider import (
     MAPPED_FIELDS,
     POLICY_FIELDS,
@@ -34,7 +36,35 @@ from steerability.evaluation.provider import (
     SteeringPipelineModelAPI,
     as_inspect_model,
 )
-from tests.evaluation.conftest import StubControl, StubSteeringPipeline, StubTokenizer, make_output
+from tests.evaluation.conftest import CHAT_TEMPLATE, StubControl, StubSteeringPipeline, StubTokenizer, make_output
+from tests.utils.tiny_models import reasoning_tag_tokenizer
+
+TOKEN_TAGS = ("<open>", "<close>")
+
+
+def _token_pipeline(special_tags=TOKEN_TAGS, ordinary_tags=()):
+    """A stub pipeline backed by a real tag tokenizer, so token-mode splitting sees real ids."""
+    tokenizer = reasoning_tag_tokenizer(special_tags=special_tags, ordinary_tags=ordinary_tags)
+    tokenizer.chat_template = CHAT_TEMPLATE
+    return StubSteeringPipeline(tokenizer=tokenizer)
+
+
+def _ids(tokenizer, *words):
+    """Encode a whitespace-joined sequence of words and tags into a one-row output-id list."""
+    ids = []
+    for word in words:
+        ids.extend(tokenizer.encode(word, add_special_tokens=False))
+    return ids
+
+
+def _output(row_ids):
+    """One `Output` carrying a single candidate row of the given ids."""
+    return Output(
+        output_ids=torch.tensor([row_ids], dtype=torch.long),
+        adapted_input_ids=torch.tensor([[1, 2]], dtype=torch.long),
+        finish_reason="eos",
+        finish_reasons=("eos",),
+    )
 
 
 def _api(pipeline=None, **kwargs) -> SteeringPipelineModelAPI:
@@ -303,6 +333,97 @@ class TestOutputAssembly:
         assert model_output.usage.input_tokens == 2
         assert model_output.usage.output_tokens == 3
         assert model_output.usage.total_tokens == 5
+
+
+class TestReasoningSplitModes:
+    """The token-mode split path and `"auto"` resolution against the pipeline tokenizer."""
+
+    def _reasoning_and_answer(self, content):
+        assert isinstance(content, list) and isinstance(content[0], ContentReasoning)
+        assert isinstance(content[1], ContentText)
+        return content[0].reasoning, content[1].text
+
+    def test_auto_resolves_ordinary_tags_to_text(self):
+        api = _api(_token_pipeline(special_tags=(), ordinary_tags=TOKEN_TAGS),
+                   options=ProviderOptions(reasoning_tags=TOKEN_TAGS))
+        assert api._reasoning_split == "text"
+
+    def test_auto_resolves_special_tags_to_tokens(self):
+        api = _api(_token_pipeline(), options=ProviderOptions(reasoning_tags=TOKEN_TAGS))
+        assert api._reasoning_split == "tokens"
+
+    def test_explicit_mode_overrides_auto(self):
+        api = _api(_token_pipeline(), options=ProviderOptions(reasoning_tags=TOKEN_TAGS, reasoning_split="text"))
+        assert api._reasoning_split == "text"
+
+    def test_none_tags_leave_no_resolved_mode(self):
+        api = _api(_token_pipeline(), options=ProviderOptions(reasoning_tags=None))
+        assert api._reasoning_split is None
+
+    def test_token_mode_case_i_splits_reasoning_from_answer(self):
+        pipeline = _token_pipeline()
+        api = _api(pipeline, options=ProviderOptions(reasoning_tags=TOKEN_TAGS))
+        output = _output(_ids(pipeline.tokenizer, "<open>", "R", "<close>", "A"))
+        content = api._assemble_model_output(output, stop_strings=()).choices[0].message.content
+        reasoning, answer = self._reasoning_and_answer(content)
+        assert reasoning == "R" and answer == "A"
+        assert "<open>" not in answer and "<close>" not in answer
+
+    def test_token_mode_close_only_with_opened_at_start(self):
+        pipeline = _token_pipeline()
+        api = _api(pipeline, options=ProviderOptions(reasoning_tags=TOKEN_TAGS, reasoning_opened_at_start=True))
+        output = _output(_ids(pipeline.tokenizer, "R", "<close>", "A"))
+        model_output = api._assemble_model_output(output, stop_strings=())
+        reasoning, answer = self._reasoning_and_answer(model_output.choices[0].message.content)
+        assert reasoning == "R" and answer == "A"
+        assert model_output.completion == "A"
+
+    def test_token_mode_unclosed_yields_empty_answer_and_warns(self, caplog):
+        pipeline = _token_pipeline()
+        api = _api(pipeline, options=ProviderOptions(reasoning_tags=TOKEN_TAGS, reasoning_opened_at_start=True))
+        output = _output(_ids(pipeline.tokenizer, "R", "plan"))
+        with caplog.at_level("WARNING", logger="steerability.evaluation.provider"):
+            content = api._assemble_model_output(output, stop_strings=()).choices[0].message.content
+        reasoning, answer = self._reasoning_and_answer(content)
+        assert reasoning == "R plan" and answer == ""
+        assert any("thinking" in record.getMessage() for record in caplog.records)
+
+    def test_token_mode_closed_with_empty_answer_does_not_warn(self, caplog):
+        # a channel that closes with no following answer is closed, not unclosed: no warning
+        pipeline = _token_pipeline()
+        api = _api(pipeline, options=ProviderOptions(reasoning_tags=TOKEN_TAGS))
+        output = _output(_ids(pipeline.tokenizer, "<open>", "R", "<close>"))
+        with caplog.at_level("WARNING", logger="steerability.evaluation.provider"):
+            content = api._assemble_model_output(output, stop_strings=()).choices[0].message.content
+        reasoning, answer = self._reasoning_and_answer(content)
+        assert reasoning == "R" and answer == ""
+        assert not any("thinking" in record.getMessage() for record in caplog.records)
+
+    def test_token_mode_stop_string_truncates_answer_only(self):
+        # (t1): reasoning is preserved verbatim; only the answer segment is truncated at the stop string
+        pipeline = _token_pipeline()
+        api = _api(pipeline, options=ProviderOptions(reasoning_tags=TOKEN_TAGS))
+        output = _output(_ids(pipeline.tokenizer, "<open>", "R", "<close>", "A", "stop", "x"))
+        content = api._assemble_model_output(output, stop_strings=("stop",)).choices[0].message.content
+        reasoning, answer = self._reasoning_and_answer(content)
+        assert reasoning == "R"
+        assert answer.split() == ["A"]
+        assert "stop" not in answer
+
+    def test_token_mode_reasoning_never_stop_truncated(self):
+        # (t2): halted mid-channel with the stop text at the tail; reasoning keeps it, answer empty
+        pipeline = _token_pipeline()
+        api = _api(pipeline, options=ProviderOptions(reasoning_tags=TOKEN_TAGS, reasoning_opened_at_start=True))
+        output = _output(_ids(pipeline.tokenizer, "R", "plan", "stop"))
+        content = api._assemble_model_output(output, stop_strings=("stop",)).choices[0].message.content
+        reasoning, answer = self._reasoning_and_answer(content)
+        assert reasoning.split() == ["R", "plan", "stop"]
+        assert answer == ""
+
+    def test_empty_encoding_tag_raises_at_construction(self):
+        pipeline = _token_pipeline()
+        with pytest.raises(ValueError, match="empty id sequence"):
+            _api(pipeline, options=ProviderOptions(reasoning_tags=("<open>", "   "), reasoning_split="auto"))
 
 
 class TestDispatchShapes:

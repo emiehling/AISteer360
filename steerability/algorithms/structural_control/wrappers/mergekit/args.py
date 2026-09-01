@@ -28,6 +28,12 @@ class MergeKitArgs(BaseArgs):
         if self.dtype not in {"float16", "bfloat16", "float32"}:
             raise ValueError(f"Unsupported dtype '{self.dtype}'.")
 
+        reserved = {"cuda", "trust_remote_code"} & set(self.extra_merge_options)
+        if reserved:
+            raise ValueError(
+                f"`extra_merge_options` may not set {sorted(reserved)}; use `allow_cuda` and `trust_remote_code`."
+            )
+
         self.out_path = Path(self.out_path)  #.expanduser()
         if self.config_path is not None:
             self.config_path = Path(self.config_path)  #.expanduser()

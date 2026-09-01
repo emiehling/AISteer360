@@ -109,7 +109,8 @@ class ITI(InterventionControl):
 
     1. **Offline (during steer())**: For every attention head across all layers,
        extract the head's output activations on labeled true/false statements.
-       Train a per-head linear probe; rank heads by probe accuracy. For the
+       Train a per-head linear probe on an 80/20 held-out split (over groups when
+       the data carries them) and rank heads by validation accuracy. For the
        top-K heads, compute the mass mean shift: direction = mean(activations_true)
        - mean(activations_false).
 

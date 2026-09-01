@@ -1,10 +1,13 @@
 """Probe fitting: contrastive feature extraction, direction estimation, and bias calibration."""
 import logging
+import warnings
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import Literal, Sequence
 
 import torch
+from scipy.optimize import OptimizeWarning
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
@@ -289,8 +292,13 @@ def _fit_direction(
     neg_z = stats.standardize(neg, layer_id)
     X = torch.cat([pos_z, neg_z]).numpy()
     y = [1] * pos_z.size(0) + [0] * neg_z.size(0)
-    clf = LogisticRegression(C=spec.C, random_state=spec.seed, max_iter=1000)
-    clf.fit(X, y)
+    clf = LogisticRegression(C=spec.C, random_state=spec.seed, max_iter=5000)
+    with warnings.catch_warnings():
+        # sklearn's lbfgs path passes an iprint option that recent scipy rejects; the fit is
+        # unaffected. the convergence filter covers small pools that reach the iteration cap.
+        warnings.simplefilter("ignore", category=OptimizeWarning)
+        warnings.simplefilter("ignore", category=ConvergenceWarning)
+        clf.fit(X, y)
     w_z = torch.as_tensor(clf.coef_[0], dtype=torch.float32)
     return w_z / stats.var[layer_id].sqrt()
 

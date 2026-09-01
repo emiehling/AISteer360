@@ -184,7 +184,8 @@ class DecodeContext:
         allow_code: Whether `$ref` imports, non-`steerability.` `$dc` imports, and pickle-backed
             memory payloads are permitted.
         code_mode: `"strict"` raises on ungranted code references; `"sentinel"` substitutes
-            inert `CodeRef` markers (internal digest decoding only).
+            inert `CodeRef` markers for `$ref` without importing, even under `allow_code`
+            (internal digest decoding only).
         verify: Verification policy applied to frozen steering artifacts (`"strict"`,
             `"warn"`, or `"off"`).
         data_mode: `"load"` materializes `$data` references; `"keep"` returns `DataRef`
@@ -679,14 +680,14 @@ def decode(value: Any, ctx: DecodeContext, path: str = "$") -> Any:
         return _decode_component(value, ctx, path)
     if "$ref" in value:
         target = value["$ref"]
+        if ctx.code_mode == "sentinel":
+            return CodeRef(target)
         if ctx.allow_code:
             module_name, _, qual = target.partition(":")
             obj: Any = import_module(module_name)
             for part in qual.split("."):
                 obj = getattr(obj, part)
             return obj
-        if ctx.code_mode == "sentinel":
-            return CodeRef(target)
         raise SpipeCodeRefError(
             f"{path}: this spipe references code ({target!r}); pass allow_code=True to load() "
             "to import it."

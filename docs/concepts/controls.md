@@ -51,6 +51,12 @@ self-consistency), automatic prompting methods, and prompt routing. The toolkit 
 - `GEPA` ([API reference](../reference/algorithms/input_control/gepa.md), [notebook](../examples/notebooks/algorithms/gepa.ipynb))
     - *Description*: reflective genetic prompt evolution ([Agrawal et al. 2025](https://arxiv.org/abs/2507.19457)), single-module variant.
     - *Backends*: HF, vLLM.
+- `UserPrefix` ([API reference](../reference/algorithms/input_control/user_prefix.md), [notebook](../examples/notebooks/algorithms/user_prefix.ipynb))
+    - *Description*: prepends a fixed text marker to a user turn (the last user turn by default, or the first or all user turns), with the token stream as a fallback for non-chat input.
+    - *Backends*: HF, vLLM.
+- `SystemPrompt` ([API reference](../reference/algorithms/input_control/system_prompt.md), [notebook](../examples/notebooks/algorithms/system_prompt.ipynb))
+    - *Description*: sets or merges the leading system message of a chat, prepending to, appending to, or replacing it (the default is to prepend ahead of an existing system prompt), always producing exactly one system message.
+    - *Backends*: HF, vLLM.
 
 The few-shot retriever from [Rubin et al. 2021](https://arxiv.org/abs/2112.08633) (EPR) is shipped as a `BaseSelector`
 that slots into `FewShot` rather than as a separate control. See
@@ -92,10 +98,10 @@ around existing libraries. The toolkit implements:
 - `LoadLoRA` ([API reference](../reference/algorithms/structural_control/load_lora.md))
     - *Description*: attaches a saved LoRA adapter to the pipeline model (optionally merging it into the base weights), verifying the adapter's recorded base model. This is the frozen form of adapter-producing structural controls in a [`.spipe`](spipe.md) bundle.
     - *Backends*: HF, vLLM (the adapter is served).
-- `MergeKit` ([API reference](../reference/algorithms/structural_control/mergekit_wrapper.md), [notebook](../examples/notebooks/algorithms/mergekit.ipynb))
+- `MergeKit` ([API reference](../reference/algorithms/structural_control/mergekit_wrapper.md), [notebook](../examples/notebooks/algorithms/wrappers/mergekit.ipynb))
     - *Description*: model merging via MergeKit[@goddard-etal-2024-arcees], combining multiple checkpoints with strategies such as linear interpolation, SLERP, and TIES from a YAML/dict config.
     - *Backends*: HF, vLLM (the merged checkpoint is served).
-- `TRL` ([API reference](../reference/algorithms/structural_control/trl_wrapper.md), [notebook](../examples/notebooks/algorithms/trl.ipynb))
+- `TRL` ([API reference](../reference/algorithms/structural_control/trl_wrapper.md), [notebook](../examples/notebooks/algorithms/wrappers/trl.ipynb))
     - *Description*: weight-level training via Hugging Face TRL[@vonwerra2022trl], exposing SFT, DPO, APO, PPO, and GRPO trainers, with optional LoRA/PEFT and a post-training merge. Since `training_args` is forwarded verbatim to the installed TRL config, a key the config does not declare raises at control construction.
     - *Backends*: HF, vLLM (serves the steer-time artifact, a checkpoint or LoRA adapter, and requires a configured output directory).
 
@@ -124,7 +130,7 @@ patching. The toolkit implements:
 - `ActAdd` ([API reference](../reference/algorithms/state_control/act_add.md), [notebook](../examples/notebooks/algorithms/act_add.ipynb))
     - *Description*: activation addition[@turner2023activation], adding a positional steering vector from a single contrast pair to the residual stream at one layer.
     - *Backends*: HF (positional injection has no intervention-spec form).
-- `ActivationAdapter` ([API reference](../reference/algorithms/state_control/activation_adapter.md), [notebook](../examples/notebooks/generics/activation_adapter.ipynb))
+- `ActivationAdapter` ([API reference](../reference/algorithms/state_control/activation_adapter.md), [notebook](../examples/notebooks/algorithms/generics/activation_adapter.ipynb))
     - *Description*: the composable activation-steering atom, wiring together the shared `common` components (a transform that carries its own artifact, selector, gate, token scope) so that a recipe is assembled without writing a new control class.
     - *Backends*: HF, vLLM (kind-conditional, i.e., the configured transform, modifier chain, and gate readout/rule must all have wire forms, and a `CallableReadout` gate is HF-only).
 - `AngularSteering` ([API reference](../reference/algorithms/state_control/angular_steering.md), [notebook](../examples/notebooks/algorithms/angular_steering.ipynb))
@@ -242,13 +248,13 @@ The toolkit implements the following step-level controls:
 - `ConstrainedDecoding` ([API reference](../reference/algorithms/output_control/constrained_decoding.md))
     - *Description*: constrained decoding from one declarative source (JSON schema, regex, EBNF grammar, or a choice set). Every logit the grammar forbids is masked at each step.
     - *Backends*: HF (client-side automaton, `steerability[guided]`), vLLM (native structured outputs). A control constructed with a live automaton object is HF-only.
-- `ValueGuidance` ([API reference](../reference/algorithms/output_control/value_guidance.md), [notebook](../examples/notebooks/generics/value_guidance.ipynb))
+- `ValueGuidance` ([API reference](../reference/algorithms/output_control/value_guidance.md), [notebook](../examples/notebooks/algorithms/generics/value_guidance.ipynb))
     - *Description*: the config-first generic over the step shape (candidates → value → normalize → shift). FUDGE, ARGS, RAD, and SASA are assignments of its config.
     - *Backends*: HF (model-backed per-step logit math is in-process only).
-- `ContrastiveGuidance` ([API reference](../reference/algorithms/output_control/contrastive_guidance.md), [notebook](../examples/notebooks/generics/contrastive_guidance.ipynb))
+- `ContrastiveGuidance` ([API reference](../reference/algorithms/output_control/contrastive_guidance.md), [notebook](../examples/notebooks/algorithms/generics/contrastive_guidance.ipynb))
     - *Description*: the config-first generic over the distribution shape (mix weighted log-prob sources). DExperts, contrastive decoding, and proxy-tuning are assignments of its config.
     - *Backends*: HF (model-backed per-step logit math is in-process only).
-- `StoppingRules` ([API reference](../reference/algorithms/output_control/stopping_rules.md), [notebook](../examples/notebooks/generics/stopping_rules.ipynb))
+- `StoppingRules` ([API reference](../reference/algorithms/output_control/stopping_rules.md), [notebook](../examples/notebooks/algorithms/generics/stopping_rules.ipynb))
     - *Description*: the config-first generic for stop rules, i.e., substring / token / budget stops as pipeline configuration rather than a class. Since its stops merge into the call's generation parameters, rows halted by them report `finish_reason="stop"` and the pipeline truncates decoded text at the stop string.
     - *Backends*: HF, vLLM (stops lower to sampling parameters).
 
@@ -263,13 +269,13 @@ and the following decoding drivers:
 - `BudgetForcing` ([API reference](../reference/algorithms/output_control/budget_forcing.md), [notebook](../examples/notebooks/algorithms/budget_forcing.ipynb))
     - *Description*: test-time thinking-length control[@muennighoff2025s1], capping each thinking segment, optionally appending extensions ("Wait") to prolong reasoning, then forcing the closing think tag before answering.
     - *Backends*: HF, vLLM.
-- `RoutedDecoding` ([API reference](../reference/algorithms/output_control/routed_decoding.md), [notebook](../examples/notebooks/recipes/routed_decoding.ipynb))
+- `RoutedDecoding` ([API reference](../reference/algorithms/output_control/routed_decoding.md), [notebook](../examples/notebooks/recipes/routed_decoding/routed_decoding.ipynb))
     - *Description*: a decoding driver that routes each row to a response plan via a `Router` over a [`ProbeSet`](probes.md)'s readings, and executes the matched plan (canned response, disclaimer prefix, or plain generation). It sits beside `PhasedDecoding` and `SearchDecoding`.
     - *Backends*: HF, offline vLLM (the probe pass needs hidden-state capture, which serve does not return).
-- `SearchDecoding` ([API reference](../reference/algorithms/output_control/search_decoding.md), [notebook](../examples/notebooks/generics/search_decoding.ipynb))
+- `SearchDecoding` ([API reference](../reference/algorithms/output_control/search_decoding.md), [notebook](../examples/notebooks/algorithms/generics/search_decoding.ipynb))
     - *Description*: the config-first generic over the segment shape (propose → score → keep → iterate, with best-of-N defaults). Best-of-N, self-consistency, blockwise controlled decoding, and DeAL are assignments of its config.
     - *Backends*: HF, vLLM with `propose_mode="sample"` (beam proposals are HF-only).
-- `PhasedDecoding` ([API reference](../reference/algorithms/output_control/phased_decoding.md), [notebook](../examples/notebooks/generics/phased_decoding.ipynb))
+- `PhasedDecoding` ([API reference](../reference/algorithms/output_control/phased_decoding.md), [notebook](../examples/notebooks/algorithms/generics/phased_decoding.ipynb))
     - *Description*: the config-first generic over the phase shape (forced / generated segments via a declarative plan grammar). Budget forcing, response prefill, and thinking intervention[@wu2025effectively] are assignments of its config.
     - *Backends*: HF, vLLM.
 

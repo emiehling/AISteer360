@@ -77,7 +77,7 @@ steerability/
 
 docs/                            # MkDocs site: home/, concepts/, tutorials/ (incl. add_method_by_category/),
                                  # reference/, .nav.yml
-examples/                        # notebooks/{algorithms,generics,studies,recipes}/, index.md
+examples/                        # notebooks/{algorithms (incl. generics/, wrappers/),studies,recipes}/, index.md
 tests/                           # controls/, core/, internals/, evaluation/, utils/; conftest.py
 ```
 
@@ -222,7 +222,12 @@ The registered names at the time of writing:
 Behaviors that differ from bare Hugging Face usage:
 
 - Returned token ids exclude the prompt by default. Do not slice the result by prompt length; pass
-  `return_full_sequence=True` for HF-style prompt-plus-continuation output.
+  `return_full_sequence=True` for HF-style prompt-plus-continuation output; a padded batch returns those rows
+  left-packed (`[pads, prompt, continuation]`).
+- Batched prompts are left-packed after the input chain, before state hooks are built and items are dispatched, so
+  the prompt mask a conditional state control pools over aligns with the layout the sessions execute, and
+  full-sequence returns and decoding-driver inputs carry that same layout. Single prompts and equal-length batches
+  carry no padding and are unaffected.
 - `chat_template_kwargs` is a reserved key inside `gen_kwargs`, forwarded to `apply_chat_template` after the
   pipeline-owned template kwargs. It is valid only with `messages=` (pairing it with `text=`/`input_ids=` raises
   `TypeError`) and may not name a pipeline-owned template kwarg (`return_tensors`, `padding`,
@@ -667,9 +672,10 @@ entry in `docs/.nav.yml`, and a mention in the category's list in `docs/concepts
 
 ### Notebooks
 
-Each method gets a demonstration notebook: `examples/notebooks/algorithms/` for named methods, `generics/` for
-config-first controls, `studies/` for use-case studies (run artifacts stay in that subfolder), `recipes/` for
-composite workflows. Add an entry to `examples/index.md`.
+Each method gets a demonstration notebook: `examples/notebooks/algorithms/` for named methods,
+`algorithms/generics/` for config-first controls, `algorithms/wrappers/` for the library wrappers (`trl`,
+`mergekit`), `studies/` for use-case studies (run artifacts stay in that subfolder), `recipes/` for composite
+workflows. Add an entry to `examples/index.md`.
 
 Conventions: imports in a setup cell; explanation lives in markdown cells rather than code comments; one plot per
 cell; no special characters in axis text; f-strings when titles reference variable values. Markdown prose is plain

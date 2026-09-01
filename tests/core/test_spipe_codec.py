@@ -127,6 +127,15 @@ def test_ref_gating_both_directions(store):
         sentinel("x", {})
 
 
+def test_sentinel_ref_never_imports_under_allow_code(store):
+    # the digest-only decode path (code_mode="sentinel") must not import the target even when
+    # allow_code is granted, so a $ref to an absent module still yields the inert CodeRef
+    encoded = {"$ref": "steerability_absent_module_xyz:some_fn"}
+    decoded = decode(encoded, DecodeContext(store=store, allow_code=True, code_mode="sentinel"))
+    assert decoded == CodeRef("steerability_absent_module_xyz:some_fn")
+    assert encode(decoded, EncodeContext(store=None)) == encoded
+
+
 def test_dc_import_gating(store):
     encoded = {"$dc": "os.path.sep", "fields": {}}
     with pytest.raises(SpipeCodeRefError, match="allow_code"):

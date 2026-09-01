@@ -12,7 +12,8 @@ class TopKHeadSelector(BaseSelector[list[tuple[int, int]]]):
     """Selects the top-K (layer_id, head_id) pairs by probe accuracy.
 
     Used by ITI to select which attention heads to intervene on based on
-    linear probe training accuracy scores.
+    linear probe training accuracy scores. "Probe" here is ITI's per-head fit-time
+    classifier used to rank heads, distinct from the toolkit's `Probe` detector.
 
     Args:
         k: Number of top heads to select.

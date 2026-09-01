@@ -973,6 +973,9 @@ class SteeringPipeline:
                 reserved and consumed here rather than forwarded to the backend:
 
                     - `return_full_sequence: bool` to include the prompt in the returned token IDs.
+                        For a padded batch the returned rows are in left-packed layout
+                        (`[pads, prompt, continuation]`), the layout the continuation was
+                        generated from.
                     - `chat_template_kwargs: dict` forwarded to `apply_chat_template` after the
                         pipeline-owned template kwargs. Valid only with `messages=` (pairing it with
                         `text=`/`input_ids=` raises `TypeError`); it may not name any pipeline-owned
@@ -1335,8 +1338,10 @@ class SteeringPipeline:
     ) -> str | list[str] | torch.Tensor | Output | list[Output]:
         """Run the shared generation tail from prompt tensors through the shaped return.
 
-        Applies the token-level input-control chain, merges sampling-expressible output
-        controls into the call's `GenerationParams`, and configures state hooks. With the
+        Applies the token-level input-control chain, then left-packs the steered prompt tensors
+        so hook assembly, per-item prompts, driver inputs, and full-sequence returns share the
+        left-packed layout the sessions execute batched forwards in. Merges sampling-expressible
+        output controls into the call's `GenerationParams` and configures state hooks. With the
         default decoding driver, each prompt row becomes a `GenerationItem` executed by the
         inference backend's session; an explicit `DecodingDriver` instead runs client-side
         under the state-control hook context with `session=` passed for its rollouts. The
@@ -1375,6 +1380,13 @@ class SteeringPipeline:
             runtime_kwargs=runtime_kwargs,
             message_handled=frozenset(message_handled),
             warnings_state=self._prompt_warnings,
+        )
+
+        # left-pack for positional alignment in causal models; the sessions left-pack every
+        # batched forward, and the hook runtime captures the prompt mask and prompt lengths
+        # here, so hooks, per-item prompts, and full-sequence returns must share that layout
+        steered_input_ids, steered_attention_mask = to_left_pad(
+            steered_input_ids, steered_attention_mask
         )
 
         # sampling-expressible output controls lower to generation parameters for this call

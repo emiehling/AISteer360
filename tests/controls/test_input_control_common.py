@@ -265,6 +265,70 @@ class TestSystemPromptFormatter:
         with pytest.raises(TypeError):
             f.apply_to_messages([[{"role": "user", "content": "hi"}]], TextMemory())
 
+    def test_default_mode_is_replace(self):
+        # backward compatibility: the no-arg formatter replaces the leading system message
+        f = SystemPromptFormatter()
+        assert f.mode == "replace"
+        memory = TextMemory(slots={"instruction": "new"})
+        out = f.apply_to_messages(
+            [[{"role": "system", "content": "old"}, {"role": "user", "content": "hi"}]],
+            memory,
+        )
+        assert out[0][0]["content"] == "new"
+
+    def test_prepend_merges_ahead_of_existing(self):
+        f = SystemPromptFormatter(mode="prepend", separator=" | ")
+        memory = TextMemory(slots={"instruction": "ctx"})
+        out = f.apply_to_messages(
+            [[{"role": "system", "content": "old"}, {"role": "user", "content": "hi"}]],
+            memory,
+        )
+        assert out[0][0]["content"] == "ctx | old"
+        assert len(out[0]) == 2
+
+    def test_append_merges_after_existing(self):
+        f = SystemPromptFormatter(mode="append", separator=" | ")
+        memory = TextMemory(slots={"instruction": "ctx"})
+        out = f.apply_to_messages(
+            [[{"role": "system", "content": "old"}, {"role": "user", "content": "hi"}]],
+            memory,
+        )
+        assert out[0][0]["content"] == "old | ctx"
+        assert len(out[0]) == 2
+
+    @pytest.mark.parametrize("mode", ["replace", "prepend", "append"])
+    def test_no_system_message_identical_across_modes(self, mode):
+        # with no leading system message, a merge with nothing is a set: one new system message at position 0
+        f = SystemPromptFormatter(mode=mode, separator=" | ")
+        memory = TextMemory(slots={"instruction": "ctx"})
+        out = f.apply_to_messages([[{"role": "user", "content": "hi"}]], memory)[0]
+        assert out[0] == {"role": "system", "content": "ctx"}
+        assert out[1]["role"] == "user"
+
+    @pytest.mark.parametrize("mode", ["replace", "prepend", "append"])
+    def test_input_messages_not_mutated(self, mode):
+        f = SystemPromptFormatter(mode=mode, separator=" | ")
+        memory = TextMemory(slots={"instruction": "ctx"})
+        original = [[{"role": "system", "content": "old"}, {"role": "user", "content": "hi"}]]
+        _ = f.apply_to_messages(original, memory)
+        assert original == [[{"role": "system", "content": "old"}, {"role": "user", "content": "hi"}]]
+
+    def test_invalid_mode_raises(self):
+        with pytest.raises(ValueError, match="mode"):
+            SystemPromptFormatter(mode="merge")
+
+    def test_apply_to_ids_batch_roundtrips(self, tiny_lm):
+        # apply_to_ids must handle a 2-row batch (batch_decode), returning two rows without raising
+        model, tokenizer = tiny_lm
+        f = SystemPromptFormatter()
+        memory = TextMemory(slots={"instruction": "be brief"})
+        enc = tokenizer(["first question", "second question here"], return_tensors="pt", padding=True)
+        with pytest.warns(UserWarning):
+            out = f.apply_to_ids(enc["input_ids"], memory, tokenizer)
+        assert out.shape[0] == 2
+        for row in out:
+            tokenizer.decode(row.tolist(), skip_special_tokens=True)  # round-trips without raising
+
 
 class TestPrependTextFormatter:
     def test_prepends_to_first_user_message(self):
@@ -292,6 +356,55 @@ class TestPrependTextFormatter:
         f = PrependTextFormatter()
         with pytest.raises(TypeError):
             f._resolve_text(TextMemory(slots={"text": 123}))
+
+    def test_default_target_is_first_user(self):
+        # backward compatibility: the no-arg formatter targets the first user turn
+        f = PrependTextFormatter(separator=" | ")
+        assert f.target == "first_user"
+        memory = TextMemory(slots={"text": "ctx"})
+        chat = [[{"role": "user", "content": "a"}, {"role": "assistant", "content": "x"},
+                 {"role": "user", "content": "b"}]]
+        out = f.apply_to_messages(chat, memory)[0]
+        assert out[0]["content"] == "ctx | a"
+        assert out[2]["content"] == "b"
+
+    def test_target_last_user(self):
+        f = PrependTextFormatter(separator=" | ", target="last_user")
+        memory = TextMemory(slots={"text": "ctx"})
+        chat = [[{"role": "user", "content": "a"}, {"role": "assistant", "content": "x"},
+                 {"role": "user", "content": "b"}]]
+        out = f.apply_to_messages(chat, memory)[0]
+        assert out[0]["content"] == "a"
+        assert out[2]["content"] == "ctx | b"
+
+    def test_target_all_user(self):
+        f = PrependTextFormatter(separator=" | ", target="all_user")
+        memory = TextMemory(slots={"text": "ctx"})
+        chat = [[{"role": "user", "content": "a"}, {"role": "assistant", "content": "x"},
+                 {"role": "user", "content": "b"}]]
+        out = f.apply_to_messages(chat, memory)[0]
+        assert out[0]["content"] == "ctx | a"
+        assert out[1]["content"] == "x"  # assistant turn untouched
+        assert out[2]["content"] == "ctx | b"
+
+    @pytest.mark.parametrize("target", ["first_user", "last_user", "all_user"])
+    def test_no_user_message_appends_user_turn(self, target):
+        f = PrependTextFormatter(target=target)
+        memory = TextMemory(slots={"text": "ctx"})
+        out = f.apply_to_messages([[{"role": "system", "content": "s"}]], memory)[0]
+        assert any(m.get("role") == "user" and "ctx" in m.get("content", "") for m in out)
+
+    @pytest.mark.parametrize("target", ["first_user", "last_user", "all_user"])
+    def test_input_messages_not_mutated(self, target):
+        f = PrependTextFormatter(separator=" | ", target=target)
+        memory = TextMemory(slots={"text": "ctx"})
+        original = [[{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]]
+        _ = f.apply_to_messages(original, memory)
+        assert original == [[{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]]
+
+    def test_invalid_target_raises(self):
+        with pytest.raises(ValueError, match="target"):
+            PrependTextFormatter(target="middle_user")
 
 
 class TestChatTemplateSlotFormatter:

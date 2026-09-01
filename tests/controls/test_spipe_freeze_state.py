@@ -106,7 +106,12 @@ def test_iti_and_act_add_same_class(tmp_path, llama):
     from steerability.algorithms.state_control.iti.control import ITI
 
     iti = ITI(
-        data={"positives": [f"true {i}" for i in range(8)], "negatives": [f"false {i}" for i in range(8)]},
+        data={
+            "positives": [f"true {i}" for i in range(8)],
+            "negatives": [f"false {i}" for i in range(8)],
+            "positive_groups": [i // 2 for i in range(8)],
+            "negative_groups": [i // 2 for i in range(8)],
+        },
         num_heads=2, alpha=5.0,
     )
     act_add = ActAdd(positive_prompt="Love", negative_prompt="Hate", layer_id=1, multiplier=3.0)

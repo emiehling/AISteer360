@@ -20,7 +20,8 @@ class Output:
             slice the pipeline returns to the caller by default). Token ids are returned as
             generated; stop strings and any token-boundary overrun are not removed from them.
         adapted_input_ids: The `input_ids` actually fed to the model after all input-control
-            transformations. None if not provided by the producer.
+            transformations. For a padded batch these are in left-packed layout. None if not
+            provided by the producer.
         finish_reason: The first row's finish reason, one of `"stop"`, `"eos"`, `"length"`, or
             None when none can be inferred.
         finish_reasons: Per-row finish reasons matching `output_ids` (one entry per candidate

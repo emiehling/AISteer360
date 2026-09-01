@@ -1,4 +1,3 @@
-
 preserve_directory_names: true
 
 flatten_single_child_sections: true
@@ -42,12 +41,9 @@ nav:
         - FewShot: "examples/notebooks/algorithms/few_shot.ipynb"
         - GEPA: "examples/notebooks/algorithms/gepa.ipynb"
         - PRewrite: "examples/notebooks/algorithms/prewrite.ipynb"
-      - Structural control:
-        - MergeKit wrapper: "examples/notebooks/algorithms/mergekit.ipynb"
-        - TRL wrapper: "examples/notebooks/algorithms/trl.ipynb"
+        - SystemPrompt: "examples/notebooks/algorithms/system_prompt.ipynb"
       - State control:
         - ActAdd: "examples/notebooks/algorithms/act_add.ipynb"
-        - ActivationAdapter: "examples/notebooks/generics/activation_adapter.ipynb"
         - AngularSteering: "examples/notebooks/algorithms/angular_steering.ipynb"
         - CAA: "examples/notebooks/algorithms/caa.ipynb"
         - CAST: "examples/notebooks/algorithms/cast.ipynb"
@@ -58,21 +54,28 @@ nav:
         - BestOfN: "examples/notebooks/algorithms/best_of_n.ipynb"
         - BudgetForcing: "examples/notebooks/algorithms/budget_forcing.ipynb"
         - ContrastiveDecoding: "examples/notebooks/algorithms/contrastive_decoding.ipynb"
-        - ContrastiveGuidance: "examples/notebooks/generics/contrastive_guidance.ipynb"
         - DeAL: "examples/notebooks/algorithms/deal.ipynb"
         - DExperts: "examples/notebooks/algorithms/dexperts.ipynb"
-        - PhasedDecoding: "examples/notebooks/generics/phased_decoding.ipynb"
         - RAD: "examples/notebooks/algorithms/rad.ipynb"
         - SASA: "examples/notebooks/algorithms/sasa.ipynb"
-        - SearchDecoding: "examples/notebooks/generics/search_decoding.ipynb"
-        - StoppingRules: "examples/notebooks/generics/stopping_rules.ipynb"
-        - ValueGuidance: "examples/notebooks/generics/value_guidance.ipynb"
+      - Generics:
+        - ActivationAdapter: "examples/notebooks/algorithms/generics/activation_adapter.ipynb"
+        - ContrastiveGuidance: "examples/notebooks/algorithms/generics/contrastive_guidance.ipynb"
+        - PhasedDecoding: "examples/notebooks/algorithms/generics/phased_decoding.ipynb"
+        - SearchDecoding: "examples/notebooks/algorithms/generics/search_decoding.ipynb"
+        - StoppingRules: "examples/notebooks/algorithms/generics/stopping_rules.ipynb"
+        - ValueGuidance: "examples/notebooks/algorithms/generics/value_guidance.ipynb"
+      - Wrappers:
+        - MergeKit wrapper: "examples/notebooks/algorithms/wrappers/mergekit.ipynb"
+        - TRL wrapper: "examples/notebooks/algorithms/wrappers/trl.ipynb"
     - Recipes:
-      - Routed decoding: "examples/notebooks/recipes/routed_decoding.ipynb"
-      - Sharing pipelines (.spipe): "examples/notebooks/recipes/spipe.ipynb"
+      - Honest-persona prompting: "examples/notebooks/recipes/honest_persona_prompting.ipynb"
+      - Routed decoding: "examples/notebooks/recipes/routed_decoding/routed_decoding.ipynb"
+      - Sharing pipelines (.spipe): "examples/notebooks/recipes/working_with_spipes.ipynb"
     - Studies:
       - Commonsense MCQA: "examples/notebooks/studies/commonsense_mcqa/commonsense_mcqa.ipynb"
       - Instruction following: "examples/notebooks/studies/instruction_following/instruction_following.ipynb"
+      - Routing versus prompting: "examples/notebooks/studies/routing_vs_prompting.ipynb"
 #  - Developer notes:
 #      - Developer notes: dev_notes/index.md
 #      - "dev_notes/steering_lifecycle.md"
@@ -92,6 +95,8 @@ nav:
             - PRewrite: reference/algorithms/input_control/prewrite.md
             - CPO: reference/algorithms/input_control/cpo.md
             - GEPA: reference/algorithms/input_control/gepa.md
+            - SystemPrompt: reference/algorithms/input_control/system_prompt.md
+            - UserPrefix: reference/algorithms/input_control/user_prefix.md
         - Structural control:
             - Base classes: reference/algorithms/structural_control/base_structural_control.md
             - LoadCheckpoint: reference/algorithms/structural_control/load_checkpoint.md

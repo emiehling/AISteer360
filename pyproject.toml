@@ -55,10 +55,12 @@ dependencies = [
 
 # optional groups
 [project.optional-dependencies]
-# `merging` cannot share an environment with `inspect`: mergekit 0.1.4 pins pydantic~=2.10 and
-# fails to import under the pydantic>=2.13 that inspect-ai requires, so it stays out of `all`
+# `merging` installs mergekit from a pinned main commit (0.1.4 on PyPI never calls `model_rebuild()` on 
+# its torch-typed pydantic models and fails at merge time). 
+# Additionally note that `merging` cannot share an environment with `inspect` since mergekit pins 
+# pydantic~=2.10 and fails to import under the pydantic>=2.13 (required by inspect-ai) so it stays out of `all`
 merging = [
-    "mergekit>=0.1.4,<0.2.0",
+    "mergekit @ git+https://github.com/arcee-ai/mergekit.git@a6e402884ba9bc30da7f23e8304a35f19485de95",
 ]
 cpo = [
     "econml>=0.16.0,<0.17.0",
@@ -108,7 +110,7 @@ dev = [
 [tool.uv]
 # mergekit pins pydantic~=2.10 and cannot import under the pydantic>=2.13 that inspect-ai
 # requires, so `merging` never co-installs with `inspect` or the extras that include it;
-# mergekit's safetensors pin (<0.6) likewise conflicts with vllm's (>=0.6.2)
+# mergekit's safetensors pin (~=0.5) likewise conflicts with vllm's (>=0.6.2)
 conflicts = [
     [{ extra = "merging" }, { extra = "inspect" }],
     [{ extra = "merging" }, { extra = "all" }],

@@ -40,7 +40,14 @@ from steerability.algorithms.core.output import Output, truncate_at_stop_strings
 from steerability.algorithms.core.utils.controls import runtime_kwargs_schema
 from steerability.evaluation.batching import LockLeaderCollator
 from steerability.utils.rendering import has_chat_template, render_messages
-from steerability.utils.thinking import DEFAULT_THINK_TAGS, split_thinking
+from steerability.utils.thinking import (
+    DEFAULT_THINK_TAGS,
+    ThinkingSplit,
+    find_subsequence,
+    resolve_split_mode,
+    split_thinking,
+    split_thinking_ids,
+)
 
 if TYPE_CHECKING:
     from steerability.algorithms.core.steering_pipeline import SteeringPipeline
@@ -89,6 +96,17 @@ class ProviderOptions:
             `max_tokens`.
         reasoning_tags: `(open_tag, close_tag)` pair splitting each generation into a reasoning
             part and an answer part, so scorers grade the answer only; None disables the split.
+        reasoning_opened_at_start: Whether the chat template's generation prompt already opened the
+            reasoning channel, so the continuation is expected to begin inside it and the split
+            treats a close-only (or no-tag) continuation as reasoning-then-answer rather than a
+            plain answer. Some thinking-mode templates emit the open tag in the generation prompt
+            (a `<think>\n` prompt tail), leaving only the close tag in the continuation.
+        reasoning_split: How the split locates the delimiters, resolved once against the pipeline
+            tokenizer. `"text"` splits substrings on the decoded continuation; `"tokens"` splits the
+            continuation ids and decodes each segment; `"auto"` (default) picks `"text"` when both
+            tags survive `skip_special_tokens=True` under the tokenizer and `"tokens"` otherwise,
+            which is the mode that keeps delimiters encoded as special tokens from being stripped
+            before the split can see them.
         on_unsupported_param: `"raise"` (default) rejects a request carrying a `GenerateConfig`
             parameter the pipeline surface cannot honor; `"warn"` warns once per parameter per
             provider and ignores it. Silent dropping is not allowed.
@@ -105,6 +123,8 @@ class ProviderOptions:
     max_batch_size: int = 8
     default_max_tokens: int = 1024
     reasoning_tags: tuple[str, str] | None = DEFAULT_THINK_TAGS
+    reasoning_opened_at_start: bool = False
+    reasoning_split: Literal["auto", "text", "tokens"] = "auto"
     on_unsupported_param: Literal["raise", "warn"] = "raise"
     seed_scope: Literal["item", "dispatch"] = "dispatch"
 
@@ -123,6 +143,10 @@ class ProviderOptions:
             open_tag, close_tag = self.reasoning_tags
             if not (isinstance(open_tag, str) and open_tag and isinstance(close_tag, str) and close_tag):
                 raise ValueError("reasoning_tags must be a pair of non-empty strings, or None.")
+        if self.reasoning_split not in ("auto", "text", "tokens"):
+            raise ValueError(
+                f"reasoning_split must be 'auto', 'text', or 'tokens'; got {self.reasoning_split!r}."
+            )
         if self.on_unsupported_param not in ("raise", "warn"):
             raise ValueError(f"on_unsupported_param must be 'raise' or 'warn'; got {self.on_unsupported_param!r}.")
         if self.seed_scope not in ("item", "dispatch"):
@@ -198,6 +222,18 @@ class SteeringPipelineModelAPI(ModelAPI):
                 "and adapt_messages does not fire on this provider (token-level adapt still does).",
                 UserWarning,
             )
+
+        self._reasoning_split: Literal["text", "tokens"] | None = None
+        self._close_ids: list[int] = []
+        if self._options.reasoning_tags is not None:
+            if self._options.reasoning_split == "auto":
+                self._reasoning_split = resolve_split_mode(pipeline.tokenizer, self._options.reasoning_tags)
+            else:
+                self._reasoning_split = self._options.reasoning_split
+            if self._reasoning_split == "tokens":
+                self._close_ids = pipeline.tokenizer.encode(
+                    self._options.reasoning_tags[1], add_special_tokens=False
+                )
 
         effective_max_batch = self._options.max_batch_size if pipeline.supports_batching else 1
         if effective_max_batch != self._options.max_batch_size:
@@ -381,10 +417,21 @@ class SteeringPipelineModelAPI(ModelAPI):
     def _assemble_model_output(self, output: Output, *, stop_strings: tuple[str, ...]) -> ModelOutput:
         """Map one pipeline `Output` (one row per candidate) onto an Inspect `ModelOutput`.
 
-        Token ids are never modified; decoded text truncates at the first stop-string occurrence,
-        then splits into reasoning and answer parts when reasoning tags are configured. An
-        opened-but-unclosed reasoning segment yields an empty answer with everything as reasoning;
-        one warning names the count of such rows in this output.
+        Token ids are never modified. When reasoning tags are configured, each row is split into a
+        reasoning part and an answer part, and only the answer is stop-string truncated. The split
+        runs in the mode resolved at construction:
+
+            - `"text"`: the row is decoded, truncated at the first stop-string occurrence, then
+              substring split. Stop-truncation runs before the split, so a stop string that occurs
+              inside the reasoning cuts the text mid-thinking and the answer is empty.
+            - `"tokens"`: the row ids are split, each segment is decoded, then the answer segment
+              (only) is truncated at the first stop-string occurrence. The reasoning segment is
+              preserved verbatim, including any stop text or token-boundary overrun it ends with.
+
+        The observable divergence between the modes is confined to token-boundary overrun in the
+        answer, since a stop criterion halts generation at the first occurrence. An opened-but-
+        unclosed reasoning segment yields an empty answer with everything as reasoning; one warning
+        names the count of such rows in this output.
         """
         tokenizer = self._pipeline.tokenizer
         pad_token_id = getattr(tokenizer, "pad_token_id", None)
@@ -397,14 +444,12 @@ class SteeringPipelineModelAPI(ModelAPI):
         choices: list[ChatCompletionChoice] = []
         unclosed = 0
         for row, text in enumerate(texts):
-            if stop_strings:
-                text = truncate_at_stop_strings(text, stop_strings)
-            content: str | list = text
-            if self._options.reasoning_tags is not None:
-                open_tag, close_tag = self._options.reasoning_tags
-                if open_tag in text and close_tag not in text:
+            if self._options.reasoning_tags is None:
+                content: str | list = truncate_at_stop_strings(text, stop_strings) if stop_strings else text
+            else:
+                split, closed = self._split_row(text, output.output_ids[row], stop_strings)
+                if not closed:
                     unclosed += 1
-                split = split_thinking(text, self._options.reasoning_tags)
                 if split.thinking is not None:
                     content = [ContentReasoning(reasoning=split.thinking), ContentText(text=split.answer)]
                 else:
@@ -428,6 +473,29 @@ class SteeringPipelineModelAPI(ModelAPI):
             total_tokens=input_tokens + output_tokens,
         )
         return ModelOutput(model=self.model_name, choices=choices, usage=usage)
+
+    def _split_row(
+        self, text: str, row_ids: torch.Tensor, stop_strings: tuple[str, ...]
+    ) -> tuple[ThinkingSplit, bool]:
+        """Split one row into reasoning and answer, per the resolved mode.
+
+        Returns:
+            The `ThinkingSplit` and whether the reasoning channel closed (used to count the
+            unclosed rows warned about once per output).
+        """
+        tags = self._options.reasoning_tags
+        opened = self._options.reasoning_opened_at_start
+        open_tag, close_tag = tags
+        if self._reasoning_split == "tokens":
+            ids = row_ids.tolist()
+            split = split_thinking_ids(ids, self._pipeline.tokenizer, tags, opened_at_start=opened)
+            closed = split.thinking is None or find_subsequence(ids, self._close_ids) != -1
+            answer = truncate_at_stop_strings(split.answer, stop_strings) if stop_strings else split.answer
+            return ThinkingSplit(thinking=split.thinking, answer=answer), closed
+        if stop_strings:
+            text = truncate_at_stop_strings(text, stop_strings)
+        closed = close_tag in text or not (open_tag in text or opened)
+        return split_thinking(text, tags, opened_at_start=opened), closed
 
     def max_tokens(self) -> int | None:
         """Default `max_tokens` filled by Inspect when a request sets none."""

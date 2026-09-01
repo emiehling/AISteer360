@@ -12,10 +12,7 @@
 
 The Steerability toolkit is an open source Python package for steering large language models.
 
-The toolkit enables the development and evaluation of a wide range of steering methods through an expressive library of
-reusable components across four model control surfaces (input, structure, state, and output). Features include modular abstractions for the
-construction of steering methods, functionality for composition of steering methods into [steering pipelines](docs/concepts/steering_pipelines.md),
-and evaluation of pipelines on Inspect AI task suites (including measurement of steering side effects).
+The toolkit enables the development and evaluation of a wide range of steering methods via reusable components across four model control surfaces (input, structure, state, and output). Features include modular abstractions for the construction of steering methods, functionality for composition of steering methods into [steering pipelines](docs/concepts/steering_pipelines.md), and evaluation of steering pipelines on [Inspect](https://inspect.aisi.org.uk) tasks (including measurement of steering side effects).
 
 To get started, please see the documentation at <https://ibm.github.io/steerability/> and the [example notebooks](examples/index.md).
 
@@ -29,15 +26,14 @@ uv venv --python 3.12 && uv pip install .
 ```
 
 By default, pipelines load and run the model *in process* (via Hugging Face `transformers`). The toolkit additionally provides
-support for inference through vLLM (either offline engine or server) via [vLLM-Hook](https://github.com/IBM/vLLM-Hook). To enable this,
+support for inference through vLLM via [vLLM-Hook](https://github.com/IBM/vLLM-Hook). To enable this,
 install the extra with `uv pip install ".[vllm]"`.
 
 ## Contributing
 
-We welcome contributions, particularly new steering methods (controls) and evaluation tasks, along with bug reports,
-documentation improvements, and new features. See the [contribution guidelines](CONTRIBUTING.md) and the tutorials on
-[adding a steering method](./docs/tutorials/add_new_steering_method.md) and
-[evaluating steering pipelines](./docs/tutorials/evaluate_steering_pipelines.md).
+We welcome contributions, particularly in the form of new steering methods (controls) and evaluation tasks, along with bug reports,
+documentation improvements, and new features. See the [contribution guidelines](CONTRIBUTING.md) and the tutorial on
+[adding a steering method](./docs/tutorials/add_new_steering_method.md).
 
 ## Reference
 
