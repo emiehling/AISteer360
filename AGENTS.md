@@ -97,7 +97,8 @@ Optional extras:
 - `merging`: MergeKit
 - `cpo`: econml
 - `inspect`: the Inspect AI evaluation stack
-- `vllm`: the vLLM backends plus the `vllm_hook_plugins` core (git-pinned until its PyPI release)
+- `vllm`: the vLLM backends plus the `vllm_hook_plugins` core; pulls in `trl[vllm]` so the resolved vLLM stays
+  inside trl's supported vLLM range
 - `guided`: xgrammar, for in-process constrained decoding
 - `viz`: matplotlib and seaborn, for `evaluation/plotting.py`
 - `all`: `cpo`, `inspect`, and `viz`
@@ -191,7 +192,7 @@ for category, methods in REGISTRY.items():
 
 The registered names at the time of writing:
 
-- input: `cpo`, `few_shot`, `gepa`, `prewrite`
+- input: `cpo`, `few_shot`, `gepa`, `prewrite`, `system_prompt`, `user_prefix`
 - state: `act_add`, `activation_adapter`, `angular_steering`, `caa`, `cast`, `directional_ablation`, `iti`, `pasta`
 - output: `best_of_n`, `budget_forcing`, `constrained_decoding`, `contrastive_decoding`, `contrastive_guidance`,
   `deal`, `dexperts`, `phased_decoding`, `rad`, `routed_decoding`, `sasa`, `search_decoding`, `stopping_rules`,
@@ -289,6 +290,11 @@ pipeline = SteeringPipeline(
   spec). The control's steering tuple serializes as an intervention spec, and tensor payloads travel as
   content-addressed artifacts (`artifact_dir` option; on serve this must be a filesystem shared with the server).
   A configuration either serializes exactly or is honestly in-process-only; there is no approximate lowering.
+- The offline backend applies a scoped engine-process environment per boot and restores it
+  (`backends/vllm/environment.py`), defaulting `VLLM_USE_FLASHINFER_SAMPLER=0` (an explicit caller value wins) and
+  forcing `VLLM_HOOK_WORKER=unified` for `hook_plugin` boots. `serve_environment` returns the same policy as a fresh
+  mapping for a `vllm serve` process. The model-runner constraint is owned by the vLLM-Hook plugin (which pins the
+  legacy runner or supports V2), not the toolkit.
 - Structural controls train on the staged model and serve their artifacts (checkpoint or LoRA) on vLLM backends.
 - Declarative constrained decoding lowers to vLLM's native structured outputs. Hidden-state capture (probe fitting
   and reads, routed decoding) is served in process and on the offline plugin engine, not on serve.
@@ -503,8 +509,10 @@ own in the common case. Required hooks per category:
   state on every call. The session that executes forwards owns registration.
 - **output**, step-level: `get_logits_processors(...)` and `get_stopping_criteria(...)`, returning fresh instances on
   each call. Loop-owning methods subclass `DecodingDriver` and implement `decode(input_ids, attention_mask, model,
-  logits_processors, stopping_criteria, runtime_kwargs, **gen_kwargs)`, returning full prompt-plus-continuation ids
-  and applying the received stacks at every scoring step.
+  logits_processors, stopping_criteria, runtime_kwargs, session=None, **gen_kwargs)`, returning full
+  prompt-plus-continuation ids and applying the received stacks at every scoring step. The pipeline always passes
+  `session=` (a `SteeredSession` carrying the generation's steering entries); drivers issue their rollouts through
+  it, and `model` is None on backends without a live model.
 - **all categories**: optional `steer()` for one-time preparation and `cleanup()` for releasing resources. The
   pipeline passes `session=` (a `SteeringSession` on the steering backend) into `steer()`; controls that only need
   structural facts read `session.layout` rather than the live model, and fitting call sites accept `session=` for

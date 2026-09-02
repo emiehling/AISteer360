@@ -63,7 +63,7 @@ class GRPOTrainerMixin(TRLMixin, StructuralControl):
                 processing_class=self.tokenizer,
                 peft_config=peft_config,
             )
-            trainer.train()
+            trainer.train(resume_from_checkpoint=self.training_args.get("resume_from_checkpoint"))
 
             # recover the trained policy so it can be used for generation (GRPO has no .policy wrapper)
             trained_model = trainer.accelerator.unwrap_model(trainer.model)

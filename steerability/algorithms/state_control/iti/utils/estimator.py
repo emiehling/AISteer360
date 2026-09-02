@@ -7,10 +7,13 @@ calibrated, model-free readout over pooled residual-stream features consumed by 
 routers). "Probe" here means only ITI's fit-time head classifier.
 """
 import logging
+import warnings
 from typing import Sequence
 
 import numpy as np
 import torch
+from scipy.optimize import OptimizeWarning
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -153,28 +156,33 @@ class ProbeMassShiftEstimator(BaseEstimator[SteeringVector]):
         directions: dict[int, torch.Tensor] = {}
         probe_accuracies: dict[tuple[int, int], float] = {}
 
-        for layer_id in range(num_layers):
-            pos_heads = feats_pos[layer_id].view(n_pos, num_heads, head_dim)
-            neg_heads = feats_neg[layer_id].view(n_neg, num_heads, head_dim)
+        # sklearn's lbfgs fit warns under recent scipy (iprint) and at the iteration cap; neither affects the fit
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=OptimizeWarning)
+            warnings.simplefilter("ignore", category=ConvergenceWarning)
 
-            layer_directions = []
-            for head_id in range(num_heads):
-                hp = pos_heads[:, head_id, :].float()  # [n_pos, head_dim]
-                hn = neg_heads[:, head_id, :].float()  # [n_neg, head_dim]
-                x = torch.cat([hp, hn], dim=0)  # [N, head_dim]
-                features = x.numpy()
+            for layer_id in range(num_layers):
+                pos_heads = feats_pos[layer_id].view(n_pos, num_heads, head_dim)
+                neg_heads = feats_neg[layer_id].view(n_neg, num_heads, head_dim)
 
-                probe = LogisticRegression(max_iter=1000, solver="lbfgs")
-                probe.fit(features[train_idx], labels[train_idx])
-                probe_accuracies[(layer_id, head_id)] = float(probe.score(features[val_idx], labels[val_idx]))
+                layer_directions = []
+                for head_id in range(num_heads):
+                    hp = pos_heads[:, head_id, :].float()  # [n_pos, head_dim]
+                    hn = neg_heads[:, head_id, :].float()  # [n_neg, head_dim]
+                    x = torch.cat([hp, hn], dim=0)  # [N, head_dim]
+                    features = x.numpy()
 
-                raw = hp.mean(dim=0) - hn.mean(dim=0)  # [head_dim]
-                norm = raw.norm()
-                theta_hat = raw / norm if norm > 0 else raw
-                sigma = (x @ theta_hat).std()
-                layer_directions.append((sigma * theta_hat).to(dtype=torch.float32))
+                    probe = LogisticRegression(max_iter=1000, solver="lbfgs")
+                    probe.fit(features[train_idx], labels[train_idx])
+                    probe_accuracies[(layer_id, head_id)] = float(probe.score(features[val_idx], labels[val_idx]))
 
-            directions[layer_id] = torch.stack(layer_directions, dim=0)  # [num_heads, head_dim]
+                    raw = hp.mean(dim=0) - hn.mean(dim=0)  # [head_dim]
+                    norm = raw.norm()
+                    theta_hat = raw / norm if norm > 0 else raw
+                    sigma = (x @ theta_hat).std()
+                    layer_directions.append((sigma * theta_hat).to(dtype=torch.float32))
+
+                directions[layer_id] = torch.stack(layer_directions, dim=0)  # [num_heads, head_dim]
 
         logger.debug("Finished fitting probe-based head directions")
         meta = {

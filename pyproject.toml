@@ -55,9 +55,9 @@ dependencies = [
 
 # optional groups
 [project.optional-dependencies]
-# `merging` installs mergekit from a pinned main commit (0.1.4 on PyPI never calls `model_rebuild()` on 
-# its torch-typed pydantic models and fails at merge time). 
-# Additionally note that `merging` cannot share an environment with `inspect` since mergekit pins 
+# `merging` installs mergekit from a pinned main commit (0.1.4 on PyPI never calls `model_rebuild()` on
+# its torch-typed pydantic models and fails at merge time).
+# Additionally note that `merging` cannot share an environment with `inspect` since mergekit pins
 # pydantic~=2.10 and fails to import under the pydantic>=2.13 (required by inspect-ai) so it stays out of `all`
 merging = [
     "mergekit @ git+https://github.com/arcee-ai/mergekit.git@a6e402884ba9bc30da7f23e8304a35f19485de95",
@@ -78,7 +78,9 @@ viz = [
 ]
 vllm = [
     "vllm>=0.26.0,<1.0.0",
-    "vllm-hook-plugins @ git+https://github.com/IBM/vLLM-Hook.git@steerability-challenge#subdirectory=vllm_hook_plugins",
+    "trl[vllm]",
+    # "vllm-hook-plugins @ git+https://github.com/IBM/vLLM-Hook.git@steerability-challenge#subdirectory=vllm_hook_plugins",
+    "vllm-hook-plugins @ git+https://github.com/emiehling/vLLM-Hook.git@steerability-interface#subdirectory=vllm_hook_plugins",
 ]
 all = [
     "steerability[cpo,inspect,viz]",
@@ -99,7 +101,8 @@ docs = [
 
 dev = [
     "steerability[all]",
-    "vllm-hook-plugins @ git+https://github.com/IBM/vLLM-Hook.git@steerability-challenge#subdirectory=vllm_hook_plugins",
+    # "vllm-hook-plugins @ git+https://github.com/IBM/vLLM-Hook.git@steerability-challenge#subdirectory=vllm_hook_plugins",
+    "vllm-hook-plugins @ git+https://github.com/emiehling/vLLM-Hook.git@steerability-interface#subdirectory=vllm_hook_plugins",
     "notebook>=7.4.5",
     "ipywidgets>=8.1.0,<9.0.0",
     "pytest>=8.3.2,<9.0.0",

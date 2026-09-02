@@ -7,7 +7,6 @@ vLLM installed: constructing `VLLMBackend` requires the `vllm` optional dependen
 engine); `VLLMServeBackend` needs only a reachable vLLM server. Every `from vllm ...` and
 `from vllm_hook_plugins ...` import stays inside a function or method body.
 """
-import dataclasses
 import gc
 import hashlib
 import json
@@ -17,7 +16,6 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Sequence
-from typing import Any
 
 import torch
 
@@ -35,6 +33,7 @@ from steerability.algorithms.core.execution.spec import BackendSpec
 from steerability.algorithms.core.internals.fingerprint import is_absent_chat_template_fingerprint
 from steerability.algorithms.core.internals.model_layout import text_config
 from steerability.backends.vllm.capabilities import _DISCOVERY_CACHE, _reconcile_discovery, _vllm_capabilities
+from steerability.backends.vllm.environment import engine_boot_environment, engine_environment
 from steerability.backends.vllm.rendering import raise_for_spec_rejection
 from steerability.backends.vllm.session import VLLMOfflineSession, VLLMServeSession
 from steerability.utils.optional import require
@@ -45,39 +44,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_REQUEST_TIMEOUT = 120.0
 _DEFAULT_MAX_CONCURRENCY = 8
 _DEFAULT_MAX_ATTEMPTS = 3
-
-_STRUCTURED_OUTPUT_ENGINE_KEYS: tuple[str, ...] = (
-    "structured_outputs_config",
-    "guided_decoding_backend",
-    "guided_decoding_disable_any_whitespace",
-)
-
-
-def _structured_outputs_engine_kwargs() -> dict[str, Any]:
-    """Engine kwargs selecting xgrammar with compact whitespace, in the installed vLLM's vocabulary.
-
-    vLLM renamed guided decoding to structured outputs; `EngineArgs` carries either
-    `structured_outputs_config` (current surface) or `guided_decoding_backend` (legacy surface).
-    The probe reads the dataclass fields rather than a version number. On the legacy surface the
-    compact-whitespace switch is set only where the field exists, so json outputs may carry
-    whitespace the in-process automaton does not emit. Returns an empty mapping when
-    `EngineArgs` cannot be imported or inspected, in which case no default is applied.
-
-    Returns:
-        Keyword arguments for `vllm.LLM`, or an empty mapping.
-    """
-    try:
-        from vllm import EngineArgs
-
-        names = {field.name for field in dataclasses.fields(EngineArgs)}
-    except (ImportError, TypeError):
-        return {}
-    if "structured_outputs_config" in names:
-        return {"structured_outputs_config": {"disable_any_whitespace": True, "backend": "xgrammar"}}
-    kwargs: dict[str, Any] = {"guided_decoding_backend": "xgrammar"}
-    if "guided_decoding_disable_any_whitespace" in names:
-        kwargs["guided_decoding_disable_any_whitespace"] = True
-    return kwargs
 
 
 class _ArtifactUploader:
@@ -195,6 +161,7 @@ class VLLMBackend(Backend):
         self.spec = spec
         self._released = False
         require("vllm")
+
         from vllm import LLM
 
         checkpoint, lora = _split_artifacts(artifacts)
@@ -205,10 +172,9 @@ class VLLMBackend(Backend):
         _reject_encoder_decoder(model_ref, trust_remote_code)
 
         engine_kwargs = dict(spec.get_option("engine_kwargs", default={}) or {})
-        # default to a compact xgrammar grammar so json constraints match the in-process automaton
-        # (disable_any_whitespace needs an explicit backend); a caller key in either vocabulary wins
-        if not any(key in engine_kwargs for key in _STRUCTURED_OUTPUT_ENGINE_KEYS):
-            engine_kwargs.update(_structured_outputs_engine_kwargs())
+        # default to a compact grammar so json constraints match the in-process automaton
+        # (disable_any_whitespace needs an explicit backend); caller kwargs win
+        engine_kwargs.setdefault("structured_outputs_config", {"disable_any_whitespace": True, "backend": "xgrammar"})
         if lora is not None:
             engine_kwargs.setdefault("enable_lora", True)
         if trust_remote_code:
@@ -218,19 +184,11 @@ class VLLMBackend(Backend):
             # explicit False, so this only fills the default
             engine_kwargs.setdefault("enforce_eager", True)
 
-        # the worker-selection variable is scoped to this engine's boot so a later plugin-free
-        # engine in the same process is unaffected
-        previous_worker = os.environ.get("VLLM_HOOK_WORKER")
-        if spec.get_option("hook_plugin"):
-            os.environ["VLLM_HOOK_WORKER"] = "unified"
-        try:
+        # the boot environment is scoped to this engine's construction and restored afterwards,
+        # so a later plugin-free engine in the same process is unaffected
+        forced, defaults = engine_boot_environment(bool(spec.get_option("hook_plugin")))
+        with engine_environment(forced, defaults):
             self._llm = LLM(model=model_ref, **engine_kwargs)
-        finally:
-            if spec.get_option("hook_plugin"):
-                if previous_worker is None:
-                    os.environ.pop("VLLM_HOOK_WORKER", None)
-                else:
-                    os.environ["VLLM_HOOK_WORKER"] = previous_worker
 
         # the pipeline records a backend only when the constructor returns, so a failure from
         # here on must release the engine before propagating

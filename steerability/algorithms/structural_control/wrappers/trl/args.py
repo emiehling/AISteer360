@@ -38,7 +38,7 @@ class TRLArgs(BaseArgs):
     logging_steps: int = 10
     report_to: str | None = None
     seed: int | None = None
-    resume_from_checkpoint: str | None = None
+    resume_from_checkpoint: str | None = None  # checkpoint directory passed to trainer.train(); unsupported by PPO
 
     # PEFT knobs
     use_peft: bool = False
@@ -87,6 +87,7 @@ class TRLArgs(BaseArgs):
             "logging_steps": self.logging_steps,
             "report_to": self.report_to,
             "seed": self.seed,
+            "resume_from_checkpoint": self.resume_from_checkpoint,
             "remove_unused_columns": False,
         }
         self.training_args = {**base_training_args, **self.training_args}

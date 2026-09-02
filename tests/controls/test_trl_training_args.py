@@ -15,6 +15,7 @@ import dataclasses
 import pytest
 import transformers
 import trl
+from datasets import Dataset
 from trl import DPOConfig, GRPOConfig, SFTConfig
 
 from steerability.algorithms.core.identity import config_descriptor_from_controls, config_digest
@@ -26,6 +27,7 @@ from steerability.algorithms.structural_control.wrappers.trl.dpotrainer.args imp
 from steerability.algorithms.structural_control.wrappers.trl.grpotrainer.args import GRPOArgs
 from steerability.algorithms.structural_control.wrappers.trl.ppotrainer.args import PPOArgs
 from steerability.algorithms.structural_control.wrappers.trl.sfttrainer.args import SFTArgs
+from steerability.algorithms.structural_control.wrappers.trl.sfttrainer.control import SFT
 
 try:
     from trl.experimental.ppo import PPOConfig
@@ -159,3 +161,21 @@ class TestConfigIdentity:
         sigmoid_digest = config_digest(config_descriptor_from_controls([sigmoid]))
         anchored_digest = config_digest(config_descriptor_from_controls([anchored]))
         assert sigmoid_digest != anchored_digest
+
+
+class TestResumeFromCheckpoint:
+    def test_field_lands_in_training_args(self):
+        assert SFTArgs(resume_from_checkpoint="ckpt").training_args["resume_from_checkpoint"] == "ckpt"
+
+    def test_training_args_entry_overrides_field(self):
+        args = SFTArgs(resume_from_checkpoint="a", training_args={"resume_from_checkpoint": "b"})
+        assert args.training_args["resume_from_checkpoint"] == "b"
+
+    def test_unset_is_dropped_from_config_kwargs(self):
+        assert "resume_from_checkpoint" not in resolve_config_kwargs(SFTConfig, SFTArgs().training_args)
+
+    def test_fit_identity_ignores_resume_path(self):
+        dataset = Dataset.from_list([{"input_ids": [1, 2, 3], "labels": [1, 2, 3]}])
+        plain = SFT(train_dataset=dataset).fit_identity()
+        resumed = SFT(train_dataset=dataset, resume_from_checkpoint="ckpt").fit_identity()
+        assert plain == resumed

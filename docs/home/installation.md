@@ -44,10 +44,18 @@ additionally enables inference through vLLM (either the offline engine or a serv
 (MergeKit structural control), `cpo` (causal DML reward estimation for CPO, which otherwise runs via a
 gradient-boosting fallback), `inspect` (the Inspect AI evaluation stack), `viz` (matplotlib and seaborn, for the
 evaluation plotting utilities), `guided` (xgrammar, for in-process constrained decoding), and `vllm` (the vLLM
-execution backends plus the `vllm_hook_plugins` core, git-pinned until its PyPI release). The umbrella `all` extra
+execution backends plus the `vllm_hook_plugins` core; it pulls in `trl[vllm]` so the resolved vLLM stays inside
+trl's supported vLLM range). The umbrella `all` extra
 installs `cpo`, `inspect`, and `viz`. Install `guided`, `merging`, and `vllm` by name, e.g., `uv pip install '.[vllm]'`.
 Note that `merging` cannot share an environment with `inspect` (MergeKit pins an older pydantic than Inspect requires)
 and therefore stays out of `all`.
+
+On a node whose CUDA toolkit does not match the installed torch build, the vLLM boot policy (applied by the offline
+engine; `serve_environment()` returns it for a server you launch) defaults the FlashInfer
+sampler off (`VLLM_USE_FLASHINFER_SAMPLER=0`) to avoid a JIT kernel compile at boot; the native sampler is
+greedy-equivalent. To use FlashInfer instead, install its prebuilt kernels for your CUDA version from
+`https://flashinfer.ai/whl/cu1XX` (`flashinfer-jit-cache`, and optionally `flashinfer-cubin`) and set
+`VLLM_USE_FLASHINFER_SAMPLER=1`.
 
 ## Accessing Hugging Face models
 

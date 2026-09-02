@@ -222,7 +222,7 @@ class TRLMixin:
                 continue
             value = getattr(args, f.name)
             if f.name == "training_args" and isinstance(value, dict):
-                value = {k: v for k, v in value.items() if k != "output_dir"}
+                value = {k: v for k, v in value.items() if k not in excluded}
             payload[f.name] = value
         return payload
 

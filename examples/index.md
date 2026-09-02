@@ -29,8 +29,6 @@ Algorithm notebooks demonstrate how each method (i.e., control) operates. The me
 
     :octicons-arrow-right-24: [SystemPrompt](./notebooks/algorithms/system_prompt.ipynb)
 
-    :octicons-arrow-right-24: [UserPrefix](./notebooks/algorithms/user_prefix.ipynb)
-
 -   __Structural control__
 
     ---
@@ -150,6 +148,14 @@ Recipes describe useful applications/compositions of the toolkit's functionality
     This notebook fits a CAA control, freezes the steered pipeline into a portable `.spipe` bundle (the recipe plus the fitted artifacts, content-addressed), and reconstructs the pipeline from the file alone with matching greedy generations.
 
     [:octicons-arrow-right-24: See the recipe](./notebooks/recipes/working_with_spipes.ipynb)
+
+-   __Serving through a vLLM server__
+
+    ---
+
+    This notebook fits a CAA direction in process, saves the `SteeringVector`, and serves it through a vLLM server running the vLLM-Hook plugin via the `vllm-serve` backend. The served pipeline holds no model, and its generations are compared against an unsteered pipeline on the same server.
+
+    [:octicons-arrow-right-24: See the recipe](./notebooks/recipes/vllm_serve.ipynb)
 
 </div>
 

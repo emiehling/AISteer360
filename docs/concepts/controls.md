@@ -51,13 +51,13 @@ self-consistency), automatic prompting methods, and prompt routing. The toolkit 
 - `GEPA` ([API reference](../reference/algorithms/input_control/gepa.md), [notebook](../examples/notebooks/algorithms/gepa.ipynb))
     - *Description*: reflective genetic prompt evolution ([Agrawal et al. 2025](https://arxiv.org/abs/2507.19457)), single-module variant.
     - *Backends*: HF, vLLM.
-- `UserPrefix` ([API reference](../reference/algorithms/input_control/user_prefix.md), [notebook](../examples/notebooks/algorithms/user_prefix.ipynb))
-    - *Description*: prepends a fixed text marker to a user turn (the last user turn by default, or the first or all user turns), with the token stream as a fallback for non-chat input.
-    - *Backends*: HF, vLLM.
 - `SystemPrompt` ([API reference](../reference/algorithms/input_control/system_prompt.md), [notebook](../examples/notebooks/algorithms/system_prompt.ipynb))
     - *Description*: sets or merges the leading system message of a chat, prepending to, appending to, or replacing it (the default is to prepend ahead of an existing system prompt), always producing exactly one system message.
     - *Backends*: HF, vLLM.
-
+- `UserPrefix` ([API reference](../reference/algorithms/input_control/user_prefix.md), used in [notebook](../examples/notebooks/algorithms/user_prefix.ipynb))
+    - *Description*: prepends a fixed text marker to a user turn (the last user turn by default, or the first or all user turns), with the token stream as a fallback for non-chat input.
+    - *Backends*: HF, vLLM.
+    
 The few-shot retriever from [Rubin et al. 2021](https://arxiv.org/abs/2112.08633) (EPR) is shipped as a `BaseSelector`
 that slots into `FewShot` rather than as a separate control. See
 [`few_shot.selectors.epr`](../reference/algorithms/input_control/few_shot.md).

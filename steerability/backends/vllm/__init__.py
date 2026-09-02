@@ -10,6 +10,7 @@ needs only a reachable vLLM server.
 """
 from steerability.backends.vllm.backend import VLLMBackend, VLLMServeBackend
 from steerability.backends.vllm.capabilities import VLLM_BASELINE_CAPABILITIES
+from steerability.backends.vllm.environment import serve_environment
 from steerability.backends.vllm.rendering import (
     extract_ref_logprobs,
     map_vllm_finish_reason,
@@ -26,6 +27,7 @@ __all__ = [
     "VLLMBackend",
     "VLLMServeBackend",
     "VLLM_BASELINE_CAPABILITIES",
+    "serve_environment",
     "extract_ref_logprobs",
     "map_vllm_finish_reason",
     "merge_intervention_specs",

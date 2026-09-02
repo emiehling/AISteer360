@@ -5,9 +5,13 @@ config on uniform-head models, including a LoRA wrapper), that the ITI estimator
 model with heterogeneous head geometry before running any forward pass, and that the estimator's
 per-head directions and probe accuracies match an in-test oracle over the same captured features.
 """
+import warnings
+
 import numpy as np
 import pytest
 import torch
+from scipy.optimize import OptimizeWarning
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -210,6 +214,18 @@ def test_chunk_invariance(model_and_tokenizer, data):
     for layer_id in small.directions:
         assert torch.allclose(small.directions[layer_id], large.directions[layer_id], atol=1e-5, rtol=1e-4)
     assert small.probe_accuracies == large.probe_accuracies
+
+
+def test_head_probe_fits_emit_no_sklearn_warnings(model_and_tokenizer, data):
+    # "always" disables the once-per-location registry, so every emission is recorded
+    model, tokenizer = model_and_tokenizer
+    spec = VectorTrainSpec(method="mean_diff", accumulate="last_token", batch_size=3)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sv = ProbeMassShiftEstimator().fit(model, tokenizer, data=data, spec=spec)
+    leaked = [w for w in caught if issubclass(w.category, (OptimizeWarning, ConvergenceWarning))]
+    assert not leaked, [str(w.message) for w in leaked]
+    assert len(sv.probe_accuracies) == len(sv.directions) * sv.num_heads
 
 
 def test_probe_partition_grouped(grouped_data):

@@ -173,8 +173,24 @@ and is the automatic path for single-process runs. The serve backend targets a v
 a remote GPU box, one server shared across processes or evaluation runs, a client with no local vLLM install, or
 process isolation from the steering client.
 
-Start a server with `vllm serve <model> --port 8000` (with any extra engine flags), then target it with a spec
-carrying `base_url`:
+vLLM reads some settings from environment variables only, and its engine core is a spawned process that inherits the
+environment as the offline backend boots it. The backend therefore applies a scoped boot environment around engine
+construction and restores it afterwards. Every offline boot defaults `VLLM_USE_FLASHINFER_SAMPLER=0`, since
+`flashinfer-python` ships its sampling kernel JIT-only and vLLM exercises it during startup warmup, so a node whose
+CUDA toolkit does not match the installed torch build would otherwise fail at boot; the native sampler is
+greedy-equivalent. An explicit caller setting wins, so to use FlashInfer instead we install its prebuilt kernels and
+set the variable to `1`. A `hook_plugin` boot also forces `VLLM_HOOK_WORKER=unified` to select the plugin's unified
+worker. The model-runner constraint the unified worker needs is owned by the vLLM-Hook plugin, which pins the legacy
+runner from inside itself and so also covers a `vllm serve` process the toolkit does not launch.
+
+A launched server needs the same boot environment as the offline engine, which `serve_environment()` returns for a
+`vllm serve` process. Start a server with
+
+```bash
+VLLM_HOOK_WORKER=unified VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve <model> --port 8000 --enforce-eager
+```
+
+(with any extra engine flags), then target it with a spec carrying `base_url`:
 
 ```python
 from steerability.algorithms.core.execution import BackendSpec

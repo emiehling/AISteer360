@@ -46,6 +46,11 @@ class PPOTrainerMixin(TRLMixin, StructuralControl):
         ref_model: PreTrainedModel | None = None,
         **_,
     ) -> torch.nn.Module:
+        if self.training_args.get("resume_from_checkpoint"):
+            raise ValueError(
+                "PPO does not support resume_from_checkpoint; TRL's PPOTrainer.train() takes no checkpoint argument."
+            )
+
         self.tokenizer = tokenizer or (getattr(model, "tokenizer", None) if model is not None else None)
         model, self.tokenizer = self._resolve_model_tokenizer(model, self.tokenizer)
         self.tokenizer = ensure_pad_token(self.tokenizer)
