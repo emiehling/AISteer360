@@ -26,7 +26,8 @@ class Perplexity(Metric):
 
     The judge model is configured by a model reference and a backend, never by a live model object.
     Backends are cached by spec (see `resolve_metric_backend`), so a `Perplexity` and a judge
-    configured with equal specs share one loaded model or engine.
+    configured with equal specs share one loaded model or engine. The backend is resolved per
+    `compute()`, so after `release_metric_backends()` the next call constructs it again.
 
     Each response is tokenized with the backend tokenizer (`add_special_tokens=False`) and scored in
     one of two conditioning modes:
@@ -68,10 +69,22 @@ class Perplexity(Metric):
         name: str | None = None,
     ) -> None:
         super().__init__(name=name)
-        self._backend = resolve_metric_backend(model, backend)
+        self._model_ref = model
+        self._backend_ref = backend
+        resolve_metric_backend(model, backend)  # validate the identity now; the backend is re-resolved per compute
         self.batch_size = int(batch_size)
         self.add_bos = bool(add_bos)
         self.max_length = max_length
+
+    @property
+    def _backend(self) -> Backend:
+        """The configured backend, resolved through the metric cache on each access.
+
+        A cache lookup while the backend is cached; after `release_metric_backends()` the next
+        access constructs it again, so a released metric stays usable. A live `Backend` passed at
+        construction is returned as is.
+        """
+        return resolve_metric_backend(self._model_ref, self._backend_ref)
 
     def _tokenize(self, tokenizer, responses: list[str]) -> list[list[int]]:
         """Tokenize each response with `add_special_tokens=False`, truncating to `max_length`."""

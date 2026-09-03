@@ -117,9 +117,11 @@ class LLMJudgeMetric(Metric):
     The judge model is configured by a model reference and a backend, never by a live model object.
     Model placement and dtype travel as spec options; an already-loaded model or engine travels as a
     live `Backend`. Backends are cached by spec (see `resolve_metric_backend`), so a judge and a
-    `Perplexity` configured with equal specs share one loaded resource. On the Hugging Face backend
-    each `compute()` opens and closes its own exclusive session, so sharing across sequential calls
-    is safe; concurrent `compute()` calls on one shared Hugging Face backend are unsupported.
+    `Perplexity` configured with equal specs share one loaded resource. The backend is resolved per
+    `compute()`, so after `release_metric_backends()` the next call constructs it again. On the
+    Hugging Face backend each `compute()` opens and closes its own exclusive session, so sharing
+    across sequential calls is safe; concurrent `compute()` calls on one shared Hugging Face backend
+    are unsupported.
 
     Args:
         model: Judge model reference (hub id or local path), or None when `backend` carries the
@@ -220,7 +222,9 @@ class LLMJudgeMetric(Metric):
             self.parse_fn = lambda text, _scale, _p=parser: float(_p(text))
 
         self._params = self._build_params(gen_kwargs)
-        self._backend = resolve_metric_backend(model, backend)
+        self._model_ref = model
+        self._backend_ref = backend
+        resolve_metric_backend(model, backend)  # validate the identity now; the backend is re-resolved per compute
 
     def _build_params(self, gen_kwargs: dict[str, Any] | None) -> GenerationParams:
         """Build the per-compute `GenerationParams` from the normalized `gen_kwargs`.
@@ -259,6 +263,16 @@ class LLMJudgeMetric(Metric):
             params["temperature"] = temperature
             params["greedy"] = kwargs["greedy"] if "greedy" in kwargs else False
         return GenerationParams(**params)
+
+    @property
+    def _backend(self) -> Backend:
+        """The configured backend, resolved through the metric cache on each access.
+
+        A cache lookup while the backend is cached; after `release_metric_backends()` the next
+        access constructs it again, so a released metric stays usable. A live `Backend` passed at
+        construction is returned as is.
+        """
+        return resolve_metric_backend(self._model_ref, self._backend_ref)
 
     @property
     def _is_deterministic(self) -> bool:

@@ -169,11 +169,11 @@ Backends are cached by spec, so two metrics configured with equal specs share on
 dtype travel as spec options (given as plain data), e.g.
 `BackendSpec(kind="huggingface", model=..., options={"device_map": "cuda:1", "hf_model_kwargs": {"torch_dtype": "bfloat16"}})`.
 
-The cache is released and emptied with `release_metric_backends()` (from `aisteer360.evaluation.metrics`); a metric
-bound to a released engine backend must be reconstructed, since its next `compute()` raises. `Benchmark` releases the
-pipelines it builds but not metric backends, which the caller owns and may reuse. The offline vLLM engine is
-one-per-process, so a `vllm` judge alongside a `vllm` steering pipeline is unsupported; run the judge on `huggingface`,
-or point one side at a server with `BackendSpec(kind="vllm-serve", ...)`.
+The cache is released and emptied with `release_metric_backends()` (from `aisteer360.evaluation.metrics`).
+`Benchmark.run()` calls it when the run finishes or fails; outside a benchmark the caller releases when done. A metric
+resolves its backend per `compute()`, so it works again after a release (the next call boots the engine again). The
+offline vLLM engine is one-per-process, so a `vllm` judge alongside a `vllm` steering pipeline is unsupported; run the
+judge on `huggingface`, or point one side at a server with `BackendSpec(kind="vllm-serve", ...)`.
 
 ### Extra template fields
 

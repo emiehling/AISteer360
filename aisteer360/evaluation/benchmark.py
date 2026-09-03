@@ -19,6 +19,7 @@ from aisteer360.algorithms.core.internals.fingerprint import model_fingerprint
 from aisteer360.algorithms.core.specs import ControlSpec
 from aisteer360.algorithms.core.steering_pipeline import SteeringPipeline
 from aisteer360.algorithms.structural_control.base import StructuralControl
+from aisteer360.evaluation.metrics.backend_utils import release_metric_backends
 from aisteer360.evaluation.use_cases.base import UseCase
 from aisteer360.evaluation.utils.data_utils import to_jsonable
 from aisteer360.evaluation.utils.identity import (
@@ -357,6 +358,9 @@ class Benchmark:
         and the use case's ``export()`` method is called after each pipeline finishes. A subsequent call with the same
         ``save_dir`` resumes only the missing trials of each configuration.
 
+        When the run finishes or fails, cached metric backends (judges, ``Perplexity``) are released; metrics construct
+        them again on next use.
+
         Returns:
             A mapping from pipeline name to a list of run dictionaries. Each run dictionary has keys:
 
@@ -376,33 +380,36 @@ class Benchmark:
         self._preflight()
         profiles = self._load_checkpoint()
 
-        for pipeline_name, pipeline in self.steering_pipelines.items():
-            logger.info("Running pipeline: %s", pipeline_name)
-            pipeline_runs: list[dict[str, Any]] = list(profiles.get(pipeline_name, []))
-            profiles[pipeline_name] = pipeline_runs  # live reference; record mutates it in place
+        try:
+            for pipeline_name, pipeline in self.steering_pipelines.items():
+                logger.info("Running pipeline: %s", pipeline_name)
+                pipeline_runs: list[dict[str, Any]] = list(profiles.get(pipeline_name, []))
+                profiles[pipeline_name] = pipeline_runs  # live reference; record mutates it in place
 
-            def record(run: dict[str, Any], _runs=pipeline_runs, _profiles=profiles) -> None:
-                _runs.append(run)
-                if self.checkpoint_every == "trial":
-                    self._save_checkpoint(_profiles)
+                def record(run: dict[str, Any], _runs=pipeline_runs, _profiles=profiles) -> None:
+                    _runs.append(run)
+                    if self.checkpoint_every == "trial":
+                        self._save_checkpoint(_profiles)
 
-            for specs, params, controls_factory in self._iter_config_points(pipeline_name, pipeline):
-                controls = controls_factory()
-                config_id = self._config_id(specs=specs, params=params, controls=controls)
-                if (pipeline_name, config_id) in self._skipped:
-                    continue
-                self._run_pipeline(
-                    controls, specs=specs, params=params,
-                    existing_runs=pipeline_runs, record=record,
-                )
-                if self.checkpoint_every == "config":
-                    self._save_checkpoint(profiles)
+                for specs, params, controls_factory in self._iter_config_points(pipeline_name, pipeline):
+                    controls = controls_factory()
+                    config_id = self._config_id(specs=specs, params=params, controls=controls)
+                    if (pipeline_name, config_id) in self._skipped:
+                        continue
+                    self._run_pipeline(
+                        controls, specs=specs, params=params,
+                        existing_runs=pipeline_runs, record=record,
+                    )
+                    if self.checkpoint_every == "config":
+                        self._save_checkpoint(profiles)
 
-            logger.info("Pipeline %s complete", pipeline_name)
-            self._save_checkpoint(profiles)
-            self._try_export(profiles)
+                logger.info("Pipeline %s complete", pipeline_name)
+                self._save_checkpoint(profiles)
+                self._try_export(profiles)
 
-        return profiles
+            return profiles
+        finally:
+            release_metric_backends()  # judge and perplexity engines; metrics resolve them again on next use
 
     def _config_id(self, *, specs=None, params=None, controls=None) -> str:
         """The canonical config id for one configuration (`"baseline"` for the empty pipeline)."""

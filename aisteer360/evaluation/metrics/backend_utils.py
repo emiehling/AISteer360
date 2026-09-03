@@ -42,12 +42,13 @@ def release_metric_backends() -> None:
     backends shut their engines down, and the Hugging Face and serve backends are no-ops. A
     release failure is logged and does not prevent the remaining releases. Live `Backend`
     instances passed to a metric are never cached and are not touched. Release is idempotent.
+    Since metrics no longer pin their backend, emptying the cache drops the last reference to a
+    Hugging Face judge, so its model memory is freed even though `release()` is a no-op there.
 
-    A metric constructed against a released spec keeps its reference to the released backend;
-    on the offline vLLM backend its next `compute()` raises `RuntimeError`, so construct the
-    metric again after releasing. The offline vLLM engine's release is process-global with
-    respect to vLLM distributed state and assumes no other live vLLM engine in the process
-    (see `VLLMBackend.release`).
+    Metrics resolve their backend per `compute()`, so a released metric constructs its backend
+    again on next use. The offline vLLM engine's release is process-global with respect to vLLM
+    distributed state and assumes no other live vLLM engine in the process (see
+    `VLLMBackend.release`).
     """
     backends = list(_METRIC_BACKENDS.values())
     _METRIC_BACKENDS.clear()
