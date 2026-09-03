@@ -140,6 +140,10 @@ class TestGenerationParamsStops:
         with pytest.raises(ValueError, match="temperature"):
             merge_lowered_params(GenerationParams(), {"temperature": 0.5})
 
+    def test_min_new_tokens_above_max_raises(self):
+        with pytest.raises(ValueError, match="min_new_tokens"):
+            GenerationParams(min_new_tokens=8, max_new_tokens=4)
+
     def test_seed_scope_round_trips_and_item_not_rendered(self):
         item = GenerationParams.from_gen_kwargs(seed=5, max_new_tokens=4)
         assert item.seed_scope == "item"
