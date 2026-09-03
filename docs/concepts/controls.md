@@ -57,7 +57,7 @@ self-consistency), automatic prompting methods, and prompt routing. The toolkit 
 - `UserPrefix` ([API reference](../reference/algorithms/input_control/user_prefix.md), used in [notebook](../examples/notebooks/algorithms/user_prefix.ipynb))
     - *Description*: prepends a fixed text marker to a user turn (the last user turn by default, or the first or all user turns), with the token stream as a fallback for non-chat input.
     - *Backends*: HF, vLLM.
-    
+
 The few-shot retriever from [Rubin et al. 2021](https://arxiv.org/abs/2112.08633) (EPR) is shipped as a `BaseSelector`
 that slots into `FewShot` rather than as a separate control. See
 [`few_shot.selectors.epr`](../reference/algorithms/input_control/few_shot.md).
@@ -229,15 +229,17 @@ decoding. Output controls participate in decoding through one of two modes:
   compose with each other and with a decoding driver.
 - **Drive**: a control subclasses `DecodingDriver` and owns the decode loop (`decode(...)`), applying the composed
   stacks in every forward pass it issues. Since the loop does not compose, a pipeline admits at most one enabled
-  driver. With none, decoding defaults to the model's own `generate`.
+  driver. With none, decoding defaults to the model's own `generate`. A driver may declare
+  `max_rollouts_per_query()`, an upper bound on the continuations it generates per input row (`None` when the
+  configuration admits no static bound).
 
 The toolkit implements the following step-level controls:
 
 - `RAD` ([API reference](../reference/algorithms/output_control/rad.md), [notebook](../examples/notebooks/algorithms/rad.ipynb))
-    - *Description*: reward-augmented decoding[@deng-raffel-2023-reward], scoring the top-`k` candidate tokens with an `AutoModelForSequenceClassification` reward model and shifting their logits by `beta * reward`. When the reward model is decoder-only and shares the base model's vocabulary it caches the reward-model prefix activations across steps (the paper's efficient path), and otherwise scores each step statelessly.
+    - *Description*: reward-augmented decoding[@deng-raffel-2023-reward], scoring the top-`k` candidate tokens with an `AutoModelForSequenceClassification` reward model and shifting their logits by `beta * reward`. When the reward model is decoder-only and shares the base model's vocabulary it caches the reward-model prefix activations across steps (the paper's efficient path), and otherwise scores each step statelessly. A `value_trace` list passed via `runtime_kwargs` records the per-step candidate scores and rewards for inspection.
     - *Backends*: HF (model-backed per-step logit math is in-process only).
 - `SASA` ([API reference](../reference/algorithms/output_control/sasa.md), [notebook](../examples/notebooks/algorithms/sasa.ipynb))
-    - *Description*: self-disciplined autoregressive sampling[@ko2025large], shifting logits toward a learned non-toxic subspace.
+    - *Description*: self-disciplined autoregressive sampling[@ko2025large], fitting a linear subspace in the model's own final-layer space from labeled examples (unpaired classes or paired prompt/response data) and shifting the candidate-token logits by the softmax-normalized margin to that subspace at each step. The candidate set follows a policy (`surviving`, `top_p`, or `top_k`); the attribute is whatever the labels define.
     - *Backends*: HF (model-backed per-step logit math is in-process only).
 - `DExperts` ([API reference](../reference/algorithms/output_control/dexperts.md), [notebook](../examples/notebooks/algorithms/dexperts.ipynb))
     - *Description*: decoding-time experts[@liu2021dexperts], re-weighting the base distribution by the log-prob difference between a small expert and anti-expert. Proxy-tuning is the same control with a tuned/untuned small-model pair.
@@ -267,7 +269,7 @@ and the following decoding drivers:
     - *Description*: best-of-N sampling / re-ranking[@nakano2021webgpt], sampling N full continuations and returning the highest-scoring one under a sequence scorer (pairing with a majority-vote scorer recovers self-consistency).
     - *Backends*: HF, vLLM.
 - `BudgetForcing` ([API reference](../reference/algorithms/output_control/budget_forcing.md), [notebook](../examples/notebooks/algorithms/budget_forcing.ipynb))
-    - *Description*: test-time thinking-length control[@muennighoff2025s1], capping each thinking segment, optionally appending extensions ("Wait") to prolong reasoning, then forcing the closing think tag before answering.
+    - *Description*: test-time thinking-length control[@muennighoff2025s1], capping each thinking segment, optionally appending extensions ("Wait") to prolong reasoning, then forcing the closing think tag before answering. `end_think_token_ids` sets the thinking-phase boundary by token id, for a closing-think delimiter that is a special token.
     - *Backends*: HF, vLLM.
 - `RoutedDecoding` ([API reference](../reference/algorithms/output_control/routed_decoding.md), [notebook](../examples/notebooks/recipes/routed_decoding/routed_decoding.ipynb))
     - *Description*: a decoding driver that routes each row to a response plan via a `Router` over a [`ProbeSet`](probes.md)'s readings, and executes the matched plan (canned response, disclaimer prefix, or plain generation). It sits beside `PhasedDecoding` and `SearchDecoding`.
@@ -276,7 +278,7 @@ and the following decoding drivers:
     - *Description*: the config-first generic over the segment shape (propose → score → keep → iterate, with best-of-N defaults). Best-of-N, self-consistency, blockwise controlled decoding, and DeAL are assignments of its config.
     - *Backends*: HF, vLLM with `propose_mode="sample"` (beam proposals are HF-only).
 - `PhasedDecoding` ([API reference](../reference/algorithms/output_control/phased_decoding.md), [notebook](../examples/notebooks/algorithms/generics/phased_decoding.ipynb))
-    - *Description*: the config-first generic over the phase shape (forced / generated segments via a declarative plan grammar). Budget forcing, response prefill, and thinking intervention[@wu2025effectively] are assignments of its config.
+    - *Description*: the config-first generic over the phase shape (forced / generated segments via a declarative plan grammar). Budget forcing, response prefill, and thinking intervention[@wu2025effectively] are assignments of its config. A `generate` phase ends at its `until` substring, any token in `until_token_ids`, or its `budget`, whichever first.
     - *Backends*: HF, vLLM.
 
 Some decoding strategies are native to Hugging Face's `generate` and need no dedicated control. They flow through the

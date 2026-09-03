@@ -7,6 +7,7 @@ beta=1)`. ARGS = `(RewardModelValue, top_k, none)`.
 from __future__ import annotations
 
 import warnings
+from dataclasses import dataclass
 from typing import Literal
 
 import torch
@@ -19,6 +20,29 @@ from steerability.algorithms.output_control.common.values.base import BaseCandid
 Normalize = Literal["none", "minmax", "softmax", "clamp"]
 
 LARGE_CANDIDATE_SET_WARN_THRESHOLD = 1024
+
+
+@dataclass(frozen=True, slots=True)
+class ValueStepRecord:
+    """One `ValueGuidedProcessor.process` step, recorded for the caller-owned trace.
+
+    All tensors are detached and on CPU. `candidate_scores` are the processor's input scores for
+    the candidates before the shift; `normalized` is the value after `normalize` and `invert`, i.e.
+    the quantity the processor multiplies by `beta`.
+
+    Attributes:
+        prefix_length: The prefix length at this step (`input_ids.size(1)`).
+        candidate_ids: Selected candidate token ids `[B, K]`.
+        candidate_scores: Input scores of the candidates before the shift `[B, K]`.
+        values: Raw per-candidate value output `[B, K]`.
+        normalized: Values after `normalize` and `invert` `[B, K]`.
+    """
+
+    prefix_length: int
+    candidate_ids: torch.Tensor
+    candidate_scores: torch.Tensor
+    values: torch.Tensor
+    normalized: torch.Tensor
 
 
 def _normalize(v: torch.Tensor, mode: Normalize, invert: bool) -> torch.Tensor:
@@ -74,6 +98,10 @@ class ValueGuidedProcessor(PrefixKeyedProcessor):
         lm_tokenizer: The language-model tokenizer, forwarded into `StepContext`.
         model: The pipeline's model (for same-model values), forwarded into `StepContext`.
         attention_mask: The prefix attention mask, forwarded into `StepContext`.
+        trace: Optional caller-owned list that receives one `ValueStepRecord` per `process` call.
+            The record is a write-only sink, so the processor stays a function of
+            `(prefix_ids, scores)`; `compute_logprobs` replays also append when the owning control's
+            `include_in_scoring` is True. `None` (default) records nothing.
     """
 
     def __init__(
@@ -91,6 +119,7 @@ class ValueGuidedProcessor(PrefixKeyedProcessor):
         lm_tokenizer: PreTrainedTokenizerBase | None = None,
         model: PreTrainedModel | None = None,
         attention_mask: torch.Tensor | None = None,
+        trace: list | None = None,
     ):
         super().__init__()
         self.value = value
@@ -105,6 +134,7 @@ class ValueGuidedProcessor(PrefixKeyedProcessor):
         self.lm_tokenizer = lm_tokenizer
         self.model = model
         self.attention_mask = attention_mask
+        self.trace = trace
         self._warned_large_set = False
 
     def process(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
@@ -134,8 +164,19 @@ class ValueGuidedProcessor(PrefixKeyedProcessor):
             model=self.model,
             attention_mask=self.attention_mask,
         )
-        v = self.value.score(ctx).to(scores.dtype)  # [B, K]
-        v = _normalize(v, self.normalize, self.invert)
+        raw = self.value.score(ctx).to(scores.dtype)  # [B, K]
+        v = _normalize(raw, self.normalize, self.invert)
+
+        if self.trace is not None:
+            self.trace.append(
+                ValueStepRecord(
+                    prefix_length=int(input_ids.size(1)),
+                    candidate_ids=cand_ids.detach().cpu(),
+                    candidate_scores=scores.gather(1, cand_ids).detach().cpu(),
+                    values=raw.detach().cpu(),
+                    normalized=v.detach().cpu(),
+                )
+            )
 
         if self.mask_non_candidates:
             out = torch.full_like(scores, float("-inf"))

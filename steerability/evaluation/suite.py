@@ -14,6 +14,8 @@ from inspect_ai import eval_set
 from steerability.evaluation.provider import ProviderOptions, as_inspect_model
 
 if TYPE_CHECKING:
+    from inspect_ai.model import Model
+
     from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 
 
@@ -73,6 +75,8 @@ class InspectSuite:
         model_name: str = "steering-pipeline",
         generate_defaults: Mapping[str, Any] | None = None,
         display: str = "none",
+        score: bool = True,
+        model_roles: Mapping[str, "str | Model"] | None = None,
     ) -> dict:
         """Run every task in the suite against `pipeline` through `eval_set`.
 
@@ -95,6 +99,13 @@ class InspectSuite:
                 `"log"`, `"none"`), forwarded unvalidated so `eval_set` reports an unknown value.
                 `"plain"` is recommended inside a sweep, since one `eval_set` call runs per cell
                 and the full display would redraw per cell.
+            score: Whether `eval_set` scores the logs. The default `True` scores as usual;
+                `False` produces logs carrying samples and outputs but no scores, for generation
+                that is scored afterwards from the logs. `SteeringEval` frames assume scored logs.
+            model_roles: Inspect model roles forwarded to `eval_set`, mapping a role name to a
+                model reference or a live `Model`. A registry task resolving a grader through
+                `get_model(role="grader")` is given one here. As with `task_args`, the grader must
+                never be the pipeline under evaluation.
 
         Returns:
             A mapping from task name to a result dict with keys:
@@ -120,8 +131,11 @@ class InspectSuite:
             max_tasks=1,
             display=display,
             retry_attempts=self.retry_attempts,
+            score=score,
             **generate_config,
         )
+        if model_roles is not None:
+            common["model_roles"] = dict(model_roles)
 
         logs: list = []
         failed: list[str] = []

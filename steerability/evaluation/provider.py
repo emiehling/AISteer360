@@ -466,13 +466,24 @@ class SteeringPipelineModelAPI(ModelAPI):
             )
 
         input_tokens = _count_non_pad(output.adapted_input_ids, pad_token_id)
-        output_tokens = _count_non_pad(output.output_ids, pad_token_id)
+        returned_output_tokens = _count_non_pad(output.output_ids, pad_token_id)
+        # generated_tokens counts every rollout a decoding driver generated, including discarded
+        # proposals; the returned continuation count stays available for scoring and truncation
+        # analysis. The driverless path leaves generated_tokens None, so usage is unchanged there.
+        output_tokens = (
+            output.generated_tokens if output.generated_tokens is not None else returned_output_tokens
+        )
         usage = ModelUsage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=input_tokens + output_tokens,
         )
-        return ModelOutput(model=self.model_name, choices=choices, usage=usage)
+        return ModelOutput(
+            model=self.model_name,
+            choices=choices,
+            usage=usage,
+            metadata={"returned_output_tokens": returned_output_tokens},
+        )
 
     def _split_row(
         self, text: str, row_ids: torch.Tensor, stop_strings: tuple[str, ...]

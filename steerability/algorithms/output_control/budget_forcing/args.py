@@ -23,6 +23,11 @@ class BudgetForcingArgs(BaseArgs):
         default="</think>",
         metadata={"help": "The closing-think marker: both the thinking-phase boundary and the forced tokens before the answer."},
     )
+    end_think_token_ids: tuple[int, ...] = field(
+        default=(),
+        metadata={"help": "Token ids that also end each thinking phase (alongside `end_think`); the backend-portable "
+                          "form for a closing-think delimiter that tokenizes to a special token."},
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.max_thinking_tokens, int) or self.max_thinking_tokens <= 0:
@@ -31,3 +36,6 @@ class BudgetForcingArgs(BaseArgs):
             raise ValueError(f"'num_extensions' must be a non-negative integer, got {self.num_extensions!r}.")
         if not self.end_think:
             raise ValueError("'end_think' must be a non-empty string.")
+        if isinstance(self.end_think_token_ids, (str, bytes)):
+            raise ValueError("'end_think_token_ids' must be a sequence of ints, not a string.")
+        self.end_think_token_ids = tuple(int(i) for i in self.end_think_token_ids)

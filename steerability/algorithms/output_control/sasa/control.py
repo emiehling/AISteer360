@@ -4,12 +4,11 @@ import gc
 import logging
 import os
 
-import pandas as pd
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from steerability.algorithms.core.execution.access import ModelAccess
-from steerability.algorithms.core.internals.data import LabeledExamples
+from steerability.algorithms.core.internals.data import ContrastivePairs, LabeledExamples
 from steerability.algorithms.core.internals.model_layout import resolve_model_layout
 from steerability.algorithms.core.internals.probes.fitting import ProbeFitSpec, fit_probe
 from steerability.algorithms.core.internals.probes.probe import Probe
@@ -54,24 +53,33 @@ class SASA(OutputControl):
 
     SASA steers generation toward a target attribute defined by labeled examples. It works in two phases:
 
-    1. **Subspace learning**: From a corpus of labeled positive (desired) and negative (undesired) examples, it fits
-    a linear classifier in the model's own sentence-embedding space. The classifier's weight vector defines a
-    subspace separating the two attribute classes.
+    1. **Subspace learning**: From labeled positive (desired) and negative (undesired) examples, it fits a linear
+    classifier in the model's own final-layer space. The classifier's weight vector defines a subspace separating
+    the two attribute classes. Data is passed via `gen_wv_data` as unpaired classes (a `{'pos', 'neg'}` dict or a
+    `LabeledExamples`) or as paired prompt/response data (a dict carrying a `'prompts'` key or a `ContrastivePairs`),
+    and `prompt_format` selects how each example is rendered before capture. `prompt_format='chat_completion'`
+    renders each pair as a user turn plus the response and requires the paired form (the paper's
+    `{prompt, response, annotation}` format); `'raw'` and `'chat_prompt'` accept unpaired classes.
 
     2. **Controlled decoding**: At every decoding step the candidate-token logits are shifted by `beta * margin`,
     where `margin` is the classifier distance of the updated context from the undesired side of the subspace.
-    Sampling from the softmax of the adjusted logits (optionally with nucleus sampling) nudges generation toward
-    the desired attribute while staying close to the original distribution.
+    Sampling from the softmax of the adjusted logits nudges generation toward the desired attribute while staying
+    close to the original distribution.
 
-    The reference paper applies SASA to detoxification; the default data loader reads the Jigsaw toxicity corpus
-    from `gen_wv_data_path`. Any binary-labeled attribute works: pass in-memory positives/negatives via
-    `gen_wv_data`, or a previously fitted probe via `wv_path`.
+    Any binary-labeled attribute works, since the attribute is defined by the labels on `gen_wv_data`. A previously
+    fitted probe is loaded via `wv_path`.
 
-    SASA is a step-level control. `steer()` fits (or loads) a `Probe`, and `get_logits_processors()` returns
-    a `ValueGuidedProcessor` over the `surviving` candidate policy whose per-candidate value is the subspace margin,
-    obtained via a single same-model forward per step. The margins are softmax-normalized over the surviving set and
-    added (scaled by `beta`) to the surviving logits. As a step-level control, SASA composes with other output
-    controls and with a decoding driver.
+    SASA is a step-level control. `steer()` fits (or loads) a `Probe`, and `get_logits_processors()` returns a
+    `ValueGuidedProcessor` whose per-candidate value is the subspace margin, obtained via a single same-model
+    forward per step. `candidate_policy` selects which tokens are scored: `'surviving'` (every token earlier
+    processors left finite), `'top_p'` (the nucleus of the raw logits, the paper's setting), or `'top_k'`. The
+    margins are softmax-normalized over the candidate set and added (scaled by `beta`) to the candidate logits with
+    no non-candidate masking. `max_candidates` clamps the set on top of any policy to bound the per-step forward. As
+    a step-level control, SASA composes with other output controls and with a decoding driver.
+
+    A `value_trace` list passed via `runtime_kwargs` receives one `ValueStepRecord` per scored step (the candidate
+    ids, their pre-shift scores, the raw margins, and the softmax-normalized shift), for inspecting the per-step
+    redistribution.
 
     `include_in_scoring` defaults to False, since scoring under SASA costs a K-candidate model forward per
     reference position; opt in explicitly if needed.
@@ -84,6 +92,15 @@ class SASA(OutputControl):
       [https://arxiv.org/abs/2410.03818](https://arxiv.org/abs/2410.03818)
     """
     Args = SASAArgs
+
+    RUNTIME_KWARGS_SCHEMA: list[dict] = [
+        {
+            "name": "value_trace",
+            "type": "list",
+            "scope": "call",
+            "help": "A caller-owned list that receives one ValueStepRecord per scored step of this call.",
+        },
+    ]
 
     include_in_scoring: bool = False
     same_model_forwards: bool = True
@@ -106,24 +123,28 @@ class SASA(OutputControl):
 
     def frozen_form(self, state: dict) -> tuple[str, dict]:
         """A same-class frozen form: `wv_path` points at the exported probe directory and the
-        fit-only `gen_wv_*` fields are dropped."""
+        fit-only `gen_wv_*` fields are dropped. The decode-time settings (`candidate_policy`,
+        `top_p`, `top_k`, `max_candidates`) are carried forward."""
         from steerability.spipe.codec import AsPath
 
         return "output_control/sasa", {
             "beta": self.beta,
             "wv_path": AsPath(state["probe"]),
             "gen_wv_data": None,
+            "candidate_policy": self.candidate_policy,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
             "max_candidates": self.max_candidates,
         }
 
     def fit_identity(self):
-        """The probe-fitting inputs (`gen_wv_*` fields), or None when a saved probe is
-        loaded."""
+        """The probe-fitting inputs (`gen_wv_*` fields and `prompt_format`), or None when a saved
+        probe is loaded."""
         if getattr(self, "wv_path", None):
             return None
         return {
             "gen_wv_data": self.gen_wv_data,
-            "gen_wv_data_path": self.gen_wv_data_path,
+            "prompt_format": self.prompt_format,
             "gen_wv_length": self.gen_wv_length,
             "gen_wv_batch_size": self.gen_wv_batch_size,
         }
@@ -138,9 +159,10 @@ class SASA(OutputControl):
 
         A `wv_path` naming a directory loads a saved `Probe` artifact; a `.probe` JSON file or a
         legacy `{'wv', 'mu_mu'}` tensor checkpoint is adapted into a `Probe` over the final
-        decoder layer. Without `wv_path`, a probe is fitted on the labeled data (fisher direction
-        over last-token features at the raw final-layer boundary, midpoint calibration). The
-        probe's recorded space is validated against the boundary the margins are evaluated at.
+        decoder layer. Without `wv_path`, a probe is fitted on `gen_wv_data` (fisher direction over
+        last-token features at the raw final-layer boundary, rendered per `prompt_format`, midpoint
+        calibration). The probe's recorded space is validated against the boundary the margins are
+        evaluated at.
 
         Args:
             model (PreTrainedModel): The base language model to be steered.
@@ -150,8 +172,9 @@ class SASA(OutputControl):
             PreTrainedModel: The input model (unchanged).
 
         Raises:
-            ValueError: If a loaded probe's `location`, `pooling`, or layer ids do not match
-                last-token features at the raw output boundary of the final decoder layer.
+            ValueError: If neither `wv_path` nor `gen_wv_data` is set, or a loaded probe's
+                `location`, `pooling`, or layer ids do not match last-token features at the raw
+                output boundary of the final decoder layer.
         """
         self.model = model
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
@@ -169,13 +192,15 @@ class SASA(OutputControl):
             else:
                 self.probe = load_single_file_probe(self.wv_path, layer_id=final_layer)
         else:
+            if self.gen_wv_data is None:
+                raise ValueError("SASA.steer() requires either gen_wv_data (to fit a probe) or wv_path (to load one).")
             logger.info("Fitting SASA probe.")
-            data = self._resolve_labeled_examples()
+            data = self._resolve_fit_data()
             spec = ProbeFitSpec(
                 method="fisher",
                 pooling="last",
                 location="layer_output",
-                prompt_format="raw",
+                prompt_format=self.prompt_format,
                 candidate_layers=[final_layer],
                 calibration="midpoint",
             )
@@ -190,53 +215,56 @@ class SASA(OutputControl):
         _validate_probe_space(self.probe, final_layer)
         return model
 
-    def _resolve_labeled_examples(self) -> LabeledExamples:
-        """Resolve labeled positives/negatives from the configured data source (SASA's loader)."""
-        if self.gen_wv_data is not None:
-            logger.debug("Data provided in-memory.")
-            return LabeledExamples(positives=self.gen_wv_data["pos"], negatives=self.gen_wv_data["neg"])
+    def _resolve_fit_data(self) -> LabeledExamples | ContrastivePairs:
+        """Normalize `gen_wv_data` into a fit-data container and truncate each class to `gen_wv_length`.
 
-        os.makedirs(self.gen_wv_data_path, exist_ok=True)
-        csv_path = os.path.join(self.gen_wv_data_path, "all_data.csv")
-        if not os.path.exists(csv_path):
-            raise FileNotFoundError(
-                f"""
-                    Jigsaw dataset not found at: {self.gen_wv_data_path}
-                    To use jigsaw_unintended_bias you have to download it manually from Kaggle:
-                    https://www.kaggle.com/c/jigsaw-unintended-bias-in-toxicity-classification/data
-                    Extract all files into one folder and load with:
-                    dataset = pd.read_csv('/tmp/Jigsaw_data/all_data.csv')
-                    """
+        A `{'pos', 'neg'}` dict becomes `LabeledExamples`; a dict carrying a `'prompts'` key becomes
+        `ContrastivePairs`; a `LabeledExamples` or `ContrastivePairs` instance passes through. When
+        `0 < gen_wv_length`, each class (and the aligned prompts for paired data) is truncated to at
+        most `gen_wv_length` entries.
+        """
+        data = self.gen_wv_data
+        if isinstance(data, dict):
+            if "prompts" in data:
+                data = ContrastivePairs(
+                    positives=data["pos"], negatives=data["neg"], prompts=data["prompts"]
+                )
+            else:
+                data = LabeledExamples(positives=data["pos"], negatives=data["neg"])
+
+        limit = self.gen_wv_length
+        if limit is None or limit <= 0:
+            return data
+
+        if isinstance(data, ContrastivePairs):
+            prompts = None if data.prompts is None else list(data.prompts[:limit])
+            return ContrastivePairs(
+                positives=list(data.positives[:limit]),
+                negatives=list(data.negatives[:limit]),
+                prompts=prompts,
             )
-        dataset = pd.read_csv(csv_path, low_memory=False)  # jigsaw csv has mixed-dtype columns
-        pos = [row for i, row in dataset["comment_text"].items()
-               if isinstance(row, str) and dataset["toxicity"][i] == 0]
-        neg = [row for i, row in dataset["comment_text"].items()
-               if isinstance(row, str) and dataset["toxicity"][i] > 0]
-
-        num = len(pos) + len(neg)
-        if 0 < self.gen_wv_length < num:
-            num_pos = int(self.gen_wv_length / num * len(pos))
-            num_neg = self.gen_wv_length - num_pos
-            pos = pos[:num_pos]
-            neg = neg[:num_neg]
-        return LabeledExamples(positives=pos, negatives=neg)
+        return LabeledExamples(
+            positives=list(data.positives[:limit]), negatives=list(data.negatives[:limit])
+        )
 
     def get_logits_processors(self, input_ids, runtime_kwargs, attention_mask=None, **kwargs) -> list:
         """Return a fresh `ValueGuidedProcessor` implementing SASA's margin-based shift.
 
-        The candidate policy is `surviving` (every token left finite by earlier processors), matching
-        SASA's use of the merged stack; margins are softmax-normalized over the surviving set and added
-        (scaled by `beta`) with no non-candidate masking. The surviving set is whatever earlier
-        processors leave finite; bound it with sampler kwargs (`top_k`/`top_p`) or `max_candidates` to
-        cap the per-step model forward.
+        The candidate set follows `candidate_policy`: `surviving` (every token left finite by earlier
+        processors), `top_p` (the nucleus of the raw logits, the paper's setting), or `top_k`. Margins
+        are softmax-normalized over the candidate set and added (scaled by `beta`) with no
+        non-candidate masking. `max_candidates` clamps the set on top of the policy to bound the
+        per-step model forward. A `value_trace` list in `runtime_kwargs` receives one `ValueStepRecord`
+        per step.
         """
         if self.probe is None:
             raise RuntimeError("SASA.steer() must run before generation (probe not fitted/loaded).")
         return [
             ValueGuidedProcessor(
                 SubspaceMarginValue(self.probe),
-                policy="surviving",
+                policy=self.candidate_policy,
+                p=self.top_p,
+                k=self.top_k,
                 beta=self.beta,
                 normalize="softmax",
                 mask_non_candidates=False,
@@ -244,6 +272,7 @@ class SASA(OutputControl):
                 lm_tokenizer=self.tokenizer,
                 model=self.model,
                 attention_mask=attention_mask,
+                trace=(runtime_kwargs or {}).get("value_trace"),
             )
         ]
 

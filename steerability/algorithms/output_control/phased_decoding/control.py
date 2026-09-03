@@ -9,7 +9,7 @@ from steerability.algorithms.output_control.common.drivers.phased import Fixed, 
 from steerability.algorithms.output_control.phased_decoding.args import PhasedDecodingArgs
 
 _FIXED_KEYS = {"fixed", "replace", "add_special_tokens"}
-_GENERATE_SUBKEYS = {"until", "budget"}
+_GENERATE_SUBKEYS = {"until", "until_token_ids", "budget"}
 
 
 def _parse_phase(entry: dict):
@@ -48,7 +48,15 @@ def _parse_phase(entry: dict):
     until = gen.get("until")
     if until is not None and not isinstance(until, str):
         raise ValueError(f"'generate' until must be a string when set, got {type(until).__name__}.")
-    return Generated(until=until, budget=budget)
+    until_token_ids = gen.get("until_token_ids") or ()
+    if isinstance(until_token_ids, (str, bytes)) or not isinstance(until_token_ids, (list, tuple)):
+        raise ValueError(
+            f"'generate' until_token_ids must be a sequence of ints when set, got "
+            f"{type(until_token_ids).__name__}."
+        )
+    if any(not isinstance(token_id, int) or isinstance(token_id, bool) for token_id in until_token_ids):
+        raise ValueError("'generate' until_token_ids must contain only ints.")
+    return Generated(until=until, until_token_ids=tuple(until_token_ids), budget=budget)
 
 
 class PhasedDecoding(PhasedDriver):
@@ -119,3 +127,7 @@ class PhasedDecoding(PhasedDriver):
     def plan(self, prompt_text: str, params: dict) -> list:
         """Return the parsed phase plan (per-example callables in `Fixed` are invoked by `_run_plan`)."""
         return self._parsed_plan
+
+    def max_rollouts_per_query(self) -> int:
+        """The number of `Generated` phases in the parsed plan (each phase is one rollout)."""
+        return sum(isinstance(phase, Generated) for phase in self._parsed_plan)

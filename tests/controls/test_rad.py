@@ -10,9 +10,24 @@ cached path is exercised (`tests/utils/tiny_models.py`).
 """
 import pytest
 import torch
-from transformers import BertConfig, BertForSequenceClassification, LlamaConfig, LlamaForSequenceClassification
+from transformers import (
+    BertConfig,
+    BertForSequenceClassification,
+    GraniteConfig,
+    GraniteForCausalLM,
+    GraniteMoeHybridConfig,
+    GraniteMoeHybridForCausalLM,
+    LlamaConfig,
+    LlamaForSequenceClassification,
+)
 
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.output_control.common.granite_heads import (
+    GraniteForSequenceClassification,
+    GraniteMoeHybridForSequenceClassification,
+)
+from steerability.algorithms.output_control.common.loading import load_sequence_classifier
+from steerability.algorithms.output_control.common.processors.value_guided import ValueStepRecord
 from steerability.algorithms.output_control.common.values.base import BaseCandidateValue, StepContext
 from steerability.algorithms.output_control.common.values.reward_model import (
     CachedRewardModelValue,
@@ -22,7 +37,7 @@ from steerability.algorithms.output_control.common.values.reward_model import (
 from steerability.algorithms.output_control.rad.args import RADArgs
 from steerability.algorithms.output_control.rad.control import RAD
 from tests.utils.sweep import build_param_grid
-from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
+from tests.utils.tiny_models import reasoning_tag_tokenizer, tiny_llama, wordlevel_tokenizer
 
 VOCAB = 100
 
@@ -59,6 +74,36 @@ def _encoder_classifier(tmp_path, vocab=VOCAB):
     clf = BertForSequenceClassification(cfg).eval()
     wordlevel_tokenizer().save_pretrained(str(tmp_path))
     clf.save_pretrained(str(tmp_path))
+    return str(tmp_path)
+
+
+def _granite_causal_lm_path(tmp_path, vocab=VOCAB):
+    """A hub-free `GraniteForCausalLM` checkpoint sharing the wordlevel vocabulary."""
+    cfg = GraniteConfig(
+        hidden_size=16, intermediate_size=32, num_hidden_layers=2,
+        num_attention_heads=2, num_key_value_heads=2, vocab_size=vocab, pad_token_id=2,
+    )
+    GraniteForCausalLM(cfg).eval().save_pretrained(str(tmp_path))
+    wordlevel_tokenizer().save_pretrained(str(tmp_path))
+    return str(tmp_path)
+
+
+def _granitemoehybrid_causal_lm_path(tmp_path, vocab=VOCAB):
+    """A hub-free `GraniteMoeHybridForCausalLM` checkpoint with all-attention layers.
+
+    All `layer_types` are `"attention"` (no Mamba, no experts), the shape the `granite-4.0-350m`
+    reward backbone has, so the decoder-only cached path is available.
+    """
+    num_layers = 2
+    cfg = GraniteMoeHybridConfig(
+        hidden_size=16, intermediate_size=32, shared_intermediate_size=32,
+        num_hidden_layers=num_layers, num_attention_heads=2, num_key_value_heads=2,
+        vocab_size=vocab, pad_token_id=2, num_local_experts=1, num_experts_per_tok=1,
+        layer_types=["attention"] * num_layers,
+        mamba_expand=1, mamba_n_heads=4, mamba_d_state=8, mamba_d_conv=2,
+    )
+    GraniteMoeHybridForCausalLM(cfg).eval().save_pretrained(str(tmp_path))
+    wordlevel_tokenizer().save_pretrained(str(tmp_path))
     return str(tmp_path)
 
 
@@ -277,3 +322,125 @@ class TestRADPosture:
         rad = RAD(reward_model_id="x", beta=1.0)
         with pytest.raises(RuntimeError, match="steer"):
             rad.get_logits_processors(torch.tensor([[0, 4, 5]]), {})
+
+
+# granite sequence-classification heads
+class TestGraniteHeads:
+    """Granite causal-LM checkpoints load as scalar-head classifiers and back RAD's cached path."""
+
+    def test_granite_loads_as_classifier(self, tmp_path):
+        path = _granite_causal_lm_path(tmp_path)
+        model, _ = load_sequence_classifier(path, device="cpu", hf_model_kwargs={"num_labels": 1})
+        assert isinstance(model, GraniteForSequenceClassification)
+        assert model.config.num_labels == 1
+
+    def test_granitemoehybrid_loads_as_classifier(self, tmp_path):
+        path = _granitemoehybrid_causal_lm_path(tmp_path)
+        model, _ = load_sequence_classifier(path, device="cpu", hf_model_kwargs={"num_labels": 1})
+        assert isinstance(model, GraniteMoeHybridForSequenceClassification)
+        assert model.config.num_labels == 1
+
+    @pytest.mark.parametrize(
+        "builder", [_granite_causal_lm_path, _granitemoehybrid_causal_lm_path]
+    )
+    def test_granite_reward_model_reaches_cached_path(self, tmp_path, builder):
+        """A Granite classifier sharing the LM vocabulary resolves the cached path and steers."""
+        rm_path = builder(tmp_path)
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        tokenizer = wordlevel_tokenizer()
+
+        rad = RAD(reward_model_id=rm_path, beta=5.0, top_k=8, score_transform="sigmoid", efficient=True)
+        pipeline = _pipeline(rad, model, tokenizer)
+        assert rad.scoring_path == "cached"
+
+        prompt = tokenizer("the cat", return_tensors="pt").input_ids
+        out = pipeline.generate(input_ids=prompt, max_new_tokens=3, do_sample=False, eos_token_id=None)
+        assert isinstance(out, torch.Tensor)
+
+    def test_cached_matches_stateless_on_granite(self, tmp_path):
+        """The Granite cached forward reproduces the stateless shared-vocab scores (TestCachedEquivalence)."""
+        rm_path = _granitemoehybrid_causal_lm_path(tmp_path)
+        rm, rm_tok = load_sequence_classifier(rm_path, device="cpu", hf_model_kwargs={"num_labels": 1})
+        cached = CachedRewardModelValue(rm, rm_tok, score_index=0, score_transform="sigmoid")
+        stateless = RewardModelValue(rm, rm_tok, score_index=0, score_transform="sigmoid", shared_vocab=True)
+        candidates = torch.tensor([[6, 7, 8, 9, 3]])
+        prefix = torch.tensor([[0, 4]])
+        for extra in (5, 6, 7):
+            prefix = torch.cat([prefix, torch.tensor([[extra]])], dim=1)
+            ctx = StepContext(
+                prefix_ids=prefix, candidate_ids=candidates,
+                lm_tokenizer=wordlevel_tokenizer(), attention_mask=torch.ones_like(prefix),
+            )
+            torch.testing.assert_close(cached.score(ctx), stateless.score(ctx), atol=1e-4, rtol=1e-4)
+
+
+# value trace
+class TestValueTrace:
+    """A caller-owned `value_trace` list receives one record per scored step."""
+
+    def test_schema_declares_value_trace(self):
+        names = [entry["name"] for entry in RAD.RUNTIME_KWARGS_SCHEMA]
+        assert "value_trace" in names
+
+    def test_trace_records_each_step(self, tmp_path):
+        torch.manual_seed(0)
+        rm_path = _decoder_classifier(tmp_path)
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        tokenizer = wordlevel_tokenizer()
+        top_k = 5
+
+        rad = RAD(reward_model_id=rm_path, beta=5.0, top_k=top_k, score_transform="sigmoid")
+        pipeline = _pipeline(rad, model, tokenizer)
+
+        prompt = tokenizer("the cat", return_tensors="pt").input_ids
+        trace: list = []
+        out = pipeline.generate(
+            input_ids=prompt, max_new_tokens=4, do_sample=False, eos_token_id=None,
+            runtime_kwargs={"value_trace": trace},
+        )
+
+        assert len(trace) == 4
+        for step, record in enumerate(trace):
+            assert isinstance(record, ValueStepRecord)
+            assert record.candidate_ids.shape == (1, top_k)
+            assert record.candidate_scores.shape == (1, top_k)
+            assert record.values.shape == (1, top_k)
+            assert record.normalized.shape == (1, top_k)
+            assert torch.all(record.normalized >= 0) and torch.all(record.normalized <= 1)
+            chosen = out[0, step].item()
+            assert chosen in record.candidate_ids[0].tolist()
+
+
+# scoring path
+class TestScoringPath:
+    def test_none_before_steer(self):
+        rad = RAD(reward_model_id="x", beta=1.0)
+        assert rad.scoring_path is None
+
+    def test_cached_for_decoder_classifier(self, tmp_path):
+        rm_path = _decoder_classifier(tmp_path)
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        rad = RAD(reward_model_id=rm_path, beta=1.0, efficient=True)
+        _pipeline(rad, model, wordlevel_tokenizer())
+        assert rad.scoring_path == "cached"
+
+    def test_stateless_when_not_efficient(self, tmp_path):
+        rm_path = _decoder_classifier(tmp_path)
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        rad = RAD(reward_model_id=rm_path, beta=1.0, efficient=False)
+        _pipeline(rad, model, wordlevel_tokenizer())
+        assert rad.scoring_path == "stateless"
+
+    def test_text_for_mismatched_vocabulary(self, tmp_path):
+        """A classifier whose tokenizer differs from the LM tokenizer uses the text path."""
+        cfg = LlamaConfig(
+            hidden_size=16, intermediate_size=32, num_hidden_layers=2,
+            num_attention_heads=2, num_key_value_heads=2, vocab_size=VOCAB,
+            num_labels=2, pad_token_id=2,
+        )
+        LlamaForSequenceClassification(cfg).eval().save_pretrained(str(tmp_path))
+        reasoning_tag_tokenizer().save_pretrained(str(tmp_path))  # a distinct vocabulary
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        rad = RAD(reward_model_id=str(tmp_path), beta=1.0, efficient=True)
+        _pipeline(rad, model, wordlevel_tokenizer())
+        assert rad.scoring_path == "text"

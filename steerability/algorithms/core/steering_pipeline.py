@@ -74,6 +74,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _split_generated_tokens(total: int | None, num_rows: int) -> list[int | None]:
+    """Split a rollout-token total evenly across `num_rows` rows, remainder on the first.
+
+    Returns a list of `None` when `total` is None (the driverless path attaches no count) or
+    `num_rows` is zero, so the arm-level sum of the per-row values equals `total`.
+    """
+    if total is None or num_rows <= 0:
+        return [None] * num_rows
+    base, remainder = divmod(total, num_rows)
+    return [base + (1 if i < remainder else 0) for i in range(num_rows)]
+
+
 @dataclass(slots=True, eq=False, weakref_slot=True)
 class SteeringPipeline:
     """Main steering pipeline for applying various control methods to Hugging Face causal language models.
@@ -1443,6 +1455,7 @@ class SteeringPipeline:
                 model=self.model, **gen_kwargs
             )
 
+        driver_generated_tokens: int | None = None
         with backend.open_session() as session:
             if decoding_driver is not None:
                 # client-side driver path: composed stacks, session-hosted hooks for the span
@@ -1469,6 +1482,7 @@ class SteeringPipeline:
                         driver_rollout_entries = rollout_entries(
                             state_entries, steered_input_ids, steered_attention_mask,
                         )
+                driver_session = SteeredSession(session, driver_rollout_entries)
                 with applied:
                     full_output_ids = decoding_driver.decode(
                         input_ids=steered_input_ids,
@@ -1477,9 +1491,10 @@ class SteeringPipeline:
                         logits_processors=logits_processors,
                         stopping_criteria=stopping_criteria,
                         runtime_kwargs=runtime_kwargs,
-                        session=SteeredSession(session, driver_rollout_entries),
+                        session=driver_session,
                         **params.to_gen_kwargs(),
                     )
+                driver_generated_tokens = driver_session.generated_tokens
                 prompt_len = steered_input_ids.size(1)
                 new_tokens = full_output_ids[:, prompt_len:]
                 reasons = infer_finish_reasons(
@@ -1548,13 +1563,20 @@ class SteeringPipeline:
 
         # shape return per modality + flag
         num_candidates = params.n or 1
+        num_rows = new_tokens.size(0)
+        # on the driver path split the wrapper's rollout-token total evenly across the returned
+        # rows (remainder on the first row) so arm-level sums are preserved; the driverless path
+        # leaves generated_tokens None and consumers fall back to the returned continuation count
+        generated_per_row = _split_generated_tokens(driver_generated_tokens, num_rows)
         if return_output:
             if is_single:
+                # one Output covers every candidate row, so it carries the full dispatch total
                 return Output(
                     output_ids=new_tokens,
                     adapted_input_ids=steered_input_ids,
                     finish_reason=reasons[0],
                     finish_reasons=tuple(reasons),
+                    generated_tokens=driver_generated_tokens,
                 )
             return [
                 Output(
@@ -1562,8 +1584,9 @@ class SteeringPipeline:
                     adapted_input_ids=steered_input_ids[i // num_candidates:i // num_candidates + 1],
                     finish_reason=reasons[i],
                     finish_reasons=(reasons[i],),
+                    generated_tokens=generated_per_row[i],
                 )
-                for i in range(new_tokens.size(0))
+                for i in range(num_rows)
             ]
 
         if not decode_text:

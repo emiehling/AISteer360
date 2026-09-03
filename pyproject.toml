@@ -7,8 +7,8 @@ license         = { text = "Apache-2.0" }
 authors         = [{ name = "IBM Research" }]
 maintainers     = [
     { name = "Erik Miehling", email = "erik.miehling@ibm.com" },
+    { name = "Inge Vejsbjerg", email = "INGEVEJS@ie.ibm.com" },
     { name = "Praveen Venkateswaran", email = "praveen.venkateswaran@ibm.com" },
-    { name = "Inge Vejsbjerg", email = "INGEVEJS@ie.ibm.com" }
 ]
 keywords = [
     "language models",
@@ -107,6 +107,7 @@ dev = [
     "ipywidgets>=8.1.0,<9.0.0",
     "pytest>=8.3.2,<9.0.0",
     "pre-commit>=4.3.0",
+    "textstat>=0.7.0",
 ]
 
 # tools

@@ -16,7 +16,7 @@ from transformers import PreTrainedModel, StoppingCriteriaList
 
 from steerability.algorithms.core.execution.contracts import Requirements
 from steerability.algorithms.output_control.base import DecodingDriver, resolve_generate_callable, stack_generate_kwargs
-from steerability.algorithms.output_control.common.criteria import BudgetTokens, StopOnSubstring
+from steerability.algorithms.output_control.common.criteria import BudgetTokens, StopOnSubstring, StopOnTokens
 
 
 @dataclass(frozen=True)
@@ -39,17 +39,27 @@ class Fixed:
 
 @dataclass(frozen=True)
 class Generated:
-    """Generate until a boundary: `until` substring and/or a token `budget`, whichever first.
+    """Generate until a boundary: the `until` substring, any token in `until_token_ids`, or the
+    token `budget`, whichever occurs first.
 
-    Both compose with the pipeline's criteria for the phase.
+    All three compose with the pipeline's criteria for the phase. `until_token_ids` is the
+    backend-portable form of a delimiter that tokenizes to a special token, which a stop string
+    cannot express (`skip_special_tokens=True` strips it before a vLLM stop-string match).
 
     Attributes:
         until: Substring that ends the phase (via `StopOnSubstring`). None disables.
+        until_token_ids: Token ids any one of which ends the phase once it is the last generated
+            token (via `StopOnTokens`). On the session path the ids extend `stop_token_ids` the
+            way `until` extends `stop_strings`. Empty disables.
         budget: Max new tokens for the phase (via `BudgetTokens`). None disables.
     """
 
     until: str | None = None
+    until_token_ids: tuple[int, ...] = ()
     budget: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "until_token_ids", tuple(int(i) for i in self.until_token_ids))
 
 
 class PhasedDriver(DecodingDriver):
@@ -78,6 +88,11 @@ class PhasedDriver(DecodingDriver):
     def __init__(self, extract_after: str | None = None):
         self.extract_after = extract_after
         self.tokenizer = None  # injected by the pipeline
+
+    def max_rollouts_per_query(self) -> int | None:
+        """None: the phase plan is per example, so the base class declares no static bound.
+        Subclasses with a fixed plan (e.g. `PhasedDecoding`, `BudgetForcing`) override it."""
+        return None
 
     def requirements(self) -> Requirements:
         """Phase splicing is client-side and generated phases run through the session, so no
@@ -170,8 +185,9 @@ class PhasedDriver(DecodingDriver):
         """Run one Generated phase, composing its boundary with the pipeline's stop rules.
 
         On the session path the boundary lowers to normalized parameters (`until` as a stop
-        string, `budget` as a tightened `max_new_tokens`), so the phase runs on any backend; a
-        raw generate callable receives the boundary as prompt-anchored criteria instead.
+        string, `until_token_ids` as extra stop token ids, `budget` as a tightened
+        `max_new_tokens`), so the phase runs on any backend; a raw generate callable receives the
+        boundary as prompt-anchored criteria instead.
         """
         criteria = list(stopping_criteria) if stopping_criteria is not None else []
         kwargs = dict(gen_kwargs)
@@ -182,6 +198,9 @@ class PhasedDriver(DecodingDriver):
                 if isinstance(existing, str):
                     existing = (existing,)
                 kwargs["stop_strings"] = (*existing, phase.until)
+            if phase.until_token_ids:
+                existing_ids = tuple(kwargs.get("stop_token_ids") or ())
+                kwargs["stop_token_ids"] = (*existing_ids, *phase.until_token_ids)
             if phase.budget is not None:
                 cap = kwargs.get("max_new_tokens")
                 kwargs["max_new_tokens"] = phase.budget if cap is None else min(cap, phase.budget)
@@ -189,6 +208,8 @@ class PhasedDriver(DecodingDriver):
             current_len = current.size(1)
             if phase.until is not None:
                 criteria.append(StopOnSubstring(self.tokenizer, phase.until, current_len))
+            if phase.until_token_ids:
+                criteria.append(StopOnTokens(phase.until_token_ids))
             if phase.budget is not None:
                 criteria.append(BudgetTokens(phase.budget, current_len))
                 if "max_new_tokens" not in kwargs:

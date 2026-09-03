@@ -1013,3 +1013,39 @@ class TestSerialSeedStateHooks:
         control.steer(model, tokenizer)
         clone = control.clone_for_call()
         assert control._gate is None and clone._gate is None
+
+
+class _FakeInnerSession:
+    """Minimal inner session returning one padded `ItemResult` per submitted item."""
+
+    def __init__(self, row_ids, pad_token_id):
+        self._row_ids = row_ids
+        self.tokenizer = type("_T", (), {"pad_token_id": pad_token_id})()
+
+    def generate(self, items, params):
+        from steerability.algorithms.core.execution.payloads import ItemResult
+
+        return [
+            ItemResult(index=i, output=Output(output_ids=torch.tensor([self._row_ids], dtype=torch.long)))
+            for i, _ in enumerate(items)
+        ]
+
+
+class TestSteeredSessionTokenAccounting:
+
+    def _session(self, row_ids, pad_token_id=0):
+        from steerability.algorithms.core.execution.backend import SteeredSession
+
+        return SteeredSession(_FakeInnerSession(row_ids, pad_token_id))
+
+    def test_accumulates_non_pad_tokens_across_calls(self):
+        session = self._session([5, 6, 7, 0, 0])  # three non-pad positions
+        session.generate([object()], GenerationParams())
+        assert session.generated_tokens == 3
+        session.generate([object(), object()], GenerationParams())
+        assert session.generated_tokens == 3 + 3 + 3
+
+    def test_counts_all_positions_when_no_pad_id(self):
+        session = self._session([5, 6, 7, 8], pad_token_id=None)
+        session.generate([object()], GenerationParams())
+        assert session.generated_tokens == 4

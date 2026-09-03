@@ -100,6 +100,11 @@ class RoutedDecoding(PhasedDriver):
         self.tokenizer = None
         self.latest_routes: list[str] = []
 
+    def max_rollouts_per_query(self) -> int:
+        """1: every route lowers to at most one `Generated` phase, and the probe pass is a
+        read-only capture rather than a generation."""
+        return 1
+
     def requirements(self) -> Requirements:
         """In-process torch or hidden-state capture at generate; the probe pass reads the
         prompt's hidden states, which a backend must either host in process or return."""

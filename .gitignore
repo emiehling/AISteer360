@@ -38,14 +38,16 @@ site
 **/tmp/
 **/profiles/
 **/runs/
+/artifacts/rad/reward_model/
 
 # examples
 /examples/notebooks/wrapper_mergekit/mergekit_models/*
 examples/**/profiles/
 examples/**/profiles_*/
 /examples/notebooks/**/figures/*.png
+/examples/notebooks/algorithms/artifacts/
 
-# 
+#
 **/CLAUDE.md
 **/_run_notebooks.sh
 **/.nbrun/

@@ -217,7 +217,9 @@ class ShortestOfN(DecodingDriver):
     continuation), and the pipeline strips the prompt prefix. The pipeline also passes `session=`, a `SteeredSession`
     carrying this generation's control entries. Resolve your rollout callable with
     `resolve_generate_callable(model, runtime_kwargs, session=session)` so that the driver's rollouts run steered on
-    any backend whose session serves its rollout parameters.
+    any backend whose session serves its rollout parameters. Override `max_rollouts_per_query()` to declare an upper
+    bound on the continuations the driver generates per input row (`ShortestOfN` returns `self.n`); the default
+    returns `None`, meaning no static bound.
 
 ## Prefer the `common` library
 

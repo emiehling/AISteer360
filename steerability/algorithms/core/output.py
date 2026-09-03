@@ -27,11 +27,18 @@ class Output:
         finish_reasons: Per-row finish reasons matching `output_ids` (one entry per candidate
             when the producer generated several), or None when the producer reports only the
             first row's reason.
+        generated_tokens: The total tokens generated to produce this output, including rollouts a
+            decoding driver proposed and discarded, or None when the producer did not count them.
+            On the driver path the pipeline attaches the session wrapper's accumulated total; for a
+            multi-row dispatch the total is split evenly across rows (integer division, remainder
+            on the first row), so arm-level sums are preserved. The driverless path leaves it None,
+            and consumers fall back to the non-pad count of `output_ids`.
     """
     output_ids: torch.Tensor
     adapted_input_ids: torch.Tensor | None = None
     finish_reason: str | None = None
     finish_reasons: tuple[str | None, ...] | None = None
+    generated_tokens: int | None = None
 
     def decode(
         self,

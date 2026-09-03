@@ -55,12 +55,24 @@ class BudgetForcing(PhasedDriver):
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
         return model
 
+    def max_rollouts_per_query(self) -> int:
+        """`num_extensions + 2`: the initial thinking phase, one per extension round, and the
+        answer phase."""
+        return self.num_extensions + 2
+
     def plan(self, prompt_text: str, params: dict) -> list:
-        """Build the thinking-budget plan: bounded thinking, optional extensions, forced tag, answer."""
-        plan = [Generated(until=self.end_think, budget=self.max_thinking_tokens)]
+        """Build the thinking-budget plan: bounded thinking, optional extensions, forced tag, answer.
+
+        Each thinking phase ends at the `end_think` string, any token in `end_think_token_ids`, or
+        `max_thinking_tokens`; the forced closing tag before the answer is the `end_think` text.
+        """
+        thinking = lambda: Generated(
+            until=self.end_think, until_token_ids=self.end_think_token_ids, budget=self.max_thinking_tokens,
+        )
+        plan = [thinking()]
         for _ in range(self.num_extensions):
             plan.append(Fixed(self.extension_text))
-            plan.append(Generated(until=self.end_think, budget=self.max_thinking_tokens))
+            plan.append(thinking())
         plan.append(Fixed(self.end_think))
         plan.append(Generated())
         return plan

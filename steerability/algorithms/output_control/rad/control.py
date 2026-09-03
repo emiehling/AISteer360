@@ -42,7 +42,9 @@ class RAD(OutputControl):
     top-`top_k` of the scores this processor receives, so its position in a composed output stack
     matters. Caller-supplied sampling kwargs (temperature, `top_p`, repetition penalty) apply around
     the shift; in particular temperature rescales the effective `beta`, so a protocol-faithful run
-    passes `do_sample=True` and nothing else.
+    passes `do_sample=True` and nothing else. A `value_trace` list passed via `runtime_kwargs`
+    receives one `ValueStepRecord` per scored step (the candidate ids, their pre-shift scores, and
+    the per-candidate reward).
 
     Two scoring paths back the value. When `efficient=True` and the reward model is decoder-only and
     shares the language model's vocabulary, `steer()` builds a `CachedRewardModelValue` that memoizes
@@ -61,6 +63,15 @@ class RAD(OutputControl):
     """
 
     Args = RADArgs
+
+    RUNTIME_KWARGS_SCHEMA: list[dict] = [
+        {
+            "name": "value_trace",
+            "type": "list",
+            "scope": "call",
+            "help": "A caller-owned list that receives one ValueStepRecord per scored step of this call.",
+        },
+    ]
 
     tokenizer: PreTrainedTokenizerBase | None = None
     _value = None
@@ -194,12 +205,28 @@ class RAD(OutputControl):
         cached._cache = None
         return True
 
+    @property
+    def scoring_path(self) -> str | None:
+        """Which scoring path `steer()` resolved, or `None` before `steer()`.
+
+        Returns `"cached"` for a `CachedRewardModelValue` (the paper's O(km) unidirectional path),
+        `"stateless"` for a shared-vocabulary `RewardModelValue`, and `"text"` for a
+        `RewardModelValue` over a different vocabulary (the decode-and-re-encode path).
+        """
+        if self._value is None:
+            return None
+        if isinstance(self._value, CachedRewardModelValue):
+            return "cached"
+        return "stateless" if self._value.shared_vocab else "text"
+
     def get_logits_processors(self, input_ids, runtime_kwargs, attention_mask=None, **kwargs) -> list:
         """Return a fresh `ValueGuidedProcessor` implementing RAD's reward-augmented shift.
 
         Candidates are the top-`top_k` of the scores this processor receives; non-candidate tokens
         are masked to `-inf`; candidate rewards are clamped to `[0, 1]` (inverted when `invert` is
-        set) and the candidate logits are shifted by `beta * reward`.
+        set) and the candidate logits are shifted by `beta * reward`. A `value_trace` list in
+        `runtime_kwargs` receives one `ValueStepRecord` per scored step; `compute_logprobs` replays
+        also append when `include_in_scoring` is True.
         """
         if self._value is None:
             raise RuntimeError("RAD.steer() must run before generation (reward model not loaded).")
@@ -214,6 +241,7 @@ class RAD(OutputControl):
                 mask_non_candidates=True,
                 lm_tokenizer=self.tokenizer,
                 attention_mask=attention_mask,
+                trace=(runtime_kwargs or {}).get("value_trace"),
             )
         ]
 

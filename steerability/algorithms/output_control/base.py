@@ -246,6 +246,22 @@ class DecodingDriver(OutputControl):
     backends without a live model.
     """
 
+    def max_rollouts_per_query(self) -> int | None:
+        """An upper bound on the number of continuations this driver generates per input row.
+
+        Counts every sequence the driver requests through the session for one row of one
+        `decode()` call, including proposals it discards. A session call over a frontier of `F`
+        rows with `num_return_sequences=n` counts `F * n`. Returns None when the configuration
+        admits no static bound.
+
+        Callers use the bound to budget or refuse a configuration before executing it. The
+        default returns None.
+
+        Returns:
+            The per-row rollout bound, or None when no static bound applies.
+        """
+        return None
+
     @abstractmethod
     def decode(
         self,

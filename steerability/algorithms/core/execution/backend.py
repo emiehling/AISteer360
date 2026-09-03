@@ -93,11 +93,16 @@ class SteeredSession:
     Attributes:
         inner: The wrapped backend session.
         state_entries: Entries injected ahead of each item's own.
+        generated_tokens: Running non-pad token count over every `ItemResult.output.output_ids`
+            this wrapper has returned from `generate`, across all of a driver's rollouts. The pad
+            id is read from the wrapped session's tokenizer; `numel()` counts every position when
+            there is none. The pipeline reads this total after the driver's `decode` returns.
     """
 
     def __init__(self, inner, state_entries: tuple = ()):
         self.inner = inner
         self.state_entries = tuple(state_entries)
+        self.generated_tokens = 0
 
     @property
     def layout(self):
@@ -117,8 +122,17 @@ class SteeredSession:
         )
 
     def generate(self, items, params):
-        """Generate with the wrapper's entries injected into every item."""
-        return self.inner.generate([self._inject(item) for item in items], params)
+        """Generate with the wrapper's entries injected into every item, accumulating the non-pad
+        token count of every returned output into `generated_tokens`."""
+        results = self.inner.generate([self._inject(item) for item in items], params)
+        pad_token_id = getattr(getattr(self.inner, "tokenizer", None), "pad_token_id", None)
+        for result in results:
+            output_ids = result.output.output_ids
+            if pad_token_id is None:
+                self.generated_tokens += int(output_ids.numel())
+            else:
+                self.generated_tokens += int((output_ids != pad_token_id).sum().item())
+        return results
 
     def score(self, items, params):
         """Score with the wrapper's entries injected into every item."""

@@ -116,6 +116,15 @@ class SearchDriver(DecodingDriver):
         self.propose_mode = propose_mode
         self.tokenizer = None  # injected by the pipeline
 
+    def max_rollouts_per_query(self) -> int:
+        """`num_candidates * (1 + (max_iterations - 1) * keep_k)`.
+
+        The first iteration proposes `num_candidates` continuations from the single-row prompt;
+        each later iteration proposes `num_candidates` from each of up to `keep_k` retained
+        beams.
+        """
+        return self.num_candidates * (1 + (self.max_iterations - 1) * self.keep_k)
+
     def requirements(self) -> Requirements:
         """Rollouts run through the session, so sampled proposals require nothing beyond the
         session contract; beam proposals require `Capability.BEAM_PROPOSALS`."""

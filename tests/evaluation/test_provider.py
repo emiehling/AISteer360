@@ -333,6 +333,25 @@ class TestOutputAssembly:
         assert model_output.usage.input_tokens == 2
         assert model_output.usage.output_tokens == 3
         assert model_output.usage.total_tokens == 5
+        assert model_output.metadata["returned_output_tokens"] == 3
+
+    def test_generated_tokens_drives_output_usage_when_present(self):
+        api = _api(options=ProviderOptions(reasoning_tags=None))
+        output = make_output([[5, 6, 0, 0]], [1, 2, 0], ("eos",))
+        output.generated_tokens = 40  # a driver rolled out far more than it returned
+        model_output = api._assemble_model_output(output, stop_strings=())
+        assert model_output.usage.output_tokens == 40
+        assert model_output.usage.total_tokens == 42
+        # the returned continuation count stays available for scoring/truncation analysis
+        assert model_output.metadata["returned_output_tokens"] == 2
+
+    def test_returned_count_used_when_generated_tokens_absent(self):
+        api = _api(options=ProviderOptions(reasoning_tags=None))
+        output = make_output([[5, 6, 0, 0]], [1, 2, 0], ("eos",))
+        model_output = api._assemble_model_output(output, stop_strings=())
+        assert output.generated_tokens is None
+        assert model_output.usage.output_tokens == 2
+        assert model_output.metadata["returned_output_tokens"] == 2
 
 
 class TestReasoningSplitModes:

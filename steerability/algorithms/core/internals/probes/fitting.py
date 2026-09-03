@@ -530,3 +530,77 @@ def fit_probe(
         bias=best["bias"],
         meta=meta,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeEvaluation:
+    """Held-out scores of a probe on labeled data.
+
+    Attributes:
+        positive_scores: Signed decision scores of the positive class, shape `[N_pos]`.
+        negative_scores: Signed decision scores of the negative class, shape `[N_neg]`.
+        accuracy: Fraction correct at the calibrated point (`score >= 0` is positive).
+        f1: F1 of the same decision.
+    """
+
+    positive_scores: torch.Tensor
+    negative_scores: torch.Tensor
+    accuracy: float
+    f1: float
+
+
+def evaluate_probe(
+    probe: Probe,
+    model: PreTrainedModel | None,
+    tokenizer: PreTrainedTokenizerBase,
+    data: ContrastivePairs | LabeledExamples,
+    *,
+    prompt_format: PromptFormat = "raw",
+    batch_size: int = 8,
+    max_length: int | None = None,
+    session=None,
+) -> ProbeEvaluation:
+    """Score labeled data against a fitted probe in the probe's recorded space.
+
+    Renders `data` per `prompt_format`, captures at the probe's `location`, pools per the probe's
+    `pooling` over the probe's layers, and applies `probe.decision_function`. The probe is not
+    refitted or recalibrated; the decision uses the probe's calibrated bias, so `score >= 0` is
+    positive at the calibrated point.
+
+    Args:
+        probe: The fitted `Probe` to score against.
+        model: Model whose activations are captured, or None when a capture-capable `session` is
+            provided.
+        tokenizer: Tokenizer for rendering and encoding the data.
+        data: Contrastive pairs or unpaired labeled examples to score. The positives are scored as
+            the positive class and the negatives as the negative class.
+        prompt_format: How the data is rendered before tokenization. Must match the format the
+            probe was fitted under for the scores to be comparable.
+        batch_size: Chunk size for feature extraction.
+        max_length: Tokenization truncation bound. None truncates to the tokenizer's model maximum.
+        session: Optional capture-capable session used in place of a live model.
+
+    Returns:
+        A `ProbeEvaluation` with the per-class scores, accuracy, and F1.
+    """
+    spec = ProbeFitSpec(
+        method="mean_diff",
+        pooling=probe.pooling,
+        location=probe.location,
+        prompt_format=prompt_format,
+        candidate_layers=list(probe.layer_ids),
+        calibration="midpoint",
+    )
+    pos_features, neg_features = _pooled_features(
+        model, tokenizer, data, spec, list(probe.layer_ids),
+        batch_size=batch_size, max_length=max_length, session=session,
+    )
+    pos_scores = probe.decision_function(pos_features)
+    neg_scores = probe.decision_function(neg_features)
+
+    correct = int((pos_scores >= 0).sum()) + int((neg_scores < 0).sum())
+    accuracy = correct / (pos_scores.numel() + neg_scores.numel())
+    f1 = _f1_at(pos_scores, neg_scores, 0.0)
+    return ProbeEvaluation(
+        positive_scores=pos_scores, negative_scores=neg_scores, accuracy=accuracy, f1=f1
+    )

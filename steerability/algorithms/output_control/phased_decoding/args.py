@@ -11,8 +11,11 @@ class PhasedDecodingArgs(BaseArgs):
 
         - `{"fixed": <str | callable>, "replace": bool = False, "add_special_tokens": bool = False}`
           — splice text (a `str` literal, or a `(prompt_text, params) -> str` callable).
-        - `{"generate": {"until": str | None = None, "budget": int | None = None}}` — generate until
-          a boundary; `{"generate": {}}` is unbounded (bounded by the call's own kwargs/criteria).
+        - `{"generate": {"until": str | None = None, "until_token_ids": Sequence[int] = (),
+          "budget": int | None = None}}` — generate until a boundary (the `until` substring, any
+          token in `until_token_ids`, or the `budget`, whichever first); `{"generate": {}}` is
+          unbounded (bounded by the call's own kwargs/criteria). `until_token_ids` is the
+          backend-portable form for a delimiter that tokenizes to a special token.
 
     Plans whose `fixed` values are all strings are fully JSON-serializable (sweepable through
     `ControlSpec` and log-friendly). Grammar validation happens in the control's `_configure()`.

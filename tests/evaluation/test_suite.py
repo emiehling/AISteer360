@@ -86,6 +86,22 @@ class TestRun:
         assert str(call["model"]) == "steerability/cfg-1"
         assert set(results) == {"a", "b"}
 
+    def test_score_defaults_true_and_forwards_false(self, recorded_eval_set, tmp_path):
+        calls, _ = recorded_eval_set
+        suite = InspectSuite(name="capability", tasks=("a",))
+        suite.run(StubSteeringPipeline(), log_dir=tmp_path)
+        assert calls[-1]["score"] is True
+        suite.run(StubSteeringPipeline(), log_dir=tmp_path, score=False)
+        assert calls[-1]["score"] is False
+
+    def test_model_roles_omitted_by_default_and_forwarded_when_given(self, recorded_eval_set, tmp_path):
+        calls, _ = recorded_eval_set
+        suite = InspectSuite(name="capability", tasks=("a",))
+        suite.run(StubSteeringPipeline(), log_dir=tmp_path)
+        assert "model_roles" not in calls[-1]
+        suite.run(StubSteeringPipeline(), log_dir=tmp_path, model_roles={"grader": "openai/x"})
+        assert calls[-1]["model_roles"] == {"grader": "openai/x"}
+
     def test_display_defaults_to_none_and_forwards_when_given(self, recorded_eval_set, tmp_path):
         calls, _ = recorded_eval_set
         suite = InspectSuite(name="capability", tasks=("a",))
