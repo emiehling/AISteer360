@@ -54,6 +54,9 @@ class GenerationParams:
             in addition to the tokenizer's EOS.
         extra: Additional keyword arguments passed through unmapped on the in-process arm. A
             normalized field always takes precedence over a same-named key in `extra`.
+
+    Raises:
+        ValueError: If `min_new_tokens` exceeds `max_new_tokens` when both are set.
     """
 
     max_new_tokens: int | None = None
@@ -75,6 +78,16 @@ class GenerationParams:
         else:
             object.__setattr__(self, "stop_strings", tuple(self.stop_strings))
         object.__setattr__(self, "stop_token_ids", tuple(int(i) for i in self.stop_token_ids))
+        if (
+            self.min_new_tokens is not None
+            and self.max_new_tokens is not None
+            and self.min_new_tokens > self.max_new_tokens
+        ):
+            raise ValueError(
+                f"min_new_tokens={self.min_new_tokens} exceeds max_new_tokens={self.max_new_tokens}; the length "
+                "bounds are jointly unsatisfiable. Control contributions only tighten bounds, so lower "
+                "min_new_tokens or loosen the tightened max_new_tokens."
+            )
 
     @classmethod
     def from_gen_kwargs(cls, **gen_kwargs: Any) -> "GenerationParams":
@@ -152,7 +165,9 @@ def merge_lowered_params(params: GenerationParams, contribution: Mapping[str, An
         The merged `GenerationParams`.
 
     Raises:
-        ValueError: If `contribution` carries a key outside the lowerable set.
+        ValueError: If `contribution` carries a key outside the lowerable set, or if the tightened
+            bounds cross (`min_new_tokens` exceeds `max_new_tokens`), raised on construction of the
+            merged instance.
     """
     unknown = [key for key in contribution if key not in LOWERABLE_PARAM_NAMES]
     if unknown:

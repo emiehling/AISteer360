@@ -217,7 +217,7 @@ The toolkit implements the following step-level controls:
     - *Backends*: HF (model-backed per-step logit math is in-process only).
 - `ConstrainedDecoding` ([API reference](../reference/algorithms/output_control/constrained_decoding.md))
     - *Description*: constrained decoding from one declarative source (JSON schema, regex, EBNF grammar, or a choice set); every logit the grammar forbids is masked at each step.
-    - *Backends*: HF (client-side automaton, `aisteer360[guided]`), vLLM (native structured outputs); a control constructed with a live automaton object is HF-only.
+    - *Backends*: HF (client-side automaton, `aisteer360[guided]`), vLLM (native structured outputs); a control constructed with a live automaton object is HF-only. On vLLM versions predating the structured-outputs surface the engine grammar is not whitespace-compact, so engine and in-process outputs agree structurally rather than byte-for-byte.
 - `ValueGuidance` ([API reference](../reference/algorithms/output_control/value_guidance.md), [notebook](../examples/notebooks/generics/value_guidance.ipynb))
     - *Description*: the config-first generic over the step shape (candidates → value → normalize → shift); FUDGE, ARGS, RAD, and SASA are assignments of its config.
     - *Backends*: HF (model-backed per-step logit math is in-process only).

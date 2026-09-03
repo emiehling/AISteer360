@@ -5,11 +5,20 @@ live model objects. Both resolve that configuration into a `Backend` through
 `resolve_metric_backend`, which caches by `BackendSpec` so metrics configured with equal specs
 share one loaded model or engine. This mirrors `SteeringPipeline._backends` and the cache-by-spec
 guidance in the `Backend` docstring.
+
+Cached backends are released and evicted by `release_metric_backends()`; the cache is otherwise
+process-lifetime. The offline vLLM engine is one-per-process: a `vllm` judge next to a `vllm`
+pipeline puts two engines in one process, which `VLLMBackend.release` does not support. Put one
+side on `vllm-serve` or `huggingface`.
 """
 from __future__ import annotations
 
+import logging
+
 from aisteer360.algorithms.core.execution.backend import Backend, resolve_backend_class
 from aisteer360.algorithms.core.execution.spec import BackendSpec
+
+logger = logging.getLogger(__name__)
 
 BackendConfig = "BackendSpec | str | Backend | None"
 
@@ -23,6 +32,30 @@ def _backend_for_spec(spec: BackendSpec) -> Backend:
         backend = resolve_backend_class(spec)(spec)
         _METRIC_BACKENDS[spec] = backend
     return backend
+
+
+def release_metric_backends() -> None:
+    """Release every cached metric backend and empty the cache.
+
+    Mirrors `SteeringPipeline.release_backends()` for the metric-side cache. The cache is
+    emptied first, then each formerly cached backend's `release()` runs once: engine-owning
+    backends shut their engines down, and the Hugging Face and serve backends are no-ops. A
+    release failure is logged and does not prevent the remaining releases. Live `Backend`
+    instances passed to a metric are never cached and are not touched. Release is idempotent.
+
+    A metric constructed against a released spec keeps its reference to the released backend;
+    on the offline vLLM backend its next `compute()` raises `RuntimeError`, so construct the
+    metric again after releasing. The offline vLLM engine's release is process-global with
+    respect to vLLM distributed state and assumes no other live vLLM engine in the process
+    (see `VLLMBackend.release`).
+    """
+    backends = list(_METRIC_BACKENDS.values())
+    _METRIC_BACKENDS.clear()
+    for backend in backends:
+        try:
+            backend.release()
+        except Exception:
+            logger.warning("Metric backend release failed", exc_info=True)
 
 
 def resolve_metric_backend(

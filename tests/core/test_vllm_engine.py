@@ -121,6 +121,7 @@ class TestConstraintParityOnEngine:
         import json
 
         from aisteer360.algorithms.output_control.constrained_decoding import ConstrainedDecoding
+        from aisteer360.backends.vllm.backend import _structured_outputs_engine_kwargs
 
         pytest.importorskip("xgrammar")
         schema = {
@@ -154,4 +155,10 @@ class TestConstraintParityOnEngine:
 
         assert parsed("engine", engine_text) is not None
         assert parsed("hf", hf_text) is not None
-        assert engine_text == hf_text
+        # byte equality holds only when the engine grammar is whitespace-compact; on the legacy
+        # guided-decoding surface without that switch, compare parsed structure instead
+        defaults = _structured_outputs_engine_kwargs()
+        if "structured_outputs_config" in defaults or "guided_decoding_disable_any_whitespace" in defaults:
+            assert engine_text == hf_text
+        else:
+            assert parsed("engine", engine_text) == parsed("hf", hf_text)
