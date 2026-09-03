@@ -12,12 +12,12 @@ The first step in steering any model is to define how you want to steer, i.e., t
 an `ActivationAdapter`, a state control that edits the model's internal activations at inference time. The desired
 target behavior for this example is "positivity".
 
-An activation adapter is assembled from a few slots: a transform that carries the steering artifact and edits the
+An activation adapter is assembled from a few slots: a transform that contains the steering artifact and edits the
 activation, a selector (or explicit layer ids) that chooses which layer(s) to steer, and optionally a gate and a
 token scope. Here we use the simplest configuration, an additive transform at a single layer.
 
 The transform's artifact is a steering direction. We obtain it from a contrast between examples of the target behavior
-(positive, upbeat text) and its opposite (negative, downbeat text). A `ContrastiveFit` holds these pairs and the
+(positive, upbeat text) and its opposite (negative, downbeat text). A `ContrastiveFit` stores these pairs and the
 extraction settings, and fits one direction per layer when the adapter steers:
 
 ```python

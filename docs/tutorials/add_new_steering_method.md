@@ -45,7 +45,7 @@ STEERING_METHOD = {
 
 ### 2. Arguments dataclass: `args.py`
 
-The args file holds a dataclass that specifies the method's required arguments along with any associated validation
+The args file contains a dataclass that specifies the method's required arguments along with any associated validation
 logic.
 
 ```python
@@ -86,12 +86,12 @@ method's parameters in the `__post_init__` method so that validation runs automa
 
 ### 3. Control implementation: `control.py`
 
-The control file holds the method's main implementation. The control class does not contain an `__init__` method.
+The control file contains the method's main implementation. The control class does not contain an `__init__` method.
 Instead, the method's parameters are handled by the args class via the line `Args = CustomControlArgs`.[^1] The
 `__init__` method of the control's base class automatically validates these fields (via `Args.validate`) and converts
 them into class attributes.
 
-[^1]: This is intended to minimize boilerplate code (parameter/argument parsing and validation) that would otherwise need to live in each control's `__init__` method.
+[^1]: This is intended to minimize boilerplate code (parameter/argument parsing and validation) that would otherwise be needed in each control's `__init__` method.
 
 Any one-time preparation of the steering method is done in the `.steer()` method of the control. This is optional for all
 control categories except structural control methods, where the `.steer()` method contains the necessary logic for
@@ -99,14 +99,13 @@ modifying the model's weights/architecture. Note that while including a steer me
 in every control type other than structural, it is often useful to include one for attaching necessary objects to the
 control for later use (e.g., the tokenizer). This is illustrated in the tutorials below.
 
-A control's steer step declares one of four access levels via `steer_access()`: `facts` (layout and tokenizer),
-`rollouts` (generate and score through the session), `capture` (hidden states), or `module` (the model as a live
-`torch.nn.Module`). Declare the highest rung your steer touches. Intervention templates derive it from their sources,
-and structural controls are `module` by definition. The pipeline hands your `steer()` a session scoped to that rung
-(and the model itself only at `module`), and arranges residency so that on an engine backend, module-level steps run on
-a temporary in-process model that is freed before the engine starts, with exported artifacts as the handoff. Do not hold
-the model past `steer()` unless your generate phase requires `IN_PROCESS_TORCH`. Generate- and score-phase
-requirements are unchanged.
+A control's steer step also declares what it needs from the model via `steer_access()`. The levels are cumulative:
+`facts` (layout and tokenizer), `rollouts` (generation and scoring through the session), `capture` (hidden states), and
+`module` (the model as a loaded `torch.nn.Module`). Declare the highest level your `steer()` uses. Intervention
+templates derive it from their sources, and structural controls are `module` by definition. The pipeline hands your
+`steer()` a session scoped to that level, and the model itself only at `module`. On an engine backend, module-level
+steps run on a temporary in-process model that is freed before the engine starts, with exported artifacts as the
+handoff. Do not keep a reference to the model past `steer()` unless your generate phase requires `IN_PROCESS_TORCH`.
 
 The implementation of a control method depends on its steering category. Specific instructions for adding a method
 under each of the four categories, via a small example implementation, are given below:
@@ -193,11 +192,10 @@ alignment with the desired objective (e.g., helpfulness, safety).
 3. **Iterative Refinement**: Select the top-k highest-scoring beams and repeat the process until termination
 conditions are met (EOS token, max length, or max iterations reached).
 
-DeAL is a decoding driver, a thin preset of the generic `SearchDriver` that maps DeAL's args onto
-`(scorer, segment_len, num_candidates, keep_k, max_iterations, propose_mode="beam")`. The driver forwards the
-composed logits/stopping stacks into every lookahead rollout, so a step-level control such as RAD steers every DeAL
-rollout. The `reward_params` runtime override is honored. The per-iteration deepcopy of `gen_kwargs`
-is safe because the composed stacks travel as explicit `decode()` parameters and never inside `gen_kwargs`.
+DeAL is a decoding driver implemented as a preset of the generic `SearchDriver`, mapping its arguments onto the
+search fields (`scorer`, `segment_len`, `num_candidates`, `keep_k`, `max_iterations`, and `propose_mode="beam"`).
+The composed logits processors and stopping criteria apply inside every lookahead rollout, which means that a
+step-level control such as RAD steers every DeAL rollout. The `reward_params` runtime kwarg is honored per row.
 
 Args:
     reward_func (Callable): Function that scores generated continuations. Should accept

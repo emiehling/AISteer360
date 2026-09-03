@@ -25,12 +25,11 @@ class DeAL(SearchDriver):
     3. **Iterative Refinement**: Select the top-k highest-scoring beams and repeat the process until termination
     conditions are met (EOS token, max length, or max iterations reached).
 
-    DeAL is a decoding driver, a thin preset of the generic `SearchDriver` that maps DeAL's args onto
-    `(scorer, segment_len, num_candidates, keep_k, max_iterations, propose_mode="beam")`. The driver forwards the
-    composed logits/stopping stacks into every lookahead rollout, so a step-level control such as RAD steers every DeAL
-    rollout. The `reward_params` runtime override is honored and is per row (one mapping merged into the scorer's
-    params). The per-iteration deepcopy of `gen_kwargs` is safe because the composed stacks travel as explicit
-    `decode()` parameters and never inside `gen_kwargs`.
+    DeAL is a decoding driver implemented as a preset of the generic `SearchDriver`, mapping its arguments onto the
+    search fields (`scorer`, `segment_len`, `num_candidates`, `keep_k`, `max_iterations`, and `propose_mode="beam"`).
+    The composed logits processors and stopping criteria apply inside every lookahead rollout, which means that a
+    step-level control such as RAD steers every DeAL rollout. The `reward_params` runtime kwarg is honored per row (one
+    mapping merged into the scorer's params).
 
     Reference:
 

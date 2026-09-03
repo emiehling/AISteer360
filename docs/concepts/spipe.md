@@ -1,11 +1,11 @@
 # Sharing pipelines (`.spipe`)
 
-A steered pipeline normally exists only as live Python objects. The `.spipe` format writes a pipeline down as a
+A steered pipeline normally exists only as in-memory Python objects. The `.spipe` format writes a pipeline down as a
 portable bundle that can be saved, version-controlled, and handed to another person or machine.
 
-One format holds two layers of information:
+One format contains two layers of information:
 
-- **The recipe**: the model reference plus the controls exactly as constructed. Every `.spipe` carries the recipe.
+- **The recipe**: the model reference plus the controls exactly as constructed. Every `.spipe` contains the recipe.
   Loading a recipe-only bundle and calling `steer()` re-runs any fits and training. Results may differ across
   machines because of GPU nondeterminism.
 - **The frozen resolution**: what the steer step actually produced, i.e., fitted steering vectors, probes, LoRA
@@ -44,7 +44,7 @@ loads against an external store via `SPipe.load(path, artifact_store=...)`.
 
 The lock records, per frozen artifact, a digest of the recipe fields a re-fit would consume. Editing an inert
 application parameter in the manifest (say, a CAA multiplier) leaves the pinned vector valid. Editing the training
-data does not, and loading then fails with a staleness error naming the control and the fix (`thaw()` and re-steer,
+data does not, and loading then fails with a staleness error that identifies the control and the fix (`thaw()` and re-steer,
 or `allow_stale=True`).
 
 ## Verification
@@ -61,9 +61,9 @@ against the model they are being installed on, under a policy chosen at `pipelin
 
 ## Trust and `allow_code`
 
-A `.spipe` from someone else is untrusted input. Loading never unpickles by default, tensors travel only as
+A `.spipe` from someone else is untrusted input. Loading never unpickles by default. Tensors are stored only as
 safetensors, archives are extracted behind zip-safety guards, and every artifact is verified against its content
-hash. Two things require an explicit `allow_code=True` at load, mirroring the `trust_remote_code` posture:
+hash. Two things require an explicit `allow_code=True` at load, similar to `trust_remote_code`:
 
 - References to Python callables, e.g., a scorer function a prompt optimizer was configured with. The manifest's
   `code_dependent` flag says up front whether a bundle needs this, and the referenced modules must be on the import
@@ -75,6 +75,6 @@ optimizer used a custom scorer is therefore code-dependent even though the froze
 
 ## Identity
 
-Every bundle carries two digests. `config_id` is the same configuration identity the evaluation stack records, which
-ties a `.spipe` to evaluation results. `recipe_id` additionally folds in the model reference, since a steering
+Every bundle contains two digests. `config_id` is the same configuration identity that `SteeringEval` records, which
+ties a `.spipe` to evaluation results. `recipe_id` additionally includes the model reference, since a steering
 artifact is meaningless without its model.

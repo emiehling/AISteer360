@@ -39,20 +39,24 @@ square brackets to the `install` command as follows:
 uv venv --python 3.12 && uv pip install '.[docs]'
 ```
 
-By default, pipelines load and run the model in process (via Hugging Face `transformers`). Installing the `vllm` extra
-additionally enables inference through vLLM (either the offline engine or a server). The feature extras are: `merging`
-(MergeKit structural control), `cpo` (causal DML reward estimation for CPO, which otherwise runs via a
-gradient-boosting fallback), `inspect` (the Inspect AI evaluation stack), `viz` (matplotlib and seaborn, for the
-evaluation plotting utilities), `guided` (xgrammar, for in-process constrained decoding), and `vllm` (the vLLM
-execution backends plus the `vllm_hook_plugins` core; it pulls in `trl[vllm]` so the resolved vLLM stays inside
-trl's supported vLLM range). The umbrella `all` extra
-installs `cpo`, `inspect`, and `viz`. Install `guided`, `merging`, and `vllm` by name, e.g., `uv pip install '.[vllm]'`.
-Note that `merging` cannot share an environment with `inspect` (MergeKit pins an older pydantic than Inspect requires)
-and therefore stays out of `all`.
+By default, pipelines load and run the model in process (via Hugging Face `transformers`). The optional feature
+extras add:
 
-On a node whose CUDA toolkit does not match the installed torch build, the vLLM boot policy (applied by the offline
-engine; `serve_environment()` returns it for a server you launch) defaults the FlashInfer
-sampler off (`VLLM_USE_FLASHINFER_SAMPLER=0`) to avoid a JIT kernel compile at boot; the native sampler is
+- `merging`: the MergeKit structural control
+- `cpo`: causal DML reward estimation for CPO (which otherwise runs via a gradient-boosting fallback)
+- `inspect`: the Inspect AI evaluation framework
+- `viz`: matplotlib and seaborn, for the evaluation plotting utilities
+- `guided`: xgrammar, for in-process constrained decoding
+- `vllm`: the vLLM execution backends (offline engine or server) plus the `vllm_hook_plugins` core. This extra pulls in
+  `trl[vllm]` such that the resolved vLLM version stays inside TRL's supported range.
+
+The umbrella `all` extra installs `cpo`, `inspect`, and `viz`. Install `guided`, `merging`, and `vllm` by name, e.g.,
+`uv pip install '.[vllm]'`. Note that `merging` cannot share an environment with `inspect` (MergeKit pins an older
+pydantic than Inspect requires) and therefore stays out of `all`.
+
+The vLLM boot environment (applied by the offline engine, and returned by `serve_environment()` for a server you
+launch) defaults the FlashInfer sampler off via `VLLM_USE_FLASHINFER_SAMPLER=0`. This avoids a JIT kernel compile at
+boot, which fails on a node whose CUDA toolkit does not match the installed torch build. The native sampler is
 greedy-equivalent. To use FlashInfer instead, install its prebuilt kernels for your CUDA version from
 `https://flashinfer.ai/whl/cu1XX` (`flashinfer-jit-cache`, and optionally `flashinfer-cubin`) and set
 `VLLM_USE_FLASHINFER_SAMPLER=1`.

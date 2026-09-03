@@ -47,11 +47,11 @@ steering methods (and combinations thereof) on a given model.
 To facilitate a principled comparison, the toolkit evaluates steering pipelines on
 [Inspect AI](https://inspect.aisi.org.uk/) and its benchmark catalog
 [`inspect_evals`](https://github.com/UKGovernmentBEIS/inspect_evals). Since a steered pipeline runs as an Inspect
-model, one stack measures both the target behavior of a pipeline and its general-capability side effects on
-community-standard tasks, with results transparent down to the per-sample generation. The `SteeringEval` runner
+model, the same evaluation framework measures both the target behavior of a pipeline and its general-capability side
+effects on community-standard tasks, with results available down to the per-sample generation. The `SteeringEval` runner
 compares pipelines (fixed configurations, hyperparameter sweeps, and an unsteered baseline) on shared task suites,
 addressing the current fragmentation in the field where steering algorithms are typically developed and evaluated
 within isolated, task-specific environments.[@liang2024controllable]
 
 We encourage the community to use Steerability in their steering workflows. We will continue to develop in the open, and
-encourage users to suggest any additional features or raise any issues on our [GitHub page](https://github.com/IBM/steerability).
+encourage users to suggest any additional features or report any issues on our [GitHub page](https://github.com/IBM/steerability).

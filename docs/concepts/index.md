@@ -12,6 +12,6 @@ Alongside steering, the toolkit reads model internals for detection through cali
 conditional steering and routed decoding. For the conceptual overview of detection, please see the
 [guide on probes](probes.md).
 
-Steered pipelines can also be written down as portable `.spipe` bundles that carry both the configuration and the
+Steered pipelines can also be written down as portable `.spipe` bundles that contain both the configuration and the
 products of an expensive steer step. For the conceptual overview of saving, sharing, and loading pipelines, please
 see the [guide on sharing pipelines](spipe.md).

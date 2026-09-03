@@ -14,7 +14,7 @@ methods from the literature map onto one of them:
 - one that splices forced and generated segments is a [`PhasedDecoding`](../../concepts/controls.md#generic-controls) config (budget forcing, response prefill, thinking intervention)
 - one that stops on a substring, token, or budget is a [`StoppingRules`](../../concepts/controls.md#generic-controls) config
 
-If so, ship the method as a config, not a class. When a config earns a name through use, promote it with a small preset
+If so, implement the method as a config, not a class. When a config earns a name through use, promote it with a small preset
 subclass over the generic that maps its named args onto the generic's fields (the pattern the named methods already
 follow, with `BestOfN` over `SearchDecoding`'s shape and `BudgetForcing` over `PhasedDecoding`'s):
 
@@ -41,11 +41,11 @@ If you are writing a class, output controls participate through one of two mecha
 decision is choosing which:
 
 - **Contribute**: supply logits processors and/or stopping criteria. The pipeline composes every step-level control's
-  processors in `controls`-list order into one stack (and likewise for stopping criteria), then hands the stacks to
+  processors in `controls`-list order into one list (and likewise for stopping criteria), then hands both lists to
   whichever driver owns the loop. A step-level control never runs the decode loop itself and therefore composes with
   other step-level controls and with a driver. **Override**: `get_logits_processors` and/or `get_stopping_criteria`.
 - **Drive**: own the decode loop. A driver subclasses `DecodingDriver` and implements `decode(...)`, applying the
-  composed stacks in every forward pass it issues. Since the loop does not compose, a pipeline admits at most one
+  composed processors and stopping criteria in every forward pass it issues. Since the loop does not compose, a pipeline admits at most one
   enabled driver. With none, decoding defaults to the model's own `generate`. **Override**: `decode`.
 
 As a rule of thumb, if the method reshapes the next-token distribution one step at a time (reward shifts, contrastive
@@ -192,7 +192,7 @@ class ShortestOfN(DecodingDriver):
         if input_ids.size(0) != 1:
             raise NotImplementedError("ShortestOfN handles one prompt at a time (batch size 1).")
 
-        extra = stack_generate_kwargs(logits_processors, stopping_criteria)  # apply the composed stacks
+        extra = stack_generate_kwargs(logits_processors, stopping_criteria)  # apply the composed processors and stopping criteria
         kwargs = dict(gen_kwargs)  # merge first so the driver's settings win without duplicate-kwarg errors
         kwargs.update({"do_sample": True, "num_return_sequences": self.n})
         candidates = model.generate(
@@ -210,21 +210,20 @@ class ShortestOfN(DecodingDriver):
 ```
 
 !!! note "The driver contract"
-    `logits_processors` and `stopping_criteria` are the composed, authoritative stacks for this generation. Apply
-    them in every forward pass. `gen_kwargs` reaching `decode` never contains `logits_processor` /
-    `stopping_criteria` (the pipeline pops caller-supplied ones and composes them into the stacks), and a driver that
-    deep-copies its `gen_kwargs` is therefore safe by construction. `decode` returns the full sequence ids (prompt +
-    continuation), and the pipeline strips the prompt prefix. The pipeline also passes `session=`, a `SteeredSession`
-    carrying this generation's control entries. Resolve your rollout callable with
-    `resolve_generate_callable(model, runtime_kwargs, session=session)` so that the driver's rollouts run steered on
-    any backend whose session serves its rollout parameters. Override `max_rollouts_per_query()` to declare an upper
-    bound on the continuations the driver generates per input row (`ShortestOfN` returns `self.n`); the default
-    returns `None`, meaning no static bound.
+    `logits_processors` and `stopping_criteria` are the composed lists for this generation, and a driver must apply
+    them in every forward pass. The `gen_kwargs` reaching `decode` never contain `logits_processor` or
+    `stopping_criteria`, since the pipeline removes caller-supplied ones and composes them into these lists. `decode`
+    returns the full sequence ids (prompt plus continuation), and the pipeline strips the prompt prefix. The pipeline
+    also passes `session=`, a `SteeredSession` that contains this generation's control entries. Resolving the rollout
+    callable with `resolve_generate_callable(model, runtime_kwargs, session=session)` makes the driver's rollouts run
+    steered on any backend. A driver can override `max_rollouts_per_query()` to declare an upper bound on the
+    continuations it generates per input row (`ShortestOfN` returns `self.n`). The default returns `None`, meaning no
+    static bound.
 
 ## Prefer the `common` library
 
 Most methods do not start from scratch. The [`output_control.common`](../../reference/algorithms/output_control/common.md)
-library factors the category into reusable components, and the shipped methods are thin recipes over them:
+library factors the category into reusable components, and the methods in the toolkit are thin recipes over them:
 
 - `ValueGuidedProcessor` (step-level candidate scoring): `RAD`, `SASA`.
 - `ContrastiveMixtureProcessor` (mix full-vocabulary logit sources): `DExperts`, `ContrastiveDecoding`.
@@ -235,6 +234,11 @@ A driver built on `SearchDriver` or `PhasedDriver` is a preset. It declares an `
 `OutputControl.__init__` from its own `__init__`, and overrides `_configure()` to map its mirrored args onto the
 generic base's fields, never bypassing the parent constructor. See `deal/control.py` and `budget_forcing/control.py`
 for the pattern. An argument-free control (no hyperparameters) sets `Args = None` and takes no constructor arguments.
+
+When adding a component to `common`, follow its naming convention. Within a `common/<family>/` folder, the primary
+class in `<name>.py` is `<Name><FamilySingular>` (for example `values/classifier.py` defines `ClassifierValue`), and
+the family base is in `base.py`. Top-level `common/*.py` modules (such as `candidates.py` and `criteria.py`) are
+collection or helper modules exempt from the suffix rule.
 
 ## Running the control
 

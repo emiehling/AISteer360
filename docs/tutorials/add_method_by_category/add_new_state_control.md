@@ -49,11 +49,12 @@ class ActivationBiasArgs(BaseArgs):
 ## Declarative controls
 
 A declarative control subclasses `InterventionControl` and maps its validated args onto an intervention template in
-`_configure`. An `Intervention` names the behavior layers (explicit ids or a selector resolved at steer time), a
-transform (which may carry an `ArtifactSource` fitted at steer time), a `TokenScope`, and optionally a gate, i.e.,
-the condition under which the edit applies. The base class does the rest: `steer()` binds the template against the model (or a remote session's
-structural facts), hooks are built once per generation by the pipeline, and configurations whose components all
-have a wire form run on vLLM backends through the vLLM-Hook plugin with no extra code.
+`_configure`. An `Intervention` specifies the behavior layers (explicit ids or a selector resolved at steer time), a
+transform (which may contain an `ArtifactSource` fitted at steer time), a `TokenScope`, and optionally a gate, i.e.,
+the condition under which the edit applies. The base class does the rest. Its `steer()` binds the template against the
+model (or against the layout reported by an engine session), the pipeline builds hooks once per generation, and
+configurations whose components all have a serialized form run on vLLM backends through the vLLM-Hook plugin with no
+extra code.
 
 Since `ActivationBias` is an additive edit, its template is one intervention over an `AdditiveTransform`:
 
@@ -82,8 +83,8 @@ class ActivationBias(InterventionControl):
         ),)
 ```
 
-There is no hook code, no per-generation state, and no backend knowledge in the control. The shipped residual-stream
-methods (`caa`, `act_add`, `directional_ablation`, `angular_steering`, `cast`, `iti`, and the composable
+There is no hook code, no per-generation state, and no backend knowledge in the control. The residual-stream
+methods in the toolkit (`caa`, `act_add`, `directional_ablation`, `angular_steering`, `cast`, `iti`, and the composable
 `activation_adapter`) all follow this pattern. Read them for templates that fit artifacts from data
 (`ContrastiveFit`), select layers at steer time (`FractionalDepthSelector`, `CoveredLayers`), or gate
 conditionally (`ConditionPointSearch`, `gate_from_probe`).
@@ -91,8 +92,9 @@ conditionally (`ConditionPointSearch`, `gate_from_probe`).
 ## Custom hook controls
 
 A method that hooks a mechanism the intervention vocabulary does not cover (for example attention weights, as in
-PASTA) subclasses `HookControl` and implements `get_hooks`. The hooks travel as entries on session items and the
-session that executes forwards owns registration. `get_hooks` must therefore fully re-derive its state on every call:
+PASTA) subclasses `HookControl` and implements `get_hooks`. The pipeline calls `get_hooks` once per generation and
+registers the returned hooks for the duration of that generation only. `get_hooks` must therefore fully re-derive its
+state on every call:
 
 ```python
 import torch
@@ -152,10 +154,8 @@ class ActivationBiasHooks(HookControl):
 
 ## Position tracking in hooks
 
-Scoped intervention controls need no position tracking of their own. `build_hooks` compiles every intervention through the
-shared `TransformHookRuntime`, which reads each pass's absolute offset from the `cache_position` kwarg when the
-hooked module receives it and falls back to pass counting otherwise, with exactly one designated pass-opener hook
-advancing the shared offset per forward pass.
+Declarative controls need no position tracking of their own, since the compiled hooks track the absolute position of
+each forward pass for them.
 
 A custom `HookControl` honoring `token_scope="after_prompt"` or `"from_position"` needs the same care. During
 prefill the hook sees the whole prompt (`seq_len == prompt_len`). During KV-cached decode it sees only the newly
@@ -187,8 +187,7 @@ still read `position_offset = 0`.
 
 ## Using the control
 
-The session executing the generation registers the hooks for exactly the span of the work, and the control can be
-used like any other:
+The control can be used like any other:
 
 ```python
 from steerability.algorithms.state_control.activation_bias.control import ActivationBias

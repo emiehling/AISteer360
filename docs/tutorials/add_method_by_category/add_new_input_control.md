@@ -200,6 +200,6 @@ The `steerability.algorithms.input_control.common` package collects components s
 - `formatters/`: token-level and message-level renderers for memory content (`SystemPromptFormatter`,
   `FewShotBlockFormatter`, `ChatTemplateSlotFormatter`, `PrependTextFormatter`).
 - `scorers/`, `proposers/`, `selectors/`: small abstractions used by `PRewrite`, `CPO`, and `GEPA`. Reuse
-  them when applicable. Method-specific procedures should live in your method's own `utils/` directory.
+  them when applicable. Method-specific procedures should be placed in your method's own `utils/` directory.
 - `pareto.py` / `budget.py`: `ParetoFrontier` (Pareto-frontier sampling, used for GEPA parent selection) and
   `RolloutBudget` (rollout-budget accounting).

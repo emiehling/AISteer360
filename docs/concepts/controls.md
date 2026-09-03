@@ -25,7 +25,7 @@ category of control below.
 
 Input control methods describe algorithms that manipulate the input/prompt to guide model behavior. They do not change
 the model itself. This is enabled in the toolkit through a prompt adapter $\sigma(x)$ applied to the original prompt
-$x$. A pipeline may hold several input controls, which compose in `controls`-list order, each receiving the previous
+$x$. A pipeline may contain several input controls, which compose in `controls`-list order, each receiving the previous
 control's output.
 
 For a control method to be deemed an input control method, it must satisfy the following requirements:
@@ -47,7 +47,7 @@ self-consistency), automatic prompting methods, and prompt routing. The toolkit 
     - *Backends*: HF, vLLM.
 - `CPO` ([API reference](../reference/algorithms/input_control/cpo.md), [notebook](../examples/notebooks/algorithms/cpo.ipynb))
     - *Description*: causal prompt optimization ([Chen et al. 2026](https://arxiv.org/abs/2602.01711)), i.e., offline causal reward training (Double ML over PCA-reduced embeddings) plus per-query tree search.
-    - *Backends*: HF, vLLM (requires `prompt_lm`). Without `prompt_lm` the live pipeline model is bound as the proposer, which is HF-only.
+    - *Backends*: HF, vLLM (requires `prompt_lm`). Without `prompt_lm` the pipeline's loaded model is bound as the proposer, which is HF-only.
 - `GEPA` ([API reference](../reference/algorithms/input_control/gepa.md), [notebook](../examples/notebooks/algorithms/gepa.ipynb))
     - *Description*: reflective genetic prompt evolution ([Agrawal et al. 2025](https://arxiv.org/abs/2507.19457)), single-module variant.
     - *Backends*: HF, vLLM.
@@ -58,12 +58,12 @@ self-consistency), automatic prompting methods, and prompt routing. The toolkit 
     - *Description*: prepends a fixed text marker to a user turn (the last user turn by default, or the first or all user turns), with the token stream as a fallback for non-chat input.
     - *Backends*: HF, vLLM.
 
-The few-shot retriever from [Rubin et al. 2021](https://arxiv.org/abs/2112.08633) (EPR) is shipped as a `BaseSelector`
+The few-shot retriever from [Rubin et al. 2021](https://arxiv.org/abs/2112.08633) (EPR) is provided as a `BaseSelector`
 that slots into `FewShot` rather than as a separate control. See
 [`few_shot.selectors.epr`](../reference/algorithms/input_control/few_shot.md).
 
 Reusable building blocks shared across these methods (memory containers, formatters, scorers, proposers, selectors,
-Pareto / rollout-budget utilities) live in
+Pareto / rollout-budget utilities) are located in
 [`input_control.common`](../reference/algorithms/input_control/common.md).
 
 
@@ -77,14 +77,14 @@ Pareto / rollout-budget utilities) live in
 Structural control methods alter the model's parameters or architecture to steer its behavior. These methods usually
 allow for more aggressive changes to the model (compared to input control methods). Structural controls are implemented
 via fine-tuning, adapter layers, or architectural modifications (e.g., merging) to yield an updated set of weights
-$\theta'$. A pipeline may hold several structural controls, and `steer()` threads the model through them in
+$\theta'$. A pipeline may contain several structural controls, and `steer()` threads the model through them in
 `controls`-list order.
 
 Structural control methods satisfy the following requirements:
 
 - *Control*: Produces a new or modified set of weights $\theta'$ or extends the network with additional modules/layers.
 
-- *Persistence*: Changes are persistent and live inside the checkpoint. Reverting requires reloading or undoing the weight edit.
+- *Persistence*: Changes are persistent and are stored in the checkpoint. Reverting requires reloading or undoing the weight edit.
 
 - *Access*: Implementation requires access to parameters and (typically) gradient flows.
 
@@ -102,7 +102,7 @@ around existing libraries. The toolkit implements:
     - *Description*: model merging via MergeKit[@goddard-etal-2024-arcees], combining multiple checkpoints with strategies such as linear interpolation, SLERP, and TIES from a YAML/dict config.
     - *Backends*: HF, vLLM (the merged checkpoint is served).
 - `TRL` ([API reference](../reference/algorithms/structural_control/trl_wrapper.md), [notebook](../examples/notebooks/algorithms/wrappers/trl.ipynb))
-    - *Description*: weight-level training via Hugging Face TRL[@vonwerra2022trl], exposing SFT, DPO, APO, PPO, and GRPO trainers, with optional LoRA/PEFT and a post-training merge. Since `training_args` is forwarded verbatim to the installed TRL config, a key the config does not declare raises at control construction.
+    - *Description*: weight-level training via Hugging Face TRL[@vonwerra2022trl], exposing SFT, DPO, APO, PPO, and GRPO trainers, with optional LoRA/PEFT and a post-training merge. Since `training_args` is forwarded verbatim to the installed TRL config, a key the config does not declare raises an error at control construction.
     - *Backends*: HF, vLLM (serves the steer-time artifact, a checkpoint or LoRA adapter, and requires a configured output directory).
 
 
@@ -131,7 +131,7 @@ patching. The toolkit implements:
     - *Description*: activation addition[@turner2023activation], adding a positional steering vector from a single contrast pair to the residual stream at one layer.
     - *Backends*: HF (positional injection has no intervention-spec form).
 - `ActivationAdapter` ([API reference](../reference/algorithms/state_control/activation_adapter.md), [notebook](../examples/notebooks/algorithms/generics/activation_adapter.ipynb))
-    - *Description*: the composable activation-steering atom, wiring together the shared `common` components (a transform that carries its own artifact, selector, gate, token scope) so that a recipe is assembled without writing a new control class.
+    - *Description*: the composable activation-steering atom, wiring together the shared `common` components (a transform that contains its own artifact, a selector, a gate, and a token scope) so that a recipe is assembled without writing a new control class.
     - *Backends*: HF, vLLM (kind-conditional, i.e., the configured transform, modifier chain, and gate readout/rule must all have wire forms, and a `CallableReadout` gate is HF-only).
 - `AngularSteering` ([API reference](../reference/algorithms/state_control/angular_steering.md), [notebook](../examples/notebooks/algorithms/angular_steering.ipynb))
     - *Description*: angular steering[@vu2025angular], rotating the hidden state within a per-layer 2D plane (feature axis + companion axis) to a target angle while leaving the orthogonal complement untouched. It is norm-preserving by construction, and vector addition and directional ablation are special cases.
@@ -149,58 +149,42 @@ patching. The toolkit implements:
     - *Description*: inference-time intervention[@li2023inference], shifting activations at a sparse set of probe-selected attention heads during generation.
     - *Backends*: HF, vLLM (`tensor_parallel_size == 1`, norm-preserving configurations are HF-only, and fitting from data runs on the staged model).
 - `PASTA` ([API reference](../reference/algorithms/state_control/pasta.md), [notebook](../examples/notebooks/algorithms/pasta.ipynb))
-    - *Description*: post-hoc attention steering[@zhang2024tell], rescaling attention to targeted prompt substrings at selected layers and heads. The `head_config` argument takes a dict or list of layers and heads, or a `HeadProfile` recipe that runs the paper's head-profiling stage as a steer-time fit on the live model (scoring each candidate head by its paired lift over an unsteered baseline) and freezes the resolved head map.
+    - *Description*: post-hoc attention steering[@zhang2024tell], rescaling attention to targeted prompt substrings at selected layers and heads. The `head_config` argument takes a dict or list of layers and heads, or a `HeadProfile` recipe that runs the paper's head-profiling stage as a steer-time fit on the loaded model (scoring each candidate head by its paired lift over an unsteered baseline) and freezes the resolved head map.
     - *Backends*: HF with `attn_implementation` `"eager"` or `"sdpa"` (attention-map writes have no engine form).
 
 Reusable building blocks shared across the residual-stream methods (estimators, gating, selectors, transforms,
-steering vectors, hook utilities) live in
+steering vectors, hook utilities) are located in
 [`state_control.common`](../reference/algorithms/state_control/common.md).
 
-Since positions are read from the `cache_position` kwarg at decoder-layer hook points, position-scoped and gated state
-controls compose exactly with multi-call decoding drivers (segment search, phased splicing) and with step-level
-controls that forward the pipeline's own model (SASA-style candidate scoring). Hook points on sub-modules that do not
-receive the kwarg assume the plain single-`generate` decode pattern. The variant branch of a CFG-style contrast is a
-detached sequence and runs unsteered by design.
+Most state controls in the toolkit are declarative. A control states its edit once, as a tuple of interventions, where
+each intervention specifies the layers to edit, a transform (e.g., adding a direction or projecting one out), a token
+scope (which positions receive the edit), and optionally a gate. The toolkit compiles this statement for whichever
+backend runs it, i.e., to torch hooks in process and to an intervention spec for engines that host activation edits
+through the vLLM-Hook plugin. A configuration whose components all have a serialized form therefore generates on vLLM
+without any control-specific code, and one that does not stays in process. The pipeline's `check()` reports which,
+with a verdict that identifies the gap and the fix.
 
-A residual-stream state control is a declarative tuple of interventions (layers, a transform, a token scope, an
-optional gate), stated once and compiled per backend, to torch hooks on the in-process backend and to an
-intervention spec for engines that host activation edits. This means that the same steered configuration generates on
-vLLM. A configuration either serializes exactly or stays in-process only. The pipeline's `check()` reports which,
-with a verdict naming the gap and the fix. The per-control support boundary is recorded on each control's `Backends` line above.
+A gate makes an intervention conditional. It reads hidden states at chosen layers, reduces each pooled state to a
+per-prompt value (e.g., an affine score or a cosine similarity against a condition direction), and applies a decision
+rule (e.g., a summed score against a calibrated bias, or per-layer thresholds). The decision is made on the prompt,
+applies for the whole generation, and is taken independently per row of a batch. An unconditional intervention has no
+gate.
 
-State controls resolve the decoder stack at one of three roots: `model.layers` (text-only decoder models like
-Llama, Mistral, Qwen, and Gemma text), `model.language_model.layers` (composite multimodal wrappers such as Gemma 3/4
-and Qwen3.5 loaded under `AutoModelForCausalLM`), and `transformer.h` (GPT-2). Resolution selects the per-layer naming
-convention (`llama_style`, `gemma_style`, `gpt2_style`) whose norm markers exist on the first decoder layer and whose
-attention module exists on at least one layer.
+`ActivationAdapter` is the general-purpose form of a declarative control. Each adapter steers a single behavior (one
+transform chain, one gate, and one token scope), and steering with several behaviors is several adapters listed
+together in a pipeline's `controls`, applied in list order. Adapters can share one gate instance for joint
+conditioning, and a fitted [`Probe`](probes.md) can gate an adapter through `Probe.as_gate()`. Position-scoped and
+gated controls compose with multi-call decoding drivers (e.g., segment search) and with step-level controls that score
+candidates through the pipeline's own model.
 
-A hybrid stack that interleaves attention layers with another token mixer (Qwen3.5 and Qwen3-Next, where three Gated
-DeltaNet `linear_attn` layers precede each `self_attn` layer) resolves to its attention layers' family, with
-`ModelLayout.attention_layer_ids` recording which layers carry attention. Residual-stream controls (`CAA`, `ActAdd`,
-`AngularSteering`, `ActivationAdapter`) and hidden-state capture work unchanged on such a stack. `head_geometry`,
-o_proj-site interventions, and `PASTA` refuse the other layers with a message naming the attention layers, and `ITI`
-refuses hybrid stacks.
-
-A multimodal checkpoint is steered on its text decoder under text-only prompting (`text=`, `messages=`, `input_ids=`).
-Images and audio are out of scope. Because an unmerged LoRA adapter (`LoadLoRA(merge=False)`, or a TRL LoRA run
-without `merge_lora_after_train`) is hooked through the PEFT wrapper, a state control listed after such an adapter
-steers the adapted model. For an architecture not on this list, register a detector with `register_layout_detector` (from
-`steerability.algorithms.core.internals`).
-
-A gate makes an intervention conditional, and it factors into three parts: evidence (which layers are read and how
-their hidden states are pooled), a readout (how each pooled state becomes a per-prompt value, e.g., an affine score,
-a cosine similarity, or CAST's projected cosine), and a rule (the decision over those values, e.g., a summed score
-against a calibrated bias, or per-layer thresholds). The decision is made on the prompt and holds for the
-generation, independently per row of a batch. An unconditional intervention has no gate.
-
-`ActivationAdapter` is the composition surface for these building blocks. Each adapter is a single-behavior atom
-(one transform chain, which carries its own artifact, one gate, and one token scope), and steering with several
-behaviors is several adapters listed together in a pipeline's `controls`. Because a pipeline accepts
-[multiple state controls](steering_pipelines.md) applied in list order, composition across behaviors is owned by that
-ordered list, and no separate composite abstraction is needed. Joint conditioning across adapters uses one shared gate
-instance, where a driver carries the gate and feeds it through its condition hooks, and followers pass the same
-instance with `gate_driven_externally=True` and read its decision. A fitted [`Probe`](probes.md) can also gate an
-adapter through `Probe.as_gate()`, which returns a gate reproducing the probe's decision.
+State controls locate the decoder layers through a model layout, which is resolved automatically for text-only decoder
+models (Llama, Mistral, Qwen, and Gemma), for composite multimodal wrappers loaded under `AutoModelForCausalLM` (Gemma
+3/4 and Qwen3.5), and for GPT-2. Hybrid architectures that interleave attention layers with another token mixer
+(Qwen3.5 and Qwen3-Next) are supported by the residual-stream controls and by hidden-state capture, while controls that
+act on attention (`PASTA` and o_proj-site interventions) are restricted to the attention layers, and `ITI` does not
+support them. A multimodal checkpoint is steered on its text decoder under text-only prompting, and images and audio
+are out of scope. A state control listed after an unmerged LoRA adapter steers the adapted model. For an architecture
+not on this list, register a detector with `register_layout_detector` (from `steerability.algorithms.core.internals`).
 
 
 
@@ -222,16 +206,12 @@ Output control methods satisfy the following requirements:
 - *Access*: Requires access to logits, token-probabilities, and possibly hidden states (depending on the method).
 
 Examples of output control methods are sampling/search strategies, weighted decoding, and reward-augmented
-decoding. Output controls participate in decoding through one of two modes:
-
-- **Contribute**: a control supplies logits processors and/or stopping criteria (via `get_logits_processors` /
-  `get_stopping_criteria`). The pipeline composes them in `controls`-list order, and step-level controls therefore
-  compose with each other and with a decoding driver.
-- **Drive**: a control subclasses `DecodingDriver` and owns the decode loop (`decode(...)`), applying the composed
-  stacks in every forward pass it issues. Since the loop does not compose, a pipeline admits at most one enabled
-  driver. With none, decoding defaults to the model's own `generate`. A driver may declare
-  `max_rollouts_per_query()`, an upper bound on the continuations it generates per input row (`None` when the
-  configuration admits no static bound).
+decoding. Output controls participate in decoding in one of two ways. A step-level control supplies logits processors
+and/or stopping criteria (via `get_logits_processors` and `get_stopping_criteria`), which the pipeline composes in
+`controls`-list order. Step-level controls therefore compose with each other and with a decoding driver. A decoding
+driver subclasses `DecodingDriver` and owns the decode loop (`decode(...)`), applying the composed processors and
+stopping criteria in every forward pass it issues. Since the loop does not compose, a pipeline admits at most one
+enabled driver, and with none, decoding defaults to the model's own `generate`.
 
 The toolkit implements the following step-level controls:
 
@@ -249,7 +229,7 @@ The toolkit implements the following step-level controls:
     - *Backends*: HF (model-backed per-step logit math is in-process only).
 - `ConstrainedDecoding` ([API reference](../reference/algorithms/output_control/constrained_decoding.md))
     - *Description*: constrained decoding from one declarative source (JSON schema, regex, EBNF grammar, or a choice set). Every logit the grammar forbids is masked at each step.
-    - *Backends*: HF (client-side automaton, `steerability[guided]`), vLLM (native structured outputs). A control constructed with a live automaton object is HF-only.
+    - *Backends*: HF (client-side automaton, `steerability[guided]`), vLLM (native structured outputs). A control constructed with an in-memory automaton object is HF-only.
 - `ValueGuidance` ([API reference](../reference/algorithms/output_control/value_guidance.md), [notebook](../examples/notebooks/algorithms/generics/value_guidance.ipynb))
     - *Description*: the config-first generic over the step shape (candidates → value → normalize → shift). FUDGE, ARGS, RAD, and SASA are assignments of its config.
     - *Backends*: HF (model-backed per-step logit math is in-process only).
@@ -287,16 +267,11 @@ default driver via `gen_kwargs`, for example DoLa decoding (`gen_kwargs={"dola_l
 
 ### Generic controls
 
-The output category's composition surface is a small family of generic, `Args`-configured controls, the output
-analogue of state control's [`ActivationAdapter`](#state-control). Where a named method (RAD, SASA, DeAL) is a class,
-a generic exposes the `common` component slots through flat, sweepable `Args`, and a method from the literature is
-then an assignment of a config rather than a subclass.
-
-Output has two composable mechanisms (logits processors and stopping criteria) and an exclusive decode loop claimed by
-type, across four shapes. The analogue is therefore not one control but a family, with one generic per shape. Each
-generic exposes the slots through flat `Args`, resolves component specs (name / instance / callable /
-dict-with-`kind`) at `steer()` time, derives `supports_batching` / `include_in_scoring` from the resolved
-components, and returns fresh processors per call.
+Alongside the named methods, the output category provides a small family of generic controls, the output analogue
+of state control's [`ActivationAdapter`](#state-control). Where a named method (RAD, SASA, DeAL) is a class, a
+generic exposes the shared component slots through flat, sweepable `Args`, and a method from the literature becomes an
+assignment of a config rather than a subclass. Since output controls act either at the step level or by owning the
+decode loop, and do so over a few distinct shapes of computation, there is one generic per shape:
 
 | generic | mechanism | shape | canonical assignments |
 | ------- | --------- | ----- | --------------------- |
@@ -306,15 +281,12 @@ components, and returns fresh processors per call.
 | [`PhasedDecoding`](../reference/algorithms/output_control/phased_decoding.md) | driver | phase | budget forcing, response prefill, thinking intervention |
 | [`StoppingRules`](../reference/algorithms/output_control/stopping_rules.md) | sampling-mapped (stop rules) | none | substring / token / budget stops |
 
-The named methods are siblings of these generics rather than children. They sit directly on the same `common` parts,
-and each keeps the one thing its class adds beyond a config (RAD's cached unidirectional reward path, SASA's probe
-fitting, and so on). When a config earns a name through use, promote it with a small preset subclass over the generic.
+The named methods are siblings of these generics rather than children. They are built directly on the same `common`
+components, and each keeps the one thing its class adds beyond a config (RAD's cached reward path, SASA's subspace
+fitting, and so on). When a config earns a name through use, it can be promoted to a small preset subclass over the
+generic.
 
 Reusable building blocks shared across these methods (candidate policies, per-candidate value functions, full-vocabulary
 logit sources, sequence scorers, a segment-search driver, a phased driver, composable stopping criteria, and the
-`PrefixKeyedProcessor` base) live in
-[`output_control.common`](../reference/algorithms/output_control/common.md). Within a `common/<family>/` folder, the
-primary class in `<name>.py` is `<Name><FamilySingular>` (for example `values/classifier.py` defines
-`ClassifierValue`). The family base lives in `base.py`, and top-level `common/*.py` modules
-(such as `candidates.py`, `criteria.py`, `candidate_forward.py`) are collection or helper modules exempt from the
-suffix rule.
+`PrefixKeyedProcessor` base) are located in
+[`output_control.common`](../reference/algorithms/output_control/common.md).
