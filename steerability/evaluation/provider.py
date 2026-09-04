@@ -97,10 +97,11 @@ class ProviderOptions:
         reasoning_tags: `(open_tag, close_tag)` pair splitting each generation into a reasoning
             part and an answer part, so scorers grade the answer only; None disables the split.
         reasoning_opened_at_start: Whether the chat template's generation prompt already opened the
-            reasoning channel, so the continuation is expected to begin inside it and the split
-            treats a close-only (or no-tag) continuation as reasoning-then-answer rather than a
-            plain answer. Some thinking-mode templates emit the open tag in the generation prompt
-            (a `<think>\n` prompt tail), leaving only the close tag in the continuation.
+            reasoning channel (some thinking-mode templates emit the open tag in the generation
+            prompt, as a `<think>\n` prompt tail). A close-only continuation splits into reasoning
+            and answer in either mode without the flag; the flag matters only for a continuation
+            carrying neither tag (reasoning truncated before the close), which is classified as
+            unclosed reasoning when set and as a plain answer otherwise.
         reasoning_split: How the split locates the delimiters, resolved once against the pipeline
             tokenizer. `"text"` splits substrings on the decoded continuation; `"tokens"` splits the
             continuation ids and decodes each segment; `"auto"` (default) picks `"text"` when both

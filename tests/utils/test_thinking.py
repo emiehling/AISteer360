@@ -155,6 +155,12 @@ class TestSplitThinkingIds:
         ids = encode_continuation(tokenizer, "<open>", "R", "<close>", "A")
         assert split_thinking_ids(ids, tokenizer, TAGS) == ThinkingSplit(thinking="R", answer="A")
 
+    def test_case_ii_close_only_default_flag_splits(self, tokenizer):
+        # the open subsequence is optional, as in text mode: a template that opens the channel in
+        # the generation prompt leaves only the close in the continuation
+        ids = encode_continuation(tokenizer, "R", "<close>", "A")
+        assert split_thinking_ids(ids, tokenizer, TAGS) == ThinkingSplit(thinking="R", answer="A")
+
     def test_case_ii_close_only_opened_at_start(self, tokenizer):
         ids = encode_continuation(tokenizer, "R", "<close>", "A")
         result = split_thinking_ids(ids, tokenizer, TAGS, opened_at_start=True)

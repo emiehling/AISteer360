@@ -397,6 +397,17 @@ class TestReasoningSplitModes:
         assert reasoning == "R" and answer == "A"
         assert model_output.completion == "A"
 
+    def test_token_mode_close_only_without_opened_at_start(self):
+        # the close subsequence alone splits the row, as in text mode; the flag matters only for a
+        # continuation carrying neither tag
+        pipeline = _token_pipeline()
+        api = _api(pipeline, options=ProviderOptions(reasoning_tags=TOKEN_TAGS))
+        output = _output(_ids(pipeline.tokenizer, "R", "<close>", "A"))
+        model_output = api._assemble_model_output(output, stop_strings=())
+        reasoning, answer = self._reasoning_and_answer(model_output.choices[0].message.content)
+        assert reasoning == "R" and answer == "A"
+        assert model_output.completion == "A"
+
     def test_token_mode_unclosed_yields_empty_answer_and_warns(self, caplog):
         pipeline = _token_pipeline()
         api = _api(pipeline, options=ProviderOptions(reasoning_tags=TOKEN_TAGS, reasoning_opened_at_start=True))

@@ -172,6 +172,9 @@ def split_thinking_ids(
     - `opened_at_start=False`, open subsequence found: the reasoning starts after the open
       subsequence. Any ids preceding the open subsequence are prepended to the answer, since output
       emitted before the channel opened is not reasoning.
+    - `opened_at_start=False`, no open subsequence but a close subsequence: the reasoning starts
+      at position 0. The open tag is optional because thinking-mode chat templates commonly end
+      the generation prompt with it, so the continuation carries only the close.
     - `opened_at_start=True`: the continuation begins inside the channel, so the reasoning starts at
       position 0 and no open subsequence is searched.
     - Once inside the channel, the split is at the first close subsequence: `thinking` is the ids
@@ -180,7 +183,7 @@ def split_thinking_ids(
     - Inside the channel with no close subsequence (truncation, or a caller stop string halted
       generation before the close was emitted): `thinking` is the rest of the ids and `answer` is
       the empty string.
-    - `opened_at_start=False` and no open subsequence: `thinking` is None and `answer` is the full
+    - `opened_at_start=False` and neither subsequence: `thinking` is None and `answer` is the full
       decoded continuation.
 
     An empty thinking segment yields `thinking == ""` (not None), since the channel was entered.
@@ -197,7 +200,9 @@ def split_thinking_ids(
             delimiter, and each segment is decoded with `skip_special_tokens=True`.
         tokenizer: The tokenizer used to encode the tags and decode the segments.
         tags: The `(open_tag, close_tag)` pair. Both entries must be non-empty strings.
-        opened_at_start: Whether the generation prompt already opened the reasoning channel.
+        opened_at_start: Whether the generation prompt already opened the reasoning channel. The
+            flag matters only for a continuation carrying neither tag, which is classified as
+            unclosed reasoning when set and as a plain answer otherwise.
 
     Returns:
         A `ThinkingSplit` with the decoded `thinking` and `answer` segments.
@@ -223,9 +228,14 @@ def split_thinking_ids(
         open_ids = _encode_tag(tokenizer, open_tag)
         open_at = find_subsequence(ids, open_ids)
         if open_at == -1:
-            return ThinkingSplit(thinking=None, answer=decode(ids))
-        answer_prefix = ids[:open_at]
-        reasoning_start = open_at + len(open_ids)
+            if find_subsequence(ids, close_ids) == -1:
+                return ThinkingSplit(thinking=None, answer=decode(ids))
+            # the open tag is optional: a generation prompt that opens the channel leaves only the
+            # close subsequence in the continuation
+            reasoning_start = 0
+        else:
+            answer_prefix = ids[:open_at]
+            reasoning_start = open_at + len(open_ids)
 
     close_at = find_subsequence(ids, close_ids, start=reasoning_start)
     if close_at == -1:
