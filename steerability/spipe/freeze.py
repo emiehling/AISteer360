@@ -3,7 +3,9 @@
 The recipe section is the codec encoding of each control's constructor args, in pipeline
 order. Freezing additionally walks each enabled control's `export_state()` and
 `frozen_form()`, writes the exported artifacts into the bundle's store with provenance and
-fit digests, and assembles the lock.
+fit digests, and assembles the lock. The freeze walk over every enabled control runs before
+any recipe encoding, so a recipe value with the same content as an exported artifact reuses
+the artifact's record.
 """
 from __future__ import annotations
 
@@ -231,7 +233,10 @@ def build_spipe(pipeline: SteeringPipeline, *, freeze: bool | None = None, model
 
     ctx = EncodeContext(store=store, provenance=provenance, default_model_type=default_model_type)
 
-    entries = []
+    # the freeze walk over every enabled control runs before any recipe encoding: exported
+    # artifacts land in the store with their fit provenance first, and a content-equal recipe
+    # value of any control reuses the metadata-rich record
+    resolved_by_index: dict[int, Any] = {}
     for i, control in enumerate(controls):
         entry_path = f"controls[{i}]"
         if getattr(control, "gate_driven_externally", False):
@@ -240,20 +245,20 @@ def build_spipe(pipeline: SteeringPipeline, *, freeze: bool | None = None, model
                 "gate, an in-memory relationship that does not serialize; save the driving "
                 "pipeline without the follower, or gate the control directly."
             )
-        method_key = method_key_for(type(control))
-        # the freeze walk runs before the recipe encoding: exported artifacts land in the
-        # store with their fit provenance first, and a content-equal recipe value reuses the
-        # metadata-rich record
-        resolved = None
         if freeze and control.enabled:
             try:
-                resolved = _freeze_control(control, ctx, entry_path)
+                resolved_by_index[i] = _freeze_control(control, ctx, entry_path)
             except NotFreezableError as exc:
                 raise SpipeSaveError(
                     f"{entry_path}: {exc} The pipeline can still be saved with freeze=False."
                 ) from exc
+
+    entries = []
+    for i, control in enumerate(controls):
+        entry_path = f"controls[{i}]"
+        resolved = resolved_by_index.get(i)
         entry: dict[str, Any] = {
-            "method": method_key,
+            "method": method_key_for(type(control)),
             "enabled": bool(control.enabled),
             "args": _recipe_args_encoded(control, ctx, f"{entry_path}.args"),
             "resolved": resolved,

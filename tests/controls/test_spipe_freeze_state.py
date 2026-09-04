@@ -1,4 +1,5 @@
 """Freezing state controls: same-class CAA/ITI/ActAdd, generic CAST lowering, verify policy."""
+import json
 import warnings
 
 import pytest
@@ -286,3 +287,41 @@ def test_norm_site_configuration_refuses_to_freeze(llama):
     steer_quietly(pipeline)
     with pytest.raises(SpipeSaveError, match="norm_input"):
         pipeline.to_spipe()
+
+
+def test_recipe_artifact_of_another_control_does_not_shadow_fit_record(tmp_path, llama):
+    from steerability.algorithms.state_control.activation_adapter.control import ActivationAdapter
+    from steerability.algorithms.state_control.common.transforms import AdditiveTransform
+    from steerability.spipe import SpipeStaleError
+
+    model, tokenizer = llama
+    pairs = {"positives": ["kind a", "kind b"], "negatives": ["mean a", "mean b"]}
+    train_spec = {"method": "mean_diff", "accumulate": "last_token"}
+    caa = CAA(data=pairs, train_spec=train_spec, layer_id=1)
+    pipeline = SteeringPipeline(model=model, tokenizer=tokenizer, controls=[caa], model_name_or_path=LLAMA)
+    steer_quietly(pipeline)
+    vector = caa.export_state()["steering_vector"]
+
+    # a disabled control is not frozen but its recipe args are still encoded, and the vector it
+    # carries has the same content id as the one the second CAA's fit exports
+    adapter = ActivationAdapter(transform=AdditiveTransform(vector), layer_ids=[1])
+    adapter.enabled = False
+    refit = CAA(data=pairs, train_spec=train_spec, layer_id=1)
+    pipeline = SteeringPipeline(
+        model=model, tokenizer=tokenizer, controls=[adapter, refit], model_name_or_path=LLAMA,
+    )
+    steer_quietly(pipeline)
+    spipe = pipeline.to_spipe()
+
+    record = spipe.manifest["controls"][1]["resolved"]["artifacts"]["steering_vector"]
+    assert record["artifact_class"] == "direction"
+    assert record["source"] == "ContrastiveFit"
+    assert record["fit_digest"] is not None
+
+    saved = spipe.save(tmp_path / "shadowed")
+    manifest_path = saved / "spipe.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["controls"][1]["args"]["data"]["fields"]["positives"] = ["edited a", "edited b"]
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(SpipeStaleError, match=r"controls\[1\]"):
+        SPipe.load(saved)
