@@ -225,7 +225,9 @@ class SPipe:
     def verify(self) -> SpipeReport:
         """The model-free report: format, integrity, staleness, versions, code dependence.
 
-        Never loads a model or instantiates a backend.
+        Never loads a model or instantiates a backend. Referenced artifacts that are not
+        present are reported in one warning (a thin bundle); the present ones are verified
+        against their content ids.
 
         Returns:
             The report.
@@ -238,14 +240,18 @@ class SPipe:
         except SpipeFormatError as exc:
             errors.append(str(exc))
 
-        referenced = self._referenced_artifact_ids()
-        if referenced and (self._store is None or not any(map(self._store.has, referenced))):
+        referenced = sorted(self._referenced_artifact_ids())
+        missing = [
+            artifact_id for artifact_id in referenced
+            if self._store is None or not self._store.has(artifact_id)
+        ]
+        if missing:
             report_warnings.append(
-                f"{len(referenced)} referenced artifact(s) are not present (thin bundle); "
-                "pass artifact_store= at load to resolve them."
+                f"{len(missing)} of {len(referenced)} referenced artifact(s) are not present (thin "
+                f"bundle); pass artifact_store= at load to resolve them: {', '.join(missing)}."
             )
-        elif self._store is not None:
-            for artifact_id in sorted(referenced):
+        for artifact_id in referenced:
+            if artifact_id not in missing:
                 try:
                     self._store.verify(artifact_id)
                 except SpipeIntegrityError as exc:

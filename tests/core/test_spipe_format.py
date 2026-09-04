@@ -165,3 +165,19 @@ def test_in_place_save_honours_artifacts(tmp_path, tiny_model):
         reloaded.save(thin, artifacts="thin")
     assert (thin / "artifacts").is_dir()
 
+
+
+def test_verify_classifies_availability_per_artifact(tmp_path, tiny_model):
+    spipe = frozen_spipe(*tiny_model, KIND, CALM)
+    saved = spipe.save(tmp_path / "partial")
+    artifact_dirs = sorted(child for child in (saved / "artifacts").iterdir() if child.is_dir())
+    assert len(artifact_dirs) == 2
+    shutil.rmtree(artifact_dirs[0])
+    missing_id = artifact_dirs[0].name.replace("-", ":", 1)
+
+    report = SPipe.load(saved).verify()
+    assert report.ok
+    assert not report.errors
+    (warning,) = [message for message in report.warnings if "thin" in message]
+    assert "1 of 2" in warning
+    assert missing_id in warning
