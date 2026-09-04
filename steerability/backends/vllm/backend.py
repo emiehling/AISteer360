@@ -93,10 +93,11 @@ def _reject_encoder_decoder(model_ref: str, trust_remote_code: bool = False) -> 
 
 
 def _config_layout(model_ref: str, trust_remote_code: bool = False) -> ModelFacts | None:
-    """A client-side `ModelFacts` from the model config, or None when unresolvable.
+    """A client-side `ModelFacts` from the model config, or None when the config cannot be loaded.
 
-    The fingerprint hashes the config JSON (volatile name/version fields removed), so it
-    identifies the architecture and configuration rather than the weights.
+    A loaded config lacking a structural fact (`hidden_size`, `num_hidden_layers`) raises
+    `AttributeError`. The fingerprint hashes the config JSON (volatile name/version fields
+    removed), so it identifies the architecture and configuration rather than the weights.
     """
     from transformers import AutoConfig
 
