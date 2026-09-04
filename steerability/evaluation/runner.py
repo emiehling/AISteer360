@@ -169,7 +169,9 @@ class SteeringEval:
 
         Warns:
             UserWarning: If a static runtime kwarg in `provider_options` is declared by no
-                configuration in the evaluation.
+                configuration in the evaluation, or `seed` is set while no `temperature` is
+                configured in `generate_defaults` or any suite's `generate_overrides` (trial
+                seeds are attached to sampling dispatches only).
         """
         points = list(expand_configurations(
             self.pipelines, base_model_name_or_path=self.base_model_name_or_path,
@@ -192,6 +194,19 @@ class SteeringEval:
                 )
             for line in failures:
                 logger.warning("Skipping unsupported configuration: %s", line)
+
+        if self.seed is not None:
+            configured = set(self.generate_defaults or {})
+            for suite in self.suites:
+                configured.update(suite.generate_overrides)
+            if "temperature" not in configured:
+                warnings.warn(
+                    "seed is set but no temperature is configured in generate_defaults or any suite's "
+                    "generate_overrides; trial seeds are attached to sampling dispatches only, so the derived "
+                    "seeds will not be attached. Pass generate_defaults={'temperature': 0} for greedy decoding "
+                    "or an explicit sampling temperature.",
+                    UserWarning,
+                )
 
         if self.save_dir is not None:
             save_dir = self.save_dir

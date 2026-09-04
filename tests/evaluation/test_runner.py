@@ -6,6 +6,7 @@ stub suites and the tiny hub-free models.
 """
 import warnings
 from dataclasses import dataclass, field
+from typing import Any, Mapping
 
 import pytest
 
@@ -24,6 +25,7 @@ class _StubSuite:
 
     name: str = "capability"
     tasks: tuple[str, ...] = ("stub/task",)
+    generate_overrides: Mapping[str, Any] = field(default_factory=dict)
     fail: bool = field(default=False)
 
     def run(self, pipeline, *, log_dir, options=None, base_seed=None,
@@ -235,6 +237,28 @@ class TestSuiteFailure:
             runner.run()
         with pytest.raises(RuntimeError, match="run\\(\\)"):
             runner.results()
+
+
+class TestSeedWithoutTemperature:
+    def test_seed_without_temperature_warns(self, tiny_base, tmp_path):
+        runner = _runner({"baseline": []}, seed=7, save_dir=tmp_path)
+        with pytest.warns(UserWarning, match="temperature"):
+            runner.run()
+
+    def test_seed_with_greedy_default_does_not_warn(self, tiny_base, tmp_path):
+        runner = _runner({"baseline": []}, seed=7, save_dir=tmp_path, generate_defaults={"temperature": 0})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            runner.run()
+        assert not any("temperature" in str(w.message) for w in caught)
+
+    def test_seed_with_suite_override_does_not_warn(self, tiny_base, tmp_path):
+        suite = _StubSuite(generate_overrides={"temperature": 0.7})
+        runner = _runner({"baseline": []}, suites=[suite], seed=7, save_dir=tmp_path)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            runner.run()
+        assert not any("temperature" in str(w.message) for w in caught)
 
 
 class TestStaticRuntimeKwargAudit:
