@@ -211,7 +211,9 @@ class TestGenerateConfigClassification:
     def test_upstream_fields_ignored(self):
         api = _api()
         gen_kwargs, _, _ = api._map_generate_config(
-            GenerateConfig(max_retries=3, timeout=10, system_message="s", cache=True, batch=True)
+            GenerateConfig(
+                max_retries=3, timeout=10, stream_idle_timeout=5, system_message="s", cache=True, batch=True
+            )
         )
         assert gen_kwargs == {}
 

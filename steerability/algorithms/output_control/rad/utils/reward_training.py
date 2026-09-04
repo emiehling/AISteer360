@@ -20,9 +20,9 @@ from pathlib import Path
 
 import torch
 from torch.optim import AdamW
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
-from steerability.algorithms.output_control.common.granite_heads import register_granite_sequence_classifiers
+from steerability.algorithms.output_control.common.granite_heads import sequence_classifier_class
 
 logger = logging.getLogger(__name__)
 
@@ -127,12 +127,12 @@ def train_prefix_reward_model(
 ) -> Path:
     """Fine-tune a scalar-head sequence classifier on `texts` with `prefix_reward_loss` and save it.
 
-    Builds the classifier from the causal-LM backbone with `num_labels=1` (Granite heads register
-    through `register_granite_sequence_classifiers`, so a Granite backbone resolves), scales the fresh
-    scalar head down by `HEAD_INIT_SCALE` so its initial sigmoid output is unsaturated, right-pads with
-    the backbone tokenizer (pad falls back to eos), trains with AdamW under bf16 autocast and a linear
-    decay schedule, and writes the model and tokenizer to `output_dir`. The saved `config.json` records
-    `num_labels: 1` and the registered architecture name, so `load_sequence_classifier(output_dir)`
+    Builds the classifier from the causal-LM backbone with `num_labels=1` (the head class is selected
+    by `sequence_classifier_class`, so a Granite backbone resolves), scales the fresh scalar head down
+    by `HEAD_INIT_SCALE` so its initial sigmoid output is unsaturated, right-pads with the backbone
+    tokenizer (pad falls back to eos), trains with AdamW under bf16 autocast and a linear decay
+    schedule, and writes the model and tokenizer to `output_dir`. The saved `config.json` records
+    `num_labels: 1` and the head's architecture name, so `load_sequence_classifier(output_dir)`
     reloads it.
 
     Labels are the dataset's native attribute (for `civil_comments`, toxicity in `[0, 1]`); the head
@@ -154,15 +154,13 @@ def train_prefix_reward_model(
     device = torch.device(device) if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(spec.seed)
 
-    register_granite_sequence_classifiers()
     tokenizer = AutoTokenizer.from_pretrained(backbone_name_or_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    model = AutoModelForSequenceClassification.from_pretrained(
-        backbone_name_or_path, num_labels=1, dtype=torch.float32
-    )
+    kwargs = {"num_labels": 1, "dtype": torch.float32}
+    model = sequence_classifier_class(backbone_name_or_path, **kwargs).from_pretrained(backbone_name_or_path, **kwargs)
     model.config.pad_token_id = tokenizer.pad_token_id
     with torch.no_grad():
         model.score.weight.mul_(HEAD_INIT_SCALE)

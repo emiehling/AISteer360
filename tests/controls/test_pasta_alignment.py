@@ -176,7 +176,7 @@ class TestBeamOrderIndexing:
 
 class TestArchAndFailFast:
     def test_gpt2_style_resolves(self):
-        """PASTA.steer() resolves modules on a GPT-2-style config and get_hooks finds them."""
+        """PASTA resolves every attention layer of a GPT-2-style config and steers the configured ones."""
         from transformers import GPT2Config, GPT2LMHeadModel
 
         cfg = GPT2Config(n_embd=32, n_layer=3, n_head=4, vocab_size=100, n_positions=64)
@@ -184,36 +184,42 @@ class TestArchAndFailFast:
         tokenizer = wordlevel_tokenizer()
 
         _, pasta = _pasta_pipeline(model, tokenizer, head_config=[0, 1], alpha=2.0)
-        assert pasta._attn_module_names == {0: "transformer.h.0.attn", 1: "transformer.h.1.attn"}
+        assert pasta._attn_module_names == {i: f"transformer.h.{i}.attn" for i in range(3)}
+        assert pasta.attention_layers() == [0, 1, 2]
+        assert sorted(pasta._head_map) == [0, 1]
         # every resolved module exists
         for path in pasta._attn_module_names.values():
             model.get_submodule(path)
 
     def test_composite_wrapper_resolves_nested_attention(self):
-        """PASTA resolves the text-decoder attention modules on a composite multimodal wrapper."""
+        """PASTA resolves every text-decoder attention layer of a composite multimodal wrapper.
+
+        The configured layers are the ones it steers.
+        """
         from tests.utils.tiny_models import tiny_gemma3_conditional
 
         model = tiny_gemma3_conditional(num_layers=4, hidden=32, heads=4)
         tokenizer = wordlevel_tokenizer()
         _, pasta = _pasta_pipeline(model, tokenizer, head_config=[0, 1], alpha=2.0)
-        assert pasta._attn_module_names == {
-            0: "model.language_model.layers.0.self_attn",
-            1: "model.language_model.layers.1.self_attn",
-        }
+        assert pasta._attn_module_names == {i: f"model.language_model.layers.{i}.self_attn" for i in range(4)}
+        assert pasta.attention_layers() == [0, 1, 2, 3]
+        assert sorted(pasta._head_map) == [0, 1]
         for path in pasta._attn_module_names.values():
             model.get_submodule(path)
 
     def test_lora_wrapper_resolves_adapted_attention(self):
-        """PASTA resolves attention modules through an unmerged LoRA wrapper and generates."""
+        """PASTA resolves every attention layer through an unmerged LoRA wrapper and generates.
+
+        The configured layers are the ones it steers.
+        """
         from tests.utils.tiny_models import tiny_lora
 
         model = tiny_lora(tiny_llama(num_layers=3, hidden=32, heads=4))
         tokenizer = wordlevel_tokenizer()
         pipeline, pasta = _pasta_pipeline(model, tokenizer, head_config=[0, 1], alpha=2.0)
-        assert pasta._attn_module_names == {
-            0: "base_model.model.model.layers.0.self_attn",
-            1: "base_model.model.model.layers.1.self_attn",
-        }
+        assert pasta._attn_module_names == {i: f"base_model.model.model.layers.{i}.self_attn" for i in range(3)}
+        assert pasta.attention_layers() == [0, 1, 2]
+        assert sorted(pasta._head_map) == [0, 1]
         for path in pasta._attn_module_names.values():
             model.get_submodule(path)
         input_ids = tokenizer("the cat sat on mat", return_tensors="pt").input_ids

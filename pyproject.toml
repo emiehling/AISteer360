@@ -66,7 +66,7 @@ cpo = [
     "econml>=0.16.0,<0.17.0",
 ]
 inspect = [
-    "inspect-ai>=0.3.260,<0.4.0",
+    "inspect-ai>=0.3.262,<0.4.0",
     "inspect-evals>=0.18.0,<1.0.0",
 ]
 guided = [

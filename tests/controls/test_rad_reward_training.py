@@ -12,7 +12,6 @@ import torch
 from transformers import GraniteConfig, GraniteForCausalLM, LlamaConfig, LlamaForSequenceClassification
 
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
-from steerability.algorithms.output_control.common.granite_heads import register_granite_sequence_classifiers
 from steerability.algorithms.output_control.common.loading import load_sequence_classifier
 from steerability.algorithms.output_control.rad.control import RAD
 from steerability.algorithms.output_control.rad.utils.reward_training import (
@@ -95,7 +94,6 @@ class TestPrefixRewards:
         assert torch.all(rewards >= 0) and torch.all(rewards <= 1)
 
     def test_shape_and_range_on_granite(self, tmp_path):
-        register_granite_sequence_classifiers()
         model, _ = load_sequence_classifier(
             _granite_backbone_path(tmp_path), device="cpu", hf_model_kwargs={"num_labels": 1}
         )

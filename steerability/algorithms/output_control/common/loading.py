@@ -4,17 +4,17 @@ Loads and configures an `AutoModelForSequenceClassification` reward model / attr
 the way the output category needs it: eval mode, pad-token fallback to EOS, right padding, and a
 clamp of the sentinel `model_max_length` some tokenizers carry onto a plain `max_length` attribute
 that `RewardModelValue` reads. Used by the `reward_model` / `classifier` value loaders, the
-`reward_model` scorer loader, and RAD's HF-classifier path. Granite checkpoints resolve through the
-heads registered by `register_granite_sequence_classifiers`, which transformers does not ship.
+`reward_model` scorer loader, and RAD's HF-classifier path. Granite checkpoints, for which transformers
+ships no head, resolve through the toolkit heads selected by `sequence_classifier_class`.
 """
 from __future__ import annotations
 
 import logging
 
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import AutoTokenizer
 
-from steerability.algorithms.output_control.common.granite_heads import register_granite_sequence_classifiers
+from steerability.algorithms.output_control.common.granite_heads import sequence_classifier_class
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +40,8 @@ def load_sequence_classifier(
         `pad_token` set (falling back to `eos_token`), `padding_side="right"`, and a `max_length`
         attribute.
     """
-    register_granite_sequence_classifiers()
-    model = AutoModelForSequenceClassification.from_pretrained(model_id, **(hf_model_kwargs or {}))
+    kwargs = dict(hf_model_kwargs or {})
+    model = sequence_classifier_class(model_id, **kwargs).from_pretrained(model_id, **kwargs)
     model = model.to(device)
     model.eval()
 

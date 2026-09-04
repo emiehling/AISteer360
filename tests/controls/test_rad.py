@@ -391,6 +391,28 @@ class TestGraniteHeads:
             )
             torch.testing.assert_close(cached.score(ctx), stateless.score(ctx), atol=1e-4, rtol=1e-4)
 
+    def test_sequence_classifier_class_resolution(self, tmp_path, monkeypatch):
+        """Granite families resolve to the toolkit heads; covered configs resolve to the auto class."""
+        from transformers import AutoModelForSequenceClassification
+
+        from steerability.algorithms.output_control.common import granite_heads
+
+        granite = granite_heads.sequence_classifier_class(_granite_causal_lm_path(tmp_path / "g"))
+        hybrid = granite_heads.sequence_classifier_class(_granitemoehybrid_causal_lm_path(tmp_path / "h"))
+        llama = granite_heads.sequence_classifier_class(_decoder_classifier(tmp_path / "l"))
+        assert granite is GraniteForSequenceClassification
+        assert hybrid is GraniteMoeHybridForSequenceClassification
+        assert llama is AutoModelForSequenceClassification
+
+        # a head shipped by transformers wins over the toolkit head
+        class _Covers:
+            def __contains__(self, item):
+                return True
+
+        monkeypatch.setattr(granite_heads, "MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING", _Covers())
+        covered = granite_heads.sequence_classifier_class(_granite_causal_lm_path(tmp_path / "g2"))
+        assert covered is AutoModelForSequenceClassification
+
 
 # value trace
 class TestValueTrace:
