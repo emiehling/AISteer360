@@ -373,6 +373,27 @@ class TestGraniteHeads:
             )
             torch.testing.assert_close(cached.score(ctx), stateless.score(ctx), atol=1e-4, rtol=1e-4)
 
+    def test_pad_id_candidate_scores_the_candidate_on_both_paths(self, tmp_path):
+        """A candidate equal to the classifier's pad id (eos after `train_prefix_reward_model`) is scored at
+        its own position on both paths rather than pooled back onto the prefix."""
+        rm_path = _granitemoehybrid_causal_lm_path(tmp_path)
+        rm, rm_tok = load_sequence_classifier(rm_path, device="cpu", hf_model_kwargs={"num_labels": 1})
+        pad_id = rm.config.pad_token_id
+        assert pad_id is not None
+        cached = CachedRewardModelValue(rm, rm_tok, score_index=0, score_transform="none")
+        stateless = RewardModelValue(rm, rm_tok, score_index=0, score_transform="none", shared_vocab=True)
+        prefix = torch.tensor([[0, 4, 5, 6]])
+        candidates = torch.tensor([[7, pad_id, 8]])
+        ctx = StepContext(
+            prefix_ids=prefix, candidate_ids=candidates,
+            lm_tokenizer=wordlevel_tokenizer(), attention_mask=torch.ones_like(prefix),
+        )
+        stateless_scores = stateless.score(ctx)
+        torch.testing.assert_close(cached.score(ctx), stateless_scores, atol=1e-4, rtol=1e-4)
+        with torch.inference_mode():
+            prefix_only = rm(input_ids=prefix, attention_mask=torch.ones_like(prefix)).logits[0, 0]
+        assert not torch.isclose(stateless_scores[0, 1], prefix_only, atol=1e-6)
+
 
 # value trace
 class TestValueTrace:

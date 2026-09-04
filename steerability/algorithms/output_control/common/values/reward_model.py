@@ -59,7 +59,9 @@ class RewardModelValue(BaseCandidateValue):
     tokenizer, which is the correct behavior for a reward model whose vocabulary differs from the
     language model's. The two paths are not numerically equivalent (the text round-trip may drop
     special tokens and re-segment the boundary token), so a reward model that shares the vocabulary
-    should use the id path.
+    should use the id path. On the id path a reward model with a `score` head is read at the
+    candidate position explicitly (the last position of every row), so a candidate equal to the
+    reward model's pad id is scored as a candidate rather than pooled onto the prefix.
 
     Args:
         reward_model: The loaded auxiliary reward model (in eval mode).
@@ -103,7 +105,11 @@ class RewardModelValue(BaseCandidateValue):
         return self._score_text(ctx)
 
     def _score_text(self, ctx: StepContext) -> torch.Tensor:
-        """Score by decoding `prefix + candidate` to text and re-encoding (mismatched-vocab path)."""
+        """Score by decoding `prefix + candidate` to text and re-encoding (mismatched-vocab path).
+
+        The ids are decoded with `skip_special_tokens=True`, so a special-token candidate such as
+        eos contributes nothing to the scored text.
+        """
         batch_size = ctx.prefix_ids.size(0)
         num_candidates = ctx.candidate_ids.size(1)
 
@@ -145,7 +151,14 @@ class RewardModelValue(BaseCandidateValue):
             ids = ids[:, -max_length:]
             mask = mask[:, -max_length:]
 
-        output = self.reward_model(input_ids=ids, attention_mask=mask)
+        if hasattr(self.reward_model, "score"):
+            # the head is applied at the last position, which is the candidate for every row; the
+            # classifier's own forward pools at the last id not equal to the configured pad id
+            backbone = getattr(self.reward_model, self.reward_model.base_model_prefix)
+            hidden = backbone(input_ids=ids, attention_mask=mask, return_dict=True).last_hidden_state
+            output = self.reward_model.score(hidden[:, -1, :])
+        else:
+            output = self.reward_model(input_ids=ids, attention_mask=mask)
         rewards = extract_score(output, self.score_index, self.score_transform)  # [B*K]
         return rewards.reshape(batch_size, num_candidates)
 
