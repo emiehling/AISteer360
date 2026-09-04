@@ -1,12 +1,22 @@
-"""Manifest schema validation and archive packing for `spipe/1`."""
+"""Manifest schema validation, archive packing, and directory save and verify behavior for `spipe/1`."""
 import json
+import shutil
+import warnings
 import zipfile
 
 import pytest
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from steerability.spipe.errors import SpipeFormatError
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.caa.control import CAA
+from steerability.spipe import SPipe
+from steerability.spipe.errors import SpipeFormatError, SpipeSaveError
 from steerability.spipe.format import pack_zip, unpack_zip, validate_manifest
 from steerability.spipe.freeze import _package_versions
+
+TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+KIND = {"positives": ["kind a", "kind b"], "negatives": ["mean a", "mean b"]}
+CALM = {"positives": ["calm a", "calm b"], "negatives": ["angry a", "angry b"]}
 
 
 def minimal_manifest(**overrides):
@@ -112,3 +122,46 @@ def test_not_a_zip_rejected(tmp_path):
     bogus.write_text("not a zip")
     with pytest.raises(SpipeFormatError, match="not a zip"):
         unpack_zip(bogus, tmp_path / "dest")
+
+
+@pytest.fixture(scope="module")
+def tiny_model():
+    model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
+    tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return model, tokenizer
+
+
+def frozen_spipe(model, tokenizer, *datasets):
+    """A frozen spipe with one fitted CAA vector per dataset."""
+    controls = [
+        CAA(data=data, train_spec={"method": "mean_diff", "accumulate": "last_token"}, layer_id=1)
+        for data in datasets
+    ]
+    pipeline = SteeringPipeline(model=model, tokenizer=tokenizer, controls=controls, model_name_or_path=TINY_MODEL)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pipeline.steer()
+    return pipeline.to_spipe()
+
+
+def test_in_place_save_honours_artifacts(tmp_path, tiny_model):
+    spipe = frozen_spipe(*tiny_model, KIND)
+    thin = spipe.save(tmp_path / "thin_dir", artifacts="thin")
+    external = spipe.save(tmp_path / "fat_dir") / "artifacts"
+    assert not (thin / "artifacts").exists()
+
+    # a fat save onto the thin directory embeds the artifacts the store resolves externally
+    SPipe.load(thin, artifact_store=external).save(thin, artifacts="fat")
+    assert (thin / "artifacts").is_dir()
+    reloaded = SPipe.load(thin)
+    report = reloaded.verify()
+    assert report.ok
+    assert not any("thin" in message for message in report.warnings)
+
+    # a thin save onto a directory that embeds artifacts would have to delete them
+    with pytest.raises(SpipeSaveError, match="thin"):
+        reloaded.save(thin, artifacts="thin")
+    assert (thin / "artifacts").is_dir()
+

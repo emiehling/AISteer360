@@ -415,6 +415,11 @@ class SPipe:
         via `artifact_store=`. A recipe-only spipe with no artifact references writes no
         `artifacts/` directory either way.
 
+        Saving onto the bundle's own backing directory rewrites the manifest in place. A fat
+        save there also embeds any referenced artifact the store resolves externally, and a
+        thin save there raises `SpipeSaveError` when the directory embeds artifacts, since a
+        thin export would have to delete them.
+
         Args:
             path: Destination file or directory.
             artifacts: `"fat"` or `"thin"`.
@@ -424,7 +429,8 @@ class SPipe:
 
         Raises:
             SpipeSaveError: If a directory target exists and is neither empty nor a spipe
-                directory, or a referenced artifact is unavailable for a fat export.
+                directory, a referenced artifact is unavailable for a fat export, or a thin
+                export targets the bundle's own directory while it embeds artifacts.
         """
         if artifacts not in ("fat", "thin"):
             raise SpipeSaveError(f"artifacts must be 'fat' or 'thin'; got {artifacts!r}.")
@@ -447,9 +453,17 @@ class SPipe:
 
         if self._base_dir is not None and path.exists() \
                 and path.resolve() == Path(self._base_dir).resolve():
-            # saving onto the backing directory: rewrite the manifest in place and leave the
-            # store untouched
+            # saving onto the backing directory rewrites the manifest in place; a fat save also
+            # embeds artifacts the store resolves externally, and a thin save is refused when the
+            # directory embeds artifacts since it would have to delete them
+            if artifacts == "thin" and (path / ARTIFACTS_DIR).is_dir():
+                raise SpipeSaveError(
+                    f"A thin export onto the bundle's own directory {path} would delete its "
+                    "embedded artifacts; save the thin export to a new path."
+                )
             write_manifest(self._manifest, path)
+            if artifacts == "fat" and referenced:
+                self._store.copy_into(path / ARTIFACTS_DIR, referenced)
             return path
 
         if path.exists():
