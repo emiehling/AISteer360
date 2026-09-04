@@ -134,6 +134,13 @@ class TestRun:
         with pytest.raises(RuntimeError, match="failed for task\\(s\\): b"):
             suite.run(StubSteeringPipeline(), log_dir=tmp_path)
 
+    def test_failure_without_failed_logs_raises_naming_unknown(self, recorded_eval_set, tmp_path):
+        _, plan = recorded_eval_set
+        plan["success"] = False  # every returned log reports success
+        suite = InspectSuite(name="capability", tasks=("a",))
+        with pytest.raises(RuntimeError, match="unknown"):
+            suite.run(StubSteeringPipeline(), log_dir=tmp_path)
+
     def test_flattening_keys_metrics_by_scorer_including_stderr(self, recorded_eval_set, tmp_path):
         _, plan = recorded_eval_set
         plan["logs"]["a"] = _log(

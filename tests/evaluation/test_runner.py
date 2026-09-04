@@ -222,6 +222,21 @@ class TestFactoryDiscipline:
         assert control.cleanup_calls == 1
 
 
+class TestSuiteFailure:
+    def test_eval_set_failure_propagates_and_records_no_cell(self, tiny_base, tmp_path, monkeypatch):
+        pytest.importorskip("inspect_ai")
+        import steerability.evaluation.suite as suite_module
+        from steerability.evaluation.suite import InspectSuite
+
+        monkeypatch.setattr(suite_module, "eval_set", lambda tasks, **kwargs: (False, []))
+        suite = InspectSuite(name="capability", tasks=("stub/task",))
+        runner = _runner({"baseline": []}, suites=[suite], save_dir=tmp_path)
+        with pytest.raises(RuntimeError, match="eval_set failed"):
+            runner.run()
+        with pytest.raises(RuntimeError, match="run\\(\\)"):
+            runner.results()
+
+
 class TestStaticRuntimeKwargAudit:
     def test_static_runtime_kwarg_declared_by_no_configuration_warns(self, tiny_base, tmp_path):
         pytest.importorskip("inspect_ai")

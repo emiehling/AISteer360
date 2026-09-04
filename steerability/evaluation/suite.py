@@ -117,7 +117,8 @@ class InspectSuite:
 
         Raises:
             RuntimeError: If `eval_set` reports failure after its retries; the message names the
-                failed tasks. No partial results are returned.
+                failed tasks when the logs identify them and `unknown` otherwise. No partial
+                results are returned.
         """
         log_dir = Path(log_dir)
         model = as_inspect_model(
@@ -139,12 +140,14 @@ class InspectSuite:
 
         logs: list = []
         failed: list[str] = []
+        succeeded = True
         if self.sample_ids is None:
             success, task_logs = eval_set(
                 list(self.tasks), log_dir=str(log_dir), limit=self.limit, **common,
             )
             logs.extend(task_logs)
             if not success:
+                succeeded = False
                 failed.extend(sorted({log.eval.task for log in task_logs if log.status != "success"}))
         else:
             # per-task sample_ids cannot be expressed in one eval_set call; each task gets its own
@@ -161,8 +164,9 @@ class InspectSuite:
                 )
                 logs.extend(task_logs)
                 if not success:
+                    succeeded = False
                     failed.extend(sorted({log.eval.task for log in task_logs if log.status != "success"}))
-        if failed:
+        if not succeeded:
             raise RuntimeError(
                 f"Inspect eval_set failed for task(s): {', '.join(failed) or 'unknown'} "
                 f"(logs under {log_dir})."
