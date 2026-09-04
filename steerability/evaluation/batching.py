@@ -329,7 +329,11 @@ class LockLeaderCollator:
             member.output = output
 
     def _run_batch(self, batch: list[BatchRequest]) -> list[Output]:
-        """Issue one `pipeline.generate` call for `batch`, returning one `Output` per record."""
+        """Issue one `pipeline.generate` call for `batch`, returning one `Output` per record.
+
+        Raises:
+            RuntimeError: If the call returns a different number of outputs than records.
+        """
         leader = batch[0]
         runtime_kwargs = dict(self._static_call_kwargs)
         for key, value in self._static_row_kwargs.items():
@@ -350,7 +354,12 @@ class LockLeaderCollator:
             return [output]
         prompts = [member.prompt for member in batch]
         prompt_kwargs = {"messages": prompts} if self._prompt_path == "messages" else {"text": prompts}
-        outputs = self._pipeline.generate(
+        outputs = list(self._pipeline.generate(
             runtime_kwargs=runtime_kwargs, return_output=True, **prompt_kwargs, **gen_kwargs,
-        )
-        return list(outputs)
+        ))
+        if len(outputs) != len(batch):
+            raise RuntimeError(
+                f"pipeline.generate returned {len(outputs)} output(s) for a dispatch of {len(batch)} "
+                "prompt(s); one Output per prompt is required."
+            )
+        return outputs

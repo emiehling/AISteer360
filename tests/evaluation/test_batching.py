@@ -323,6 +323,20 @@ class TestPoisonIsolation:
         assert results[0] is not None and results[2] is not None
         assert isinstance(errors[1], ValueError) and "bad sample" in str(errors[1])
 
+    def test_short_output_list_leaves_no_record_unresolved(self):
+        class ShortPipeline(StubSteeringPipeline):
+            def generate(self, **kw):
+                return super().generate(**kw)[:-1]  # one Output fewer than prompts
+
+        release = threading.Event()
+        pipeline = ShortPipeline()
+        pipeline.gate = release
+        collator, _ = _collator(pipeline, max_batch_size=4)
+        records = [_admit(collator, [{"role": "user", "content": f"q{i}"}]) for i in range(3)]
+        _, errors = _run_concurrent(collator, records, release=release)
+        assert not any(record.output is None and record.error is None for record in records)
+        assert all(isinstance(error, RuntimeError) and "output" in str(error) for error in errors)
+
     def test_singleton_failure_lands_on_its_record(self):
         class FailingPipeline(StubSteeringPipeline):
             def generate(self, **kw):
