@@ -60,7 +60,7 @@ MAPPED_FIELDS: frozenset[str] = frozenset({
     "max_tokens", "stop_seqs", "temperature", "top_p", "top_k", "seed", "num_choices", "extra_body",
 })
 UPSTREAM_FIELDS: frozenset[str] = frozenset({
-    "system_message", "max_retries", "timeout", "attempt_timeout", "max_connections",
+    "system_message", "max_retries", "timeout", "attempt_timeout", "stream_idle_timeout", "max_connections",
     "adaptive_connections", "fallback_models", "cache", "cache_prompt", "batch",
     "parallel_tool_calls", "internal_tools", "max_tool_output",
 })
