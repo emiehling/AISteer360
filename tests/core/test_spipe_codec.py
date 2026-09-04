@@ -1,11 +1,17 @@
 """Codec round-trips and security gates for the `.spipe` value codec."""
+import json
+import warnings
+
 import pytest
 import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from steerability.algorithms.core.internals.data import ContrastivePairs
 from steerability.spipe.codec import CodeRef, DataRef, DecodeContext, EncodeContext, decode, digest_of, encode
 from steerability.spipe.errors import SpipeCodeRefError, SpipeSaveError
 from steerability.spipe.store import ArtifactStore
+
+TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 
 
 def module_level_scorer(response, row):
@@ -263,3 +269,48 @@ def test_unhandled_object_raises_in_strict_mode(store):
         encode(Opaque(), EncodeContext(store=store))
     # digest mode reduces to a type name instead
     assert digest_of(Opaque()) == digest_of(Opaque())
+
+
+@pytest.fixture(scope="module")
+def frozen_caa_spipe():
+    from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+    from steerability.algorithms.state_control.caa.control import CAA
+
+    model = AutoModelForCausalLM.from_pretrained(TINY_MODEL)
+    tokenizer = AutoTokenizer.from_pretrained(TINY_MODEL)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    caa = CAA(
+        data={"positives": ["kind a", "kind b"], "negatives": ["mean a", "mean b"]},
+        train_spec={"method": "mean_diff", "accumulate": "last_token"},
+        layer_id=1,
+    )
+    pipeline = SteeringPipeline(model=model, tokenizer=tokenizer, controls=[caa], model_name_or_path=TINY_MODEL)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pipeline.steer()
+    return pipeline.to_spipe()
+
+
+def test_manifest_record_governs_verification_wrap(tmp_path, frozen_caa_spipe):
+    from steerability.algorithms.state_control.common.sources import VerifiedPrecomputed
+    from steerability.spipe import SPipe
+
+    thin = frozen_caa_spipe.save(tmp_path / "thin_dir", artifacts="thin")
+    external = frozen_caa_spipe.save(tmp_path / "fat_dir") / "artifacts"
+    # a shared external store may hold a sidecar written by another bundle for the same content
+    (record,) = (
+        record
+        for entry in frozen_caa_spipe.manifest["controls"]
+        for record in entry["resolved"]["artifacts"].values()
+    )
+    assert record["artifact_class"] == "direction"
+    sidecar_path = external / record["id"].replace(":", "-", 1) / "artifact.json"
+    sidecar = json.loads(sidecar_path.read_text())
+    sidecar.update(artifact_class="opaque", source=None, fit_digest=None)
+    sidecar_path.write_text(json.dumps(sidecar))
+
+    rebuilt = SPipe.load(thin, artifact_store=external).pipeline()
+    source = rebuilt.state_controls[0].steering_vector
+    assert isinstance(source, VerifiedPrecomputed)
+    assert source.artifact_class == "direction"

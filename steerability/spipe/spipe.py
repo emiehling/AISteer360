@@ -30,7 +30,7 @@ from steerability.spipe.format import (
     validate_manifest,
     write_manifest,
 )
-from steerability.spipe.store import ArtifactStore
+from steerability.spipe.store import ArtifactRecord, ArtifactStore
 
 if TYPE_CHECKING:
     from steerability.algorithms.core.execution.spec import BackendSpec
@@ -85,6 +85,16 @@ def _collect_artifact_ids(value: Any, found: set[str]) -> None:
             _collect_artifact_ids(item, found)
 
 
+def _manifest_records(manifest: Mapping) -> dict[str, ArtifactRecord]:
+    """The artifact records of every resolved entry, keyed by artifact id."""
+    records: dict[str, ArtifactRecord] = {}
+    for entry in manifest["controls"]:
+        for item in _resolved_items(entry):
+            for record in (item.get("artifacts") or {}).values():
+                records[record["id"]] = ArtifactRecord.from_mapping(record)
+    return records
+
+
 class SPipe:
     """A serialized steering pipeline: recipe, optional lock, and artifact store.
 
@@ -105,6 +115,7 @@ class SPipe:
     ):
         validate_manifest(manifest)
         self._manifest = manifest
+        self._manifest_records = _manifest_records(manifest)
         self._store = store
         self._base_dir = base_dir
         self._allow_code = allow_code
@@ -270,6 +281,7 @@ class SPipe:
             code_mode="sentinel" if lenient else "strict",
             verify=verify,
             data_mode=data_mode,
+            manifest_records=self._manifest_records,
         )
 
     @staticmethod
@@ -506,6 +518,7 @@ class SPipe:
             code_mode="strict",
             verify=verify,
             data_mode="load",
+            manifest_records=self._manifest_records,
         )
 
         controls = []

@@ -190,6 +190,10 @@ class DecodeContext:
             `"warn"`, or `"off"`).
         data_mode: `"load"` materializes `$data` references; `"keep"` returns `DataRef`
             values unchanged.
+        manifest_records: Artifact records from the manifest's resolved entries, keyed by
+            artifact id. When an artifact has one, its `artifact_class` and `provenance` decide
+            the verification wrap; the store sidecar supplies the encoding, type, and
+            reconstruction metadata.
     """
 
     store: ArtifactStore | None = None
@@ -197,6 +201,7 @@ class DecodeContext:
     code_mode: str = "strict"
     verify: str = "strict"
     data_mode: str = "load"
+    manifest_records: Mapping[str, ArtifactRecord] = field(default_factory=dict)
 
 
 def _qualname(obj_type: type) -> str:
@@ -549,6 +554,9 @@ def _decode_artifact(ref: Mapping, ctx: DecodeContext, path: str) -> Any:
             "artifact_store= to load()."
         )
     record = ctx.store.record_for(artifact_id)
+    # the manifest record, when present, decides the verification wrap; the sidecar keeps the
+    # encoding, type, and reconstruction metadata
+    manifest_record = ctx.manifest_records.get(artifact_id, record)
 
     if record.type in ("CPOMemory", "PoolMemory") and not ctx.allow_code:
         raise SpipeCodeRefError(
@@ -567,13 +575,13 @@ def _decode_artifact(ref: Mapping, ctx: DecodeContext, path: str) -> Any:
             return tensors["value"]
         if record.type == "SteeringVector":
             vector = _rebuild_steering_vector(tensors, record, ctx)
-            if record.artifact_class in ("direction", "calibrated"):
+            if manifest_record.artifact_class in ("direction", "calibrated"):
                 from steerability.algorithms.state_control.common.sources import VerifiedPrecomputed
 
                 return VerifiedPrecomputed(
                     vector,
-                    provenance=record.provenance,
-                    artifact_class=record.artifact_class,
+                    provenance=manifest_record.provenance,
+                    artifact_class=manifest_record.artifact_class,
                     policy=ctx.verify,
                 )
             return vector
