@@ -65,7 +65,7 @@ def prefix_reward_loss(
     For one sequence of length `l` with prediction `r_t` at every prefix `t` (1-indexed) and label
     `r`, the loss is `sum_t t * (r_t - r)^2 / S_l` with `S_l = l * (l + 1) / 2`. Positions with
     `attention_mask == 0` are excluded and `l` counts the included positions, so a fully masked row
-    contributes nothing.
+    contributes nothing. The loss is computed in float32 regardless of the input dtypes.
 
     Args:
         predictions: Per-position predictions `[B, T]`.
@@ -73,14 +73,15 @@ def prefix_reward_loss(
         attention_mask: `[B, T]` mask; `0` positions are excluded.
 
     Returns:
-        A scalar tensor, the mean per-sequence prefix loss over the non-empty rows.
+        A float32 scalar tensor, the mean per-sequence prefix loss over the non-empty rows.
     """
-    mask = attention_mask.to(predictions.dtype)  # [B, T]
+    predictions = predictions.float()
+    mask = attention_mask.to(torch.float32)  # [B, T]
     positions = torch.cumsum(mask, dim=1) * mask  # 1-indexed prefix length at each kept position
     lengths = mask.sum(dim=1)  # [B]
     normalizer = lengths * (lengths + 1) / 2  # S_l per row
 
-    squared_error = (predictions - labels.unsqueeze(1).to(predictions.dtype)) ** 2  # [B, T]
+    squared_error = (predictions - labels.unsqueeze(1).float()) ** 2  # [B, T]
     per_row = (positions * squared_error).sum(dim=1) / normalizer.clamp_min(1.0)  # [B]
 
     nonempty = lengths > 0

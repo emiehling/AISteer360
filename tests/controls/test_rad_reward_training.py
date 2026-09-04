@@ -70,6 +70,19 @@ def test_prefix_reward_loss_ignores_fully_masked_rows():
     assert prefix_reward_loss(predictions, labels, attention_mask).item() == pytest.approx(only_row0, abs=1e-6)
 
 
+def test_prefix_reward_loss_computes_in_fp32_from_bf16_inputs():
+    """bf16 inputs over a sequence longer than bf16's exact-integer range give the fp32 loss, in fp32."""
+    torch.manual_seed(0)
+    length = 300
+    predictions = torch.rand(2, length).to(torch.bfloat16)
+    labels = torch.tensor([0.7, 0.2]).to(torch.bfloat16)
+    attention_mask = torch.ones(2, length, dtype=torch.long)
+    reference = prefix_reward_loss(predictions.float(), labels.float(), attention_mask)
+    got = prefix_reward_loss(predictions, labels, attention_mask)
+    assert got.dtype == torch.float32
+    torch.testing.assert_close(got, reference)
+
+
 class TestPrefixRewards:
     """`prefix_rewards` returns `[B, T]` sigmoid outputs on both checkpoint families."""
 
