@@ -71,6 +71,20 @@ class TestCanonicalValue:
     def test_numpy_scalar_and_array(self):
         assert canonical_value(np.float64(2.5)) == 2.5
         assert canonical_value(np.array([1, 2, 3])) == [1, 2, 3]
+        assert canonical_value(np.array([[1.5, 2.0], [3.0, 4.0]])) == [[1.5, 2.0], [3.0, 4.0]]
+
+    def test_object_array_elements_follow_element_rules(self):
+        arr = np.array([Path("models/base"), {"layers": {2, 1}}, np.int64(3)], dtype=object)
+        form = canonical_value(arr)
+        assert form == ["models/base", {"layers": [1, 2]}, 3]
+        assert form == canonical_value([Path("models/base"), {"layers": {1, 2}}, 3])
+        assert len(config_digest({"params": form})) == 12
+
+    def test_nested_arrays_recurse(self):
+        outer = np.empty(2, dtype=object)
+        outer[0] = np.array([1, 2])
+        outer[1] = np.array([Path("a")], dtype=object)
+        assert canonical_value(outer) == [[1, 2], ["a"]]
 
     def test_mapping_key_order_irrelevant(self):
         assert canonical_value({"a": 1, "b": 2}) == canonical_value({"b": 2, "a": 1})
@@ -153,6 +167,14 @@ class TestConfigDigest:
         right = config_descriptor_from_controls([_ArgControl(alpha=1.0, label="y")])
         assert config_digest(left) == config_digest(right)
         assert len(config_digest(left)) == 12
+
+    def test_object_array_param_digests_like_its_list_form(self):
+        specs = [_Spec(_ArgControl, name="ctl")]
+        as_array = config_descriptor_from_specs(
+            specs, {"ctl": {"alpha": 1.0, "paths": np.array([Path("a"), Path("b")], dtype=object)}}
+        )
+        as_list = config_descriptor_from_specs(specs, {"ctl": {"alpha": 1.0, "paths": [Path("a"), Path("b")]}})
+        assert config_digest(as_array) == config_digest(as_list)
 
 
 class TestDeriveTrialSeed:

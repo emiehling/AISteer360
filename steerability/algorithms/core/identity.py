@@ -63,7 +63,9 @@ def canonical_value(obj: Any, _path: str = "$") -> Any:
     content-addressed over dtype, shape, and bytes, with device and `requires_grad` excluded.
     Mapping key order never affects the form, sequence order always does, and set element order
     never does. A callable reduces to its qualified name. An unhandled object type reduces to its
-    type qualname (value-blind), logged at debug.
+    type qualname (value-blind), logged at debug. NumPy scalars reduce with `item()`; NumPy arrays
+    convert through `tolist()` and then recurse, so the elements of object arrays follow the same
+    rules as list elements.
 
     Args:
         obj: The value to canonicalize.
@@ -80,7 +82,7 @@ def canonical_value(obj: Any, _path: str = "$") -> Any:
     if isinstance(obj, np.generic):
         return obj.item()
     if isinstance(obj, np.ndarray):
-        return obj.tolist()
+        return canonical_value(obj.tolist(), _path)
     if isinstance(obj, torch.Tensor):
         tensor = obj.detach().to("cpu").contiguous()
         digest = hashlib.sha256()
