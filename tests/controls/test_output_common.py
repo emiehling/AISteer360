@@ -574,6 +574,14 @@ class TestCandidateForward:
         with pytest.raises(ValueError, match="longer than"):
             CandidateForward(model).last_hidden_states(prefix, cands, long_mask)
 
+    def test_prefix_mask_with_zeros_raises(self):
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        prefix = torch.tensor([[0, 3, 4, 5]])
+        cands = torch.tensor([[7, 8]])
+        padded_mask = torch.tensor([[0, 1, 1, 1]])  # a leading pad shifts the candidate's position
+        with pytest.raises(ValueError, match="unpadded"):
+            CandidateForward(model).last_hidden_states(prefix, cands, padded_mask)
+
     def test_preserve_input_does_not_mutate_cache(self):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         ids = torch.tensor([[0, 3, 4]])

@@ -29,7 +29,8 @@ class CandidateForward:
     replay from an unrelated prefix) rebuilds from scratch. The candidate evaluation then repeats a
     fresh copy of the cache across the K candidates, so the incremental cache survives the call.
     Explicit `cache_position` is passed on every forward, including the prefix rebuild (this is what
-    `generate` does internally). Supports batch size 1 only.
+    `generate` does internally), and the model derives token positions from it, so the prefix must
+    be unpadded: an attention mask containing zeros is rejected. Supports batch size 1 only.
 
     Args:
         model: The model to forward through (the pipeline's own model for same-model values).
@@ -83,16 +84,23 @@ class CandidateForward:
             prefix_ids: `[1, T]` prefix (batch size 1).
             candidate_ids: `[1, K]` candidate next tokens.
             attention_mask: Optional prefix mask; right-extended with ones to the prefix length.
+                Must contain no zeros.
 
         Returns:
             A tensor `[K, H]` of candidate-position hidden states, one per candidate.
 
         Raises:
+            ValueError: If the prefix batch size is not 1, or the attention mask contains zeros.
             RuntimeError: If the candidate forward does not pass through the final decoder layer
                 exactly once.
         """
         if prefix_ids.size(0) != 1:
             raise ValueError("CandidateForward supports batch size 1 only.")
+        if attention_mask is not None and not bool(attention_mask.all()):
+            raise ValueError(
+                "CandidateForward positions tokens by sequence index and requires an unpadded prefix; "
+                "the attention mask contains zeros."
+            )
 
         num = candidate_ids.size(1)
         device = prefix_ids.device
