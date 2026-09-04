@@ -43,6 +43,13 @@ def test_nonstring_keys_roundtrip_via_map(store):
     assert "$map" in encoded
 
 
+def test_map_encoding_and_digest_are_key_order_independent():
+    forward = encode({10: 1.0, 5: 2.0}, EncodeContext(store=None))
+    backward = encode({5: 2.0, 10: 1.0}, EncodeContext(store=None))
+    assert forward == backward
+    assert digest_of({10: 1.0, 5: 2.0}) == digest_of({5: 2.0, 10: 1.0})
+
+
 def test_dataclass_roundtrip(store):
     pairs = ContrastivePairs(positives=["a", "b"], negatives=["c", "d"], prompts=["p", "q"])
     decoded, encoded = roundtrip(pairs, store)

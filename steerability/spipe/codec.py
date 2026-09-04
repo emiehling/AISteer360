@@ -8,8 +8,9 @@ Plain JSON values pass through; everything else encodes as a single-key tagged o
   decoded through `COMPONENT_KINDS`.
 - `$ref`: module-level callables, decoded by import only under `allow_code=True`.
 - `$data`: dataset references (`DataRef`), materialized at pipeline construction.
-- `$map`: mappings with non-string scalar keys, kept as `[key, value]` pairs so key types
-  survive the JSON round trip.
+- `$map`: mappings with non-string scalar keys, kept as `[key, value]` pairs sorted by key so
+  key types are retained through the JSON round trip and the encoding is independent of
+  insertion order.
 
 The codec round-trips; `identity.canonical_value` remains the separate, hash-only
 canonicalizer. Digest computation for fit identities goes through `encode` in digest mode
@@ -474,6 +475,7 @@ def encode(value: Any, ctx: EncodeContext, path: str = "$") -> Any:
                     "serialized form; mapping keys must be strings, ints, floats, or bools."
                 )
             entries.append([key, encode(item, ctx, f"{path}[{key!r}]")])
+        entries.sort(key=lambda entry: (type(entry[0]).__name__, repr(entry[0])))
         return {"$map": entries}
     if isinstance(value, (list, tuple)):
         return [encode(item, ctx, f"{path}[{i}]") for i, item in enumerate(value)]
