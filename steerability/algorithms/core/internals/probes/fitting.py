@@ -537,8 +537,10 @@ class ProbeEvaluation:
     """Held-out scores of a probe on labeled data.
 
     Attributes:
-        positive_scores: Signed decision scores of the positive class, shape `[N_pos]`.
-        negative_scores: Signed decision scores of the negative class, shape `[N_neg]`.
+        positive_scores: Signed decision scores of the positive class, shape `[N_pos]`, ordered by
+            descending rendered text length rather than input order.
+        negative_scores: Signed decision scores of the negative class, shape `[N_neg]`, in the same
+            order.
         accuracy: Fraction correct at the calibrated point (`score >= 0` is positive).
         f1: F1 of the same decision.
     """
