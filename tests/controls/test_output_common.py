@@ -5,6 +5,7 @@ statefulness contract, candidate policies, the value-guided step shape, the cont
 distribution shape, KV-cache round-trips, the segment and phase drivers, composable criteria, and
 the constraint integration point.
 """
+import itertools
 import json
 import math
 
@@ -307,20 +308,201 @@ class TestSearchDriver:
         assert out.ndim == 2
         assert all(seen_stacks)  # every rollout received the processor stack
 
-    def test_batch_gt_one_raises(self):
-        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+    def test_batch_rows_in_row_major_candidate_minor_order(self):
+        tokenizer = wordlevel_tokenizer()
         driver = SearchDriver(
-            scorer=lambda p, c, params: [0.0], segment_len=2, num_candidates=2, keep_k=1,
-            max_iterations=1,
+            scorer=lambda p, c, params: [0.0] * len(c), segment_len=2, num_candidates=2, keep_k=1,
+            max_iterations=1, propose_mode="sample",
         )
-        driver.tokenizer = wordlevel_tokenizer()
-        with pytest.raises(NotImplementedError):
-            driver.decode(
-                input_ids=torch.zeros(2, 3, dtype=torch.long),
-                attention_mask=torch.ones(2, 3, dtype=torch.long),
-                model=model, logits_processors=LogitsProcessorList(),
-                stopping_criteria=StoppingCriteriaList(), runtime_kwargs=None,
-            )
+        driver.tokenizer = tokenizer
+
+        def fake_generate(**kwargs):
+            # continue every prompt with two copies of its second token; on the unstripped padded row
+            # that token would be <s>, on the stripped row it is the last prompt token
+            inp = kwargs["input_ids"]
+            full = torch.cat([inp, inp[:, 1:2].repeat(1, 2)], dim=1)
+            return full.repeat_interleave(kwargs.get("num_return_sequences", 1), dim=0)
+
+        out = driver.decode(
+            input_ids=torch.tensor([[0, 3, 4], [2, 0, 5]]),
+            attention_mask=torch.tensor([[1, 1, 1], [0, 1, 1]]),
+            model=None,
+            logits_processors=LogitsProcessorList(),
+            stopping_criteria=StoppingCriteriaList(),
+            runtime_kwargs=None,
+            session=ScriptedSession(fake_generate, tokenizer=tokenizer),
+            max_new_tokens=2,
+            num_return_sequences=2,
+        )
+        # each row keeps its padded prompt, and the pad-stripped row is continued from its real tokens
+        assert out.tolist() == [
+            [0, 3, 4, 3, 3], [0, 3, 4, 3, 3], [2, 0, 5, 5, 5], [2, 0, 5, 5, 5],
+        ]
+
+    @pytest.mark.parametrize(
+        "propose_mode, sampling, expected_searches",
+        [("beam", {}, 1), ("beam", {"do_sample": False}, 1), ("beam", {"do_sample": True}, 3), ("sample", {}, 3)],
+    )
+    def test_deterministic_beam_proposals_run_one_search_per_row(self, propose_mode, sampling, expected_searches):
+        tokenizer = wordlevel_tokenizer()
+        driver = SearchDriver(
+            scorer=lambda p, c, params: [0.0] * len(c), segment_len=2, num_candidates=2, keep_k=1,
+            max_iterations=1, propose_mode=propose_mode,
+        )
+        driver.tokenizer = tokenizer
+        rollouts = []
+
+        def fake_generate(**kwargs):
+            rollouts.append(kwargs["input_ids"].size(0))
+            inp = kwargs["input_ids"]
+            full = torch.cat([inp, torch.full((inp.size(0), 2), 5)], dim=1)
+            return full.repeat_interleave(kwargs.get("num_return_sequences", 1), dim=0)
+
+        out = driver.decode(
+            input_ids=torch.tensor([[0, 3, 4]]),
+            attention_mask=None,
+            model=None,
+            logits_processors=LogitsProcessorList(),
+            stopping_criteria=StoppingCriteriaList(),
+            runtime_kwargs=None,
+            session=ScriptedSession(fake_generate, tokenizer=tokenizer),
+            max_new_tokens=2,
+            num_return_sequences=3,
+            **sampling,
+        )
+        assert out.tolist() == [[0, 3, 4, 5, 5]] * 3
+        assert len(rollouts) == expected_searches  # one rollout per single-iteration search
+
+    def test_last_segment_is_clamped_to_the_remaining_budget(self):
+        tokenizer = wordlevel_tokenizer()
+        driver = SearchDriver(
+            scorer=lambda p, c, params: [float(len(text.split())) for text in c], segment_len=3, num_candidates=1,
+            keep_k=1, max_iterations=3, propose_mode="sample",
+        )
+        driver.tokenizer = tokenizer
+        requested = []
+
+        def fake_generate(**kwargs):
+            requested.append(kwargs["max_new_tokens"])
+            inp = kwargs["input_ids"]
+            full = torch.cat([inp, torch.full((inp.size(0), kwargs["max_new_tokens"]), 5)], dim=1)
+            return full.repeat_interleave(kwargs.get("num_return_sequences", 1), dim=0)
+
+        out = driver.decode(
+            input_ids=torch.tensor([[0, 3, 4]]),
+            attention_mask=None,
+            model=None,
+            logits_processors=LogitsProcessorList(),
+            stopping_criteria=StoppingCriteriaList(),
+            runtime_kwargs=None,
+            session=ScriptedSession(fake_generate, tokenizer=tokenizer),
+            max_new_tokens=4,
+        )
+        # the second segment proposes the one token left in the budget, and the row at the budget is finished
+        assert requested == [3, 1]
+        assert out.tolist() == [[0, 3, 4, 5, 5, 5, 5]]
+
+    def test_clamped_segment_lowers_min_new_tokens(self):
+        tokenizer = wordlevel_tokenizer()
+        driver = SearchDriver(
+            scorer=lambda p, c, params: [1.0] * len(c), segment_len=3, num_candidates=1,
+            keep_k=1, max_iterations=3, propose_mode="sample",
+        )
+        driver.tokenizer = tokenizer
+        requested = []
+
+        def fake_generate(**kwargs):
+            requested.append((kwargs["max_new_tokens"], kwargs.get("min_new_tokens")))
+            inp = kwargs["input_ids"]
+            return torch.cat([inp, torch.full((inp.size(0), kwargs["max_new_tokens"]), 5)], dim=1)
+
+        driver.decode(
+            input_ids=torch.tensor([[0, 3, 4]]),
+            attention_mask=None,
+            model=None,
+            logits_processors=LogitsProcessorList(),
+            stopping_criteria=StoppingCriteriaList(),
+            runtime_kwargs=None,
+            session=ScriptedSession(fake_generate, tokenizer=tokenizer),
+            max_new_tokens=4,
+            min_new_tokens=2,
+        )
+        assert requested == [(3, 2), (1, 1)]
+
+    def test_frontier_at_the_budget_width_ends_the_search(self):
+        tokenizer = wordlevel_tokenizer()
+        pad = tokenizer.pad_token_id
+        driver = SearchDriver(
+            scorer=lambda p, c, params: [float(index) for index in range(len(c))], segment_len=4,
+            num_candidates=2, keep_k=1, max_iterations=3, propose_mode="sample",
+        )
+        driver.tokenizer = tokenizer
+        requested = []
+
+        def fake_generate(**kwargs):
+            requested.append(kwargs["max_new_tokens"])
+            inp = kwargs["input_ids"]
+            # the second candidate is cut after one token (as by a caller stopping criterion) and right-padded
+            continuations = torch.tensor([[5, 5, 5, 5], [6, pad, pad, pad]])
+            return torch.cat([inp.repeat(2, 1), continuations], dim=1)
+
+        out = driver.decode(
+            input_ids=torch.tensor([[0, 3, 4]]),
+            attention_mask=None,
+            model=None,
+            logits_processors=LogitsProcessorList(),
+            stopping_criteria=StoppingCriteriaList(),
+            runtime_kwargs=None,
+            session=ScriptedSession(fake_generate, tokenizer=tokenizer),
+            max_new_tokens=4,
+        )
+        # the kept candidate is unfinished, but the frontier's width leaves no budget for another segment
+        assert requested == [4]
+        assert out.tolist() == [[0, 3, 4, 6, pad, pad, pad]]
+
+    @pytest.mark.parametrize("eos_offset, expected_reason", [(5, "length"), (3, "eos")])
+    def test_rows_stay_within_the_budget_when_pad_equals_eos(self, eos_offset, expected_reason):
+        from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+        from steerability.algorithms.output_control.base import OutputControl
+        from steerability.algorithms.output_control.search_decoding.control import SearchDecoding
+
+        torch.manual_seed(0)
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        tokenizer = wordlevel_tokenizer()
+        tokenizer.pad_token = tokenizer.eos_token
+        eos = tokenizer.eos_token_id
+        prompt = tokenizer("the dog", return_tensors="pt").input_ids
+
+        class _EosAtOffset(OutputControl):
+            Args = None
+
+            def get_logits_processors(self, input_ids, runtime_kwargs, **kwargs):
+                def _force(prefix_ids, scores):
+                    scores = scores.clone()
+                    scores[:, eos] = -1e9
+                    if prefix_ids.size(1) - prompt.size(1) == eos_offset:
+                        scores[:, :] = -1e9
+                        scores[:, eos] = 0.0
+                    return scores
+
+                return [_force]
+
+        # later segments score higher, so the best-so-far sequence is the longest one
+        scoring_calls = itertools.count(1)
+        search = SearchDecoding(
+            scorer=lambda p, c, params: [float(next(scoring_calls))] * len(c), segment_len=3, num_candidates=1,
+            keep_k=1, max_iterations=3, propose_mode="sample",
+        )
+        pipeline = SteeringPipeline(controls=[_EosAtOffset(), search], model=model, tokenizer=tokenizer)
+        pipeline.steer()
+        [output] = pipeline.generate(
+            input_ids=prompt, return_output=True, max_new_tokens=4, do_sample=True, seed=0, eos_token_id=eos,
+        )
+        continuation = output.output_ids[0].tolist()
+        # an eos past the budget is never generated, and an eos at the budget's last position is reported as eos
+        assert len(continuation) == 4
+        assert (continuation[-1] == eos) == (expected_reason == "eos")
+        assert output.finish_reason == expected_reason
 
 
 class TestFrontier:
@@ -385,6 +567,32 @@ class TestPhasedDriver:
         decoded = tokenizer.decode(out[0], skip_special_tokens=False)
         assert "</think>" not in decoded
         assert "mat" in decoded
+
+    def test_extract_after_without_the_marker_keeps_the_continuation(self):
+        tokenizer = wordlevel_tokenizer()
+
+        class _Extract(PhasedDriver):
+            def plan(self, prompt_text, params):
+                return [Generated()]
+
+        driver = _Extract(extract_after="</think>")
+        driver.tokenizer = tokenizer
+        prompt_ids = tokenizer("the cat", return_tensors="pt").input_ids
+        continuation = tokenizer(" the mat", return_tensors="pt", add_special_tokens=False).input_ids
+
+        def fake_generate(**kwargs):
+            inp = kwargs["input_ids"]
+            return torch.cat([inp, continuation.to(inp.device)], dim=1)
+
+        out = driver.decode(
+            input_ids=prompt_ids, attention_mask=torch.ones_like(prompt_ids),
+            model=None, logits_processors=LogitsProcessorList(),
+            stopping_criteria=StoppingCriteriaList(),
+            runtime_kwargs={},
+            session=ScriptedSession(fake_generate),
+        )
+        # the prompt is not repeated after itself, and the whole continuation is kept
+        assert out[0].tolist() == prompt_ids[0].tolist() + continuation[0].tolist()
 
     def test_per_example_params_slicing(self):
         driver = _ScriptedPhasedDriver()

@@ -3,9 +3,9 @@
 Exercises the runtime directly with hand-registered hooks on a tiny Llama: `cache_position`-derived
 position offsets and their pass-counting fallback, pass-opener KV-offset semantics across
 prefill/decode with multiple hooked layers, `after_prompt`/`last_k`/`from_position`/`all` token
-scopes, auxiliary-pass marking (aligned and detached), beam-expansion alignment, tuple vs
-bare-tensor outputs, the pre-hook (`layer_input`) extract/replace path, and read-only condition
-hooks feeding a gate.
+scopes, auxiliary-pass marking (aligned and detached), the counting restart at each marked
+`model.generate` call, beam-expansion alignment, tuple vs bare-tensor outputs, the pre-hook
+(`layer_input`) extract/replace path, and read-only condition hooks feeding a gate.
 
 Runs hub-free on a tiny randomly-initialized Llama.
 """
@@ -15,6 +15,7 @@ import pytest
 import torch
 
 from steerability.algorithms.core.utils.auxiliary_pass import auxiliary_pass
+from steerability.algorithms.core.utils.generate_call import generate_call
 from steerability.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
 from steerability.algorithms.state_control.common.runtime import TransformHookRuntime
 from steerability.algorithms.state_control.common.token_scope import compute_prompt_lens
@@ -406,3 +407,65 @@ class TestFallbackMultiCallHeuristic:
             warnings.simplefilter("always")
             hook(None, (), {}, (hidden,))
         assert not [w for w in caught if "Multiple generate calls" in str(w.message)]
+
+
+class TestGenerateCallBoundary:
+    """The counting fallback restarts at the first pass of each marked `model.generate` call."""
+
+    def test_second_marked_generate_counts_from_position_zero(self):
+        # the attention output projection receives neither `cache_position` nor `position_ids`
+        model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
+        runtime = TransformHookRuntime(hook_point="layer_input")
+        transform = _RecordingTransform()
+        prompt = torch.arange(3, 7, dtype=torch.long).unsqueeze(0)  # prompt_len 4
+        hook = _after_prompt_hook(runtime, transform)
+        o_proj = model.model.layers[0].self_attn.o_proj
+        handles = [o_proj.register_forward_pre_hook(hook, with_kwargs=True)]
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with generate_call():
+                    first = model.generate(input_ids=prompt, max_new_tokens=3, do_sample=False, eos_token_id=None)
+                first_masks = list(transform.masks)
+                # the second call re-prefills the prompt followed by the first call's continuation
+                with generate_call():
+                    model.generate(input_ids=first, max_new_tokens=3, do_sample=False, eos_token_id=None)
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        assert not [w for w in caught if "Multiple generate calls" in str(w.message)]
+        assert len(first_masks) == 2 and all(m.shape[1] == 1 and bool(m.all()) for m in first_masks)
+        second_masks = transform.masks[len(first_masks):]
+        prefill, *decode = second_masks
+        # the first call's continuation columns are steered, the prompt columns are not
+        assert prefill[0].tolist() == [False] * 4 + [True] * 3
+        assert len(decode) == 2 and all(m.shape[1] == 1 and bool(m.all()) for m in decode)
+
+    def test_pass_of_an_older_call_does_not_restart_the_count(self):
+        runtime = TransformHookRuntime(hook_point="layer_output")
+        transform = _RecordingTransform()
+        hook = _after_prompt_hook(runtime, transform)
+        with generate_call():
+            hook(None, (), {}, (torch.zeros(1, 4, HIDDEN),))
+            with generate_call():
+                hook(None, (), {}, (torch.zeros(1, 6, HIDDEN),))
+            # the outer call's pass is counted as a decode step rather than a new prefill
+            hook(None, (), {}, (torch.zeros(1, 1, HIDDEN),))
+        nested_prefill, resumed = transform.masks
+        assert nested_prefill[0].tolist() == [False] * 4 + [True] * 2
+        assert resumed.shape[1] == 1 and bool(resumed.all())  # a restart would place it at position 0
+
+    def test_auxiliary_pass_in_a_marked_call_leaves_the_count(self):
+        runtime = TransformHookRuntime(hook_point="layer_output")
+        transform = _RecordingTransform()
+        hook = _after_prompt_hook(runtime, transform)
+        with generate_call():
+            hook(None, (), {}, (torch.zeros(1, 4, HIDDEN),))
+        with generate_call():
+            with auxiliary_pass(aligned=False):
+                hook(None, (), {}, (torch.zeros(1, 6, HIDDEN),))
+            assert runtime._offset == 4  # the auxiliary pass neither restarts nor advances the count
+            hook(None, (), {}, (torch.zeros(1, 6, HIDDEN),))
+        assert runtime._offset == 6
+        assert transform.masks[-1][0].tolist() == [False] * 4 + [True] * 2

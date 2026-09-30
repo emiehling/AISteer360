@@ -313,11 +313,12 @@ class SteeringPipeline:
             *self.state_controls,
             *self.output_controls,
         )
-        return all(
-            getattr(control, "supports_batching", False)
-            for control in controls
-            if control.enabled
-        )
+        if not all(getattr(control, "supports_batching", False) for control in controls if control.enabled):
+            return False
+        decoding_driver = resolve_decoding_driver(self.output_controls)
+        if decoding_driver is not None and not decoding_driver.whole_batch_rollouts:
+            return not any(control.enabled for control in self.state_controls)
+        return True
 
     def _inject_tokenizer(self) -> None:
         """Attach the pipeline tokenizer to every control exposing an unset `tokenizer`."""
@@ -1029,9 +1030,13 @@ class SteeringPipeline:
                 `chat_template_kwargs` is paired with `text=`/`input_ids=`, or if
                 `chat_template_kwargs` is not a mapping.
             ValueError: If a token tensor is not 1-D/2-D, nested token lists are ragged, a text/
-                chat sequence is empty, `chat_template_kwargs` names a pipeline-owned template
+                chat sequence is empty, `chat_template_kwargs` contains a pipeline-owned template
                 argument, or multiple candidates per prompt (`num_return_sequences`/`n` greater
-                than 1) are requested on a decoded text return without `return_output=True`.
+                than 1) are requested on a decoded text return without `return_output=True`. Also
+                raised if a batch of more than one prompt reaches a decoding driver while enabled
+                state controls run as in-process hooks, and either the driver sets
+                `whole_batch_rollouts` to False or the call passes a seed with `seed_scope="item"`
+                (the default).
         """
         if not self._is_steered:
             raise RuntimeError("Must call `.steer()` before `.generate()`.")
@@ -1370,18 +1375,19 @@ class SteeringPipeline:
             return_full_sequence: bool,
             gen_kwargs: dict,
     ) -> str | list[str] | torch.Tensor | Output | list[Output]:
-        """Run the shared generation tail from prompt tensors through the shaped return.
+        """Run generation from the prompt tensors and shape the return value.
 
-        Applies the token-level input-control chain, then left-packs the steered prompt tensors
-        so hook assembly, per-item prompts, driver inputs, and full-sequence returns share the
-        left-packed layout the sessions execute batched forwards in. Merges sampling-expressible
-        output controls into the call's `GenerationParams` and configures state hooks. With the
-        default decoding driver, each prompt row becomes a `GenerationItem` executed by the
-        inference backend's session; an explicit `DecodingDriver` instead runs client-side
-        under the state-control hook context with `session=` passed for its rollouts. The
-        return is then shaped per modality: decoded continuation text truncates at the first
-        stop string, and the prompt slice is removed by default (`return_full_sequence=False`
-        returns continuation tokens only).
+        The token-level input-control chain runs first. The steered prompt tensors are then
+        left-packed, since the sessions run batched forwards in that layout. The later steps
+        (state hooks, per-item prompts, driver inputs, full-sequence returns) use the same
+        layout. Output controls that export generation parameters are merged into the call's
+        `GenerationParams`, and the state-control entries are collected for the backend. With
+        the default decoding driver, each prompt row becomes a `GenerationItem` that the
+        inference backend's session runs. An enabled `DecodingDriver` instead runs in the client
+        process and issues its rollouts through `session=`. In-process state hooks then stay
+        registered for the whole decode. The returned token IDs contain only the continuation
+        unless `return_full_sequence` is True. Decoded continuation text is truncated at the
+        first stop string.
 
         Args:
             prompt_input_ids: Prompt token IDs [seq_len] or [batch, seq_len] before the token-level
@@ -1397,11 +1403,18 @@ class SteeringPipeline:
             return_output: If True, return `Output` (single) or `list[Output]` (batched) regardless
                 of `decode_text`.
             return_full_sequence: If True, include the prompt in the returned token IDs.
-            gen_kwargs: Generation parameters forwarded to the decoding driver.
+            gen_kwargs: Generation parameters, normalized through `GenerationParams` and passed to
+                the decoding driver or the session.
 
         Returns:
             `str` or `list[str]` when `decode_text` is True, `torch.Tensor` when False, or
             `Output`/`list[Output]` when `return_output` is True.
+
+        Raises:
+            ValueError: If a batch of more than one row reaches a decoding driver while enabled
+                state controls run as in-process hooks, and either the driver sets
+                `whole_batch_rollouts` to False or the call passes a seed with
+                `seed_scope="item"` (the default).
         """
         # input controls (token-level adapt chain) + normalize
         device = self.model.device if self.model is not None else torch.device("cpu")
@@ -1449,6 +1462,23 @@ class SteeringPipeline:
                 intervention_kinds=inference_capabilities.intervention_kinds,
                 model=self.model, **gen_kwargs
             )
+            # in-process hooks index their gates and masks by batch row, which session calls over
+            # subsets of the rows do not preserve, and per-item seeds make the session decode each
+            # session call one row at a time
+            if state_entries and hooks_in_process and steered_input_ids.size(0) > 1:
+                if not decoding_driver.whole_batch_rollouts:
+                    raise ValueError(
+                        f"{type(decoding_driver).__name__} issues session calls over subsets of the batch, but the "
+                        f"in-process state hooks are built for all {steered_input_ids.size(0)} rows; generate one "
+                        "prompt per call when state controls are enabled."
+                    )
+                if gen_kwargs.get("seed") is not None and gen_kwargs.get("seed_scope", "item") == "item":
+                    raise ValueError(
+                        "Under a seed with seed_scope='item', the session decodes each session call of "
+                        f"{type(decoding_driver).__name__} one row at a time, but the in-process state hooks are "
+                        f"built for all {steered_input_ids.size(0)} rows; pass seed_scope='dispatch' or generate one "
+                        "prompt per call when state controls are enabled."
+                    )
         elif not hooks_in_process:
             if has_enabled_state:
                 state_entries = collect_state_entries(

@@ -32,8 +32,9 @@ class PhasedDecodingArgs(BaseArgs):
     )
     extract_after: str | None = field(
         default=None,
-        metadata={"help": "Output rule: keep the original prompt prefix + the remainder after this "
-                          "marker (ThinkingIntervention's tail extraction). None keeps the full stream."},
+        metadata={"help": "Output rule: when the decoded continuation contains this marker, keep the original "
+                          "prompt prefix + the remainder after its last occurrence; otherwise, and with None, "
+                          "the full stream is kept."},
     )
 
     def __post_init__(self) -> None:

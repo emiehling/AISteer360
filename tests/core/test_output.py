@@ -30,6 +30,24 @@ class TestInferFinishReasons:
         )
         assert reasons == ["eos", "length"]
 
+    def test_pad_equals_eos_generate_rows(self):
+        # rows as `generate` returns them under pad == eos == 1 and max_new_tokens=4: an early eos
+        # followed by pads, an eos at the ceiling, and a row at the ceiling without eos
+        new_tokens = torch.tensor([[5, 1, 1, 1], [5, 6, 7, 1], [5, 6, 7, 8]])
+        reasons = infer_finish_reasons(
+            new_tokens, {"max_new_tokens": 4}, eos_token_id=1, pad_token_id=1
+        )
+        assert reasons == ["eos", "eos", "length"]
+
+    def test_pad_equals_eos_row_at_the_ceiling_padded_to_a_longer_row(self):
+        # a decoding driver can return a row longer than the ceiling (row 0); row 1 reached the
+        # ceiling and is padded to row 0's width, and row 2 stopped on eos before the ceiling
+        new_tokens = torch.tensor([[5, 6, 7, 8, 9, 10], [5, 6, 7, 8, 1, 1], [5, 6, 1, 1, 1, 1]])
+        reasons = infer_finish_reasons(
+            new_tokens, {"max_new_tokens": 4}, eos_token_id=1, pad_token_id=1
+        )
+        assert reasons == ["length", "length", "eos"]
+
     def test_no_max_new_tokens_length_unreachable(self):
         new_tokens = torch.tensor([[5, 6, 7], [5, 6, 8]])
         reasons = infer_finish_reasons(new_tokens, {}, eos_token_id=7, pad_token_id=2)

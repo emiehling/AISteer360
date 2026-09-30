@@ -1,11 +1,13 @@
-"""Session-side helpers for steer- and generate-time model access.
+"""Helpers for model access through a session at steer and generate time.
 
-`session_generate` and `session_score` run one generation or scoring call through a
-`SteeringSession` with the `model.generate` calling convention, so components written against
-that convention execute on any backend. `ScopedSession` enforces a control's declared
-`ModelAccess` during its steer step, and `SessionLM` adapts a session into a model-shaped
-object for helpers that expect one.
+`session_generate` runs one generation call through a `SteeringSession` with the `model.generate`
+calling convention, and `session_score` runs one teacher-forced scoring call. Components written
+against these helpers run on any backend. `session_generate_items` runs one generation call over
+unpadded rows and returns each row's continuation and finish reason. `ScopedSession` enforces a
+control's declared `ModelAccess` during its steer step. `SessionLM` wraps a session in an object with
+`generate` and `device` for helpers that expect a model.
 """
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import torch
@@ -72,6 +74,74 @@ def session_generate(
         for row in full_rows
     ]
     return torch.cat(padded, dim=0)
+
+
+def session_generate_items(
+    session: "SteeringSession",
+    rows: list[torch.Tensor],
+    eos_token_ids: tuple[int, ...] = (),
+    **gen_kwargs,
+) -> list[tuple[torch.Tensor, str | None]]:
+    """Run one generation call through a `SteeringSession` and return each row's continuation.
+
+    Each 1-D row becomes one `GenerationItem` whose attention mask covers every token. The call
+    requests one candidate per item and ignores `num_return_sequences`. The keyword arguments are
+    converted with `GenerationParams.from_gen_kwargs`, which passes in-memory `logits_processor` and
+    `stopping_criteria` objects through in `extra`. Only the in-process backend accepts them.
+
+    Trailing pad tokens are removed from each continuation, since a session that batches items
+    right-pads their continuations to a common length. When the pad token is also an eos token (the
+    tokenizer's eos or one of `eos_token_ids`), one trailing pad token is kept as the eos the model
+    emitted. The pad token is kept only when the item finished on eos or reported no reason, and when
+    the last remaining token is not already a terminal token (an eos id or one of the call's stop
+    token ids).
+
+    Args:
+        session: The `SteeringSession` to generate on.
+        rows: Unpadded prompt token ids, one 1-D tensor per item.
+        eos_token_ids: Additional eos ids to treat as terminal when removing trailing pad tokens (e.g.,
+            the ids on the model's generation config). They do not change when generation stops.
+        **gen_kwargs: Generation keyword arguments for the call, in `model.generate` vocabulary.
+
+    Returns:
+        One `(continuation_ids, finish_reason)` pair per row, in row order. `continuation_ids` is a 1-D
+        tensor, and `finish_reason` is the reason the session reports for the item's candidate, or None
+        when it reports none.
+    """
+    gen_kwargs.pop("num_return_sequences", None)
+    params = replace(GenerationParams.from_gen_kwargs(**gen_kwargs), n=1)
+    items = [
+        GenerationItem(prompt=PreparedPrompt.from_token_ids(
+            row.reshape(1, -1), torch.ones(1, row.numel(), dtype=torch.long, device=row.device),
+        ))
+        for row in rows
+    ]
+    results = session.generate(items, params)
+
+    tokenizer = getattr(session, "tokenizer", None)
+    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    eos_ids = set(eos_token_id) if isinstance(eos_token_id, (list, tuple)) else {eos_token_id}
+    eos_ids |= {int(token_id) for token_id in eos_token_ids}
+    pad_is_eos = pad_token_id is not None and pad_token_id in eos_ids
+    terminal_ids = eos_ids | {int(token_id) for token_id in params.stop_token_ids}
+
+    continuations: list[tuple[torch.Tensor, str | None]] = []
+    for result in results:
+        output = result.output
+        ids = output.output_ids[0] if output.output_ids.dim() == 2 else output.output_ids
+        reason = output.finish_reasons[0] if output.finish_reasons else output.finish_reason
+        end = ids.numel()
+        if pad_token_id is not None:
+            real_positions = (ids != pad_token_id).nonzero()
+            end = int(real_positions[-1]) + 1 if real_positions.numel() else 0
+            # the first stripped pad is the emitted eos when pad and eos share an id; a session that
+            # knows only the tokenizer's eos reports no reason for a stop on another eos id
+            ends_on_terminal = end > 0 and int(ids[end - 1]) in terminal_ids
+            if end < ids.numel() and reason in ("eos", None) and pad_is_eos and not ends_on_terminal:
+                end += 1
+        continuations.append((ids[:end], reason))
+    return continuations
 
 
 def session_score(

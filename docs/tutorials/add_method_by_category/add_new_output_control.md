@@ -152,34 +152,49 @@ the steered distribution. Set `include_in_scoring = False` (a class attribute) t
 
 ## Drive: a decoding driver
 
-`ShortestOfN` samples N continuations and returns the shortest one. It changes the shape of the search and is
+`ShortestOfN` samples several continuations and returns the shortest one. It changes the shape of the search and is
 therefore a driver. A driver receives the composed `logits_processors` / `stopping_criteria` as explicit parameters
-and must apply them in every forward pass it issues. Delegating to
-`model.generate(..., logits_processor=..., stopping_criteria=...)` satisfies this. The helper `stack_generate_kwargs` builds those two kwargs, including each only when non-empty.
+and must apply them in every forward pass it issues, i.e., pass them to each rollout it runs through the pipeline's
+session. The helper `stack_generate_kwargs` builds the two kwargs, including each only when non-empty. The helper
+`session_generate_items(session, rows, eos_token_ids=(), **gen_kwargs)` (from
+`steerability.algorithms.core.execution.session_utils`) runs one session call over unpadded prompt rows, with one
+candidate per row, and returns one `(continuation_ids, finish_reason)` pair per row. Each continuation has its trailing
+pads removed. When the pad token is also an eos token, one pad is kept as the emitted eos unless the row already ends
+on a terminal token, and `eos_token_ids` lists the further eos ids that count as terminal (e.g., the ids on the model's
+generation config). For rollouts in the `model.generate` calling convention (padded input,
+full sequences returned), `resolve_generate_callable(model, runtime_kwargs, session=session)` returns a callable that
+generates through the session.
+
+A driver also returns `n` candidates for every prompt row of the batch, where `n` is the caller's
+`num_return_sequences` (passed to `pipeline.generate()` as `n` or `num_return_sequences`). `ShortestOfN` therefore
+runs one selection per candidate, each over `num_samples` samples of the row's prompt with its left padding removed:
 
 ```python
 from dataclasses import dataclass, field
 
 import torch
+import torch.nn.functional as F
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from steerability.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.core.execution.session_utils import session_generate_items
 from steerability.algorithms.output_control.base import DecodingDriver, stack_generate_kwargs
 
 
 @dataclass
 class ShortestOfNArgs(BaseArgs):
-    n: int = field(default=4, metadata={"help": "Number of candidates to sample."})
+    num_samples: int = field(default=4, metadata={"help": "Number of continuations sampled per candidate."})
 
     def __post_init__(self):
-        if self.n < 1:
-            raise ValueError("`n` must be >= 1.")
+        if self.num_samples < 1:
+            raise ValueError("`num_samples` must be >= 1.")
 
 
 class ShortestOfN(DecodingDriver):
-    """Samples `n` continuations and returns the shortest (fewest non-pad tokens)."""
+    """Samples `num_samples` continuations per candidate and keeps the shortest."""
 
     Args = ShortestOfNArgs
+    whole_batch_rollouts = False  # each session call covers the samples of a single row
 
     tokenizer: PreTrainedTokenizer | None = None
 
@@ -187,38 +202,55 @@ class ShortestOfN(DecodingDriver):
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
         return model
 
+    def max_rollouts_per_query(self) -> int:
+        return self.num_samples
+
     def decode(self, input_ids, attention_mask, model, logits_processors,
-               stopping_criteria, runtime_kwargs, **gen_kwargs) -> torch.Tensor:
-        if input_ids.size(0) != 1:
-            raise NotImplementedError("ShortestOfN handles one prompt at a time (batch size 1).")
+               stopping_criteria, runtime_kwargs, session=None, **gen_kwargs) -> torch.Tensor:
+        stacks = stack_generate_kwargs(logits_processors, stopping_criteria)  # the composed processors and criteria
+        num_candidates = gen_kwargs.pop("num_return_sequences", None) or 1
+        kwargs = {**gen_kwargs, **stacks, "do_sample": True}
+        eos = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
+        eos_token_ids = (eos,) if isinstance(eos, int) else tuple(eos or ())
 
-        extra = stack_generate_kwargs(logits_processors, stopping_criteria)  # apply the composed processors and stopping criteria
-        kwargs = dict(gen_kwargs)  # merge first so the driver's settings win without duplicate-kwarg errors
-        kwargs.update({"do_sample": True, "num_return_sequences": self.n})
-        candidates = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            **extra,
-            **kwargs,
-        )
+        rows = []
+        for index, padded_prompt in enumerate(input_ids):
+            prompt = padded_prompt if attention_mask is None else padded_prompt[attention_mask[index].bool()]
+            samples = session_generate_items(
+                session, [prompt] * (num_candidates * self.num_samples), eos_token_ids=eos_token_ids, **kwargs
+            )
+            for start in range(0, len(samples), self.num_samples):  # the samples of one candidate
+                shortest = min((ids for ids, _ in samples[start:start + self.num_samples]), key=len)
+                rows.append(torch.cat([padded_prompt, shortest.to(padded_prompt.device)]))
 
-        prompt_len = input_ids.size(1)
+        width = max(row.numel() for row in rows)
         pad_id = self.tokenizer.pad_token_id
-        lengths = [int((row[prompt_len:] != pad_id).sum()) for row in candidates]
-        best = int(torch.tensor(lengths).argmin())
-        return candidates[best].unsqueeze(0)  # full sequence: prompt + continuation
+        return torch.stack([F.pad(row, (0, width - row.numel()), value=pad_id) for row in rows])
 ```
 
 !!! note "The driver contract"
     `logits_processors` and `stopping_criteria` are the composed lists for this generation, and a driver must apply
     them in every forward pass. The `gen_kwargs` reaching `decode` never contain `logits_processor` or
-    `stopping_criteria`, since the pipeline removes caller-supplied ones and composes them into these lists. `decode`
-    returns the full sequence ids (prompt plus continuation), and the pipeline strips the prompt prefix. The pipeline
-    also passes `session=`, a `SteeredSession` that contains this generation's control entries. Resolving the rollout
-    callable with `resolve_generate_callable(model, runtime_kwargs, session=session)` makes the driver's rollouts run
-    steered on any backend. A driver can override `max_rollouts_per_query()` to declare an upper bound on the
-    continuations it generates per input row (`ShortestOfN` returns `self.n`). The default returns `None`, meaning no
-    static bound.
+    `stopping_criteria`, since the pipeline removes caller-supplied ones and composes them into these lists. The
+    pipeline also passes `session=`, a `SteeredSession` that contains this generation's control entries, and rollouts
+    issued through it run steered on any backend.
+
+    The pipeline left-pads a batch of prompts before calling `decode`. For a batch of `B` rows of length `T` and
+    `n = num_return_sequences`, `decode` returns `[B * n, T + L]` ids. Each row is a padded prompt row as received
+    followed by one candidate's continuation, right-padded, in row-major, candidate-minor order (the layout of
+    `model.generate`), and the pipeline slices every row at `T` to recover the continuations.
+
+    In-process state hooks are built once per generation for the whole batch and index their gates and masks by
+    row. A driver whose session calls cover a subset of the rows, or rows at different stream lengths, sets
+    `whole_batch_rollouts = False`. The pipeline then accepts one prompt row per call when enabled state controls
+    run in process. Under a seed with `seed_scope="item"`, the in-process session decodes each call one row at a
+    time, and the pipeline then accepts one prompt row per call for any driver unless the call passes
+    `seed_scope="dispatch"`. A driver can also override `max_rollouts_per_query()` to declare an upper bound on the
+    continuations it requests per row and candidate (`ShortestOfN` returns `self.num_samples`). The default returns
+    `None`, meaning no static bound.
+
+    A decoding driver registered in the toolkit also needs an entry in `PRESET_KWARGS` in
+    `tests/controls/test_driver_candidates.py`, which checks this output layout for every registered preset.
 
 ## Prefer the `common` library
 
@@ -230,10 +262,10 @@ library factors the category into reusable components, and the methods in the to
 - `SearchDriver` (propose, score, keep top-k, iterate): `DeAL`, `BestOfN`.
 - `PhasedDriver` (forced/generated segments with boundary rules): `BudgetForcing`.
 
-A driver built on `SearchDriver` or `PhasedDriver` is a preset. It declares an `Args` dataclass, calls
-`OutputControl.__init__` from its own `__init__`, and overrides `_configure()` to map its mirrored args onto the
-generic base's fields, never bypassing the parent constructor. See `deal/control.py` and `budget_forcing/control.py`
-for the pattern. An argument-free control (no hyperparameters) sets `Args = None` and takes no constructor arguments.
+A driver built on `SearchDriver` or `PhasedDriver` is a preset. It declares an `Args` dataclass and overrides
+`_configure()` to set the fields the generic driver reads from its args, and it defines no `__init__` of its own.
+When a subclass sets `Args`, the generic driver's constructor validates the args and copies them onto the instance
+before it calls `_configure()`. See `deal/control.py` and `budget_forcing/control.py` for the pattern. An argument-free control (no hyperparameters) sets `Args = None` and takes no constructor arguments.
 
 When adding a component to `common`, follow its naming convention. Within a `common/<family>/` folder, the primary
 class in `<name>.py` is `<Name><FamilySingular>` (for example `values/classifier.py` defines `ClassifierValue`), and

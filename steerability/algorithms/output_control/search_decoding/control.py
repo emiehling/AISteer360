@@ -2,32 +2,49 @@ from __future__ import annotations
 
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from steerability.algorithms.output_control.base import OutputControl
 from steerability.algorithms.output_control.common.drivers.search import SearchDriver
 from steerability.algorithms.output_control.common.resolve import resolve_scorer
 from steerability.algorithms.output_control.search_decoding.args import SearchDecodingArgs
 
 
 class SearchDecoding(SearchDriver):
-    """Config-first segment-shape driver: propose -> score -> keep -> iterate.
+    """Decoding driver that runs a configured segment search over continuations.
 
-    `SearchDecoding` is the generic over the segment shape, a thin `Args`-configured preset of the
-    `common` `SearchDriver`. Its defaults are best-of-N: with no arguments beyond a scorer, it
-    samples `num_candidates` full-budget continuations once and returns the scorer's argmax. A
-    method from the literature is an assignment of a config:
+    `SearchDecoding` extends each prompt one segment at a time. Each iteration proposes
+    `num_candidates` continuations of up to `segment_len` tokens from each kept sequence, scores them
+    with the scorer, and keeps the `keep_k` highest-scoring sequences. The search runs for at most
+    `max_iterations` iterations and returns the highest-scoring sequence seen in any iteration.
 
-        - Best-of-N: defaults + `scorer={"kind": "reward_model", ...}` (or any callable).
-        - Self-consistency: defaults + `scorer={"kind": "majority_vote"}`.
-        - Blockwise controlled decoding: `segment_len=block, max_iterations=⌈budget/block⌉`.
-        - Scorer-guided reranking: defaults + `scorer=SampleSequenceScorer(row_scorer)`.
-        - DeAL-equivalent: `propose_mode="beam", segment_len=lookahead, num_candidates=init_beams,
-          keep_k=topk, max_iterations=...`.
+    The `scorer` argument accepts a `SequenceScorer`, i.e., a callable
+    `(prompt, continuations, params) -> list[float]` such as a function, a `MajorityVoteScorer`, or a
+    `SampleSequenceScorer`. It also accepts a dict with a `"kind"` key, either `"reward_model"` (with
+    a `model_id`) or `"majority_vote"`. `steer()` resolves a dict, and a `"reward_model"` dict loads
+    its model onto the device of the pipeline's model. The `propose_mode` argument is `"sample"`
+    (default) or `"beam"`. `segment_len=None` (default) uses the call's `max_new_tokens` as the
+    segment length. The integer arguments must be positive, and `keep_k` must not exceed
+    `num_candidates`.
 
-    `SearchDecoding` is a decoding driver: at most one enabled driver runs per pipeline, and the
-    driver forwards the composed logits/stopping stacks into every rollout, so a step-level
-    control (e.g. `ValueGuidance`) steers every proposed continuation. Batch size 1 and the
-    row-scoped `reward_params` runtime kwarg (one mapping per row, merged into the scorer's params)
-    are inherited from `SearchDriver` unchanged.
+    The defaults (`num_candidates=8`, `keep_k=1`, `max_iterations=1`, and sampled proposals) give
+    best-of-N, which samples `num_candidates` full-length continuations once and returns the one with
+    the highest score. Methods from the literature correspond to the following settings:
+
+    - Best-of-N: the defaults with `scorer={"kind": "reward_model", "model_id": ...}` or any callable.
+    - Self-consistency: the defaults with `scorer={"kind": "majority_vote"}`.
+    - Blockwise controlled decoding: `segment_len=block` and `max_iterations=ceil(budget / block)`.
+    - Scorer-guided reranking: the defaults with `scorer=SampleSequenceScorer(row_scorer)`.
+    - DeAL: `propose_mode="beam"`, `segment_len=lookahead`, `num_candidates=init_beams`,
+      `keep_k=topk`, and the DeAL `max_iterations`.
+
+    The composed logits processors and stopping criteria apply in every rollout, and a step-level
+    control such as `ValueGuidance` steers every proposed continuation. A call with
+    `num_return_sequences=n` runs `n` searches per row. In beam mode without sampling, one search
+    runs per row and its result is returned as each of the `n` candidates.
+
+    The following `runtime_kwargs` are accepted:
+
+    - `"reward_params"`: A mapping of entries added to the scorer's `params` on every scoring call
+      for the row. A single mapping applies to every row, and a sequence contains one mapping per
+      row.
 
     Reference:
 
@@ -45,10 +62,6 @@ class SearchDecoding(SearchDriver):
     Args = SearchDecodingArgs
 
     tokenizer: PreTrainedTokenizerBase | None = None
-
-    def __init__(self, *args, **kwargs):
-        # route through OutputControl (validate SearchDecodingArgs, mirror fields, then _configure)
-        OutputControl.__init__(self, *args, **kwargs)
 
     def _configure(self) -> None:
         """Map the mirrored args onto the generic `SearchDriver` fields (name-identical here)."""

@@ -79,7 +79,7 @@ def test_deal(model_and_tokenizer, device: torch.device, conf: dict):
     # assertions
     assert isinstance(out_ids, torch.Tensor), "Output is not torch.Tensor"
     assert out_ids.ndim == 2, "Expected (batch, seq_len) tensor"
-    assert out_ids.size(0) == 1, "DeAL currently supports batch size 1"
+    assert out_ids.size(0) == 1, "one prompt with one candidate returns one row"
 
     # allow either full sequence (prompt + continuation) or continuation-only
     out_len = out_ids.size(1)

@@ -91,36 +91,39 @@ def infer_finish_reasons(
     stop_token_ids: Sequence[int] = (),
     tokenizer: PreTrainedTokenizerBase | None = None,
 ) -> list[str | None]:
-    """Classify a per-row finish reason from generated token IDs and the composed stop rules.
+    """Infer each row's finish reason from its generated token ids and the composed stop rules.
+
+    Trailing `pad_token_id` positions are removed from each row to recover its continuation length
+    `n`. The first rule that matches gives the row's reason:
+
+    1. `"stop"` if `n > 0` and the last token is one of `stop_token_ids`, or if the decoded
+       continuation contains a stop string (only when `tokenizer` is given).
+    2. `"eos"` if `n > 0` and the last token is an eos id.
+    3. `"length"` if `max_new_tokens` is set and `n >= max_new_tokens`.
+    4. `"eos"` if `pad_token_id` is an eos id and at least one trailing pad was removed. In this
+       configuration (common to Llama-family tokenizers), the first removed pad is the eos the model
+       emitted.
+    5. None otherwise.
+
+    The length rule comes before the pad-equals-eos rule because a row with `max_new_tokens` tokens
+    reached the limit, and its trailing pads only extend it to the length of a longer row in the batch
+    (a decoding driver can return rows longer than `max_new_tokens`). A row that stopped on a rule the
+    function is not given, such as a custom stopping criterion from the caller, gets None unless
+    another rule matches.
 
     Args:
-        new_tokens: Generated token IDs as a `[batch, gen_len]` tensor, right-padded by `generate`
-            (the continuation only, with the prompt excluded).
-        gen_kwargs: Generation parameters; only `max_new_tokens` is consulted.
-        eos_token_id: End-of-sequence token ID(s); an int, a list of ints, or None. Normalized to a
-            set of IDs internally.
-        pad_token_id: Padding token ID used to right-pad short rows, or None.
-        stop_strings: Stop strings composed for this generation; requires `tokenizer` to take
-            effect.
-        stop_token_ids: Extra stop token ids composed for this generation.
-        tokenizer: Tokenizer used to decode continuations for the stop-string test, or None.
+        new_tokens: Generated token ids of shape `[batch, gen_len]`, right-padded, with the prompt
+            excluded.
+        gen_kwargs: Generation parameters. Only `max_new_tokens` is read.
+        eos_token_id: The eos token id, a list of eos token ids, or None.
+        pad_token_id: The pad token id used to right-pad short rows, or None.
+        stop_strings: Stop strings composed for this generation. They take effect only when
+            `tokenizer` is given.
+        stop_token_ids: Stop token ids composed for this generation.
+        tokenizer: Tokenizer that decodes continuations for the stop-string test, or None.
 
     Returns:
-        One reason per row, in order, classified with the precedence stop, then eos, then
-        length, then None. For row `i`, trailing `pad_token_id` positions are stripped to
-        recover the true continuation length `n`, then:
-
-            - `"stop"` if the decoded continuation contains a stop string (when a tokenizer is
-              available), or the last unstripped token is one of `stop_token_ids`;
-            - `"eos"` if `n > 0` and the last unstripped token is in the eos set, or
-              `pad_token_id` is in the eos set and at least one trailing token was stripped (the
-              pad-equals-eos configuration common to Llama-family tokenizers, where the first
-              stripped token was the genuine EOS);
-            - `"length"` if `max_new_tokens` is set and `n >= max_new_tokens`;
-            - None otherwise (including zero-length rows).
-
-    Stop rules the classifier was not given, such as caller-supplied custom stopping criteria,
-    still classify as None.
+        One finish reason per row, in row order: `"stop"`, `"eos"`, `"length"`, or None.
     """
     eos_ids: set[int] = set()
     if isinstance(eos_token_id, int):
@@ -156,10 +159,10 @@ def infer_finish_reasons(
             reasons.append("stop")
         elif n > 0 and row_list[-1] in eos_ids:
             reasons.append("eos")
-        elif pad_equals_eos and stripped_any:
-            reasons.append("eos")
         elif max_new is not None and n >= max_new:
             reasons.append("length")
+        elif pad_equals_eos and stripped_any:
+            reasons.append("eos")
         else:
             reasons.append(None)
 

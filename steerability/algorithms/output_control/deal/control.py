@@ -2,34 +2,43 @@ from __future__ import annotations
 
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from steerability.algorithms.output_control.base import OutputControl
 from steerability.algorithms.output_control.common.drivers.search import SearchDriver
 from steerability.algorithms.output_control.deal.args import DeALArgs
 
 
 class DeAL(SearchDriver):
-    """
-    Implementation of DeAL (Decoding-time Alignment) from Huang et al., 2024.
+    """Implementation of DeAL (Decoding-time Alignment) from Huang et al., 2024.
 
-    DeAL performs controlled text generation through iterative lookahead search and reward-guided beam selection. Unlike
-    training-time alignment methods, DeAL operates purely at inference time to steer language model outputs toward
-    desired behaviors.
+    DeAL aligns generation with an objective at inference time through a lookahead search guided by a
+    reward function. Each search iteration has three steps:
 
-    The algorithm works in three phases:
+    1. **Lookahead**: beam search generates `init_beams` continuations of up to `lookahead` tokens
+       from each sequence in the frontier, which starts as the prompt.
+    2. **Scoring**: `reward_func` scores each continuation for the objective (e.g., helpfulness or
+       safety).
+    3. **Selection**: the `topk` highest-scoring sequences are kept, and the unfinished ones form the
+       next frontier.
 
-    1. **Lookahead Generation**: Generate multiple candidate continuations using beam search from the current context.
+    The search stops after `max_iterations` iterations, when every kept sequence is finished (it ends
+    in an eos token or reaches `max_new_tokens`), or when no token budget is left. DeAL returns the
+    highest-scoring sequence seen in any iteration.
 
-    2. **Reward-based Scoring**: Evaluate each candidate continuation using a provided reward function that measures
-    alignment with the desired objective (e.g., helpfulness, safety).
+    The `reward_func` argument accepts a callable `(prompt, continuations, params) -> list[float]`
+    that returns one score per continuation, with higher scores preferred. Each continuation is the
+    decoded text after the prompt. The `lookahead` (default 10), `init_beams` (default 5), `topk`
+    (default 3), and `max_iterations` (default 10) arguments must be positive integers, and `topk`
+    must not exceed `init_beams`.
 
-    3. **Iterative Refinement**: Select the top-k highest-scoring beams and repeat the process until termination
-    conditions are met (EOS token, max length, or max iterations reached).
+    The composed logits processors and stopping criteria apply in every lookahead rollout, and a
+    step-level control such as RAD steers every rollout. Without sampling, beam search is
+    deterministic. The `num_return_sequences` candidates of a prompt then come from a single search
+    and are identical. Beam proposals require a backend with `Capability.BEAM_PROPOSALS`.
 
-    DeAL is a decoding driver implemented as a preset of the generic `SearchDriver`, mapping its arguments onto the
-    search fields (`scorer`, `segment_len`, `num_candidates`, `keep_k`, `max_iterations`, and `propose_mode="beam"`).
-    The composed logits processors and stopping criteria apply inside every lookahead rollout, which means that a
-    step-level control such as RAD steers every DeAL rollout. The `reward_params` runtime kwarg is honored per row (one
-    mapping merged into the scorer's params).
+    The following `runtime_kwargs` are accepted:
+
+    - `"reward_params"`: A mapping of entries added to the `params` passed to `reward_func` on every
+      scoring call for the row. A single mapping applies to every row, and a sequence contains one
+      mapping per row.
 
     Reference:
 
@@ -42,10 +51,6 @@ class DeAL(SearchDriver):
     Args = DeALArgs
 
     tokenizer: PreTrainedTokenizerBase | None = None
-
-    def __init__(self, *args, **kwargs):
-        # route through OutputControl (validate DeALArgs, mirror fields, then _configure)
-        OutputControl.__init__(self, *args, **kwargs)
 
     def _configure(self) -> None:
         """Map DeAL's mirrored args onto the generic `SearchDriver` fields."""

@@ -1,21 +1,22 @@
-"""Output control base classes.
+"""Base classes for output controls.
 
-Output controls participate in decoding through two mechanisms:
+Output controls take part in decoding through three mechanisms:
 
-- Logits-processor composition: each control's `get_logits_processors()` results are gathered in
-  pipeline `controls` list order and composed by `LogitsProcessorList`.
-- Stopping-criteria composition: each control's `get_stopping_criteria()` results are gathered the
-  same way; generation stops when any criterion fires.
-- The decode loop is exclusive: it is implemented by exactly one `DecodingDriver`, which receives
-  the composed stacks as explicit parameters and must apply them at every scoring step of every
-  forward pass it issues.
+- **Logits processors**: the pipeline gathers the results of each control's `get_logits_processors()` in the
+  order of the pipeline's `controls` list and composes them into one `LogitsProcessorList`.
+- **Stopping criteria**: the pipeline gathers the results of each control's `get_stopping_criteria()` in the
+  same order. Generation stops when any criterion is met.
+- **Decode loop**: the loop does not compose. At most one enabled `DecodingDriver` implements it, and the
+  pipeline's default decode loop runs when no driver is enabled. A `DecodingDriver` receives the composed
+  logits processors and stopping criteria as arguments and must apply them at every scoring step of every
+  forward pass it runs.
 
 Examples of output controls:
 
 - Reward-augmented decoding (a step-level control)
 - Self-disciplined autoregressive sampling (a step-level control)
-- Decoding-time alignment / lookahead search (a decoding driver)
-- Phase splicing / thinking intervention (a decoding driver)
+- Decoding-time alignment and lookahead search (decoding drivers)
+- Phased decoding and thinking intervention (decoding drivers)
 
 See Also:
 
@@ -42,11 +43,15 @@ if TYPE_CHECKING:
 
 
 def stack_generate_kwargs(logits_processors, stopping_criteria) -> dict:
-    """Build the `model.generate` kwargs for the composed stacks, each included only when non-empty.
+    """Build the `model.generate` kwargs that pass the composed logits processors and stopping criteria.
 
-    Shared by every driver that delegates to `model.generate` (the default driver, and the segment
-    and phase drivers per rollout or per phase) so the "pass the stack only when non-empty" rule
-    lives in one place.
+    Args:
+        logits_processors: The composed logits processors, or None.
+        stopping_criteria: The composed stopping criteria, or None.
+
+    Returns:
+        A dict with `logits_processor` when `logits_processors` is non-empty and `stopping_criteria` when
+        `stopping_criteria` is non-empty. An empty or None argument contributes no key.
     """
     extra: dict = {}
     if logits_processors is not None and len(logits_processors):
@@ -227,38 +232,48 @@ class OutputControl(BaseControl):
 
 
 class DecodingDriver(OutputControl):
-    """An output control that implements the decoding procedure.
+    """An output control that implements the decode loop.
 
-    Exactly one enabled driver may exist per pipeline (the decode loop does not compose).
-    Driver contract: `logits_processors` and `stopping_criteria` are the composed,
-    authoritative stacks for this generation; the driver applies them at every scoring
-    step of every forward pass it issues. Delegating to `model.generate(...,
-    logits_processor=..., stopping_criteria=...)` satisfies the contract; hand-rolled
-    loops apply them explicitly.
+    A subclass implements `decode()`, which receives the prompt batch, the composed logits processors
+    and stopping criteria, and a session, and returns the full sequences. A pipeline may contain at
+    most one enabled `DecodingDriver`, and `SteeringPipeline` raises `ValueError` at construction when
+    it contains more. A driver is also an `OutputControl`. The pipeline composes the results of its
+    `get_logits_processors()` and `get_stopping_criteria()` with those of the other output controls.
 
-    A driver is also an `OutputControl`: it may additionally contribute processors or
-    criteria of its own via the `get_*` hooks, which the pipeline composes like any other
-    control's.
+    The driver must apply the composed logits processors and stopping criteria at every scoring step
+    of every forward pass it runs. Passing them to `model.generate` as `logits_processor` and
+    `stopping_criteria` meets this requirement, and a custom decoding loop applies them explicitly.
+    The driver issues its rollouts through the session it receives (`resolve_generate_callable`
+    returns a generate callable for it). A driver written this way runs on any backend whose session
+    supports its generation parameters. `model` is None on backends without a loaded model.
 
-    The pipeline passes `session=`, the `SteeringSession` for this generation. Drivers issue
-    their rollouts through it (`resolve_generate_callable` returns the right callable), so a
-    driver runs on any backend whose session serves its rollout parameters; `model` is None on
-    backends without a live model.
+    In-process state hooks are built once per generation for the whole prompt batch and index their
+    state by batch row. A driver whose session calls cover only some of the rows, or rows at
+    different stream lengths, must set `whole_batch_rollouts` to False. With such a driver, the
+    pipeline raises `ValueError` for a batch of more than one row when enabled state controls run as
+    in-process hooks, and `SteeringPipeline.supports_batching` is False for that combination. Under a
+    seed with `seed_scope="item"`, the in-process session decodes each session call one row at a time.
+    The pipeline then raises `ValueError` for such a batch with any driver, unless the call passes
+    `seed_scope="dispatch"`.
+
+    Attributes:
+        whole_batch_rollouts: Whether every session call the driver issues covers all rows of the
+            batch, in row order, at a common stream length. Defaults to True.
     """
 
+    whole_batch_rollouts: bool = True
+
     def max_rollouts_per_query(self) -> int | None:
-        """An upper bound on the number of continuations this driver generates per input row.
+        """Return an upper bound on the rollouts the driver requests for one candidate of one row.
 
-        Counts every sequence the driver requests through the session for one row of one
-        `decode()` call, including proposals it discards. A session call over a frontier of `F`
-        rows with `num_return_sequences=n` counts `F * n`. Returns None when the configuration
-        admits no static bound.
-
-        Callers use the bound to budget or refuse a configuration before executing it. The
-        default returns None.
+        Every sequence the driver requests through the session counts, including proposals it
+        discards. A session call over `F` rows with `num_return_sequences=n` counts as `F * n`
+        rollouts. A `decode()` call with `num_return_sequences=k` requests up to `k` times the bound
+        for each row. The bound lets a caller budget or refuse a configuration before running it.
+        The default returns None.
 
         Returns:
-            The per-row rollout bound, or None when no static bound applies.
+            The bound, or None when the configuration has no static bound.
         """
         return None
 
@@ -274,4 +289,28 @@ class DecodingDriver(OutputControl):
         session=None,
         **gen_kwargs,
     ) -> torch.Tensor:
-        """Run the decoding procedure; return full sequence ids (prompt + continuation)."""
+        """Run the decode loop and return the full sequences.
+
+        Args:
+            input_ids: Prompt token ids of shape `[B, T]`, left-padded by the pipeline.
+            attention_mask: Prompt attention mask with the same shape as `input_ids`.
+            model: The loaded model, or None on backends without a loaded model.
+            logits_processors: The composed `LogitsProcessorList`, with any processors the caller
+                passed after those of the output controls. The driver applies it at every scoring
+                step.
+            stopping_criteria: The composed `StoppingCriteriaList`, with any criteria the caller
+                passed after those of the output controls. The driver applies it at every scoring
+                step.
+            runtime_kwargs: Per-call parameters passed to `generate()`, or None.
+            session: The `SteeredSession` through which the driver issues its rollouts.
+            **gen_kwargs: Generation keyword arguments, e.g., `num_return_sequences` (`n`, 1 when
+                absent) and `max_new_tokens`. They contain no logits processors or stopping criteria,
+                since the pipeline passes those only through `logits_processors` and
+                `stopping_criteria`.
+
+        Returns:
+            A tensor of shape `[B * n, T + L]`, where `L` is the length of the longest continuation.
+            Rows are ordered by prompt row and then by candidate. Each row is the padded prompt row of
+            `input_ids` followed by one candidate's continuation, right-padded. The pipeline reads the
+            columns after the first `T` as the continuations.
+        """
