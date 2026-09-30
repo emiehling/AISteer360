@@ -1,13 +1,17 @@
-"""Plotting utilities for steering-evaluation summaries.
+"""Plotting functions for steering-evaluation summaries.
 
-Every public function consumes the summary-frame contract: one row per configuration with
-`{metric}_mean` and `{metric}_std` columns, plus any sweep or grouping columns. Summary frames
-come from the evaluation stack: `SteeringEval.runs_frame` (or the module function `runs_frame`
-in `steerability.evaluation.runner`) pivots `results()` into one row per (pipeline, trial), and
-`summarize_runs` aggregates trials into the summary form. Fixed reference pipelines
-(`compare_to_pipelines`) are one-configuration summary frames, e.g. the baseline arm's rows.
+The metric plots (`plot_metric_by_config`, `plot_tradeoff_scatter`, `plot_sensitivity`, `plot_tradeoff`,
+`create_tradeoff_figure`, and `plot_pareto_frontier`) take a summary frame. A summary frame has one row
+per configuration with `{metric}_mean` and `{metric}_std` columns, plus any sweep or grouping columns.
+`plot_metric_heatmap` takes a pivoted frame of values, and `plot_comparison_bars` takes a frame with the
+metric columns given by `metric_cols`.
 
-Requires the `viz` extra (matplotlib; `plot_metric_heatmap` additionally uses seaborn).
+Summary frames are built with the functions in `steerability.evaluation.runner`. `SteeringEval.runs_frame`
+(or the module function `runs_frame`) pivots `results()` into one row per (pipeline, trial), and
+`summarize_runs` aggregates the trials into a summary frame. The reference pipelines passed as
+`compare_to_pipelines` are summary frames with one configuration, e.g., the rows of the baseline pipeline.
+
+Requires the `eval` extra (matplotlib, and seaborn for `plot_metric_heatmap`).
 """
 
 from pathlib import Path

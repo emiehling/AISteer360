@@ -2,8 +2,8 @@
 
 Covers the mechanism-based composition of the output category: step-level controls
 (`get_logits_processors` / `get_stopping_criteria`) compose in `controls`-list order; the decode
-loop is exclusive and owned by at most one `DecodingDriver` (default: the pipeline's
-`HFGenerateDriver`). Step-level controls also apply during `compute_logprobs`; drivers and stopping
+loop is exclusive and owned by at most one `DecodingDriver` (default: the session's
+`model.generate`). Step-level controls also apply during `compute_logprobs`; drivers and stopping
 criteria do not.
 
 Runs hub-free on a tiny randomly-initialized Llama with module-local fixture controls (no

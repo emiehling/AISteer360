@@ -1,8 +1,8 @@
-"""Rollout proposal for `SearchDriver`.
+"""Rollout proposals for `SearchDriver`.
 
-The composed logits and stopping stacks are forwarded into every rollout (each only when non-empty,
-following `HFGenerateDriver`'s pattern), so a step-level control such as RAD steers every proposed
-continuation.
+`SegmentProposer` passes the composed logits processors and stopping criteria to every rollout, each
+only when it is non-empty. A step-level control such as RAD steers every proposed continuation, since
+every rollout applies them.
 """
 from __future__ import annotations
 

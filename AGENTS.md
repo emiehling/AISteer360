@@ -45,11 +45,14 @@ steerability/
 │   ├── core/                    # SteeringPipeline, registry, ControlSpec (specs.py), BaseArgs, BaseControl,
 │   │   │                        # Output; identity.py (config identity, trial seeds), sweeps.py
 │   │   │                        # (configuration sweeps, PipelineFactory), scoring.py (SampleScorer)
-│   │   ├── execution/           # backend seam: spec, contracts, payloads, backend/session/registry, params,
-│   │   │                        # fanout; access (ModelAccess, SteerPlan), session_utils (scoped sessions), staging
+│   │   ├── execution/           # backend interface: spec, contracts, payloads, backend (sessions, Backend, backend
+│   │   │                        # registry), params, fanout; access (ModelAccess, SteerPlan); session_utils (scoped
+│   │   │                        # sessions, session_generate, session_generate_items); staging (stage freeing,
+│   │   │                        # served-artifact selection)
 │   │   ├── internals/           # activation capture, pooling, stats, model_layout (decoder-stack resolution,
 │   │   │                        # text_config), fingerprint, data/encoding/render; probes/ (detection)
-│   │   └── utils/               # control merging, generation helpers, auxiliary_pass, assembly (per-generation
+│   │   └── utils/               # control merging, generation helpers, auxiliary_pass, generate_call (marks each
+│   │                            # model.generate call for hook pass counting), assembly (per-generation
 │   │                            # hook/spec/processor entry assembly)
 │   ├── input_control/           # each category: base.py + one folder per method (triplet layout below)
 │   │   └── common/             # building blocks: memory, formatters, proposers, scorers, selectors, budget, pareto
@@ -121,6 +124,7 @@ Common commands:
 pytest tests/controls/                    # all control tests
 pytest tests/controls/test_pasta.py       # one control
 pytest tests/core/ tests/internals/       # pipeline, registry, probes
+pytest -m 'not network' tests/            # skip tests that download hub models outside the CI set
 pre-commit install                        # once per clone
 pre-commit run --all-files                # detect-secrets, whitespace/EOF fixers, large files, isort (black profile)
 uv sync --extra all --group docs && uv run mkdocs serve   # docs at localhost:8000
@@ -195,7 +199,8 @@ The registered names at the time of writing:
   `deal`, `dexperts`, `phased_decoding`, `rad`, `routed_decoding`, `sasa`, `search_decoding`, `stopping_rules`,
   `value_guidance`
 - structural: `load_checkpoint`, `load_lora` (artifact loaders, also the frozen forms of trained structural controls
-  in a `.spipe`), `mergekit`, `sft`, `dpo`, `ppo`, `grpo`, `apo` (MergeKit and TRL wrappers)
+  in a `.spipe`), `mergekit`, `sft`, `dpo`, `ppo`, `grpo`, `apo` (MergeKit and TRL wrappers; `ppo` is registered
+  only when the installed TRL provides `trl.experimental.ppo`)
 
 ### Pipeline semantics
 
@@ -236,13 +241,15 @@ Behaviors that differ from bare Hugging Face usage:
   decoded continuation text is truncated at the first stop-string occurrence by one client-side rule.
 - `generate(..., return_output=True)` returns an `Output` object (or list of them) with fields `output_ids`,
   `adapted_input_ids` (the prompt after input controls, useful for inspecting the steered prompt), a per-item
-  `finish_reason` (`"stop"`, `"eos"`, `"length"`, or `None`, with that precedence), and `finish_reasons` (one reason
-  per candidate for `n > 1`). Import it via `from steerability.algorithms.core import Output`.
+  `finish_reason` (`"stop"`, `"eos"`, `"length"`, or `None`, with that precedence, except that an eos inferred only from
+  stripped trailing pads ranks below `"length"`), and `finish_reasons` (one reason per candidate for `n > 1`). Import it
+  via `from steerability.algorithms.core import Output`.
 - A seeded `generate()` call maps its `seed` onto the items of a multi-item dispatch according to `seed_scope`
   (default `"item"`). Under `"item"`, one seed is derived per row, and on the Hugging Face backend the dispatch then
   decodes one row at a time. Under `"dispatch"`, one seed is derived for the whole dispatch, which is batched in one
-  pass (reproducible as a whole). The scope is inert on vLLM backends, and an item carrying its own seed is honored
-  under either scope.
+  pass (reproducible as a whole). Every `generate()` call on the Hugging Face backend opens a new session, and under
+  `"dispatch"` calls with the same seed therefore derive the same sampling seed. The scope is inert on vLLM backends,
+  and an item containing its own seed is honored under either scope.
 - `generate()` before `steer()` raises `RuntimeError`; a second `steer()` call is a silent no-op.
 - `attention_mask` is valid only with `input_ids=`; it is derived automatically for `text=` and `messages=`, and
   passing it with either (or with positional text) raises a `TypeError`.
@@ -251,8 +258,11 @@ Behaviors that differ from bare Hugging Face usage:
   `model=`/`tokenizer=` objects passed at construction, or receives it from a structural control that produces the
   final weights itself (e.g. `mergekit`). `lazy_init` is accepted and inert.
 - A `revision` key in `hf_model_kwargs` also pins the tokenizer when it is loaded from `model_name_or_path`.
-- `pipeline.supports_batching` is `True` only when every enabled control declares batch safety; the Inspect model
-  provider batches concurrent requests when it is `True` and serializes them otherwise.
+- `pipeline.supports_batching` is `True` only when every enabled control declares batch safety and no enabled
+  decoding driver with `whole_batch_rollouts = False` (the phased and search drivers) is combined with an enabled
+  state control; the Inspect model provider batches concurrent requests when it is `True` and serializes them
+  otherwise. With state hooks in process, the driver path raises `ValueError` for a batch of more than one prompt
+  when the driver sets `whole_batch_rollouts = False` or the call is seeded under `seed_scope="item"`.
 - `pipeline.compute_logprobs(input_ids, ref_output_ids=...)` scores reference tokens teacher-forced with the full
   steering applied; output controls with `include_in_scoring=False` are excluded from scoring.
 - Controls with a `tokenizer` attribute left as `None` get the pipeline tokenizer injected automatically.
@@ -282,8 +292,9 @@ pipeline = SteeringPipeline(
   advertises it (the offline plugin engine), and on a staged in-process model where it does not (serve, or
   `fit="in_process"`). `module` steps always stage. On engine backends the staged model is loaded, used, and freed
   before the engine boots; exported artifacts are the handoff, so in-process weights and engine-served weights
-  never coexist. If engine capture fails a steer-time smoke test, fitting degrades to the stage with a warning;
-  support verdicts never depend on the plugin's presence.
+  never coexist. If engine capture fails a steer-time smoke test, fitting degrades to the stage with a warning. The
+  stage loads the weights the engine serves (a checkpoint from its path, or the base with the LoRA adapter merged
+  in). Support verdicts never depend on the plugin's presence.
 - Activation-steering state controls execute on vLLM through the vLLM-Hook plugin (`hook_plugin: True` on the
   spec). The control's steering tuple serializes as an intervention spec, and tensor payloads travel as
   content-addressed artifacts (`artifact_dir` option; on serve this must be a filesystem shared with the server).
@@ -294,14 +305,17 @@ pipeline = SteeringPipeline(
   mapping for a `vllm serve` process. The model-runner constraint is owned by the vLLM-Hook plugin (which pins the
   legacy runner or supports V2), not the toolkit.
 - Structural controls train on the staged model and serve their artifacts (checkpoint or LoRA) on vLLM backends.
-- Declarative constrained decoding lowers to vLLM's native structured outputs. Hidden-state capture (probe fitting
-  and reads, routed decoding) is served in process and on the offline plugin engine, not on serve.
+- Declarative constrained decoding lowers to vLLM's native structured outputs on the default decode path. Under an
+  enabled `DecodingDriver` a constraint or processor spec does not lower (the driver receives the in-process
+  processor), and `check()` fails that combination on the engine kinds. Hidden-state capture (probe fitting and
+  reads, routed decoding) is served in process and on the offline plugin engine, not on serve.
 - `compute_logprobs` scores through the backend; an enabled output control with
   `include_in_scoring=True` keeps scoring in-process.
 - Discarding a pipeline that booted a vLLM engine should go through `release_backends()` (or a
   `with` block over the pipeline) rather than relying on garbage collection, which is not prompt at
-  freeing the engine. A failed `steer()` releases the backends it constructed before re-raising, so a
-  retried steer re-boots. `PipelineFactory` (and so `SteeringEval`) releases per configuration.
+  freeing the engine. A failed `steer()` frees any staged in-process model (clearing the local variables of the
+  stage frames in the error's traceback) and releases the backends it constructed before re-raising, and a
+  retried steer therefore re-boots. `PipelineFactory` (and so `SteeringEval`) releases per configuration.
 - Spec options the vLLM backends read: `hook_plugin`, `artifact_dir`, `engine_kwargs` (offline engine);
   `base_url`, `api_key`, `max_concurrency`, `request_timeout`, `max_retries`, `retry_backoff` (server);
   and `tokenizer_name_or_path` / `trust_remote_code` for the client-side tokenizer. Options must be plain
@@ -315,6 +329,18 @@ pipeline = SteeringPipeline(
   input, then state, then output) and in list order within each category, so higher layers always see the final model.
 - At most one enabled `DecodingDriver` may be present; the decode loop does not compose. When none is supplied the
   pipeline uses `model.generate`. Step-level output controls (processors, stopping criteria) compose freely.
+- Every driver preset accepts a padded batch and returns `n` (`num_return_sequences`) candidates per prompt in
+  row-major, candidate-minor order. The phased drivers (`phased_decoding`, `budget_forcing`, `routed_decoding`) run each
+  candidate through its row's plan under one `max_new_tokens` ceiling across all phases. Fixed text (including routed
+  prefixes and canned responses) counts against the ceiling and is appended whole; a candidate that reaches the ceiling
+  skips the rest of its plan (finish reason `"length"`). The phased drivers raise `ValueError` for `num_beams > 1` with
+  `n > 1`. The search drivers (`deal`, `best_of_n`, `search_decoding`) run `n` independent searches per row, with the
+  preset's own candidate count as the proposals per iteration from each kept beam. They clamp segments so that no
+  continuation exceeds `max_new_tokens`, and beam proposals without sampling run one search and return it as every
+  candidate.
+- In-process state hooks restart their pass count at every `model.generate` call the Hugging Face session issues,
+  which places each call's prefill at position 0. Hook points that receive no position ids (e.g., `iti` on `o_proj`)
+  therefore steer every phase and candidate of a driver.
 - Input controls run in two phases on chat input. Every control's `adapt_messages` runs in list order before chat
   templating; controls whose `adapt_messages` returns `None` then run their token-level `adapt` in list order after
   tokenization. Text and tensor inputs skip the message phase entirely. Place semantic rewriters (`prewrite`, `cpo`,
@@ -378,8 +404,22 @@ manifest only, with artifact ids resolved at load through `artifact_store=`. `SP
 
 `spipe.pipeline()` reconstructs a `SteeringPipeline`. Frozen entries instantiate from their resolution, so `steer()` is
 cheap and model-free; `prefer="recipe"` forces re-fits instead. Backend, device, dtype, and `hf_model_kwargs` stay the
-caller's. `verify()` is the model-free report, `thaw()` drops the resolution, and `allow_code=True` at load gates
-callable references, non-toolkit dataclass imports, and pickle-backed memories.
+caller's. `verify()` is the model-free report and `thaw()` drops the resolution. `allow_code=True` at load permits
+`$ref` callables, `$dc` dataclasses outside `codec.DECODABLE_DATACLASSES` (the toolkit dataclasses whose construction
+only validates), and tree artifacts whose payload contains pickle-bearing files (pickle-backed memories, adapter or
+checkpoint trees with pickled weights). Toolkit enums always decode, and `$dc` constructs only dataclasses and enums.
+Freezing leaves TRL trainer state (`training_args.bin`, optimizer, scheduler, scaler, and RNG state) out of adapter and
+checkpoint trees. `allow_code` governs decoding only; recipe args such as `trust_remote_code` take effect at `steer()`.
+
+`spipe.entries` lists the manifest's entries as `SpipeEntry` records (`index`, `method`, `enabled`, `args`, `resolved`)
+without decoding them, and `spipe.instantiate_entry(index, prefer=, verify=, lenient=)` returns one entry's control(s);
+`pipeline()` is built from it. Errors are raised per entry, with `SpipeFormatError` for an unregistered method key, a
+malformed value, or args the constructor rejects, and `SpipeCodeRefError` when the entry needs code. A bundle whose
+method key is unregistered in this process therefore loads, and instantiating that entry raises `SpipeFormatError`, as
+do `recipe_id`, the `config_id` of an unfrozen bundle, and `describe()`, which instantiate every entry. For inspecting
+an entry's `steer_access()` and `requirements()`, `lenient=True` never imports or runs bundle code (`$ref` values become
+inert markers, `$data` stays a `DataRef`, no dataset loads); an entry that needs other code (a `$dc` class outside
+`DECODABLE_DATACLASSES` or a pickle-bearing artifact) raises `SpipeCodeRefError` there even under `allow_code=True`.
 
 An unsteered pipeline freezes without loading the model when every enabled control is recipe-frozen (`FACTS` steer
 access, no fits, no exported state, as for a prompt-only pipeline), and the lock then records no model or tokenizer
@@ -435,16 +475,16 @@ template (so `adapt_messages` input controls fire exactly as in deployment) and 
 the path recorded as `prompt_path` in provenance. Scoring is generation-based only; logprob parameters, tools, and
 multimodal content are refused with actionable messages.
 
-Concurrent Inspect requests collate into batched pipeline calls when every enabled control is batch-safe. A seeded
+Concurrent Inspect requests collate into batched pipeline calls when `pipeline.supports_batching` is `True`. A seeded
 dispatch carries `seed_scope` from `ProviderOptions` (default `"dispatch"`), so a seeded batch decodes in one pass on
 the Hugging Face backend, and bitwise reproducibility of stochastic sampling is not preserved under concurrency (see
 the `steerability/evaluation/batching.py` module docstring for the full contract).
 
 There is no results checkpoint: the `.eval` logs under `save_dir/inspect_logs/` are the store, and `eval_set`
 resumes each (config, trial, suite) cell from them at sample granularity. Because `eval_set` matches task identity
-only, a changed protocol (seed, generate defaults, provider options, suites, fit, backend) needs a new `save_dir`.
-Pre-flight `check()` runs over every sweep point before any model or engine work (`on_unsupported="raise"` or
-`"skip"`).
+only, a changed protocol (seed, generate defaults, provider options, suites, fit, backend, toolkit version) needs
+a new `save_dir`. `check()` runs over every sweep point before any model or engine work
+(`on_unsupported="raise"` or `"skip"`).
 
 Per-sample steering inputs travel on `Sample.metadata` and are delivered by the shipped `runtime_kwargs_solver` (used
 in place of a bare `generate()` in the task's solver chain). Static per-arm kwargs go in
@@ -519,10 +559,16 @@ own in the common case. Required hooks per category:
   state on every call. The session that executes forwards owns registration.
 - **output**, step-level: `get_logits_processors(...)` and `get_stopping_criteria(...)`, returning fresh instances on
   each call. Loop-owning methods subclass `DecodingDriver` and implement `decode(input_ids, attention_mask, model,
-  logits_processors, stopping_criteria, runtime_kwargs, session=None, **gen_kwargs)`, returning full
-  prompt-plus-continuation ids and applying the received stacks at every scoring step. The pipeline always passes
-  `session=` (a `SteeredSession` carrying the generation's steering entries); drivers issue their rollouts through
-  it, and `model` is None on backends without a live model.
+  logits_processors, stopping_criteria, runtime_kwargs, session=None, **gen_kwargs)`, applying the received stacks
+  at every scoring step. `decode` returns `[B * n, T + L]` ids, where `n` is the caller's `num_return_sequences`
+  (default 1). Each row is the padded prompt row as received followed by one candidate's continuation, right-padded,
+  in row-major, candidate-minor order. The pipeline always passes `session=` (a `SteeredSession` containing the
+  generation's steering entries); drivers issue their rollouts through it, and `model` is None on backends without a
+  loaded model. `session_generate_items(session, rows, eos_token_ids=(), **gen_kwargs)` (in
+  `core/execution/session_utils.py`) runs one session call over unpadded rows and returns one
+  `(continuation_ids, finish_reason)` per row; pass the generation config's eos ids as `eos_token_ids` so that an eos
+  sharing the pad id is kept.
+  `max_rollouts_per_query()` bounds the rollouts per row and candidate.
 - **all categories**: optional `steer()` for one-time preparation and `cleanup()` for releasing resources. The
   pipeline passes `session=` (a `SteeringSession` on the steering backend) into `steer()`; controls that only need
   structural facts read `session.layout` rather than the live model, and fitting call sites accept `session=` for
@@ -535,6 +581,8 @@ Declare the class attributes the pipeline reads:
 - `RUNTIME_KWARGS_SCHEMA`: a list of `{"name": ...}` entries; declare `scope` on every entry, `"row"` for a
   per-prompt value delivered row-aligned in batched calls or `"call"` for one value per call
 - for output controls, `include_in_scoring` and `same_model_forwards`
+- for decoding drivers, `whole_batch_rollouts` (default `True`; set `False` when a session call covers a subset of
+  the rows or rows at different stream lengths, as the phased and search drivers do)
 
 Backend support is declared through `requirements()`. The default (`IN_PROCESS_TORCH` at generate) is honest for a
 new control and keeps it Hugging Face-only; do not widen it speculatively. An `InterventionControl` derives its
@@ -591,7 +639,8 @@ or is very large; import it through `steerability.utils.optional.require("<modul
 in `OPTIONAL_MODULE_EXTRAS` (`steerability/utils/optional.py`), and discovery then skips the method with an actionable
 hint when the dependency is absent instead of failing. A dependency a control runs without (an alternative estimator or
 an enhancement) is not declared at all; raise a `ModuleNotFoundError` naming the package and its tested range, as CPO's
-`use_dml` does.
+`use_dml` does. A package that exports no `STEERING_METHOD` is skipped, which lets a method whose upstream API is
+missing from an installed dependency log a hint and skip its own registration rather than fail the crawl.
 
 ### Generics before new machinery
 
@@ -602,7 +651,8 @@ Before writing new components, check the category's `common/` library and compos
   (`ContrastiveFit`, `SinglePairFit`, `ConditionPointSearch`, `LayerFilteredFit`, `VerifiedPrecomputed`, and the
   PASTA-local `HeadProfile` for rollout-scored head selection; each declares its `access` and `artifact_class`);
   estimators (`MeanDifferenceEstimator`,
-  `ContrastiveDirectionEstimator`, `SinglePairEstimator`, `SteeringPlaneEstimator`); gating (`Gate` over an
+  `ContrastiveDirectionEstimator`, `SinglePairEstimator`, `SteeringPlaneEstimator`, and `estimator_for(method)`,
+  which maps a `VectorTrainSpec.method` to its estimator); gating (`Gate` over an
   `Evidence` and a rule; readouts `AffineReadout`, `CosineReadout`, `ProjectedCosineReadout`, `CallableReadout`;
   rules `SumThreshold`, `PerKeyThreshold`; `gate_from_probe`); selectors (`FixedLayerSelector`,
   `FractionalDepthSelector`, `TopKHeadSelector`, `ConditionPointSelector`); token scopes; `SteeringVector`; and
@@ -652,6 +702,10 @@ A new control needs `tests/controls/test_<method>.py` following the existing pat
 `build_param_grid()` (from `tests/utils/sweep.py`), then build the control, wrap it in a `SteeringPipeline`, `steer()`,
 `generate()`, and assert on the output. Unit-test any new generics directly (`tests/controls/` for control components,
 `tests/internals/` for the probes substrate, `tests/core/` for pipeline behavior).
+
+`tests/controls/test_driver_candidates.py` runs every registered `DecodingDriver` preset on a batch of two prompts of
+different lengths with `n=2` and checks the output layout. A new preset needs a minimal configuration for the tiny
+model in its `PRESET_KWARGS`, and the suite fails for a preset without one.
 
 ### Code style
 
@@ -712,7 +766,8 @@ updating; does it affect other parts of the system. A finished method contributi
 
 - [ ] the `args.py` / `control.py` / `__init__.py` triplet, importing cleanly with a valid `STEERING_METHOD` export
 - [ ] honest `supports_batching`, `RUNTIME_KWARGS_SCHEMA`, and (output) `include_in_scoring` / `same_model_forwards`
-- [ ] tests in `tests/controls/test_<method>.py` passing on CPU with the CI models
+- [ ] tests in `tests/controls/test_<method>.py` passing on CPU with the CI models (and, for a decoding driver
+  preset, its `PRESET_KWARGS` entry in `tests/controls/test_driver_candidates.py`)
 - [ ] a Google-style docstring ending with the paper reference
 - [ ] reference page, `docs/.nav.yml` entry, and `docs/concepts/controls.md` mention
 - [ ] a notebook plus its `examples/index.md` entry
@@ -750,14 +805,17 @@ Rules that hold regardless of task:
    `HookEntry` contributions built by the pipeline.
 8. Never mutate caller-supplied artifacts (steering vectors, probes, configs); clone before moving devices or
    normalizing.
-9. One in-flight generation per control instance. Gate instances embedded in a control's interventions carry
-   per-generation decisions, so do not share control instances across concurrently running pipelines.
+9. One in-flight generation per control instance. Gate instances embedded in a control's interventions, and the
+   per-row grammar state of a constraint automaton, contain per-generation decisions. Do not share control instances
+   across concurrently running pipelines.
 10. `generate()` returns continuation-only ids by default; never re-slice its result by prompt length.
 11. `runtime_kwargs` is a single shared namespace per call. Declare consumed names and their `scope` in
     `RUNTIME_KWARGS_SCHEMA` (a row-scoped kwarg receives a row-aligned sequence in batched calls) and expect shared
     values on name collisions.
 12. Declare `supports_batching=True` only when a control is safe under batched prompts; the pipeline and the
-    Inspect model provider read it to choose between batched and per-example generation.
+    Inspect model provider read it to choose between batched and per-example generation. A decoding driver whose
+    session calls cover a subset of the rows, or rows at different stream lengths, declares
+    `whole_batch_rollouts = False`.
 13. A control's behavior has exactly one declarative statement (the adapted prompt, a structural artifact, an
     intervention tuple, or exported params/specs). Every backend consumes the highest representation it supports.
     Hooks are per-generation products of the pipeline and specs are per-steer products of it, and no code path

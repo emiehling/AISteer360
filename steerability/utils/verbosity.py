@@ -90,25 +90,27 @@ def set_verbosity(level: int | str) -> None:
 def get_verbosity() -> int:
     """Return the effective level of the `steerability` logger.
 
-    Applies the `STEERABILITY_VERBOSITY` environment default once (on first library use) before
-    reading, so an environment-configured level is reflected without an explicit `set_verbosity`
-    call.
+    The first call applies the `STEERABILITY_VERBOSITY` environment default before reading the level,
+    unless `set_verbosity` has already run. A level set through the environment is therefore reported
+    without an explicit `set_verbosity` call. Applying the default calls `set_verbosity`, which also
+    attaches a stream handler when the package logger has none.
 
     Returns:
-        The effective integer level, resolved up the logger hierarchy when the package logger has
-        no level of its own.
+        The effective integer level. When the package logger has no level of its own, the level is
+        resolved up the logger hierarchy.
     """
     _apply_env_default()
     return logging.getLogger(_ROOT_LOGGER_NAME).getEffectiveLevel()
 
 
 def _apply_env_default() -> None:
-    """Apply the `STEERABILITY_VERBOSITY` level once if it is set and no explicit call has been made.
+    """Apply the `STEERABILITY_VERBOSITY` level once, unless `set_verbosity` has already run.
 
-    Reads the environment on first invocation. If `STEERABILITY_VERBOSITY` is set to a recognized level
-    name or integer, applies it via `set_verbosity`; if unset, the package logger is left untouched
-    (default stays silent). An unrecognized value is ignored. Called by library code on first use
-    rather than at import time, so importing `steerability` never inspects the environment.
+    The environment is read on the first invocation only. A value that is an integer or a recognized
+    level name (case-insensitive) is applied through `set_verbosity`. When the variable is unset or
+    empty, the package logger is left unchanged and stays silent. An unrecognized value is ignored.
+    Only `get_verbosity` calls this function, and importing `steerability` does not read the
+    environment.
     """
     global _env_default_applied
     if _env_default_applied:

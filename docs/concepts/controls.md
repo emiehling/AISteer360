@@ -42,6 +42,8 @@ self-consistency), automatic prompting methods, and prompt routing. The toolkit 
 - `FewShot` ([API reference](../reference/algorithms/input_control/few_shot.md), [notebook](../examples/notebooks/algorithms/few_shot.ipynb))
     - *Description*: pool- or runtime-supplied few-shot examples with a pluggable selector. On chat input the
       rendered example block merges into the leading system message (appended by default, via `system_mode`).
+      Setting `selector_seed` seeds each pool draw from the seed, the pool polarity, and the query content, which
+      makes the examples a query receives independent of call order (not accepted with a selector instance).
     - *Backends*: HF, vLLM.
 - `PRewrite` ([API reference](../reference/algorithms/input_control/prewrite.md), [notebook](../examples/notebooks/algorithms/prewrite.ipynb))
     - *Description*: RL-trained instruction rewriter ([Kong et al. 2024](https://arxiv.org/abs/2401.08189)) supporting a greedy "inference" strategy and a best-of-K "search" strategy. The rewriter can optionally be trained with GRPO using a scorer-in-the-loop reward (apply the rewrite with the frozen task model over a dev set and score each response with a per-row `SampleScorer`, the paper's reward).
@@ -55,7 +57,7 @@ self-consistency), automatic prompting methods, and prompt routing. The toolkit 
 - `SystemPrompt` ([API reference](../reference/algorithms/input_control/system_prompt.md), [notebook](../examples/notebooks/algorithms/system_prompt.ipynb))
     - *Description*: sets or merges the leading system message of a chat, prepending to, appending to, or replacing it (the default is to prepend ahead of an existing system prompt), always producing exactly one system message.
     - *Backends*: HF, vLLM.
-- `UserPrefix` ([API reference](../reference/algorithms/input_control/user_prefix.md), used in [notebook](../examples/notebooks/algorithms/user_prefix.ipynb))
+- `UserPrefix` ([API reference](../reference/algorithms/input_control/user_prefix.md), used in [notebook](../examples/notebooks/recipes/honest_persona_prompting.ipynb))
     - *Description*: prepends a fixed text marker to a user turn (the last user turn by default, or the first or all user turns), with the token stream as a fallback for non-chat input.
     - *Backends*: HF, vLLM.
 
@@ -103,7 +105,7 @@ around existing libraries. The toolkit implements:
     - *Description*: model merging via MergeKit[@goddard-etal-2024-arcees], combining multiple checkpoints with strategies such as linear interpolation, SLERP, and TIES from a YAML/dict config.
     - *Backends*: HF, vLLM (the merged checkpoint is served).
 - `TRL` ([API reference](../reference/algorithms/structural_control/trl_wrapper.md), [notebook](../examples/notebooks/algorithms/wrappers/trl.ipynb))
-    - *Description*: weight-level training via Hugging Face TRL[@vonwerra2022trl], exposing SFT, DPO, APO, PPO, and GRPO trainers, with optional LoRA/PEFT and a post-training merge. Since `training_args` is forwarded verbatim to the installed TRL config, a key the config does not declare raises an error at control construction. A `target_modules` list of module-name suffixes is scoped at steer time to the decoder stack of the resolved model layout, so a multimodal wrapper's vision and audio towers are not adapted; a regex targets other modules.
+    - *Description*: weight-level training via Hugging Face TRL[@vonwerra2022trl], exposing SFT, DPO, APO, PPO, and GRPO trainers, with optional LoRA/PEFT and a post-training merge. The `ppo` control is registered only when the installed TRL provides `trl.experimental.ppo` (discovery otherwise skips it with a logged hint). Since `training_args` is forwarded verbatim to the installed TRL config, a key the config does not declare raises an error at control construction. A `target_modules` list of module-name suffixes is scoped at steer time to the decoder stack of the resolved model layout, so a multimodal wrapper's vision and audio towers are not adapted; a regex targets other modules.
     - *Backends*: HF, vLLM (serves the steer-time artifact, a checkpoint or LoRA adapter, and requires a configured output directory).
 
 
@@ -176,7 +178,9 @@ transform chain, one gate, and one token scope), and steering with several behav
 together in a pipeline's `controls`, applied in list order. Adapters can share one gate instance for joint
 conditioning, and a fitted [`Probe`](probes.md) can gate an adapter through `Probe.as_gate()`. Position-scoped and
 gated controls compose with multi-call decoding drivers (e.g., segment search) and with step-level controls that score
-candidates through the pipeline's own model.
+candidates through the pipeline's own model. Note that the phased and search drivers issue session calls over subsets
+of the batch. A pipeline that combines one of them with state controls running in process accepts one prompt per
+call, and a batch of more than one prompt raises a `ValueError`.
 
 State controls locate the decoder layers through a model layout, which is resolved automatically for text-only decoder
 models (Llama, Mistral, Qwen, and Gemma), for composite multimodal wrappers loaded under `AutoModelForCausalLM` (Gemma
@@ -230,8 +234,8 @@ The toolkit implements the following step-level controls:
     - *Description*: contrastive decoding[@li2022contrastive], favoring tokens the base (expert) scores higher than a weaker amateur, over an expert-plausibility-masked set.
     - *Backends*: HF (model-backed per-step logit math is in-process only).
 - `ConstrainedDecoding` ([API reference](../reference/algorithms/output_control/constrained_decoding.md))
-    - *Description*: constrained decoding from one declarative source (JSON schema, regex, EBNF grammar, or a choice set). Every logit the grammar forbids is masked at each step.
-    - *Backends*: HF (client-side xgrammar automaton), vLLM (native structured outputs). A control constructed with an in-memory automaton object is HF-only.
+    - *Description*: constrained decoding from one declarative source (JSON schema, regex, EBNF grammar, or a choice set). Every logit the grammar forbids is masked at each step. For a declarative constraint, batched prompts, multiple candidates, and beams are constrained separately, since the grammar state is tracked per row (one control instance serves one generation at a time).
+    - *Backends*: HF (client-side xgrammar automaton), vLLM (native structured outputs). A control constructed with an in-memory automaton object is HF-only. With a decoding driver in the pipeline the constraint does not lower, and the control is HF-only.
 - `ValueGuidance` ([API reference](../reference/algorithms/output_control/value_guidance.md), [notebook](../examples/notebooks/algorithms/generics/value_guidance.ipynb))
     - *Description*: the config-first generic over the step shape (candidates → value → normalize → shift). FUDGE, ARGS, RAD, and SASA are assignments of its config.
     - *Backends*: HF (model-backed per-step logit math is in-process only).
@@ -248,10 +252,10 @@ and the following decoding drivers:
     - *Description*: decoding-time alignment[@huang2024deal], i.e., iterative lookahead beam search with reward-guided beam selection.
     - *Backends*: HF (beam proposals are in-process only, though the sampled-proposal search runs on vLLM as a `SearchDecoding` configuration).
 - `BestOfN` ([API reference](../reference/algorithms/output_control/best_of_n.md), [notebook](../examples/notebooks/algorithms/best_of_n.ipynb))
-    - *Description*: best-of-N sampling / re-ranking[@nakano2021webgpt], sampling N full continuations and returning the highest-scoring one under a sequence scorer (pairing with a majority-vote scorer recovers self-consistency).
+    - *Description*: best-of-N sampling / re-ranking[@nakano2021webgpt], sampling N full continuations and returning the highest-scoring one under a sequence scorer (pairing with a majority-vote scorer recovers self-consistency). Note that the control's `n` sets the number of samples in one search, while the call's `n` (`num_return_sequences`) sets the number of searches per prompt.
     - *Backends*: HF, vLLM.
 - `BudgetForcing` ([API reference](../reference/algorithms/output_control/budget_forcing.md), [notebook](../examples/notebooks/algorithms/budget_forcing.ipynb))
-    - *Description*: test-time thinking-length control[@muennighoff2025s1], capping each thinking segment, optionally appending extensions ("Wait") to prolong reasoning, then forcing the closing think tag before answering. `end_think_token_ids` sets the thinking-phase boundary by token id, for a closing-think delimiter that is a special token.
+    - *Description*: test-time thinking-length control[@muennighoff2025s1], capping each thinking segment, optionally appending extensions ("Wait") to prolong reasoning, then forcing the closing think tag before answering. `end_think_token_ids` sets the thinking-phase boundary by token id, for a closing-think delimiter that is a special token. Since the thinking phases count against the call's `max_new_tokens`, a candidate whose thinking reaches the ceiling ends without the forced tag or an answer.
     - *Backends*: HF, vLLM.
 - `RoutedDecoding` ([API reference](../reference/algorithms/output_control/routed_decoding.md), [notebook](../examples/notebooks/recipes/routed_decoding/routed_decoding.ipynb))
     - *Description*: a decoding driver that routes each row to a response plan via a `Router` over a [`ProbeSet`](probes.md)'s readings, and executes the matched plan (canned response, disclaimer prefix, or plain generation). It sits beside `PhasedDecoding` and `SearchDecoding`.
@@ -262,6 +266,17 @@ and the following decoding drivers:
 - `PhasedDecoding` ([API reference](../reference/algorithms/output_control/phased_decoding.md), [notebook](../examples/notebooks/algorithms/generics/phased_decoding.ipynb))
     - *Description*: the config-first generic over the phase shape (forced / generated segments via a declarative plan grammar). Budget forcing, response prefill, and thinking intervention[@wu2025effectively] are assignments of its config. A `generate` phase ends at its `until` substring, any token in `until_token_ids`, or its `budget`, whichever first. Note that under a chat template that opens the reasoning block in its generation prompt (the case `ProviderOptions.reasoning_opened_at_start` describes), a plan whose first phase is `fixed` must splice the reasoning close tag before the answer text. Without it the evaluation provider reads the fixed text as unclosed reasoning and grades an empty answer.
     - *Backends*: HF, vLLM.
+
+Every decoding driver accepts a padded batch of prompts and returns `n` candidates per prompt (the call's
+`num_return_sequences`). Among the drivers, only `PhasedDecoding` and `RoutedDecoding` declare `supports_batching`,
+which the evaluation provider reads to batch concurrent requests. The search drivers (`DeAL`, `BestOfN`, and
+`SearchDecoding`) run one independent search per candidate on the row's unpadded prompt (with beam proposals and no
+sampling, the search runs once and is returned as every candidate). Their segments are clamped so that no
+continuation exceeds `max_new_tokens`. The phased drivers (`BudgetForcing`, `RoutedDecoding`, and `PhasedDecoding`)
+apply the call's `max_new_tokens` as one ceiling per candidate across all phases, with fixed text (including routed
+prefixes and canned responses) counted against it and appended whole. A candidate that reaches the ceiling skips the
+rest of its plan (finish reason `"length"`). Since each candidate of a phased driver generates as its own sequence,
+beam search (`num_beams > 1`) with more than one candidate raises a `ValueError`.
 
 Some decoding strategies are native to Hugging Face's `generate` and need no dedicated control. They flow through the
 default driver via `gen_kwargs`, for example DoLa decoding (`gen_kwargs={"dola_layers": ...}`) and watermarking

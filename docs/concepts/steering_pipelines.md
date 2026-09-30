@@ -94,7 +94,9 @@ running vLLM server (`kind="vllm-serve"`).
 Not every control configuration can run on every backend. For instance, a state control whose edit has no serialized
 form cannot be hosted by an engine. Each control's `Backends` line in [steering controls](controls.md) records where it
 is supported. Before any model or engine work, `pipeline.check()` reports every unsupported (control, phase) pair
-together with the gap and the fix, and `steer()` runs the same check and raises an error on failures.
+together with the gap and the fix, and `steer()` runs the same check and raises an error on failures. The report also
+covers control combinations that a backend cannot execute, e.g., a constraint under a decoding driver on vLLM (the
+constraint lowers to the engine only without a driver).
 
 ```python
 from steerability.algorithms.core.execution import BackendSpec

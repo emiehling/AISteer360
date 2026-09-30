@@ -8,7 +8,7 @@ pipeline, so prefer API graders or size headroom accordingly.
 """
 from steerability.utils.optional import require
 
-require("inspect_ai")  # anyio, sniffio, and nest_asyncio2 arrive through the inspect extra
+require("inspect_ai")  # anyio, sniffio, and nest_asyncio2 arrive through the eval extra
 import asyncio
 from typing import Any, Callable, Mapping
 
