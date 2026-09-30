@@ -240,6 +240,7 @@ class RAD(OutputControl):
                 invert=self.invert,
                 mask_non_candidates=True,
                 lm_tokenizer=self.tokenizer,
+                prompt_ids=input_ids,
                 attention_mask=attention_mask,
                 trace=(runtime_kwargs or {}).get("value_trace"),
             )

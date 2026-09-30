@@ -44,7 +44,7 @@ class ContrastiveMixtureProcessor(PrefixKeyedProcessor):
         base_logprobs = torch.log_softmax(scores, dim=-1)
         mixed = self.base_weight * base_logprobs
         for source, weight in self.sources:
-            mixed = mixed + weight * source.logprobs(input_ids).to(mixed.dtype)
+            mixed = mixed + weight * source.logprobs(input_ids).to(device=mixed.device, dtype=mixed.dtype)
 
         if self.alpha is not None:
             base_probs = base_logprobs.exp()

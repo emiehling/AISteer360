@@ -97,6 +97,7 @@ class ValueGuidance(OutputControl):
                 max_candidates=self.max_candidates,
                 lm_tokenizer=self.tokenizer,
                 model=self.model,
+                prompt_ids=input_ids,
                 attention_mask=attention_mask,
             )
         ]
