@@ -5,11 +5,13 @@ handoff, and the capture smoke-test degradation path.
 Engine paths run against a fake backend registered by monkeypatching
 `resolve_backend_class`, since CI has no vLLM.
 """
+import gc
 import os
 import weakref
 
 import pytest
 import torch
+from transformers import AutoModelForCausalLM
 
 from steerability.algorithms.core.execution import (
     BackendSpec,
@@ -167,6 +169,17 @@ class _StageStructural(StructuralControl):
         return model
 
 
+class _OutPathStructural(_StageStructural):
+    """Stage structural control that exports a checkpoint at a configurable path."""
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    def export_artifact(self):
+        return CheckpointArtifact(path=self.path)
+
+
 class _ModuleOutput(OutputControl):
     """Module-level output control that is portable at generate and does not retain."""
 
@@ -196,11 +209,13 @@ class _CaptureFitter(OutputControl):
 
     Args = None
 
-    def __init__(self, label):
+    def __init__(self, label, location="layer_output"):
         super().__init__()
         self.label = label
+        self.location = location
         self.steer_count = 0
         self.saw_in_process = None
+        self.captured = None
 
     def requirements(self):
         return Requirements()
@@ -216,7 +231,30 @@ class _CaptureFitter(OutputControl):
         self.saw_in_process = getattr(session, "in_process", None)
         CALLS.append((self.label, model is not None))
         prompt = PreparedPrompt.from_token_ids(torch.tensor([[0]], dtype=torch.long))
-        session.capture([prompt], [0], "last_token")
+        self.captured = session.capture([prompt], [0], "last_token", location=self.location)
+
+
+class _EmbeddingScalingStructural(StructuralControl):
+    """Scales the embedding row of token 0 on the stage model and saves the result as a checkpoint."""
+
+    Args = None
+
+    def __init__(self, out_dir, factor=3.0):
+        super().__init__()
+        self.out_dir = str(out_dir)
+        self.factor = factor
+
+    def artifact_capability(self):
+        return Capability.SERVE_CHECKPOINT
+
+    def export_artifact(self):
+        return CheckpointArtifact(path=self.out_dir)
+
+    def steer(self, model, tokenizer=None, session=None, **kwargs):
+        with torch.no_grad():
+            model.get_input_embeddings().weight[0] *= self.factor
+        model.save_pretrained(self.out_dir)
+        return model
 
 
 class _RetainingModule(OutputControl):
@@ -232,6 +270,41 @@ class _RetainingModule(OutputControl):
 
     def steer(self, model=None, tokenizer=None, session=None, **kwargs):
         self.model = model
+
+
+class _FailingModule(OutputControl):
+    """Module-level output control whose steer raises until `fail` is cleared."""
+
+    Args = None
+
+    def __init__(self):
+        super().__init__()
+        self.fail = True
+        self.stage_ref = None
+
+    def requirements(self):
+        return Requirements()
+
+    def steer_access(self):
+        return ModelAccess.MODULE
+
+    def steer(self, model=None, tokenizer=None, session=None, **kwargs):
+        self.stage_ref = weakref.ref(model)
+        if self.fail:
+            raise ValueError("stage steer failed")
+
+
+class _FailOnceSessionInput(_SessionInput):
+    """Session-venued input control whose first steer raises."""
+
+    def __init__(self):
+        super().__init__()
+        self.fail = True
+
+    def steer(self, model=None, tokenizer=None, session=None, **kwargs):
+        if self.fail:
+            self.fail = False
+            raise ValueError("session steer failed")
 
 
 def _engine_spec(model_dir) -> BackendSpec:
@@ -290,6 +363,58 @@ class TestFreeProtocol:
             pipeline.steer()
         assert fake_engine.instances == []  # the engine never booted
 
+    def test_failed_stage_steer_frees_the_stage_model(self, fake_engine, model_dir):
+        failing = _FailingModule()
+        pipeline = SteeringPipeline(controls=[failing], backend=_engine_spec(model_dir))
+        with pytest.raises(ValueError, match="stage steer failed") as excinfo:
+            pipeline.steer()
+        # the stage weights are gone while the caller still holds the error, as a notebook does
+        gc.collect()
+        assert excinfo.value.__traceback__ is not None
+        assert pipeline.model is None
+        assert failing.stage_ref() is None
+        assert fake_engine.instances == []
+
+        # a retried steer loads one fresh stage and completes
+        failing.fail = False
+        pipeline.steer()
+        assert pipeline.model is None
+        assert len(fake_engine.instances) == 1
+
+    def test_stage_model_load_failure_frees_the_partial_stage(self, fake_engine, model_dir, monkeypatch):
+        original_load = SteeringPipeline._load_in_process_model
+        stage_refs = []
+
+        def load_then_fail(self, model_ref):
+            original_load(self, model_ref)
+            staged = self.model
+            stage_refs.append(weakref.ref(staged))
+            raise RuntimeError("placement failed")
+
+        monkeypatch.setattr(SteeringPipeline, "_load_in_process_model", load_then_fail)
+        pipeline = SteeringPipeline(controls=[_ModuleOutput()], backend=_engine_spec(model_dir))
+        with pytest.raises(RuntimeError, match="placement failed") as excinfo:
+            pipeline.steer()
+        gc.collect()
+        assert excinfo.value.__traceback__ is not None
+        assert pipeline.model is None
+        assert stage_refs[0]() is None
+        assert fake_engine.instances == []
+
+    def test_retried_steer_hands_off_the_retry_artifacts(self, fake_engine, model_dir):
+        structural = _OutPathStructural("/tmp/first")
+        pipeline = SteeringPipeline(
+            controls=[structural, _FailOnceSessionInput()], backend=_engine_spec(model_dir),
+        )
+        with pytest.raises(ValueError, match="session steer failed"):
+            pipeline.steer()
+        assert fake_engine.instances[0].artifacts[0].path == "/tmp/first"
+
+        # the retry re-runs the structural steer, which now exports a different checkpoint
+        structural.path = "/tmp/retry"
+        pipeline.steer()
+        assert fake_engine.instances[1].artifacts[0].path == "/tmp/retry"
+
 
 class TestSmokeTestDegradation:
 
@@ -325,6 +450,88 @@ class TestSmokeTestDegradation:
         # the input control ran through the re-booted engine session, after the stage
         assert CALLS == [("fitter_a", False), ("fitter_b", False), ("input", False)]
         assert pipeline.model is None
+
+    @pytest.fixture
+    def failing_smoke_test(self, monkeypatch):
+        import steerability.algorithms.core.steering_pipeline as pipeline_module
+
+        monkeypatch.setattr(
+            pipeline_module, "capture_smoke_failure", lambda session, fallback_tokenizer=None: "capture down",
+        )
+
+    def test_degraded_fit_captures_from_the_structural_checkpoint(
+        self, fake_engine, model_dir, tmp_path, failing_smoke_test,
+    ):
+        structural = _EmbeddingScalingStructural(tmp_path / "scaled", factor=3.0)
+        fitter = _CaptureFitter("fitter", location="layer_input")
+        pipeline = SteeringPipeline(controls=[structural, fitter], backend=_engine_spec(model_dir))
+        with pytest.warns(UserWarning, match="degrades to a staged in-process model"):
+            pipeline.steer()
+
+        assert fitter.saw_in_process is True
+        base_row = AutoModelForCausalLM.from_pretrained(model_dir).get_input_embeddings().weight[0].detach()
+        captured = fitter.captured.hidden[0][0]
+        torch.testing.assert_close(captured, 3.0 * base_row)
+        assert not torch.allclose(captured, base_row)
+        assert pipeline.model is None
+
+    def test_degraded_fit_captures_from_the_structural_lora_adapter(
+        self, fake_engine, model_dir, tmp_path, failing_smoke_test,
+    ):
+        from peft import LoraConfig, PeftModel, get_peft_model
+
+        from steerability.algorithms.structural_control.load_lora import LoadLoRA
+
+        adapter_dir = tmp_path / "adapter"
+        torch.manual_seed(1)
+        get_peft_model(
+            AutoModelForCausalLM.from_pretrained(model_dir),
+            LoraConfig(r=2, target_modules=["embed_tokens"], init_lora_weights=False),
+        ).save_pretrained(adapter_dir, save_embedding_layers=False)
+        adapted = PeftModel.from_pretrained(AutoModelForCausalLM.from_pretrained(model_dir), adapter_dir)
+        expected_row = adapted.merge_and_unload().get_input_embeddings().weight[0].detach()
+        base_row = AutoModelForCausalLM.from_pretrained(model_dir).get_input_embeddings().weight[0].detach()
+
+        fitter = _CaptureFitter("fitter", location="layer_input")
+        pipeline = SteeringPipeline(
+            controls=[LoadLoRA(path=adapter_dir, base_model=model_dir), fitter],
+            backend=_engine_spec(model_dir),
+        )
+        with pytest.warns(UserWarning, match="degrades to a staged in-process model"):
+            pipeline.steer()
+
+        assert fitter.saw_in_process is True
+        captured = fitter.captured.hidden[0][0]
+        torch.testing.assert_close(captured, expected_row)
+        assert not torch.allclose(captured, base_row)
+        assert pipeline.model is None
+
+    def test_every_stage_load_uses_the_constructor_placement(
+        self, fake_engine, model_dir, tmp_path, failing_smoke_test, monkeypatch,
+    ):
+        import steerability.algorithms.core.steering_pipeline as pipeline_module
+
+        loads = []
+
+        class _RecordingAutoModel:
+            @staticmethod
+            def from_pretrained(model_ref, **kwargs):
+                loads.append((str(model_ref), kwargs.get("device_map")))
+                return AutoModelForCausalLM.from_pretrained(model_ref, **kwargs)
+
+        monkeypatch.setattr(pipeline_module, "AutoModelForCausalLM", _RecordingAutoModel)
+        checkpoint_dir = str(tmp_path / "scaled")
+        pipeline = SteeringPipeline(
+            controls=[_EmbeddingScalingStructural(checkpoint_dir), _CaptureFitter("fitter")],
+            backend=_engine_spec(model_dir),
+            device_map={"": "cpu"},
+        )
+        with pytest.warns(UserWarning, match="degrades to a staged in-process model"):
+            pipeline.steer()
+
+        # the first stage loads the base and the degraded stage loads the checkpoint, both placed by device_map
+        assert loads == [(model_dir, {"": "cpu"}), (checkpoint_dir, {"": "cpu"})]
+        assert pipeline.device is None
 
     def test_passing_smoke_test_keeps_fits_on_the_session(self, fake_engine, model_dir):
         CALLS.clear()

@@ -1,17 +1,47 @@
-"""Stage mechanics for the engine-backed steer phase: the stage free protocol and the
-steer-time capture smoke test.
+"""Helpers for the staged in-process model that `steer()` loads on engine backends.
 
-The free protocol takes only a `weakref.ref`; a strong reference crossing the function
-boundary would keep the staged model alive through `gc.collect()` and defeat the check.
+The module provides the following helpers:
+
+- `split_artifacts`: selects the checkpoint and the LoRA adapter that an engine serves.
+- `capture_smoke_failure`: runs the steer-time capture smoke test on a session.
+- `free_stage_memory`: frees the memory of stage weights that are no longer referenced.
+- `verify_stage_released`: checks that no control retains the staged model after the stage.
+
+`verify_stage_released` takes a `weakref.ref` to the staged model. A strong reference passed
+as an argument would keep the model alive through `gc.collect()`, and the check would fail.
 """
 from __future__ import annotations
 
 import gc
 import weakref
+from collections.abc import Sequence
 
 import torch
 
-from steerability.algorithms.core.execution.payloads import PreparedPrompt
+from steerability.algorithms.core.execution.payloads import (
+    Artifact,
+    CheckpointArtifact,
+    LoRAArtifact,
+    PreparedPrompt,
+)
+
+
+def split_artifacts(artifacts: Sequence[Artifact]) -> tuple[CheckpointArtifact | None, LoRAArtifact | None]:
+    """Select the checkpoint and the LoRA adapter that an engine serves from `artifacts`.
+
+    The first artifact of each type is selected. The engine backends and the staged
+    in-process model use the same selection.
+
+    Args:
+        artifacts: The structural artifacts handed to the engine.
+
+    Returns:
+        The first `CheckpointArtifact` and the first `LoRAArtifact`, each None when
+        `artifacts` contains no artifact of that type.
+    """
+    checkpoint = next((a for a in artifacts if isinstance(a, CheckpointArtifact)), None)
+    lora = next((a for a in artifacts if isinstance(a, LoRAArtifact)), None)
+    return checkpoint, lora
 
 
 def capture_smoke_failure(session, fallback_tokenizer=None) -> str | None:
@@ -34,6 +64,16 @@ def capture_smoke_failure(session, fallback_tokenizer=None) -> str | None:
     return None
 
 
+def free_stage_memory() -> None:
+    """Free the memory of stage weights that are no longer referenced.
+
+    Runs `gc.collect()` and, when CUDA is available, `torch.cuda.empty_cache()`.
+    """
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def verify_stage_released(ref: weakref.ref, controls) -> None:
     """Verify the staged in-process model's weights are actually gone.
 
@@ -44,9 +84,7 @@ def verify_stage_released(ref: weakref.ref, controls) -> None:
         RuntimeError: If a control retained the staged model past the stage; the message
             names the retaining controls where identifiable.
     """
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    free_stage_memory()
     referent = ref()
     if referent is None:
         return

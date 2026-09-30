@@ -640,3 +640,82 @@ class TestServeSupportBoundary:
         # the tier rule reads the generate phase only; score fails on serve at the default
         assert report.supported("generate") is True
         assert report.supported("score") is False
+
+
+def _constrained_choice():
+    from steerability.algorithms.output_control.constrained_decoding.control import ConstrainedDecoding
+    return ConstrainedDecoding(choice=["yes", "no"])
+
+
+class _ProcessorSpecExporter(OutputControl):
+    """Output control whose per-step logits lower to an engine-hosted processor spec."""
+
+    def requirements(self):
+        return Requirements()
+
+    def export_processor_spec(self, runtime_kwargs=None):
+        from steerability.algorithms.core.execution.payloads import ProcessorSpec
+        return ProcessorSpec(kind="constraint")
+
+
+_DRIVER_LOWERING_MESSAGE = (
+    "ConstrainedDecoding is unsupported at generate on backend kind 'vllm': missing IN_PROCESS_TORCH, "
+    "because ConstrainedDecoding lowers to the backend only without a decoding driver and BestOfN is "
+    "the pipeline's decoding driver; run this pipeline on the huggingface backend or drop BestOfN."
+)
+
+
+class TestDriverLoweringRule:
+    """A constraint or processor spec lowers onto the backend only on the default decode path, so
+    `check()` fails the combination with a decoding driver on backends without in-process torch."""
+
+    def test_constraint_under_driver_fails_on_vllm(self):
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_constrained_choice(), _best_of_n()])
+        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
+        (failure,) = report.failures_for("generate")
+        assert failure.control == "ConstrainedDecoding"
+        assert failure.message == _DRIVER_LOWERING_MESSAGE
+        with pytest.raises(UnsupportedPipelineError, match="drop BestOfN"):
+            report.raise_for("generate")
+
+    def test_constraint_under_driver_passes_on_huggingface(self):
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[_constrained_choice(), _best_of_n()])
+        assert pipeline.check(backend="huggingface").ok
+
+    def test_per_control_verdicts_are_kept(self):
+        pipeline = SteeringPipeline(
+            model_name_or_path="m",
+            controls=[_TokenPassthroughControl(), _constrained_choice(), _best_of_n()],
+        )
+        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
+        assert [(failure.control, failure.phase) for failure in report.failures] == [
+            ("_TokenPassthroughControl", "generate"),
+            ("ConstrainedDecoding", "score"),
+            ("ConstrainedDecoding", "generate"),
+        ]
+        assert report.failures[-1].message == _DRIVER_LOWERING_MESSAGE
+
+    def test_automaton_object_reports_only_its_per_control_verdict(self):
+        pipeline = SteeringPipeline(
+            model_name_or_path="m", controls=[_constrained_automaton(), _best_of_n()],
+        )
+        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
+        (failure,) = report.failures_for("generate")
+        assert "a live automaton object has no declarative form" in failure.message
+
+    @pytest.mark.parametrize("disabled", ["constraint", "driver"])
+    def test_disabled_control_does_not_trigger_the_rule(self, disabled):
+        constraint, driver = _constrained_choice(), _best_of_n()
+        (constraint if disabled == "constraint" else driver).enabled = False
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[constraint, driver])
+        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
+        assert report.supported("generate")
+
+    def test_processor_spec_under_driver_fails_on_serve(self):
+        pipeline = SteeringPipeline(controls=[_ProcessorSpecExporter(), _best_of_n()], backend=_PLAIN_SERVE_SPEC)
+        (failure,) = pipeline.check().failures_for("generate")
+        assert failure.control == "_ProcessorSpecExporter"
+        assert failure.message.startswith(
+            "_ProcessorSpecExporter is unsupported at generate on backend kind 'vllm-serve': "
+            "missing IN_PROCESS_TORCH"
+        )
