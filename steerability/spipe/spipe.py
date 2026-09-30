@@ -20,7 +20,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from steerability.spipe.codec import DecodeContext, decode, digest_of
-from steerability.spipe.errors import SpipeFormatError, SpipeIntegrityError, SpipeSaveError, SpipeStaleError
+from steerability.spipe.errors import (
+    SpipeCodeRefError,
+    SpipeFormatError,
+    SpipeIntegrityError,
+    SpipeSaveError,
+    SpipeStaleError,
+)
 from steerability.spipe.format import (
     ARTIFACTS_DIR,
     MANIFEST_NAME,
@@ -30,9 +36,10 @@ from steerability.spipe.format import (
     validate_manifest,
     write_manifest,
 )
-from steerability.spipe.store import ArtifactRecord, ArtifactStore
+from steerability.spipe.store import ArtifactRecord, ArtifactStore, check_sidecar, is_artifact_id
 
 if TYPE_CHECKING:
+    from steerability.algorithms.core.base_control import BaseControl
     from steerability.algorithms.core.execution.spec import BackendSpec
     from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 
@@ -64,6 +71,33 @@ class SpipeReport:
         return self.render()
 
 
+@dataclass(frozen=True)
+class SpipeEntry:
+    """A summary of one control entry in a manifest, as returned by `SPipe.entries`.
+
+    Attributes:
+        index: The position of the entry in the manifest's `controls` list, which is the value
+            `SPipe.instantiate_entry()` accepts as `index`.
+        method: The recipe method key (`"<category>_control/<name>"`).
+        enabled: Whether the entry is enabled.
+        args: A deep copy of the entry's recipe args in their encoded (manifest JSON) form.
+        resolved: Whether the entry has a resolved (frozen) section.
+    """
+
+    index: int
+    method: str
+    enabled: bool
+    args: dict
+    resolved: bool
+
+
+def _check_policies(prefer: str, verify: str) -> None:
+    if prefer not in ("frozen", "recipe"):
+        raise ValueError(f"prefer must be 'frozen' or 'recipe'; got {prefer!r}.")
+    if verify not in ("strict", "warn", "off"):
+        raise ValueError(f"verify must be 'strict', 'warn', or 'off'; got {verify!r}.")
+
+
 def _resolved_items(entry: Mapping) -> list[Mapping]:
     resolved = entry.get("resolved")
     if resolved is None:
@@ -72,11 +106,19 @@ def _resolved_items(entry: Mapping) -> list[Mapping]:
 
 
 def _collect_artifact_ids(value: Any, found: set[str]) -> None:
+    """Add the well-formed artifact ids referenced in an encoded value to `found`.
+
+    The value is searched recursively for `$artifact` and `id` keys, which cover `$artifact`
+    references and artifact records. A malformed id is not collected. Decoding the entry that
+    contains a malformed `$artifact` id raises `SpipeFormatError`.
+
+    Args:
+        value: The encoded value to search.
+        found: The set that receives the ids, modified in place.
+    """
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if key == "$artifact" and isinstance(item, str):
-                found.add(item)
-            elif key == "id" and isinstance(item, str) and item.startswith("sha256:"):
+            if key in ("$artifact", "id") and is_artifact_id(item):
                 found.add(item)
             else:
                 _collect_artifact_ids(item, found)
@@ -96,11 +138,19 @@ def _manifest_records(manifest: Mapping) -> dict[str, ArtifactRecord]:
 
 
 class SPipe:
-    """A serialized steering pipeline: recipe, optional lock, and artifact store.
+    """A serialized steering pipeline, consisting of a manifest and an artifact store.
 
-    Instances come from `SteeringPipeline.to_spipe()` (backed by a temporary store until
-    saved) or `SPipe.load()` (backed by the loaded bundle). The manifest is data; controls
-    are instantiated only by `pipeline()`.
+    The manifest contains the recipe (the model reference and each control's constructor args)
+    and, for a frozen spipe, the resolved entries and a lock section. An `SPipe` is created by
+    `SteeringPipeline.to_spipe()`, which keeps its artifacts in a temporary directory, or by
+    `SPipe.load()`, which reads a saved bundle. `save()` writes the spipe to a `.spipe` file
+    or a directory.
+
+    The `pipeline()` and `instantiate_entry()` methods return controls built from the manifest.
+    The staleness check and the `recipe_id` and `config_id` properties of a spipe without a
+    lock section also construct controls from the recipe args, for internal use. These
+    constructions decode each `$ref` callable to a `CodeRef` and leave `$data` references
+    unloaded.
     """
 
     def __init__(
@@ -121,7 +171,7 @@ class SPipe:
         self._allow_code = allow_code
         self._allow_stale = allow_stale
         self._temp = _temp
-        self._staleness_checked = False
+        self._stale_checked: set[int] = set()
 
     # inspection
 
@@ -129,6 +179,25 @@ class SPipe:
     def manifest(self) -> dict:
         """A deep copy of the manifest."""
         return copy.deepcopy(self._manifest)
+
+    @property
+    def entries(self) -> tuple[SpipeEntry, ...]:
+        """The manifest's control entries as `SpipeEntry` records, in pipeline order.
+
+        The args are returned in encoded form without decoding. Listing the entries does not
+        import code or read artifacts, and it works when a method key is not registered in this
+        process.
+        """
+        return tuple(
+            SpipeEntry(
+                index=i,
+                method=entry["method"],
+                enabled=entry["enabled"],
+                args=copy.deepcopy(entry["args"]),
+                resolved=entry.get("resolved") is not None,
+            )
+            for i, entry in enumerate(self._manifest["controls"])
+        )
 
     @property
     def recipe_id(self) -> str:
@@ -157,8 +226,8 @@ class SPipe:
         """The configuration descriptor recomputed from freshly instantiated recipe controls."""
         from steerability.algorithms.core.identity import config_descriptor_from_controls
 
-        controls = [self._instantiate(entry["method"], entry["args"], self._decode_ctx(lenient=True))
-                    for entry in self._manifest["controls"]]
+        controls = [self._instantiate(entry["method"], entry["args"], self._decode_ctx(lenient=True), index=index)
+                    for index, entry in enumerate(self._manifest["controls"])]
         for control, entry in zip(controls, self._manifest["controls"]):
             control.enabled = entry["enabled"]
         return config_descriptor_from_controls(controls)
@@ -198,7 +267,10 @@ class SPipe:
                 for name, record in (item.get("artifacts") or {}).items():
                     size = ""
                     if self._store is not None and self._store.has(record["id"]):
-                        size = f"  {self._store.size_of(record['id'])} bytes"
+                        try:
+                            size = f"  {self._store.size_of(record['id'])} bytes"
+                        except (SpipeFormatError, SpipeIntegrityError):
+                            size = "  (unreadable; see verify())"
                     lines.append(f"        {name}: {record['type']} {record['id'][:19]}…{size}")
         return "\n".join(lines)
 
@@ -223,14 +295,29 @@ class SPipe:
         return found
 
     def verify(self) -> SpipeReport:
-        """The model-free report: format, integrity, staleness, versions, code dependence.
+        """Check the spipe without loading a model and return the findings as a `SpipeReport`.
 
-        Never loads a model or instantiates a backend. Referenced artifacts that are not
-        present are reported in one warning (a thin bundle); the present ones are verified
-        against their content ids.
+        The method does not load a model or create a backend, and it does not raise an error for
+        a failed check. It runs the following checks:
+
+        1. **Format**: the manifest is validated against the `spipe/1` schema. A violation is
+           an error.
+        2. **Artifacts**: the referenced artifacts that are not in the store are listed in one
+           warning (a thin bundle). Each present artifact is verified against its content id,
+           and its store sidecar against its manifest record. A failure is an error.
+        3. **Staleness**: the fit digest of each frozen entry is recomputed from its recipe
+           args. The check stops at the first stale entry and reports it as an error. An entry
+           whose recipe does not decode in this process is reported as a warning. A check that
+           cannot run for another reason (e.g., a missing artifact) is also reported as a
+           warning.
+        4. **Versions**: a major version difference between the toolkit that wrote the spipe
+           and the installed toolkit is a warning. A version recorded as `"unknown"` on either
+           side is not compared.
+        5. **Code dependence**: a manifest that references code (`$ref`) is reported as a
+           warning.
 
         Returns:
-            The report.
+            The report, whose `ok` is True when no check found an error.
         """
         errors: list[str] = []
         report_warnings: list[str] = []
@@ -253,12 +340,13 @@ class SPipe:
         for artifact_id in referenced:
             if artifact_id not in missing:
                 try:
-                    self._store.verify(artifact_id)
-                except SpipeIntegrityError as exc:
+                    self._verify_artifact(artifact_id)
+                except (SpipeFormatError, SpipeIntegrityError) as exc:
                     errors.append(str(exc))
 
         try:
-            self._check_staleness(raise_on_stale=True, force=True)
+            unchecked = self._check_staleness(raise_on_stale=True, force=True)
+            report_warnings.extend(f"staleness check could not run for {message}" for message in unchecked)
         except SpipeStaleError as exc:
             errors.append(str(exc))
         except Exception as exc:
@@ -268,7 +356,8 @@ class SPipe:
 
         saved = self._manifest.get("toolkit_version", "unknown")
         current = _toolkit_version()
-        if saved.split(".")[0] != current.split(".")[0]:
+        comparable = "unknown" not in (saved, current)
+        if comparable and saved.split(".")[0] != current.split(".")[0]:
             report_warnings.append(
                 f"spipe was written by steerability {saved}; this is {current} (major mismatch)."
             )
@@ -280,10 +369,34 @@ class SPipe:
 
         return SpipeReport(ok=not errors, errors=errors, warnings=report_warnings)
 
-    def _decode_ctx(self, *, lenient: bool, verify: str = "off", data_mode: str = "keep") -> DecodeContext:
+    def _verify_artifact(self, artifact_id: str) -> None:
+        """Verify a stored artifact against its content id and its manifest record.
+
+        The store sidecar is compared with the manifest record only when the manifest has a
+        record for the artifact.
+
+        Args:
+            artifact_id: The id of an artifact that the store contains.
+
+        Raises:
+            SpipeFormatError: If the artifact is in the bundle's `artifacts/` directory and its
+                directory, sidecar, tensor file, or payload directory is a symlink, or if a tree
+                payload contains a symlink.
+            SpipeIntegrityError: If the sidecar is malformed or records a different id, if a
+                tree payload is missing or empty, if the content hash differs from the id, or if
+                the sidecar's encoding or type differs from the manifest record.
+        """
+        self._store.verify(artifact_id)
+        expected = self._manifest_records.get(artifact_id)
+        if expected is not None:
+            check_sidecar(self._store.record_for(artifact_id), expected)
+
+    def _decode_ctx(
+        self, *, lenient: bool, verify: str = "off", data_mode: str = "keep", allow_code: bool | None = None,
+    ) -> DecodeContext:
         return DecodeContext(
             store=self._store,
-            allow_code=self._allow_code,
+            allow_code=self._allow_code if allow_code is None else allow_code,
             code_mode="sentinel" if lenient else "strict",
             verify=verify,
             data_mode=data_mode,
@@ -291,7 +404,26 @@ class SPipe:
         )
 
     @staticmethod
-    def _instantiate(method_key: str, encoded_args: Mapping, ctx: DecodeContext):
+    def _instantiate(method_key: str, encoded_args: Mapping, ctx: DecodeContext, *, index: int):
+        """Decode the args of an entry or resolved item and construct its control.
+
+        Args:
+            method_key: The method key of the entry or resolved item.
+            encoded_args: The args in encoded form.
+            ctx: The decoding context.
+            index: The position of the entry in the manifest's `controls` list, used in error
+                messages.
+
+        Returns:
+            The constructed control.
+
+        Raises:
+            SpipeFormatError: If `method_key` does not match a registered method, if an encoded
+                value is malformed, or if the control constructor rejects the decoded args with
+                an `AttributeError`, `LookupError`, `TypeError`, or `ValueError`.
+            SpipeCodeRefError: If decoding requires code that `ctx` does not permit.
+            SpipeIntegrityError: If a referenced artifact is unavailable or fails verification.
+        """
         from steerability.algorithms.core.registry import RegistryError, resolve_method_key
 
         try:
@@ -299,50 +431,117 @@ class SPipe:
         except RegistryError as exc:
             raise SpipeFormatError(str(exc)) from exc
         kwargs = {name: decode(value, ctx, f"args.{name}") for name, value in encoded_args.items()}
-        return method.control_cls(**kwargs)
+        try:
+            return method.control_cls(**kwargs)
+        except (AttributeError, LookupError, TypeError, ValueError) as exc:
+            raise SpipeFormatError(
+                f"controls[{index}] ({method_key}): the decoded args do not construct the control "
+                f"({type(exc).__name__}: {exc})."
+            ) from exc
 
-    def _check_staleness(self, *, raise_on_stale: bool, force: bool = False) -> None:
-        """Recompute each frozen entry's fit digest from the current recipe args.
+    def _check_staleness(self, *, raise_on_stale: bool, force: bool = False) -> list[str]:
+        """Recompute the fit digest of each frozen entry from its current recipe args.
 
-        Skipped when artifacts are unavailable (thin bundle without a store); `pipeline()`
-        re-invokes it once artifacts resolve.
+        Entries that an earlier call checked are skipped unless `force` is True. An entry whose
+        recipe does not decode in this process is left unchecked, e.g., because its method key
+        is not registered or its args require code that `allow_code` does not permit.
+        `instantiate_entry()` raises its decoding error when it runs the staleness check for
+        that entry. Unless the spipe was loaded with `allow_stale=True`, `load()` runs this
+        check when every referenced artifact is available, and `pipeline()` runs it under
+        `prefer="frozen"`.
+
+        Args:
+            raise_on_stale: Whether a stale entry raises `SpipeStaleError`. When False, a stale
+                entry emits a `UserWarning` instead.
+            force: Whether to check the entries that an earlier call checked.
+
+        Returns:
+            One message per entry left unchecked, giving the entry and the decoding error.
 
         Raises:
-            SpipeStaleError: If a recorded fit digest does not match the recomputed one, or a
-                recipe entry can no longer be reconstructed for the check.
+            SpipeStaleError: If `raise_on_stale` is True and a recorded fit digest differs from
+                the recomputed one, or if computing an entry's fit identity fails.
+            SpipeIntegrityError: If an artifact the recipe references is unavailable or fails
+                verification.
+
+        Warns:
+            UserWarning: If `raise_on_stale` is False and a recorded fit digest differs from the
+                recomputed one.
         """
-        if self._staleness_checked and not force:
-            return
-        for i, entry in enumerate(self._manifest["controls"]):
-            recorded: dict[str, str] = {}
-            for item in _resolved_items(entry):
-                for name, record in (item.get("artifacts") or {}).items():
-                    if record.get("fit_digest"):
-                        recorded[name] = record["fit_digest"]
-            if not recorded:
+        unchecked = []
+        for index, entry in enumerate(self._manifest["controls"]):
+            if index in self._stale_checked and not force:
                 continue
             try:
-                control = self._instantiate(entry["method"], entry["args"], self._decode_ctx(lenient=True))
-                fit_identity = control.fit_identity()
-            except Exception as exc:
-                raise SpipeStaleError(
-                    f"controls[{i}] ({entry['method']}): the recipe args no longer reconstruct "
-                    f"for the staleness check ({exc}); thaw() and re-steer(), or pass "
-                    "allow_stale=True."
-                ) from exc
-            current = digest_of(fit_identity) if fit_identity is not None else None
-            for name, digest in recorded.items():
-                if digest != current:
-                    message = (
-                        f"controls[{i}] ({entry['method']}): frozen artifact {name!r} was "
-                        f"produced from fit digest {digest} but the recipe now digests to "
-                        f"{current}; the fit-relevant recipe fields were edited after "
-                        "freezing. thaw() and re-steer(), or pass allow_stale=True."
-                    )
-                    if raise_on_stale:
-                        raise SpipeStaleError(message)
-                    warnings.warn(message, UserWarning)
-        self._staleness_checked = True
+                self._check_entry_staleness(index, raise_on_stale=raise_on_stale)
+            except (SpipeFormatError, SpipeCodeRefError) as exc:
+                prefix = f"controls[{index}] ({entry['method']}): "
+                message = str(exc)
+                unchecked.append(message if message.startswith(prefix) else prefix + message)
+        return unchecked
+
+    def _check_entry_staleness(self, index: int, *, raise_on_stale: bool) -> None:
+        """Recompute the fit digest of one frozen entry from its current recipe args.
+
+        An entry with no recorded fit digest is marked as checked without decoding its recipe.
+        Otherwise the recipe args are decoded with `$ref` callables as `CodeRef` placeholders,
+        and the entry is marked as checked when the comparison does not raise an error.
+
+        Args:
+            index: The position of the entry in the manifest's `controls` list.
+            raise_on_stale: Whether a stale entry raises `SpipeStaleError`. When False, a stale
+                entry emits a `UserWarning` instead.
+
+        Raises:
+            SpipeFormatError: If the entry's method key does not match a registered method, if
+                an encoded recipe value is malformed, or if the control constructor rejects the
+                decoded args.
+            SpipeCodeRefError: If the recipe args contain a `$dc` class or an artifact payload
+                that requires code and the spipe was loaded without `allow_code=True`.
+            SpipeIntegrityError: If a recipe value references an artifact that is unavailable or
+                fails verification.
+            SpipeStaleError: If `raise_on_stale` is True and a recorded fit digest differs from
+                the recomputed one, or if computing the fit identity fails (including a
+                constructor error other than an `AttributeError`, `LookupError`, `TypeError`, or
+                `ValueError`).
+
+        Warns:
+            UserWarning: If `raise_on_stale` is False and a recorded fit digest differs from the
+                recomputed one.
+        """
+        entry = self._manifest["controls"][index]
+        recorded: dict[str, str] = {}
+        for item in _resolved_items(entry):
+            for name, record in (item.get("artifacts") or {}).items():
+                if record.get("fit_digest"):
+                    recorded[name] = record["fit_digest"]
+        if not recorded:
+            self._stale_checked.add(index)
+            return
+        try:
+            control = self._instantiate(entry["method"], entry["args"], self._decode_ctx(lenient=True), index=index)
+            fit_identity = control.fit_identity()
+        except (SpipeFormatError, SpipeCodeRefError, SpipeIntegrityError):
+            raise
+        except Exception as exc:
+            raise SpipeStaleError(
+                f"controls[{index}] ({entry['method']}): the recipe args no longer reconstruct "
+                f"for the staleness check ({exc}); thaw() and re-steer(), or pass "
+                "allow_stale=True."
+            ) from exc
+        current = digest_of(fit_identity) if fit_identity is not None else None
+        for name, digest in recorded.items():
+            if digest != current:
+                message = (
+                    f"controls[{index}] ({entry['method']}): frozen artifact {name!r} was "
+                    f"produced from fit digest {digest} but the recipe now digests to "
+                    f"{current}; the fit-relevant recipe fields were edited after "
+                    "freezing. thaw() and re-steer(), or pass allow_stale=True."
+                )
+                if raise_on_stale:
+                    raise SpipeStaleError(message)
+                warnings.warn(message, UserWarning)
+        self._stale_checked.add(index)
 
     # load / save
 
@@ -355,28 +554,51 @@ class SPipe:
         allow_stale: bool = False,
         artifact_store: str | Path | Callable[[str], Path] | None = None,
     ) -> "SPipe":
-        """Load a `.spipe` file or directory.
+        """Load a spipe from a `.spipe` zip file or a spipe directory.
+
+        A zip file is extracted to a temporary directory. Each referenced artifact that is
+        present is verified against its content id and its manifest record. The staleness check
+        runs when `allow_stale` is False and every referenced artifact is present. When some
+        referenced artifacts are missing, the staleness check is deferred to `pipeline()` and
+        `instantiate_entry()`, and each missing artifact is verified when it is decoded.
+
+        An entry whose recipe does not decode in this process does not stop the load. The
+        decoding error is raised when that entry is checked for staleness or instantiated from
+        its recipe.
 
         Args:
             path: A `.spipe` zip file or a spipe directory.
-            allow_code: Permit `$ref` imports, non-`steerability.` `$dc` imports, and
-                pickle-backed memory payloads during decoding.
+            allow_code: Whether decoding may import `$ref` callables, decode `$dc` values whose
+                class is not a toolkit enum or a data-only toolkit dataclass, and load artifact
+                payloads that contain pickled data.
             allow_stale: Skip the staleness check.
-            artifact_store: External artifact source for thin bundles: a store directory, or
-                a callable mapping an artifact id to the directory holding it.
+            artifact_store: An external artifact source for thin bundles, either a store
+                directory or a callable that maps an artifact id to the directory containing
+                it. Artifacts in the bundle's `artifacts/` directory take precedence. Symlinked
+                artifact directories, sidecars, tensor files, and payload directories are
+                rejected only inside the bundle's `artifacts/` directory. A symlink inside a
+                tree payload is rejected wherever the artifact is stored.
 
         Returns:
             The loaded `SPipe`.
 
         Raises:
-            SpipeFormatError: On format-version, schema, or archive violations.
-            SpipeIntegrityError: If a present artifact fails content verification.
+            SpipeFormatError: If the format version is unsupported, if the manifest is missing
+                or violates the schema, if the archive is malformed, if the bundle's
+                `artifacts/` directory or one of its artifact entries is a symlink, or if a tree
+                payload contains a symlink.
+            SpipeIntegrityError: If a present artifact fails content verification, or if its
+                store sidecar is malformed or disagrees with its manifest record.
             SpipeStaleError: If a frozen entry is stale and `allow_stale` is False.
         """
         path = Path(path)
         temp = None
         if path.is_dir():
             base_dir = path
+            if (base_dir / ARTIFACTS_DIR).is_symlink():
+                raise SpipeFormatError(
+                    f"{base_dir / ARTIFACTS_DIR} is a symlink; a spipe directory must contain its artifacts."
+                )
         else:
             temp = tempfile.TemporaryDirectory(prefix="spipe-load-")
             unpack_zip(path, temp.name)
@@ -400,7 +622,7 @@ class SPipe:
         referenced = spipe._referenced_artifact_ids()
         available = [artifact_id for artifact_id in referenced if store.has(artifact_id)]
         for artifact_id in sorted(available):
-            store.verify(artifact_id)
+            spipe._verify_artifact(artifact_id)
         if len(available) < len(referenced):
             logger.info(
                 "Thin spipe: %d of %d referenced artifacts unavailable; integrity and "
@@ -493,6 +715,101 @@ class SPipe:
 
     # pipeline construction
 
+    def instantiate_entry(
+        self,
+        index: int,
+        *,
+        prefer: str = "frozen",
+        verify: str = "off",
+        lenient: bool = False,
+    ) -> list[BaseControl]:
+        """Instantiate the controls of one manifest entry.
+
+        Under `prefer="frozen"`, an entry with a resolved section is instantiated from it, with
+        one control per resolved item. Any other entry is instantiated from its recipe args.
+        Each control's `enabled` flag is copied from the entry. `pipeline()` calls this method
+        for each entry. Errors are raised for the requested entry only, and an entry that cannot
+        be instantiated does not affect the others. Under `prefer="frozen"`, the staleness check
+        runs first for an entry that has not been checked, unless `lenient=True` or the spipe
+        was loaded with `allow_stale=True`.
+
+        With `lenient=True`, the entry is decoded for inspection (e.g., of `steer_access()` or
+        `requirements()`), and no bundle code is imported or run. Each `$ref` callable decodes
+        to a `CodeRef`, which raises `SpipeCodeRefError` when called. Each `$data` reference
+        decodes to a `DataRef` without loading. Every other value decodes as under
+        `allow_code=False`, even when the spipe was loaded with `allow_code=True`. An entry that
+        requires code (e.g., a `$dc` class outside the data-only set or an artifact payload
+        that contains pickled data) therefore raises `SpipeCodeRefError`. The `verify` argument
+        is treated as `"off"`.
+
+        Args:
+            index: The position of the entry in the manifest's `controls` list (see `entries`).
+            prefer: `"frozen"` (default) or `"recipe"`.
+            verify: The verification policy for frozen steering artifacts (`"strict"`,
+                `"warn"`, or `"off"`), applied when the artifacts are bound at `steer()`. Under
+                `"warn"` or `"off"`, frozen `routed_decoding` and `load_lora` controls are also
+                constructed with `allow_model_mismatch=True` and `allow_base_mismatch=True`,
+                respectively.
+            lenient: Decode without loading datasets or importing or running bundle code.
+
+        Returns:
+            The entry's controls, one per resolved item in order, or a single control built from
+            the recipe args.
+
+        Raises:
+            IndexError: If `index` is outside the manifest's `controls` list.
+            ValueError: If `prefer` or `verify` is not a recognized value.
+            SpipeFormatError: If the entry's method key does not match a registered method, if
+                an encoded value is malformed, or if the control constructor rejects the decoded
+                args.
+            SpipeCodeRefError: If decoding the entry requires code and the spipe was loaded
+                without `allow_code=True`, or if decoding under `lenient=True` requires code.
+            SpipeIntegrityError: If a referenced artifact is unavailable, fails verification, or
+                has a store sidecar that disagrees with its manifest record.
+            SpipeStaleError: If the entry's frozen artifacts are stale.
+        """
+        _check_policies(prefer, verify)
+        entries = self._manifest["controls"]
+        if not 0 <= index < len(entries):
+            raise IndexError(f"entry index {index} is out of range for {len(entries)} control entries.")
+        entry = entries[index]
+
+        if lenient:
+            verify = "off"
+            ctx = self._decode_ctx(lenient=True, allow_code=False)
+        else:
+            if prefer == "frozen" and not self._allow_stale and index not in self._stale_checked:
+                self._check_entry_staleness(index, raise_on_stale=True)
+            ctx = self._decode_ctx(lenient=False, verify=verify, data_mode="load")
+
+        controls = []
+        items = _resolved_items(entry) if prefer == "frozen" else []
+        try:
+            if items:
+                for item in items:
+                    args = dict(item["args"])
+                    if verify != "strict" and item["method"] == "output_control/routed_decoding":
+                        args["allow_model_mismatch"] = True
+                    if verify != "strict" and item["method"] == "structural_control/load_lora":
+                        args["allow_base_mismatch"] = True
+                    controls.append(self._instantiate(item["method"], args, ctx, index=index))
+            else:
+                controls.append(self._instantiate(entry["method"], entry["args"], ctx, index=index))
+        except SpipeCodeRefError as exc:
+            if not (lenient and self._allow_code):
+                raise
+            raise SpipeCodeRefError(
+                f"controls[{index}] ({entry['method']}): {exc} Lenient instantiation never runs bundle "
+                "code, even under allow_code=True; instantiate without lenient=True to permit it."
+            ) from exc
+
+        # controls may hold paths into this spipe's extraction directory; retaining the spipe
+        # on each control keeps that directory alive for the controls' lifetime
+        for control in controls:
+            control.enabled = entry["enabled"]
+            control._spipe_retainer = self
+        return controls
+
     def pipeline(
         self,
         *,
@@ -501,68 +818,50 @@ class SPipe:
         verify: str = "strict",
         **pipeline_kwargs,
     ) -> SteeringPipeline:
-        """Instantiate a `SteeringPipeline` from this spipe.
+        """Construct a `SteeringPipeline` from this spipe.
 
-        Frozen entries instantiate from their resolution by default; `prefer="recipe"`
-        instantiates every entry from its recipe args (forcing re-fits at `steer()`). The
-        spipe supplies the model reference and the controls only; backend, device, dtype, and
-        `hf_model_kwargs` are the caller's. The caller runs `pipeline.check()` /
-        `pipeline.steer()` as normal.
+        Under `prefer="frozen"` (default), each frozen entry is instantiated from its resolved
+        section. With `prefer="recipe"`, every entry is instantiated from its recipe args, and
+        `steer()` runs the fits again. The spipe provides the model reference and the controls.
+        The backend and the model loading options (e.g., `device_map` and `hf_model_kwargs`)
+        come from the arguments of this call. Under `prefer="frozen"`, the staleness check runs
+        for the entries that have not been checked, unless the spipe was loaded with
+        `allow_stale=True`.
 
         Args:
-            backend: Forwarded to the `SteeringPipeline` constructor.
+            backend: The backend, forwarded to the `SteeringPipeline` constructor.
             prefer: `"frozen"` (default) or `"recipe"`.
-            verify: Verification policy for frozen steering artifacts (`"strict"`, `"warn"`,
-                or `"off"`), enforced where binding happens at `steer()`.
+            verify: The verification policy for frozen steering artifacts (`"strict"`,
+                `"warn"`, or `"off"`), applied when the artifacts are bound at `steer()`. Under
+                `"warn"` or `"off"`, frozen `routed_decoding` and `load_lora` controls are also
+                constructed with `allow_model_mismatch=True` and `allow_base_mismatch=True`,
+                respectively.
+            **pipeline_kwargs: Other keyword arguments forwarded to the `SteeringPipeline`
+                constructor.
 
         Returns:
-            The constructed (unsteered) `SteeringPipeline`.
+            The constructed `SteeringPipeline`, not yet steered.
 
         Raises:
-            SpipeFormatError: If a method key resolves to no registered method.
+            ValueError: If `prefer` or `verify` is not a recognized value.
+            SpipeFormatError: If a method key does not match a registered method, if an encoded
+                value is malformed, or if a control constructor rejects the decoded args.
             SpipeCodeRefError: If decoding requires code and the spipe was loaded without
                 `allow_code=True`.
-            SpipeStaleError: If a deferred staleness check fails (thin bundles).
+            SpipeIntegrityError: If a referenced artifact is unavailable, fails verification, or
+                has a store sidecar that disagrees with its manifest record.
+            SpipeStaleError: If a frozen entry is stale, e.g., in a thin bundle whose staleness
+                check `load()` deferred.
         """
-        if prefer not in ("frozen", "recipe"):
-            raise ValueError(f"prefer must be 'frozen' or 'recipe'; got {prefer!r}.")
-        if verify not in ("strict", "warn", "off"):
-            raise ValueError(f"verify must be 'strict', 'warn', or 'off'; got {verify!r}.")
-
+        _check_policies(prefer, verify)
         if prefer == "frozen" and not self._allow_stale:
             self._check_staleness(raise_on_stale=True)
 
-        ctx = DecodeContext(
-            store=self._store,
-            allow_code=self._allow_code,
-            code_mode="strict",
-            verify=verify,
-            data_mode="load",
-            manifest_records=self._manifest_records,
-        )
-
-        controls = []
-        for entry in self._manifest["controls"]:
-            items = _resolved_items(entry) if prefer == "frozen" else []
-            if items:
-                for item in items:
-                    args = dict(item["args"])
-                    if verify != "strict" and item["method"] == "output_control/routed_decoding":
-                        args["allow_model_mismatch"] = True
-                    if verify != "strict" and item["method"] == "structural_control/load_lora":
-                        args["allow_base_mismatch"] = True
-                    control = self._instantiate(item["method"], args, ctx)
-                    control.enabled = entry["enabled"]
-                    controls.append(control)
-            else:
-                control = self._instantiate(entry["method"], entry["args"], ctx)
-                control.enabled = entry["enabled"]
-                controls.append(control)
-
-        # controls may hold paths into this spipe's extraction directory; retaining the spipe
-        # on each control keeps that directory alive for the pipeline's lifetime
-        for control in controls:
-            control._spipe_retainer = self
+        controls = [
+            control
+            for index in range(len(self._manifest["controls"]))
+            for control in self.instantiate_entry(index, prefer=prefer, verify=verify)
+        ]
 
         from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 

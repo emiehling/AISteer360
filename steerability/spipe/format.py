@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from steerability.spipe.errors import SpipeFormatError
+from steerability.spipe.store import is_artifact_id
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +57,19 @@ def _validate_resolved_entry(resolved: Mapping, where: str) -> None:
         record_where = f"{where}.artifacts[{name!r}]"
         _require(isinstance(record, Mapping), f"{record_where}: must be an object.")
         _check_keys(record, _ARTIFACT_RECORD_KEYS, record_where)
-        _require(isinstance(record.get("id"), str) and record["id"].startswith("sha256:"),
-                 f"{record_where}.id: required 'sha256:<hex>' string.")
+        _require(is_artifact_id(record.get("id")),
+                 f"{record_where}.id: required 'sha256:<hex>' string with 64 lowercase hex digits.")
         _require(record.get("encoding") in ("tensors", "tree"),
                  f"{record_where}.encoding: must be 'tensors' or 'tree'.")
         _require(record.get("artifact_class") in ("direction", "calibrated", "opaque"),
                  f"{record_where}.artifact_class: must be 'direction', 'calibrated', or 'opaque'.")
+        _require(isinstance(record.get("type"), str) and record["type"],
+                 f"{record_where}.type: required non-empty string.")
+        for key in ("source", "fit_digest"):
+            _require(record.get(key) is None or isinstance(record[key], str),
+                     f"{record_where}.{key}: must be null or a string.")
+        _require(record.get("provenance") is None or isinstance(record["provenance"], Mapping),
+                 f"{record_where}.provenance: must be null or an object.")
     origin = resolved.get("origin")
     if origin is not None:
         _require(isinstance(origin, Mapping) and set(origin) <= {"method", "args"},

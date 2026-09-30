@@ -3,6 +3,7 @@ import torch
 
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 from steerability.algorithms.state_control.cast.control import CAST
+from steerability.algorithms.state_control.common.selectors.condition_point import ConditionPoint
 from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 from tests.utils.sweep import build_param_grid
 
@@ -310,3 +311,81 @@ def test_consecutive_generations_across_batch_sizes():
 
     assert torch.equal(out_after_4, out_fresh)  # no state from the batch-of-4 leaked into the batch-of-2
     assert control._gate.num_rows == 2  # get_hooks re-sized the gate past the unsized reset() clear
+
+
+# save and load round trips of a CAST configured by a condition point
+TINY_LLAMA = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+
+
+def _expanded_condition(control: CAST) -> tuple:
+    args = control.args
+    return (
+        args.condition_point, args.condition_layer_ids, args.condition_vector_threshold,
+        args.condition_comparator_threshold_is, args.condition_threshold_comparison_mode,
+    )
+
+
+def _point_cast(condition_point) -> CAST:
+    return CAST(
+        behavior_data={"positives": ["be kind", "be nice"], "negatives": ["be mean", "be rude"]},
+        behavior_layer_ids=[1],
+        condition_data={
+            "positives": ["math question one", "algebra query two"],
+            "negatives": ["cooking recipe one", "sports news two"],
+        },
+        condition_point=condition_point,
+    )
+
+
+@pytest.mark.parametrize("condition_point", [
+    {"layer_ids": [1], "threshold": 0.05, "comparator": "ge"},
+    ConditionPoint(layer_id=1, threshold=0.05, comparator="le", f1=1.0, comparison_mode="last"),
+], ids=["mapping", "object"])
+def test_condition_point_recipe_reloads_without_allow_code(tmp_path, condition_point):
+    from steerability.spipe import SPipe
+    from steerability.spipe.errors import SpipeFormatError
+
+    original = _point_cast(condition_point)
+    recipe = SteeringPipeline(model_name_or_path=TINY_LLAMA, controls=[original]).to_spipe(freeze=False)
+    loaded = SPipe.load(recipe.save(tmp_path / "cast.spipe"))
+    (control,) = loaded.pipeline().state_controls
+    assert _expanded_condition(control) == _expanded_condition(original)
+    assert control.condition_point == original.condition_point
+    (inspected,) = loaded.instantiate_entry(0, lenient=True)
+    assert _expanded_condition(inspected) == _expanded_condition(original)
+    assert loaded.config_id == recipe.config_id
+
+    manifest = recipe.manifest
+    manifest["controls"][0]["args"]["condition_vector_threshold"] = 0.5
+    edited = SPipe(manifest, store=None, base_dir=None, allow_code=False)
+    with pytest.raises(SpipeFormatError, match="already carries the layers and threshold"):
+        edited.instantiate_entry(0)
+
+
+def test_condition_point_frozen_bundle_reloads_without_allow_code(tmp_path):
+    import warnings
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from steerability.spipe import SPipe
+
+    model = AutoModelForCausalLM.from_pretrained(TINY_LLAMA)
+    tokenizer = AutoTokenizer.from_pretrained(TINY_LLAMA)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    original = _point_cast({"layer_ids": [1], "threshold": 0.05, "comparator": "ge"})
+    pipeline = SteeringPipeline(model=model, tokenizer=tokenizer, controls=[original], model_name_or_path=TINY_LLAMA)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pipeline.steer()
+    reference = pipeline.generate(text="math question one please", max_new_tokens=6, do_sample=False)
+
+    loaded = SPipe.load(pipeline.to_spipe().save(tmp_path / "cast.spipe"))
+    (recipe,) = loaded.instantiate_entry(0, prefer="recipe")
+    assert _expanded_condition(recipe) == _expanded_condition(original)
+    rebuilt = loaded.pipeline()
+    rebuilt.model, rebuilt.tokenizer = model, tokenizer
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        rebuilt.steer()
+    assert rebuilt.generate(text="math question one please", max_new_tokens=6, do_sample=False) == reference

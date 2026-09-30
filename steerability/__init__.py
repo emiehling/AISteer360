@@ -7,10 +7,12 @@ steering pipelines). Benchmarks enable comparison of steering pipelines on commo
 """
 
 import logging as _logging
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _distribution_version
 
 try:
-    from .version import version as __version__
-except ImportError:
-    pass
+    __version__ = _distribution_version("steerability")
+except _PackageNotFoundError:
+    __version__ = "unknown"
 
 _logging.getLogger(__name__).addHandler(_logging.NullHandler())

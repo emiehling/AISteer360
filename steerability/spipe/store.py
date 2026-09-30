@@ -12,8 +12,12 @@ content hash.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
+import pickle
+import pickletools
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,13 +25,48 @@ from typing import Any, Callable, Mapping
 
 import torch
 
-from steerability.spipe.errors import SpipeIntegrityError, SpipeSaveError
+from steerability.spipe.errors import SpipeFormatError, SpipeIntegrityError, SpipeSaveError
 
 logger = logging.getLogger(__name__)
 
 TENSOR_FILE = "artifact.safetensors"
 SIDECAR_FILE = "artifact.json"
 PAYLOAD_DIR = "payload"
+
+PICKLE_SUFFIXES = frozenset({".pkl", ".pk", ".pickle", ".dill", ".joblib", ".pt", ".pth", ".ckpt"})
+
+ARTIFACT_ID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+
+# leading bytes of a `.bin` file parsed as a pickle stream, and the opcode count that marks one
+_PICKLE_SCAN_BYTES = 64 * 1024
+_PICKLE_MIN_OPCODES = 8
+
+# opcodes through which unpickling imports a callable
+_PICKLE_IMPORT_OPCODES = frozenset({"GLOBAL", "INST", "STACK_GLOBAL", "EXT1", "EXT2", "EXT4"})
+
+
+def is_artifact_id(value: Any) -> bool:
+    """Return whether `value` is a well-formed artifact id (`sha256:` followed by 64 lowercase hex digits)."""
+    return isinstance(value, str) and ARTIFACT_ID_PATTERN.fullmatch(value) is not None
+
+
+def check_artifact_id(value: Any, where: str = "artifact id") -> str:
+    """Return `value` after checking that it is a well-formed artifact id.
+
+    Args:
+        value: The candidate id.
+        where: The position of the id, used in the error message.
+
+    Returns:
+        `value`, unchanged.
+
+    Raises:
+        SpipeFormatError: If `value` is not a string of `sha256:` followed by 64 lowercase hex
+            digits.
+    """
+    if not is_artifact_id(value):
+        raise SpipeFormatError(f"{where}: {value!r} is not an artifact id ('sha256:' and 64 lowercase hex digits).")
+    return value
 
 
 def _dir_name(artifact_id: str) -> str:
@@ -79,6 +118,83 @@ def tree_id_for(root: Path) -> str:
     for relpath, file_hash in entries:
         digest.update(f"{relpath}\n{file_hash}\n".encode("utf-8"))
     return "sha256:" + digest.hexdigest()
+
+
+def _is_pickle_or_zip(path: Path) -> bool:
+    """Return whether a file is a zip archive or starts with a pickle stream.
+
+    A file that starts with the zip signature (the format `torch.save` writes) is a zip archive.
+    For any other file, the first 64 KB are parsed with `pickletools.genops`, and the file counts
+    as a pickle stream when one of the following is true:
+
+    - the first opcode is `PROTO` with a supported protocol number
+    - the parse reaches `STOP` after at least one other opcode
+    - the parse reaches an opcode that imports a callable (`GLOBAL`, `INST`, `STACK_GLOBAL`, or an
+      `EXT` opcode)
+    - the parse yields 8 opcodes
+    - the file is longer than 64 KB, and the parse fails at a known opcode or at the end of the
+      scanned bytes (the rest of the stream is not inspected)
+
+    Data that is not a pickle rarely meets these conditions, since the parse stops at the first
+    byte that is not an opcode.
+
+    Args:
+        path: The file to check.
+
+    Returns:
+        True when the file is a zip archive or starts with a pickle stream.
+    """
+    size = path.stat().st_size
+    with open(path, "rb") as handle:
+        prefix = handle.read(_PICKLE_SCAN_BYTES)
+    if prefix.startswith(b"PK\x03\x04"):
+        return True
+    stream = io.BytesIO(prefix)
+    count = 0
+    end = 0  # offset just past the last opcode that parsed
+    try:
+        for opcode, argument, _ in pickletools.genops(stream):
+            name = opcode.name
+            if count == 0 and name == "PROTO" and argument <= pickle.HIGHEST_PROTOCOL:
+                return True
+            if name == "STOP":
+                return count > 0
+            if name in _PICKLE_IMPORT_OPCODES:
+                return True
+            count += 1
+            if count >= _PICKLE_MIN_OPCODES:
+                return True
+            end = stream.tell()
+    except ValueError:
+        if size > len(prefix):
+            next_code = prefix[end:end + 1].decode("latin-1")
+            return next_code == "" or next_code in pickletools.code2op
+    return False
+
+
+def pickle_bearing_files(root: str | Path) -> list[str]:
+    """Return the files under a directory that contain pickled data.
+
+    A file counts when any of its suffixes is in `PICKLE_SUFFIXES`. A `.bin` file counts when it
+    is a zip archive (the format `torch.save` writes) or when its first 64 KB parse as the start
+    of a pickle stream of any protocol. Files with other suffixes, e.g., `.safetensors` or
+    `.json`, are not inspected and do not count.
+
+    Args:
+        root: The directory to scan, searched recursively.
+
+    Returns:
+        The posix paths of the matching files relative to `root`, sorted.
+    """
+    root = Path(root)
+    found = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        suffixes = {suffix.lower() for suffix in path.suffixes}
+        if suffixes & PICKLE_SUFFIXES or (path.suffix.lower() == ".bin" and _is_pickle_or_zip(path)):
+            found.append(path.relative_to(root).as_posix())
+    return found
 
 
 def tensors_payload(tensors: Mapping[str, torch.Tensor]) -> tuple[str, bytes]:
@@ -163,15 +279,51 @@ class ArtifactRecord:
         )
 
 
+def check_sidecar(record: ArtifactRecord, expected: ArtifactRecord) -> None:
+    """Check that an artifact's store sidecar matches its manifest record on the encoding and type.
+
+    The sidecar determines how the payload is reconstructed, and `ArtifactStore.verify` checks
+    only the payload bytes.
+
+    Args:
+        record: The record read from the store sidecar.
+        expected: The artifact's record in the manifest.
+
+    Raises:
+        SpipeIntegrityError: If the sidecar's encoding or type differs from the manifest record.
+    """
+    if (record.encoding, record.type) != (expected.encoding, expected.type):
+        raise SpipeIntegrityError(
+            f"Artifact {record.id} has a store sidecar recording encoding {record.encoding!r} and "
+            f"type {record.type!r}, but the manifest records encoding {expected.encoding!r} and "
+            f"type {expected.type!r}."
+        )
+
+
 class ArtifactStore:
-    """Directory-backed store of content-addressed artifacts.
+    """A directory of content-addressed artifacts, each in a subdirectory named after its id.
+
+    Artifacts are written to `root`, and a write does nothing when `root` already contains the
+    artifact. Reads look in `root` first. An artifact that is not in `root` is read from the
+    directory that `resolver` returns for it. Loading a payload verifies its content hash first.
+
+    Every method that takes an artifact id raises `SpipeFormatError` for a malformed id (see
+    `check_artifact_id`) before it builds a path or calls the resolver. Reading an artifact from
+    `root` raises `SpipeFormatError` when its directory, its sidecar, its tensor file, or its
+    `payload/` directory is a symlink. Verification raises `SpipeFormatError` for a symlink
+    anywhere inside a tree payload, including the payload of an artifact found through the
+    resolver.
 
     Args:
         root: The store directory (`artifacts/` inside a spipe, or any external directory for
-            thin exports). Created on first write.
-        resolver: Optional callable mapping an artifact id to the directory holding that
-            artifact, used when artifacts live outside `root` (a thin export's external
-            store).
+            thin exports). It is created on the first write.
+        resolver: An optional callable that maps an artifact id to the directory containing
+            that artifact, for artifacts stored outside `root` (e.g., the external store of a
+            thin export). The directories it returns may be symlinks, but their tree payloads
+            may not contain symlinks.
+
+    Attributes:
+        root: The store directory.
     """
 
     def __init__(self, root: str | Path, resolver: Callable[[str], Path] | None = None):
@@ -179,11 +331,33 @@ class ArtifactStore:
         self._resolver = resolver
 
     def _dir_for(self, artifact_id: str) -> Path:
-        local = self.root / _dir_name(artifact_id)
+        local = self.root / _dir_name(check_artifact_id(artifact_id))
         if local.exists() or self._resolver is None:
             return local
         resolved = Path(self._resolver(artifact_id))
         return resolved if resolved.exists() else local
+
+    def _read_dir(self, artifact_id: str) -> Path:
+        """Return the directory of an artifact, after checking it for symlinks when it is in `root`.
+
+        Args:
+            artifact_id: The artifact id.
+
+        Returns:
+            The artifact's directory in `root`, or the directory the resolver returns when the
+            artifact is not in `root` and that directory exists. The returned path may not
+            exist.
+
+        Raises:
+            SpipeFormatError: If the id is malformed, or if the directory is in `root` and it,
+                its sidecar, its tensor file, or its payload directory is a symlink.
+        """
+        directory = self._dir_for(artifact_id)
+        if directory == self.root / _dir_name(artifact_id):
+            for path in (directory, directory / SIDECAR_FILE, directory / TENSOR_FILE, directory / PAYLOAD_DIR):
+                if path.is_symlink():
+                    raise SpipeFormatError(f"Artifact {artifact_id}: {path} is a symlink; symlinks are rejected.")
+        return directory
 
     def has(self, artifact_id: str) -> bool:
         """Whether the store holds `artifact_id`."""
@@ -247,13 +421,22 @@ class ArtifactStore:
         return record
 
     def record_for(self, artifact_id: str) -> ArtifactRecord:
-        """The sidecar record of a stored artifact.
+        """Return the record in a stored artifact's sidecar.
+
+        Args:
+            artifact_id: The artifact id.
+
+        Returns:
+            The `ArtifactRecord` read from the artifact's `artifact.json`, including
+            `type_meta`.
 
         Raises:
-            SpipeIntegrityError: If the artifact is absent or the sidecar's `id` does not
-                match the directory name.
+            SpipeFormatError: If the id is malformed, or if the artifact is in `root` and its
+                directory, sidecar, tensor file, or payload directory is a symlink.
+            SpipeIntegrityError: If the store does not contain the artifact, if the sidecar is
+                malformed, or if the sidecar's `id` differs from `artifact_id`.
         """
-        directory = self._dir_for(artifact_id)
+        directory = self._read_dir(artifact_id)
         sidecar = directory / SIDECAR_FILE
         if not sidecar.exists():
             raise SpipeIntegrityError(
@@ -262,7 +445,13 @@ class ArtifactStore:
                    "; for a thin bundle, pass artifact_store= to load()")
                 + "."
             )
-        record = ArtifactRecord.from_mapping(json.loads(sidecar.read_text(encoding="utf-8")))
+        try:
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            record = ArtifactRecord.from_mapping(data)
+        except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise SpipeIntegrityError(
+                f"Artifact sidecar at {sidecar} is malformed ({type(exc).__name__}: {exc})."
+            ) from exc
         if record.id != artifact_id:
             raise SpipeIntegrityError(
                 f"Artifact sidecar at {directory} records id {record.id} but the directory "
@@ -273,22 +462,55 @@ class ArtifactStore:
     def verify(self, artifact_id: str) -> None:
         """Verify a stored artifact's bytes against its content id.
 
+        Args:
+            artifact_id: The artifact id.
+
         Raises:
-            SpipeIntegrityError: If the artifact is absent, the sidecar id mismatches, or the
-                recomputed content hash differs from `artifact_id`.
+            SpipeFormatError: If the id is malformed, if the artifact is in `root` and its
+                directory, sidecar, tensor file, or payload directory is a symlink, or if a tree
+                payload contains a symlink.
+            SpipeIntegrityError: If the store does not contain the artifact, if the sidecar is
+                malformed or records a different id, if a tensor file or tree payload is missing, if
+                a tree payload is empty, or if the recomputed content hash differs from `artifact_id`.
         """
         record = self.record_for(artifact_id)
-        directory = self._dir_for(artifact_id)
+        directory = self._read_dir(artifact_id)
         if record.encoding == "tensors":
-            data = (directory / TENSOR_FILE).read_bytes()
+            data = self._tensor_file(artifact_id, directory).read_bytes()
             actual = "sha256:" + hashlib.sha256(data).hexdigest()
         else:
-            actual = tree_id_for(directory / PAYLOAD_DIR)
+            payload = directory / PAYLOAD_DIR
+            for path in payload.rglob("*"):
+                if path.is_symlink():
+                    raise SpipeFormatError(f"Artifact {artifact_id}: {path} is a symlink; symlinks are rejected.")
+            try:
+                actual = tree_id_for(payload)
+            except SpipeSaveError as exc:
+                raise SpipeIntegrityError(f"Artifact {artifact_id} failed integrity verification ({exc})") from exc
         if actual != artifact_id:
             raise SpipeIntegrityError(
                 f"Artifact {artifact_id} failed integrity verification (content hashes to "
                 f"{actual})."
             )
+
+    @staticmethod
+    def _tensor_file(artifact_id: str, directory: Path) -> Path:
+        """Return the tensor file of a `"tensors"` artifact.
+
+        Args:
+            artifact_id: The artifact id, used in the error message.
+            directory: The artifact's directory.
+
+        Returns:
+            The path of the artifact's `artifact.safetensors` file.
+
+        Raises:
+            SpipeIntegrityError: If the file does not exist.
+        """
+        path = directory / TENSOR_FILE
+        if not path.is_file():
+            raise SpipeIntegrityError(f"Artifact {artifact_id} has no tensor file at {path}.")
+        return path
 
     def load_tensors(self, artifact_id: str) -> dict[str, torch.Tensor]:
         """Load and verify a `"tensors"` artifact.
@@ -299,27 +521,27 @@ class ArtifactStore:
         import safetensors.torch
 
         self.verify(artifact_id)
-        directory = self._dir_for(artifact_id)
+        directory = self._read_dir(artifact_id)
         return safetensors.torch.load_file(str(directory / TENSOR_FILE))
 
     def payload_path(self, artifact_id: str) -> Path:
         """The verified `payload/` path of a `"tree"` artifact."""
         self.verify(artifact_id)
-        return self._dir_for(artifact_id) / PAYLOAD_DIR
+        return self._read_dir(artifact_id) / PAYLOAD_DIR
 
     def size_of(self, artifact_id: str) -> int:
         """Total on-disk bytes of an artifact's content (sidecar excluded)."""
-        directory = self._dir_for(artifact_id)
+        directory = self._read_dir(artifact_id)
         record = self.record_for(artifact_id)
         if record.encoding == "tensors":
-            return (directory / TENSOR_FILE).stat().st_size
+            return self._tensor_file(artifact_id, directory).stat().st_size
         return sum(p.stat().st_size for p in (directory / PAYLOAD_DIR).rglob("*") if p.is_file())
 
     def copy_into(self, dest_root: str | Path, artifact_ids: list[str]) -> None:
         """Copy the named artifacts into another store directory (fat export)."""
         dest_root = Path(dest_root)
         for artifact_id in artifact_ids:
-            source = self._dir_for(artifact_id)
+            source = self._read_dir(artifact_id)
             dest = dest_root / _dir_name(artifact_id)
             if not dest.exists():
                 dest.mkdir(parents=True, exist_ok=True)

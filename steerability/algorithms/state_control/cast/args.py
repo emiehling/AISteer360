@@ -26,81 +26,78 @@ if TYPE_CHECKING:
 class CASTArgs(BaseArgs):
     """Arguments for CAST (Conditional Activation Steering).
 
-    The applied behavior artifact comes from exactly one of three routes: a pre-computed
-    `behavior_vector`, contrastive `behavior_data` fitted during steer(), or a `behavior_transform`
-    that carries its own artifact. The first two feed the default additive path (fitted vectors are
-    scaled by `behavior_vector_strength` and added); `behavior_transform` replaces that construction
-    with any `BaseTransform`.
+    The behavior artifact comes from `behavior_vector` (a precomputed vector), `behavior_data`
+    (contrastive pairs fitted during `steer()`), or `behavior_transform` (a transform that provides
+    its own artifact). With `behavior_vector` or `behavior_data`, the control builds an additive
+    transform that scales each layer's direction by `behavior_vector_strength` and adds it. When
+    both are given, `behavior_vector` is used. `behavior_transform` replaces the additive transform
+    with any `BaseTransform` and cannot be combined with the other two.
 
-    All layer validation happens in steer() once the model is known.
+    Layer indices are checked against the model in `steer()`.
 
     Attributes:
-        behavior_vector: Pre-computed behavior steering vector.
-        behavior_data: Contrastive pairs for training the behavior vector.
-        behavior_fit: Training configuration for behavior vector extraction. Applies to the default
-            additive path; invalid alongside `behavior_transform`, which forces `behavior_data` to be
-            absent and so never fits (a source-carrying transform configures its own fit via
-            `ContrastiveFit`).
-        behavior_layer_ids: Layers to apply the behavior artifact to. If None,
-            defaults to the late third of the model's layers.
-        behavior_transform: An alternative behavior application, replacing the default additive
-            construction. Accepts a `BaseTransform` (bound, e.g.
-            `ProjectionTransform(vector, alpha=0.8)`, or source-carrying, e.g.
-            `ProjectionTransform(ContrastiveFit(data=...))` bound at steer()), or a factory
-            `Callable[[TransformContext], BaseTransform]`. The transform is the sole artifact carrier,
-            so it is mutually exclusive with `behavior_vector`/`behavior_data` and with the additive
-            knobs `behavior_vector_strength`, `use_explained_variance`, and
-            `use_ooi_preventive_normalization` (incorporate those into the transform instead). The transform
-            is applied at the pre-hook input of the behavior layers, the same one-layer skew as the
-            additive path; a `ContrastiveFit` source defaults to `location="layer_output"` to match
-            the behavior convention, and users who want the artifact fit at the applied boundary pass
-            `ContrastiveFit(..., location="layer_input")`.
-        behavior_vector_strength: Scaling factor for the behavior vector.
-            Positive values induce the target behavior; negative values subtract
-            it (e.g., negate a refusal vector to remove refusal), matching the
-            sign convention of the paper's behavior strength. Applies to the default additive path;
-            invalid alongside `behavior_transform`.
-        condition_vector: Pre-computed condition steering vector.
-        condition_data: Contrastive pairs for training the condition vector.
-        condition_fit: Training configuration for condition vector extraction. Defaults to fitting at
-            the layer-input boundary (`location="layer_input"`), matching both the
-            `ConditionPointSelector` calibration and the runtime condition pre-hook.
-        search: Configuration for automatic condition point search.
-        condition_point: A complete, reusable condition point supplied as a single object. Accepts a
-            `ConditionPoint` (e.g. from a prior `ConditionPointSelector` search, invertible via
-            `.flipped()`) or the dict returned by the `CAST.condition_point` property (keys
-            `layer_ids`, `threshold`, `comparator`, and optionally `comparison_mode`). Expanded in
-            `__post_init__` into `condition_layer_ids` / `condition_vector_threshold` /
-            `condition_comparator_threshold_is` (and `condition_threshold_comparison_mode` when the
-            point carries one). This is a complete manual configuration and supersedes
-            `search.auto_find`; it is mutually exclusive with `condition_layer_ids` and
-            `condition_vector_threshold`.
+        behavior_vector: Precomputed behavior steering vector.
+        behavior_data: Contrastive pairs for fitting the behavior vector. A dict is converted to
+            `ContrastivePairs`.
+        behavior_fit: Fit configuration for the behavior vector. It is used only when the vector is
+            fitted from `behavior_data`. A `behavior_transform` with a source configures its own fit
+            (e.g., via `ContrastiveFit`).
+        behavior_layer_ids: Layers to apply the behavior artifact to. If None, the late third of the
+            model's layers is used.
+        behavior_transform: A transform that replaces the default additive transform. Accepts a bound
+            `BaseTransform` (e.g., `ProjectionTransform(vector, alpha=0.8)`), a `BaseTransform` with a
+            source that `steer()` binds (e.g., `ProjectionTransform(ContrastiveFit(data=...))`), or a
+            factory `Callable[[TransformContext], BaseTransform]`. It cannot be combined with
+            `behavior_vector` or `behavior_data`. It also requires the defaults for
+            `behavior_vector_strength`, `use_explained_variance`, and
+            `use_ooi_preventive_normalization` (configure the transform instead). The transform is
+            applied at the input of the behavior layers. An artifact that records its extraction
+            location must record `"layer_input"`, since `steer()` raises `ValueError` for any other
+            location. `ContrastiveFit` records its `location` (default `"layer_output"`) and therefore
+            needs `location="layer_input"`.
+        behavior_vector_strength: Scaling factor for the behavior vector. Positive values induce the
+            target behavior and negative values subtract it (e.g., a negated refusal vector removes
+            refusal), following the sign convention of the paper's behavior strength. Must be 1.0
+            when `behavior_transform` is set.
+        condition_vector: Precomputed condition steering vector.
+        condition_data: Contrastive pairs for fitting the condition vector. A dict is converted to
+            `ContrastivePairs`.
+        condition_fit: Fit configuration for the condition vector. The default fits at the input of
+            each layer (`location="layer_input"`), which is where `ConditionPointSelector` calibrates
+            and where the runtime condition pre-hook scores.
+        search: Configuration for the automatic condition point search.
+        condition_point: A complete condition point given as one object. Accepts a `ConditionPoint`
+            (e.g., from an earlier `ConditionPointSelector` search, or its `.flipped()` copy) or the
+            dict returned by the `CAST.condition_point` property (keys `layer_ids`, `threshold`,
+            `comparator`, and optionally `comparison_mode`). `__post_init__` expands it into
+            `condition_layer_ids`, `condition_vector_threshold`, and
+            `condition_comparator_threshold_is`, and into `condition_threshold_comparison_mode` when
+            the point contains a comparison mode. A condition point disables the automatic search.
+            `condition_layer_ids` and `condition_vector_threshold` must either both be None or both
+            equal the point's layers and threshold (as in arguments that were already expanded).
+            Any other combination raises `ValueError`.
         condition_layer_ids: Layers to check the condition on.
         condition_vector_threshold: Similarity threshold for condition detection.
-        condition_comparator_threshold_is: When to open the gate. `"ge"` opens when
+        condition_comparator_threshold_is: When the gate opens. `"ge"` opens when
             score >= threshold and `"le"` opens when score <= threshold.
-        condition_threshold_comparison_mode: How to aggregate hidden states
-            for comparison ("mean" or "last").
-        use_ooi_preventive_normalization: Apply out-of-distribution preventive
-            normalization to maintain hidden state magnitudes. Applies to the default additive path;
-            invalid alongside `behavior_transform` (wrap the transform in `NormPreservingTransform`
-            instead).
-        use_explained_variance: Scale steering vectors by their explained
-            variance for adaptive layer-wise control. Only the PCA methods
-            ("pca_center", "pca_pairwise") produce explained variances; with
-            method="mean_diff" there is no variance to scale by and this is a
-            no-op. Applies to the default additive path; invalid alongside `behavior_transform`
-            (pre-scale the artifact instead).
-        token_scope: Which tokens to steer ("all", "after_prompt", "last_k", "from_position").
-            `"all"` (default, reference-faithful) permits prompt-token steering during prefill
-            wherever the gate is already decided (i.e., at behavior layers above the condition
-            layer) and steers every decode token. `"after_prompt"` steers only generated tokens.
-            This subsumes the former `apply_behavior_on_first_call` flag:
-            `apply_behavior_on_first_call=True` corresponds to `token_scope="all"` and
-            `apply_behavior_on_first_call=False` to `token_scope="after_prompt"`.
-        last_k: Required when token_scope == "last_k".
-        from_position: Required when token_scope == "from_position". The absolute position from
-            which to start steering (for single-pass logit scoring).
+        condition_threshold_comparison_mode: How hidden states are aggregated for the comparison
+            (`"mean"` or `"last"`).
+        use_ooi_preventive_normalization: Apply out-of-distribution preventive normalization to
+            maintain hidden-state magnitudes. Must be False when `behavior_transform` is set (wrap
+            the transform in `NormPreservingTransform` instead).
+        use_explained_variance: Scale each layer's behavior direction by its explained variance.
+            Only the PCA methods (`"pca_center"`, `"pca_pairwise"`) produce explained variances.
+            With `method="mean_diff"` the setting has no effect. Must be False when
+            `behavior_transform` is set (scale the transform's artifact beforehand instead).
+        token_scope: Which tokens to steer (`"all"`, `"after_prompt"`, `"last_k"`, or
+            `"from_position"`). `"all"` (the default, matching the reference implementation) steers
+            prompt tokens during prefill at the behavior layers above the condition layer, where the
+            gate is already decided, and steers every decode token. `"after_prompt"` steers only
+            generated tokens.
+        last_k: Number of final positions of each forward pass to steer. Required (at least 1)
+            when `token_scope` is `"last_k"`.
+        from_position: The absolute position from which steering starts (e.g., for single-pass
+            logit scoring). Required (at least 0) when `token_scope` is `"from_position"`.
     """
 
     # behavior
@@ -150,12 +147,6 @@ class CASTArgs(BaseArgs):
 
         # expand a reusable condition point into the manual triple (supersedes search.auto_find)
         if self.condition_point is not None:
-            if self.condition_layer_ids is not None or self.condition_vector_threshold is not None:
-                raise ValueError(
-                    "condition_point already carries the layers and threshold; drop "
-                    "condition_layer_ids and condition_vector_threshold, or drop condition_point."
-                )
-
             if isinstance(self.condition_point, ConditionPoint):
                 point_layer_ids: Sequence[int] = [self.condition_point.layer_id]
                 point_threshold = self.condition_point.threshold
@@ -193,6 +184,18 @@ class CASTArgs(BaseArgs):
             if point_comparator not in ("ge", "le"):
                 raise ValueError(
                     f"condition_point comparator must be 'ge' or 'le'; got {point_comparator!r}."
+                )
+            # args built from a condition point contain the expanded layers and threshold next to it
+            expanded = (
+                self.condition_layer_ids is not None
+                and self.condition_vector_threshold is not None
+                and list(self.condition_layer_ids) == list(point_layer_ids)
+                and self.condition_vector_threshold == point_threshold
+            )
+            if not expanded and (self.condition_layer_ids is not None or self.condition_vector_threshold is not None):
+                raise ValueError(
+                    "condition_point already carries the layers and threshold; drop "
+                    "condition_layer_ids and condition_vector_threshold, or drop condition_point."
                 )
             self.condition_layer_ids = list(point_layer_ids)
             self.condition_vector_threshold = point_threshold

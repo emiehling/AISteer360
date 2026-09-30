@@ -17,10 +17,17 @@ class SpipeError(Exception):
 
 
 class SpipeFormatError(SpipeError):
-    """The manifest or archive violates the `spipe/1` format.
+    """The manifest, archive, or artifact layout does not conform to the `spipe/1` format.
 
-    Raised for unsupported format versions, schema violations (missing, mistyped, or unknown
-    fields), unknown method keys, and malformed archives.
+    Raised for the following conditions:
+
+    - an unsupported format version, or a manifest field that is missing, mistyped, or unknown
+    - a method key that does not match a registered method
+    - a malformed archive
+    - a malformed encoded value, or a `$dc` or `$ref` target that cannot be imported
+    - args that a control or dataclass constructor rejects
+    - a malformed artifact id
+    - a symlink among the artifact entries of a bundle, or inside a tree payload
     """
 
 
@@ -34,7 +41,16 @@ class SpipeSaveError(SpipeError):
 
 
 class SpipeIntegrityError(SpipeError):
-    """Stored artifact bytes do not match their content-addressed id."""
+    """A stored artifact or data file is missing or does not match its recorded identity.
+
+    Raised for the following conditions:
+
+    - an artifact's bytes do not match its content-addressed id
+    - a referenced artifact is not in the store, or no artifact store is available
+    - an artifact's store sidecar is malformed, records a different id, or disagrees with the
+      manifest record on the encoding or type
+    - a `"path"` data reference points to a file that does not match its recorded digest
+    """
 
 
 class SpipeStaleError(SpipeError):
@@ -47,9 +63,16 @@ class SpipeStaleError(SpipeError):
 
 
 class SpipeCodeRefError(SpipeError):
-    """Decoding requires importing code and `allow_code` was not granted.
+    """Decoding a value requires running code that the loader was not permitted to run.
 
-    Raised when a manifest contains a `$ref` callable reference, a `$dc` class outside the
-    `steerability.` namespace, or a pickle-backed memory artifact, and `load()` was called
-    without `allow_code=True`.
+    Raised when a decoded value is one of the following and `SPipe.load()` was called without
+    `allow_code=True`:
+
+    - a `$ref` callable reference
+    - a `$dc` class other than a toolkit enum or a data-only toolkit dataclass
+    - an artifact whose payload contains pickled data
+
+    `SPipe.instantiate_entry(lenient=True)` raises it for the last two even when the spipe was
+    loaded with `allow_code=True`, and it decodes a `$ref` to a `CodeRef` instead. Calling a
+    `CodeRef` also raises it.
     """
