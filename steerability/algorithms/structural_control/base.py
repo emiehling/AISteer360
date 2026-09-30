@@ -1,14 +1,11 @@
-"""Structural control base classes.
+"""Structural control base class.
 
-This module provides the abstract base class for methods that create persistent changes to the model, either through
-weight updates or architectural changes.
+This module provides `StructuralControl`, the abstract base class for methods that make persistent changes to the
+model by updating its weights or modifying its architecture. A subclass implements `steer()`, which returns the new or
+modified model.
 
-Two base classes are provided:
-
-- `StructuralControl`: Base class for all structural control methods.
-
-Structural controls implement steering through model weight or architecture modifications, transforming base parameters
-θ to θ', resulting in generations following y ~ p_θ'(x).
+A structural control transforms the base parameters θ into θ'. Generations from the steered model then follow
+y ~ p_θ'(x).
 
 Examples of structural controls:
 
@@ -21,7 +18,7 @@ Examples of structural controls:
 See Also:
 
 - `steerability.algorithms.structural_control`: Implementations of structural control methods
-- `steerability.core.steering_pipeline`: Integration with steering pipeline
+- `steerability.algorithms.core.steering_pipeline`: Integration with steering pipeline
 """
 from abc import abstractmethod
 

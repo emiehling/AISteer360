@@ -1,14 +1,10 @@
-"""Input control base classes.
+"""Input control base class.
 
-This module provides the abstract base class for methods that modify prompts before they reach the model.
+This module provides `InputControl`, the abstract base class for methods that modify prompts before they reach the
+model.
 
-Two base classes are provided:
-
-- `InputControl`: Base class for all input control methods.
-
-Input controls implement steering through prompt transformation σ(x), enabling behavior modification without altering
-model parameters or architecture. These methods transform inputs before they reach the model, resulting in generations
-following y ~ p_θ(σ(x)).
+Input controls steer through a prompt transformation σ(x) and do not change model parameters or architecture.
+Generations then follow y ~ p_θ(σ(x)).
 
 Examples of input controls:
 
@@ -21,7 +17,7 @@ Examples of input controls:
 See Also:
 
 - `steerability.algorithms.input_control`: Implementations of input control methods
-- `steerability.core.steering_pipeline`: Integration with steering pipeline
+- `steerability.algorithms.core.steering_pipeline`: Integration with steering pipeline
 """
 from __future__ import annotations
 
@@ -122,14 +118,15 @@ class InputControl(BaseControl):
         pass
 
     def requirements(self) -> Requirements:
-        """Backend requirements computed from this instance's configuration, per phase.
+        """Return the backend requirements of this control for each phase.
 
-        Input controls transform the prompt client-side, so the generate phase requires nothing
-        beyond the session contract on any backend. A control whose `steer()` reads the live
-        pipeline model (e.g. for rollouts or scoring) overrides this with a steer-phase
-        `Capability.IN_PROCESS_TORCH` requirement.
+        The base implementation returns empty requirements, since input controls transform the
+        prompt on the client and need nothing beyond the session contract on any backend. A
+        control that uses the in-process pipeline model at adapt time overrides this method with
+        a generate-phase `Capability.IN_PROCESS_TORCH` requirement. The model access that
+        `steer()` needs (e.g., for rollouts or scoring) is declared by `steer_access()`.
 
         Returns:
-            The control's phase-keyed requirements.
+            The control's requirements, keyed by phase.
         """
         return Requirements()

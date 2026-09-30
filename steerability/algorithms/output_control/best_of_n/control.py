@@ -3,7 +3,6 @@ from __future__ import annotations
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from steerability.algorithms.output_control.base import OutputControl
 from steerability.algorithms.output_control.best_of_n.args import BestOfNArgs
 from steerability.algorithms.output_control.common.drivers.search import SearchDriver
 
@@ -38,10 +37,6 @@ class BestOfN(SearchDriver):
     Args = BestOfNArgs
 
     tokenizer: PreTrainedTokenizerBase | None = None
-
-    def __init__(self, *args, **kwargs):
-        # route through OutputControl (validate BestOfNArgs, mirror fields, then _configure)
-        OutputControl.__init__(self, *args, **kwargs)
 
     def _configure(self) -> None:
         """Map Best-of-N's mirrored args onto the generic `SearchDriver` fields."""

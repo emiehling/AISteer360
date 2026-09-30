@@ -48,7 +48,11 @@ class Prefix:
             raise ValueError("Prefix requires a non-empty text.")
 
     def plan(self) -> list:
-        """The phase plan: an appended `Fixed` phase, then an unbounded `Generated` phase."""
+        """Return a `Fixed` phase that appends `text`, followed by a `Generated` phase without a phase budget.
+
+        Returns:
+            The phase plan as a list.
+        """
         return [Fixed(self.text, add_special_tokens=False), Generated()]
 
     def __str__(self) -> str:
@@ -57,10 +61,14 @@ class Prefix:
 
 @dataclass(frozen=True)
 class Generate:
-    """Plain pass-through: delegate the row to the model with no splicing."""
+    """Action that generates a response without appending any text first."""
 
     def plan(self) -> list:
-        """The phase plan: one unbounded `Generated` phase."""
+        """Return a plan with one `Generated` phase without a phase budget.
+
+        Returns:
+            The phase plan as a list.
+        """
         return [Generated()]
 
     def __str__(self) -> str:

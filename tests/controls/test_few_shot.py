@@ -7,7 +7,9 @@ import torch
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 from steerability.algorithms.input_control.common.formatters.few_shot_block import FewShotBlockFormatter
 from steerability.algorithms.input_control.common.memory.text import TextMemory
+from steerability.algorithms.input_control.common.selectors.base import BaseSelector
 from steerability.algorithms.input_control.few_shot.control import FewShot
+from steerability.algorithms.input_control.few_shot.selectors import SELECTOR_REGISTRY
 from tests.utils.sweep import build_param_grid
 
 PROMPT_TEXT = (
@@ -276,6 +278,97 @@ def test_unknown_selector_name_raises(model_and_tokenizer, device: torch.device)
     pipeline = SteeringPipeline(controls=[fewshot], model=model, tokenizer=tokenizer)
     with pytest.raises(ValueError, match="Unknown selector"):
         pipeline.steer()
+
+
+SEED_POS_POOL = [{"input": f"positive review number {index}", "label": "Positive"} for index in range(8)]
+SEED_NEG_POOL = [{"input": f"negative review number {index}", "label": "Negative"} for index in range(8)]
+SEED_QUERIES = [[{"role": "user", "content": f"Question {index}?"}] for index in range(3)]
+
+
+def _seeded_few_shot(selector_seed: int | None, selector: str | None = "random") -> FewShot:
+    return FewShot(
+        directive="follow examples",
+        positive_example_pool=SEED_POS_POOL,
+        negative_example_pool=SEED_NEG_POOL,
+        k_positive=3,
+        k_negative=2,
+        selector=selector,
+        selector_seed=selector_seed,
+    )
+
+
+@pytest.mark.parametrize("selector", ["random", None])
+def test_selector_seed_makes_selection_reproducible(model_and_tokenizer, device: torch.device, selector):
+    """Two pipelines built with the same `selector_seed` adapt the same queries to the same prompts."""
+    base_model, tokenizer = model_and_tokenizer
+    model = base_model.to(device)
+    prompt_ids = tokenizer(PROMPT_TEXT, return_tensors="pt").input_ids.to(device)
+
+    def adapted_prompts(selector_seed: int):
+        fewshot = _seeded_few_shot(selector_seed=selector_seed, selector=selector)
+        SteeringPipeline(controls=[fewshot], model=model, tokenizer=tokenizer).steer()
+        return fewshot.adapt_messages(SEED_QUERIES), fewshot.adapt(prompt_ids, runtime_kwargs={}).tolist()
+
+    assert adapted_prompts(7) == adapted_prompts(7)
+    assert adapted_prompts(7) != adapted_prompts(8)
+
+
+def test_selector_seed_draws_are_independent_of_call_order():
+    """Under `selector_seed`, a query's examples do not depend on its position or on earlier selections."""
+    forward = _seeded_few_shot(selector_seed=7)
+    forward.steer()
+    reverse = _seeded_few_shot(selector_seed=7)
+    reverse.steer()
+
+    forward_prompts = forward.adapt_messages(SEED_QUERIES)
+    assert reverse.adapt_messages(SEED_QUERIES[::-1])[::-1] == forward_prompts
+    assert forward.adapt_messages(SEED_QUERIES[1:2]) == forward_prompts[1:2]
+    assert forward.adapt_messages(SEED_QUERIES) == forward_prompts
+
+
+class _SeedlessSelector(BaseSelector):
+    """A registered selector class whose constructor takes no arguments and has no `reseed()`."""
+
+    def select(self, items, query=None, k=1, context=None):
+        return list(items)[:k]
+
+
+def test_registered_selector_without_seed_support(monkeypatch):
+    """A registered class without `reseed()` builds when `selector_seed` is unset and is rejected at steer time."""
+    monkeypatch.setitem(SELECTOR_REGISTRY, "seedless", _SeedlessSelector)
+
+    fewshot = FewShot(positive_example_pool=POS_POOL, k_positive=1, selector="seedless")
+    fewshot.steer()
+    assert isinstance(fewshot._selector, _SeedlessSelector)
+
+    seeded = FewShot(positive_example_pool=POS_POOL, k_positive=1, selector="seedless", selector_seed=3)
+    with pytest.raises(ValueError, match="reseed"):
+        seeded.steer()
+
+
+def test_selector_seed_rejected_with_selector_instance():
+    from steerability.algorithms.input_control.common.selectors.random import RandomSelector
+
+    with pytest.raises(ValueError, match="selector_seed"):
+        FewShot(positive_example_pool=POS_POOL, k_positive=1, selector=RandomSelector(seed=1), selector_seed=1)
+
+
+def test_spipe_round_trip_preserves_selector_seed(tmp_path):
+    """`selector_seed` is a recipe field, so a frozen bundle retains it and reproduces the selection."""
+    from steerability.spipe import SPipe
+
+    tiny_model = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+    original = _seeded_few_shot(selector_seed=11)
+    spipe = SteeringPipeline(model_name_or_path=tiny_model, controls=[original]).to_spipe(freeze=True)
+    assert spipe.is_frozen
+    assert spipe.manifest["controls"][0]["args"]["selector_seed"] == 11
+
+    reloaded = SPipe.load(spipe.save(tmp_path / "few_shot.spipe")).pipeline().input_controls[0]
+    assert reloaded.selector_seed == 11
+
+    original.steer()
+    reloaded.steer()
+    assert reloaded.adapt_messages(SEED_QUERIES) == original.adapt_messages(SEED_QUERIES)
 
 
 def test_few_shot_missing_pad_token_raises(model_and_tokenizer, device: torch.device):

@@ -650,6 +650,33 @@ class PASTA(HookControl):
         best = min(matches, key=lambda i: abs(i - naive_start))
         return best, best + w_len
 
+    @staticmethod
+    def _key_length(input_kwargs: dict, query_len: int, layer_idx: int) -> int:
+        """Return the number of key positions in an attention call, including the current query tokens.
+
+        When the call passes `cache_position` (transformers v4), the key length is its last entry plus
+        one. Otherwise, when the call passes a `past_key_values` cache with `get_seq_length()`, the key
+        length is this layer's cached length plus `query_len` (transformers v5 does not pass
+        `cache_position` to attention calls). The pre-hook runs before the layer's cache update, which
+        makes this sum the key length after the update. Without either input, the key length is
+        `query_len`.
+
+        Args:
+            input_kwargs: Keyword arguments of the attention forward call.
+            query_len: The number of query tokens in the call.
+            layer_idx: Decoder layer index of the hooked attention module.
+
+        Returns:
+            The number of key positions from the start of the sequence up to and including the last query.
+        """
+        cache_position = input_kwargs.get("cache_position")
+        past_key_values = input_kwargs.get("past_key_values")
+        if cache_position is not None:
+            return int(cache_position[-1]) + 1
+        if past_key_values is not None and callable(getattr(past_key_values, "get_seq_length", None)):
+            return int(past_key_values.get_seq_length(layer_idx) or 0) + query_len
+        return query_len
+
     def _attention_pre_hook(
         self,
         module,
@@ -661,35 +688,43 @@ class PASTA(HookControl):
         scale_constant: torch.Tensor,
         layer_idx: int = 0,
     ):
-        """Modify attention mask to steer focus toward/away from target tokens.
+        """Edit the attention mask of the configured heads to scale attention to the prompt tokens.
 
-        Pre-forward hook that adjusts attention weights by adding scaling factors to the attention mask for specified token ranges and attention heads.
+        The hook adds the edit to the additive attention mask of the heads in `head_idx`. When the call
+        passes no attention mask, the hook builds an additive causal mask over all key positions. A
+        boolean mask is converted to the additive form before the edit.
 
-        In `"include"` mode each prompt column is edited once: the highlighted span columns are
-        left untouched and `scale_constant` is subtracted from the complement (the non-span prompt
-        columns), the paper's Eq. 3 (non-highlighted prompt columns scaled by the coefficient).
-        Overlapping spans therefore net to zero, and no column is touched twice, which removes the
-        bfloat16 residue of a double touch. `"exclude"` and `"generation"` add `scale_constant` to
-        the non-span columns and the whole prompt respectively.
+        In `"include"` and `"exclude"` modes each prompt column is edited at most once. Columns inside
+        any highlighted span are left unchanged, and the remaining prompt columns receive the edit.
+        `"exclude"` adds `scale_constant` there, which scales the non-highlighted columns by `alpha`
+        (the paper's Eq. 3). `"include"` subtracts it. Since no column is edited twice, the span
+        columns stay exactly unchanged in bfloat16. `"generation"` adds `scale_constant` to the whole
+        prompt. Under a sliding-window cache the mask's key axis covers only the most recent keys, and
+        the edit applies to the prompt positions inside that window. Rows whose token ranges are all
+        empty are left unchanged. When the batch is larger than the number of prompt rows (e.g., under
+        beam search), each prompt's ranges apply to its consecutive expanded rows.
 
         Args:
             module: The attention module being hooked.
-            input_args: Positional arguments to the forward pass.
-            input_kwargs: Keyword arguments to the forward pass.
-            head_idx: List of attention head indices to modify.
-            token_ranges: Token index ranges to apply scaling to.
-            input_len: Length of input sequence (for generation positioning).
-            scale_constant: The `log(alpha)` edit magnitude, bound into the hook so a profiling
-                strength and the control's own `alpha` cannot cross.
-            layer_idx: Decoder layer index of the hooked attention module, used to read this
-                layer's cached key length when `cache_position` is absent (transformers v5).
+            input_args: Positional arguments of the forward call.
+            input_kwargs: Keyword arguments of the forward call.
+            head_idx: Indices of the attention heads to edit.
+            token_ranges: One tensor of `(start, end)` token ranges per prompt row.
+            input_len: The padded prompt length, i.e., the number of leading key positions that belong
+                to the prompt.
+            scale_constant: A tensor containing `log(alpha)`, bound into the hook when it is built. Each
+                hook set therefore uses its own strength, and a profiling strength does not affect the
+                control's own `alpha`.
+            layer_idx: Decoder layer index of the hooked attention module. It is used to read this
+                layer's cached key length when the call passes no `cache_position` (transformers v5).
 
         Returns:
-            Tuple of potentially modified (input_args, input_kwargs).
+            The tuple `(input_args, input_kwargs)`, with the edited mask in `input_kwargs["attention_mask"]`.
 
         Raises:
-            RuntimeError: If hidden states cannot be located.
-            ValueError: If scale_position is invalid.
+            RuntimeError: If the hidden states cannot be located in the call arguments, or if the batch
+                size is larger than the number of prompt rows and not a multiple of it.
+            ValueError: If `scale_position` is not `"include"`, `"exclude"`, or `"generation"`.
         """
         hidden_states = (
             input_args[0] if input_args else input_kwargs.get("hidden_states")
@@ -697,26 +732,18 @@ class PASTA(HookControl):
         if hidden_states is None:
             raise RuntimeError("PASTA: could not locate hidden states")
 
+        query_len = hidden_states.size(1)
+        key_len = self._key_length(input_kwargs, query_len, layer_idx)
+
         attention_mask = input_kwargs.get("attention_mask")
         if attention_mask is None:  # build it
-            batch_size, query_len, _ = hidden_states.size()
+            batch_size = hidden_states.size(0)
             num_heads = self._num_heads_by_layer[layer_idx]
 
             # during decoding the query attends to the full kv cache, so the mask spans the cached key
-            # positions rather than just the current query window. transformers v4 exposes the key axis
-            # via cache_position; v5 removed that kwarg from attention calls, so fall back to this
-            # layer's cache length (the pre-hook runs before the layer's cache update, so cached length
-            # plus query_len is the post-update key length). an undersized mask would rely on sdpa
+            # positions rather than just the current query window. an undersized mask would rely on sdpa
             # broadcasting, and the cuda mem-efficient kernel rejects the stride-0 last dimension that
             # its mask expansion produces ("(*bias): last dimension must be contiguous")
-            cache_position = input_kwargs.get("cache_position")
-            past_key_values = input_kwargs.get("past_key_values")
-            if cache_position is not None:
-                key_len = int(cache_position[-1]) + 1
-            elif past_key_values is not None and callable(getattr(past_key_values, "get_seq_length", None)):
-                key_len = int(past_key_values.get_seq_length(layer_idx) or 0) + query_len
-            else:
-                key_len = query_len
 
             # query row i sits at absolute position (key_len - query_len + i) and attends to keys 0..position
             query_positions = torch.arange(
@@ -763,31 +790,32 @@ class PASTA(HookControl):
         if self.scale_position not in ("include", "exclude", "generation"):
             raise ValueError(f"Unknown scale_position '{self.scale_position}'")
 
+        # a sliding-window cache narrows the mask's key axis to the most recent keys, with column 0 at
+        # absolute key position key_len - mask_width; only the prompt positions inside that window are edited
+        mask_width = attention_mask.size(-1)
+        window_start = max(key_len - mask_width, 0)
+        prompt_columns = min(max(input_len - window_start, 0), mask_width)
+
         for batch_index in range(batch_size):
             ranges = token_ranges[batch_index].tolist()
             has_valid_range = any(start != end for start, end in ranges)
             if not has_valid_range:
                 continue
 
-            if self.scale_position == "include":
-                # edit each prompt column once: subtract on the complement of the highlighted
-                # span union, leaving the span columns untouched (overlapping spans net to zero).
-                # a per-column delta applied over the [:input_len] slice keeps the write a single
+            if self.scale_position in ("include", "exclude"):
+                # each prompt column is edited once; the prompt columns outside the highlighted span union
+                # take the edit (subtracted under include, added under exclude) and the union is left
+                # unchanged. a per-column delta applied over the prompt slice keeps the write a single
                 # subscription (advanced head indexing writes back only through one __setitem__)
                 delta = attention_mask.new_full((input_len,), 0.0)
-                delta[:] = -scale_constant
+                delta[:] = -scale_constant if self.scale_position == "include" else scale_constant
                 for start_idx, end_idx in ranges:
                     if start_idx != end_idx:
                         delta[start_idx:end_idx] = 0.0
-                attention_mask[batch_index, head_idx, :, :input_len] += delta
-            elif self.scale_position == "exclude":
-                for start_idx, end_idx in ranges:
-                    if start_idx == end_idx:
-                        continue
-                    attention_mask[batch_index, head_idx, :, :start_idx] += scale_constant
-                    attention_mask[batch_index, head_idx, :, end_idx:input_len] += scale_constant
+                window_delta = delta[window_start:window_start + prompt_columns]
+                attention_mask[batch_index, head_idx, :, :prompt_columns] += window_delta
             else:  # generation
-                attention_mask[batch_index, head_idx, :, :input_len] += scale_constant
+                attention_mask[batch_index, head_idx, :, :prompt_columns] += scale_constant
 
         input_kwargs["attention_mask"] = attention_mask
         return input_args, input_kwargs

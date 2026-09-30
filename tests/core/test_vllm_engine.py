@@ -14,6 +14,9 @@ import pytest
 
 vllm = pytest.importorskip("vllm")
 
+# every engine boots `JackFram/llama-68m`, which is not in the CI model set
+pytestmark = pytest.mark.network
+
 import torch  # noqa: E402
 from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: E402
 

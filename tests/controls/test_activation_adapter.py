@@ -675,3 +675,60 @@ class TestPipelineIntegration:
         assert driver_on._gate is follower_on._gate
         assert follower_on.supports_batching is True  # row gates batch natively
         assert not torch.allclose(h_follower_on, h_follower_off, atol=1e-5)
+
+    def test_shared_gate_follower_tracks_driver_per_item(self):
+        """Under per-item seeding the follower fires iff the driver opens on the same row."""
+        tokenizer = wordlevel_tokenizer()
+        tokenizer.chat_template = "{{ bos_token }}{% for message in messages %}{{ message['content'] }} {% endfor %}"
+        torch.manual_seed(0)
+        model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
+        # the "dog" embedding dominates feature 0, so the gate opens only on prompts containing it
+        with torch.no_grad():
+            model.model.embed_tokens.weight[tokenizer.convert_tokens_to_ids("dog"), 0] = 100.0
+        sv = _sv(29)
+
+        def _gate(threshold=5.0):
+            readout = CallableReadout(lambda pooled, layer_id: pooled[:, 0])
+            return Gate(Evidence((0,), readout), PerKeyThreshold(threshold=threshold, comparator="ge"))
+
+        def _adapter(gate, layer_id, follower=False):
+            return ActivationAdapter(
+                transform=AdditiveTransform(sv, strength=4.0), layer_ids=[layer_id], token_scope="all",
+                gate=gate, gate_driven_externally=follower,
+            )
+
+        def _prefill_states(controls):
+            """Hidden states entering the last layer, one entry per forward pass."""
+            pipeline = SteeringPipeline(controls=controls, model=model, tokenizer=tokenizer)
+            pipeline.steer()
+            captured = []
+
+            def _capture(module, args, kwargs):
+                hidden = kwargs["hidden_states"] if "hidden_states" in kwargs else args[0]
+                captured.append(hidden.detach().clone())
+
+            handle = model.model.layers[LAYERS - 1].register_forward_pre_hook(_capture, with_kwargs=True)
+            try:
+                pipeline.generate(
+                    messages=[
+                        [{"role": "user", "content": "the dog ran"}],
+                        [{"role": "user", "content": "the cat sat"}],
+                    ],
+                    seed=1, seed_scope="item", max_new_tokens=1, do_sample=False,
+                )
+            finally:
+                handle.remove()
+            return captured
+
+        shared_gate = _gate()
+        paired = _prefill_states([_adapter(shared_gate, 1), _adapter(shared_gate, 2, follower=True)])
+        driver_only = _prefill_states([_adapter(_gate(), 1)])
+        closed = _prefill_states([_adapter(_gate(threshold=1e9), 1)])
+
+        assert len(paired) == len(driver_only) == len(closed) == 2
+        assert all(hidden.size(0) == 1 for hidden in paired)  # serial per-item path, one prefill per row
+        for row, driver_opens in enumerate([True, False]):
+            driver_fired = not torch.allclose(driver_only[row], closed[row], atol=1e-5)
+            follower_fired = not torch.allclose(paired[row], driver_only[row], atol=1e-5)
+            assert driver_fired == driver_opens
+            assert follower_fired == driver_opens

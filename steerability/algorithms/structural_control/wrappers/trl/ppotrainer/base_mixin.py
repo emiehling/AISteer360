@@ -6,10 +6,24 @@ from transformers import AutoModelForSequenceClassification, PreTrainedModel, Pr
 
 # TRL 1.x ships PPO under `trl.experimental`; importing from there emits a
 # `TRLExperimentalWarning` that would otherwise fire on every `steerability` import
-# (the registry crawls this module), so it is suppressed for this import only.
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore")
-    from trl.experimental.ppo import PPOConfig, PPOTrainer
+# (the registry crawls this module), and it is therefore suppressed for this import only. An
+# `ImportError` (e.g., an upstream rename) is kept in `PPO_IMPORT_ERROR`; the package then
+# skips registering `ppo`, and `steer()` raises the error with an install hint.
+try:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from trl.experimental.ppo import PPOConfig, PPOTrainer
+except ImportError as exc:
+    PPOConfig = PPOTrainer = None
+    PPO_IMPORT_ERROR: ImportError | None = exc
+else:
+    PPO_IMPORT_ERROR = None
+
+PPO_IMPORT_HINT = (
+    "TRL's PPO trainer could not be imported from `trl.experimental.ppo` ({error}); the installed trl "
+    "release may have moved or renamed it. Install a trl release that provides "
+    "`trl.experimental.ppo.PPOConfig` and `PPOTrainer` to use the `ppo` control."
+)
 
 from steerability.algorithms.structural_control.base import StructuralControl
 from steerability.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin, resolve_config_kwargs
@@ -45,6 +59,8 @@ class PPOTrainerMixin(TRLMixin, StructuralControl):
         ref_model: PreTrainedModel | None = None,
         **_,
     ) -> torch.nn.Module:
+        if PPO_IMPORT_ERROR is not None:
+            raise ImportError(PPO_IMPORT_HINT.format(error=PPO_IMPORT_ERROR)) from PPO_IMPORT_ERROR
         if self.training_args.get("resume_from_checkpoint"):
             raise ValueError(
                 "PPO does not support resume_from_checkpoint; TRL's PPOTrainer.train() takes no checkpoint argument."

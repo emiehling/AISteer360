@@ -25,6 +25,11 @@ Tests for single controls are executed by specifying the file name, e.g.,:
 ```commandline
 pytest tests/controls/test_pasta.py
 ```
+Tests that download Hub models outside `tests/utils/ci_models.yaml` are marked `network`. On a machine with only the CI
+models cached, deselect them with:
+```commandline
+pytest -m 'not network' tests/
+```
 
 ## Adding your own control test
 

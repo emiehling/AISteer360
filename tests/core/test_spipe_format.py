@@ -80,12 +80,29 @@ def test_resolved_object_and_array_forms():
         validate_manifest(minimal_manifest(controls=[dict(entry, resolved=[])]))
 
 
-def test_artifact_record_validation():
-    record = {"id": "notahash", "encoding": "tensors", "type": "SteeringVector",
+@pytest.mark.parametrize("artifact_id", ["notahash", "sha256:x/../../outside", "sha256:" + "A" * 64])
+def test_artifact_record_validation(artifact_id):
+    record = {"id": artifact_id, "encoding": "tensors", "type": "SteeringVector",
               "artifact_class": "direction", "source": None, "fit_digest": None, "provenance": {}}
     resolved = {"method": "state_control/caa", "args": {}, "artifacts": {"v": record}, "origin": None}
     entry = {"method": "state_control/caa", "enabled": True, "args": {}, "resolved": resolved}
     with pytest.raises(SpipeFormatError, match="sha256"):
+        validate_manifest(minimal_manifest(controls=[entry]))
+
+
+@pytest.mark.parametrize("change, field", [
+    ({"type": None}, "type"),
+    ({"type": ""}, "type"),
+    ({"source": 5}, "source"),
+    ({"fit_digest": ["x"]}, "fit_digest"),
+    ({"provenance": "abc"}, "provenance"),
+])
+def test_artifact_record_field_types(change, field):
+    record = {"id": "sha256:" + "a" * 64, "encoding": "tensors", "type": "SteeringVector",
+              "artifact_class": "direction", "source": None, "fit_digest": None, "provenance": {}, **change}
+    resolved = {"method": "state_control/caa", "args": {}, "artifacts": {"v": record}, "origin": None}
+    entry = {"method": "state_control/caa", "enabled": True, "args": {}, "resolved": resolved}
+    with pytest.raises(SpipeFormatError, match=rf"\.{field}"):
         validate_manifest(minimal_manifest(controls=[entry]))
 
 

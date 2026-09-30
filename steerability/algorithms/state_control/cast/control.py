@@ -8,10 +8,7 @@ import torch
 
 from steerability.algorithms.core.execution.access import ModelAccess
 from steerability.algorithms.state_control.base import InterventionControl
-from steerability.algorithms.state_control.common.estimators import (
-    ContrastiveDirectionEstimator,
-    MeanDifferenceEstimator,
-)
+from steerability.algorithms.state_control.common.estimators import estimator_for
 from steerability.algorithms.state_control.common.fit_specs import Comparator, CompMode, VectorTrainSpec
 from steerability.algorithms.state_control.common.gating import Gate, PerKeyThreshold
 from steerability.algorithms.state_control.common.selectors import LateThirdSelector
@@ -75,14 +72,12 @@ def _make_estimator(spec: VectorTrainSpec):
         ValueError: If `method == "mean_diff"` is combined with `accumulate == "suffix-only"`,
             which the mean-difference estimator does not support.
     """
-    if spec.method == "mean_diff":
-        if spec.accumulate == "suffix-only":
-            raise ValueError(
-                "method='mean_diff' does not support accumulate='suffix-only'; "
-                "use accumulate='all' or 'last_token', or method='pca_pairwise'/'pca_center'."
-            )
-        return MeanDifferenceEstimator()
-    return ContrastiveDirectionEstimator()
+    if spec.method == "mean_diff" and spec.accumulate == "suffix-only":
+        raise ValueError(
+            "method='mean_diff' does not support accumulate='suffix-only'; "
+            "use accumulate='all' or 'last_token', or method='pca_pairwise'/'pca_center'."
+        )
+    return estimator_for(spec.method)
 
 
 def _squeeze_direction(d: torch.Tensor) -> torch.Tensor:

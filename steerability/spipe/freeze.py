@@ -33,14 +33,10 @@ INLINE_LIMIT_BYTES = 1_000_000
 
 
 def _toolkit_version() -> str:
-    try:
-        from importlib.metadata import version
+    """Return `steerability.__version__`, which is `"unknown"` when the distribution is not installed."""
+    import steerability
 
-        return version("steerability")
-    except Exception:
-        import steerability
-
-        return getattr(steerability, "__version__", "unknown")
+    return steerability.__version__
 
 
 def _package_versions() -> dict[str, str]:

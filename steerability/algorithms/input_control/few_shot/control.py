@@ -1,12 +1,15 @@
 """
 Few-shot learning control for prompt adaptation.
 """
+import hashlib
+import json
 import warnings
 from typing import Any, Sequence
 
 import torch
 from transformers import PreTrainedTokenizerBase
 
+from steerability.algorithms.core.identity import canonical_value
 from steerability.algorithms.input_control.base import InputControl
 from steerability.algorithms.input_control.common.formatters.few_shot_block import FewShotBlockFormatter
 from steerability.algorithms.input_control.common.memory.pool import PoolMemory
@@ -18,50 +21,67 @@ from steerability.utils.rendering import has_chat_template, render_messages
 
 
 class FewShot(InputControl):
-    """
-    Implementation of few-shot learning control for prompt adaptation.
+    """Input control that adds labeled positive and negative examples to each prompt.
 
-    FewShot enables selective behavioral steering by prepending specific examples to user prompts, guiding model
-    responses through demonstration.
+    `FewShot` renders a `directive` and a set of examples as one block and adds the block to each
+    prompt. The examples come from one of two sources:
 
-    The method operates in two modes:
+    1. **Pool-based sampling**: `steer()` stores `positive_example_pool` and `negative_example_pool`,
+        and each prompt receives `k_positive` and `k_negative` examples chosen by the `selector` (uniform
+        random sampling by default, or a retriever such as `EPRSelector`). Examples are chosen
+        separately for each prompt row, with the prompt as the selector's query.
 
-    1. **Pool-based sampling**: Maintains pools of positive and negative examples from which k examples are dynamically
-        selected using configurable sampling strategies (random, semantic similarity, etc.).
+    2. **Runtime examples**: the `positive_examples` and `negative_examples` runtime kwargs give the
+        examples for one call directly. When either key is present, pool-based selection is skipped
+        for both polarities.
 
-    2. **Runtime injection**: Accepts examples directly at inference time through runtime_kwargs, enabling
-        context-specific demonstrations without predefined pools. Useful for dynamic or user-provided examples.
+    The block contains the `directive` (when set) followed by each example under the header
+    `"### Positive example (behavior to follow)"` or `"### Negative example (behavior to avoid)"`. Each
+    example field is rendered as a `Key: value` line with the key in title case. Keys with a leading
+    underscore are reserved by the toolkit (e.g., `_polarity`) and are not rendered. User fields should
+    not start with `_`.
 
-    The selected examples are rendered as a single block with positive/negative labels. On chat input the block is
-    combined with the leading system message according to `system_mode`: `"append"` places it after the existing
-    content, `"prepend"` before it, and `"insert"` adds it as a separate second system message. Under `"append"` and
-    `"prepend"` every chat input yields exactly one leading system message. Under `"insert"` a chat that already has
-    a leading system message yields two, which some chat templates (Qwen3) reject. When the chat has no leading
-    system message, all three modes insert one containing the block. On raw token input the block text is prepended
-    to the stream and `system_mode` does not apply.
+    On chat input the block is combined with the leading system message according to `system_mode`.
+    `"append"` places the block after the existing content, `"prepend"` places it before, and `"insert"`
+    adds it as a separate second system message. Under `"append"` and `"prepend"` every chat input
+    yields exactly one leading system message. Under `"insert"` a chat that already has a leading system
+    message yields two, which some chat templates (Qwen3) reject. When the chat has no leading system
+    message, all three modes insert one containing the block. On token input with a tokenizer that has
+    a chat template, the prompt is decoded and wrapped as a user message, and the block is placed in a
+    new system message before the chat template is applied. With a tokenizer that has no chat template,
+    the block text is prepended to the token stream and `system_mode` does not apply. When there are no
+    examples and no `directive`, the input is returned unchanged (and `adapt()` emits a `UserWarning`).
 
-    Runtime keyword arguments:
+    The following `runtime_kwargs` are accepted:
 
-    - `positive_examples` (`list[dict]`, `optional`): Positive examples to use for this specific query (overrides pool-based selection).
-    - `negative_examples` (`list[dict]`, `optional`): Negative examples to use for this specific query (overrides pool-based selection).
-
-    Notes:
-
-    - Requires a tokenizer with chat_template support for optimal formatting
-    - Examples are automatically labeled as "### Positive example" or "### Negative example"
-    - When both pools and runtime examples are available, runtime examples take precedence
-    - If no examples are provided, the original input is returned unchanged
-    - Keys with a leading underscore in example dicts are reserved by the framework (e.g. `_polarity`);
-        user fields should not start with `_`.
+    - `"positive_examples"`: A list of example dicts used as the positive examples for every prompt row
+        in the call, in place of pool-based selection.
+    - `"negative_examples"`: A list of example dicts used as the negative examples for every prompt row
+        in the call, in place of pool-based selection.
 
     Args:
+        directive: Text placed at the start of the block, before the examples.
+        positive_example_pool: Positive examples to select from. Requires `k_positive`.
+        negative_example_pool: Negative examples to select from. Requires `k_negative`.
+        k_positive: Number of positive examples selected for each prompt.
+        k_negative: Number of negative examples selected for each prompt.
+        selector: Selector that picks examples from the pools, given as a `BaseSelector` instance, a
+            registered name (e.g., `"random"`), or None for `RandomSelector`.
+        selector_seed: Seed for pool selection when `selector` is a registered name or None. Each draw is
+            seeded from `selector_seed`, the pool polarity, and the query content. The examples a query
+            receives are therefore independent of call order. `steer()` raises `ValueError` when the
+            selector has no `reseed()` method. Not accepted with a selector instance.
         system_mode: How the rendered block combines with an existing leading system message on chat input
             (`"append"` (default), `"prepend"`, or `"insert"`). Ignored when the chat has no leading system
             message.
         separator: String inserted between the existing system content and the block for `"append"` and
             `"prepend"`. Empty string allowed.
-        formatter: Formatter that renders the block. When given, the instance owns its placement and
-            `system_mode` and `separator` are not consulted.
+        formatter: Formatter that renders the block. When given, the formatter determines the placement,
+            and `system_mode` and `separator` are not used.
+
+    Attributes:
+        pool: The `PoolMemory` of pool examples tagged by polarity, built by `steer()`.
+        tokenizer: The tokenizer attached by `steer()`.
     """
 
     Args = FewShotArgs
@@ -93,6 +113,7 @@ class FewShot(InputControl):
     system_mode: str = "append"
     separator: str = "\n\n"
     selector: Any = None  # str | BaseSelector | None — resolved in steer()
+    selector_seed: int | None = None
     formatter: Any = None  # BaseFormatter | None — resolved in steer()
 
     # method-owned state populated in steer()
@@ -117,6 +138,10 @@ class FewShot(InputControl):
 
         # resolve selector argument (instance | name | None) into a BaseSelector[dict]
         self._selector = selector_from_arg(self.selector)
+        if self.selector_seed is not None and not callable(getattr(self._selector, "reseed", None)):
+            raise ValueError(
+                f"selector_seed requires a selector with a reseed() method; {type(self._selector).__name__} has none."
+            )
 
         # selectors that need offline preparation (e.g. EPR) get a chance here
         prepare = getattr(self._selector, "prepare", None)
@@ -258,7 +283,26 @@ class FewShot(InputControl):
         items = [item for item, pol in zip(self.pool.items, polarities) if pol == polarity]
         if not items or k <= 0:
             return []
+        if self.selector_seed is not None:
+            self._selector.reseed(self._selection_seed(polarity, query))
         return self._selector.select(items, query=query, k=k)
+
+    def _selection_seed(self, polarity: str, query: Any) -> int:
+        """Return the seed for one pool draw.
+
+        The seed is the first 8 bytes, read as a big-endian integer, of a SHA-256 digest of
+        `selector_seed`, the pool polarity, and the canonical JSON form of `query`.
+
+        Args:
+            polarity: The pool polarity, `"pos"` or `"neg"`.
+            query: The query the draw is made for (the decoded prompt text or the chat messages).
+
+        Returns:
+            A non-negative integer below `2**64`.
+        """
+        payload = json.dumps(canonical_value(query), sort_keys=True)
+        digest = hashlib.sha256(f"{self.selector_seed}:{polarity}:{payload}".encode("utf-8")).digest()
+        return int.from_bytes(digest[:8], "big")
 
     def _sample_from_pools(self, query: Any = None) -> list[dict[str, Any]]:
         """Sample examples from the pools, attaching polarity labels for downstream formatting."""

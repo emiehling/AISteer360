@@ -106,14 +106,62 @@ class TestBestOfNBehavior:
         continuation = out[:, prompt.size(1):]
         assert torch.all(continuation == 7)
 
-    def test_batch_gt_one_raises(self):
+    def test_batch_searches_every_row(self):
         model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
         tokenizer = wordlevel_tokenizer()
-        bon = BestOfN(n=2, scorer=lambda p, c, params: [0.0] * len(c))
+        prompts_seen = []
+
+        def scorer(prompt, continuations, params):
+            prompts_seen.append(prompt)
+            return [0.0] * len(continuations)
+
+        bon = BestOfN(n=2, scorer=scorer)
         pipeline, model, tokenizer = _pipeline([bon], model=model, tokenizer=tokenizer)
-        prompts = tokenizer(["the cat", "the dog"], return_tensors="pt", padding=True).input_ids
-        with pytest.raises(NotImplementedError):
-            pipeline.generate(input_ids=prompts, max_new_tokens=3, do_sample=True, eos_token_id=None)
+        batch = tokenizer(["the cat sat", "dog"], return_tensors="pt", padding=True)
+        out = pipeline.generate(
+            input_ids=batch.input_ids, attention_mask=batch.attention_mask, max_new_tokens=3,
+            do_sample=True, eos_token_id=None,
+        )
+        assert out.shape == (2, 3)
+        assert prompts_seen == ["the cat sat", "dog"]  # each row searched from its unpadded prompt
+
+    def test_batch_with_state_controls_is_refused(self):
+        from steerability.algorithms.state_control.caa.control import CAA
+        from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        tokenizer = wordlevel_tokenizer()
+        steering_vector = SteeringVector(model_type="llama", directions={1: torch.randn(1, 16)})
+        caa = CAA(steering_vector=steering_vector, layer_id=1, multiplier=1.0, token_scope="after_prompt")
+        bon = BestOfN(n=2, scorer=lambda p, c, params: [0.0] * len(c))
+        pipeline, model, tokenizer = _pipeline([caa, bon], model=model, tokenizer=tokenizer)
+        batch = tokenizer(["the cat sat", "dog"], return_tensors="pt", padding=True)
+        with pytest.raises(ValueError, match="one prompt per call"):
+            pipeline.generate(
+                input_ids=batch.input_ids, attention_mask=batch.attention_mask, max_new_tokens=3,
+                do_sample=True, eos_token_id=None,
+            )
+        prompt = tokenizer("dog", return_tensors="pt").input_ids
+        out = pipeline.generate(input_ids=prompt, max_new_tokens=3, do_sample=True, eos_token_id=None)
+        assert out.shape == (1, 3)
+
+    def test_num_return_sequences_runs_one_search_per_candidate(self):
+        model = tiny_llama(num_layers=2, hidden=16, heads=2, vocab=VOCAB)
+        tokenizer = wordlevel_tokenizer()
+        calls = []
+
+        def scorer(prompt, continuations, params):
+            calls.append(len(continuations))
+            return [0.0] * len(continuations)
+
+        bon = BestOfN(n=2, scorer=scorer)
+        pipeline, model, tokenizer = _pipeline([bon], model=model, tokenizer=tokenizer)
+        prompt = tokenizer("the cat", return_tensors="pt").input_ids
+        out = pipeline.generate(
+            input_ids=prompt, num_return_sequences=3, max_new_tokens=3, do_sample=True, eos_token_id=None,
+        )
+        assert out.shape == (3, 3)
+        assert calls == [2, 2, 2]  # three searches of two samples each
 
 
 class TestSelfConsistencyRecipe:

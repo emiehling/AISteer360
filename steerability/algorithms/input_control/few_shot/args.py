@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from steerability.algorithms.core.base_args import BaseArgs
+from steerability.algorithms.input_control.common.selectors.base import BaseSelector
 
 _SYSTEM_MODES = frozenset({"append", "prepend", "insert"})
 
@@ -17,6 +18,18 @@ class FewShotArgs(BaseArgs):
                 "Selector for picking examples from the pool. May be a `BaseSelector[dict]` instance, "
                 "a string name (looked up in the few-shot selector registry; e.g. 'random'), or None "
                 "(defaults to `RandomSelector`)."
+            )
+        },
+    )
+
+    selector_seed: int | None = field(
+        default=None,
+        metadata={
+            "help": (
+                "Seed for pool selection when `selector` is a string name (e.g., 'random') or `None`. When set, "
+                "each draw is seeded from this value, the pool polarity, and the query content, which makes the "
+                "examples a query receives independent of call order; the selector must define `reseed()`. "
+                "`None` leaves the selector unseeded. Not accepted with a selector instance, which has its own RNG."
             )
         },
     )
@@ -81,6 +94,11 @@ class FewShotArgs(BaseArgs):
             raise ValueError(f"system_mode must be one of {sorted(_SYSTEM_MODES)}; got {self.system_mode!r}.")
         if not isinstance(self.separator, str):
             raise TypeError(f"separator must be a str; got {type(self.separator).__name__}.")
+        if self.selector_seed is not None and isinstance(self.selector, BaseSelector):
+            raise ValueError(
+                "selector_seed applies only when selector is a name or None; seed the selector instance "
+                f"({type(self.selector).__name__}) directly."
+            )
         if self.positive_example_pool is not None or self.negative_example_pool is not None:
             if self.k_positive is None and self.positive_example_pool:
                 raise ValueError("k_positive must be specified when positive_example_pool is provided.")

@@ -22,6 +22,7 @@ from steerability.algorithms.core.execution.payloads import (
 )
 from steerability.algorithms.core.internals.model_layout import text_config
 from steerability.algorithms.core.output import Output, infer_finish_reasons
+from steerability.algorithms.core.utils.generate_call import generate_call
 from steerability.algorithms.output_control.base import stack_generate_kwargs
 from steerability.algorithms.output_control.common.criteria import StopOnSubstring, StopOnTokens
 from steerability.algorithms.state_control.common.hook_utils import get_model_layer_list
@@ -381,25 +382,41 @@ class ExclusiveSession:
         items: Sequence[GenerationItem],
         params: GenerationParams,
     ) -> list[ItemResult]:
-        """Generate one result per item, each under its own hook registrations.
+        """Generate one result per item under the item's state and output entries.
 
-        Items sharing identical state entries, identical output entries, and identical-or-absent
-        effective seeds execute in one batched `model.generate` pass (right-padded to a common
-        prompt length, then left-packed together); otherwise items decode serially. Caller-supplied `logits_processor` and
-        `stopping_criteria` entries in `params.extra` append after the items' own contributions,
-        and the normalized stop fields compose as stop rules anchored at the prompt length. A
-        seeded item decodes inside a seeded RNG fork, so seeded runs are reproducible and the
-        covered generator state (CPU, plus the model device's) is restored afterwards; when
-        `params.seed` is set and an item carries no seed of its own, the item's seed derives per
-        index, so multi-item fan-outs sample distinct streams.
+        When all items have the same state and output entry objects and the same effective seed
+        (or no seed), they run in one batched `model.generate` call. Their prompts are
+        right-padded to a common length and then left-packed together. Otherwise, the items
+        decode one at a time. Caller-supplied `logits_processor` and `stopping_criteria` entries
+        in `params.extra` are appended after the items' own contributions. The normalized stop
+        fields become stop criteria that apply to the tokens after the prompt.
+
+        An item's own seed is always used. Under `params.seed` with `seed_scope="item"` (the
+        default), an item without a seed of its own gets a seed derived from `params.seed` and
+        the item's index. Items in a multi-item call then sample distinct streams. Under
+        `seed_scope="dispatch"`, when no item has its own seed, all items share one derived seed.
+        A seeded decode runs inside a fork of the RNG state, which makes seeded runs
+        reproducible. The forked generators (the CPU generator and those of the model's device
+        type) are restored afterwards.
+
+        Each `model.generate` call runs inside `generate_call()`. State hooks that count passes
+        restart their count at the prefill of each call. The restart also applies to hooks that
+        `entries_applied` keeps registered across calls.
 
         Args:
             items: The generation items.
             params: Normalized generation parameters shared by all items.
 
         Returns:
-            One `ItemResult` per item, in item order. Each result's `finish_reasons` carries one
-            reason per candidate with the precedence stop, then eos, then length, then None.
+            One `ItemResult` per item, in item order. The `finish_reasons` of each result contain
+            one reason per candidate, with the precedence stop, then eos, then length, then None.
+            An eos inferred only from stripped trailing pads ranks below length.
+
+        Raises:
+            RuntimeError: If the session is closed or no model is available.
+            UnsupportedOperationError: If an item contains a state entry that is not a
+                `HookEntry` or an output entry that is not a `StackEntry`.
+            ValueError: If `params.stop_strings` is set and the session has no tokenizer.
         """
         self._ensure_open()
         model = self.model
@@ -445,7 +462,7 @@ class ExclusiveSession:
             handles = self._register_state_entries(model, item.state_entries)
             try:
                 seed = seeds[index]
-                with self._seeded(seed):
+                with self._seeded(seed), generate_call():
                     if seed is not None:
                         self._apply_seed(seed)
                     full_ids = model.generate(
@@ -496,7 +513,7 @@ class ExclusiveSession:
         stacks = stack_generate_kwargs(processors, criteria)
         handles = self._register_state_entries(model, items[0].state_entries)
         try:
-            with self._seeded(seed):
+            with self._seeded(seed), generate_call():
                 if seed is not None:
                     self._apply_seed(seed)
                 full_ids = model.generate(

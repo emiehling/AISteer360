@@ -33,8 +33,14 @@ where the `ProviderOptions` dataclass contains the provider's configuration:
 - `default_max_tokens`: the default `max_tokens`
 - `reasoning_tags`: the tags used to split thinking from the answer before scoring (`reasoning_tags=None`
   disables the split)
+- `reasoning_opened_at_start`: whether the chat template's generation prompt already opens the reasoning block (a
+  continuation that contains neither tag is then read as unclosed reasoning rather than as an answer)
+- `reasoning_split`: how the split locates the tags (`"text"` on the decoded continuation, `"tokens"` on the
+  continuation ids, or the default `"auto"`, which picks `"tokens"` when `skip_special_tokens=True`
+  strips a tag)
 - `on_unsupported_param`: the policy for `GenerateConfig` parameters the pipeline cannot honor (`"raise"` by
   default or `"warn"`)
+- `seed_scope`: how a seeded dispatch applies its seed to the rows of a batch (see below)
 
 The provider decides how to deliver prompts to the pipeline when it is constructed. With a chat-templated
 tokenizer, prompts are dispatched as `messages=` and every input control participates as it does in
@@ -64,21 +70,25 @@ not be set below `max_batch_size`.
 
 Batching applies only to arms whose enabled controls all declare `supports_batching=True`, and the
 provider otherwise clamps the batch size to 1. Input, state, and structural arms batch. Among output
-controls, only `phased_decoding`, `routed_decoding`, and `stopping_rules` declare batch safety (`rad`
-and `value_guidance` compute it), and most driver-based arms therefore run one sample at a time. Rows
+controls, only `phased_decoding`, `routed_decoding`, and `stopping_rules` declare batch safety (`rad`,
+`value_guidance`, and `constrained_decoding` compute it), and most driver-based arms therefore run one
+sample at a time. An arm that combines a state control with `phased_decoding` or `routed_decoding` also
+runs one sample at a time, since these drivers issue session calls over subsets of the batch. Rows
 of one batch need not share a prompt length. A ragged batch (e.g., few-shot with per-row exemplar
 draws) is left-packed on the Hugging Face backend, and each row's continuation is predicted from its
 own last real token rather than from a trailing pad.
 
 We recommend greedy decoding (`temperature=0`) as the default since it is the norm for capability
 benchmarks and avoids seed sensitivity. Which samples are evaluated is fixed by the suite, independent
-of batch composition. Under sampling, `seed_scope` in `ProviderOptions` sets how seeds are applied.
-The default `"dispatch"` scope seeds each batch as a whole and decodes it in one pass, and the
-`"item"` scope derives a seed per row and decodes one row at a time. Bitwise reproducibility of
-stochastic sampling is not preserved under concurrency, because a sample's batch membership and row
-index depend on the order in which requests arrive. A bitwise-reproducible stochastic run requires
-`max_batch_size=1` and Inspect `max_connections=1`. Even greedy outputs can differ across batch
-compositions, since padded-batch numerics differ from single-item numerics on some kernels.
+of batch composition. Under sampling, `seed_scope` in `ProviderOptions` sets how seeds are applied. The
+default `"dispatch"` scope seeds each batch as a whole and decodes it in one pass, and the `"item"`
+scope derives a seed per row and decodes one row at a time. Note that every `pipeline.generate()` call
+on the Hugging Face backend opens a new session. This means that under `"dispatch"`, every dispatch with
+the same seed starts sampling from the same random state (common random numbers across prompts). Bitwise
+reproducibility of stochastic sampling is not preserved under concurrency, because a sample's batch
+membership and row index depend on the order in which requests arrive. A bitwise-reproducible stochastic
+run requires `max_batch_size=1` and Inspect `max_connections=1`. Even greedy outputs can differ across
+batch compositions, since padded-batch numerics differ from single-item numerics on some kernels.
 Trial-to-trial variation under sampling is therefore measured rather than eliminated, which is the role
 of `num_trials` and the per-metric standard error.
 
@@ -116,9 +126,16 @@ directory (`f"{TASK_FILE}@instruction_following"`).
 Each suite run goes through `inspect_ai.eval_set`, which provides task retry and log-based resume. The
 `.eval` logs under `save_dir/inspect_logs/` are the record of the run, and a re-run completes only the
 missing samples of each (configuration, trial, suite) cell. Since `eval_set` matches on task identity
-only, a changed protocol (seed, generate defaults, provider options, suites, fit, backend) needs a new
-`save_dir` rather than a re-run into the old one. Repetition is trial-based rather than epoch-based,
-and with `seed` set, each (configuration, trial) pair derives one seed.
+only, a changed protocol (seed, generate defaults, provider options, suites, fit, backend, toolkit
+version) needs a new `save_dir` rather than a re-run into the old one. Repetition is trial-based rather
+than epoch-based, and with `seed` set, each (configuration, trial) pair derives one seed.
+
+In version 0.5.3, the `selector_seed` field of `FewShot` enters the configuration identity of every
+fixed `FewShot` instance, which changes its `config_id` and derived trial seeds. The fixed `FewShot`
+arms of a `save_dir` written with version 0.5.2 are therefore recomputed rather than resumed. Also in
+0.5.3, `max_new_tokens` bounds all phases of the phased drivers (`phased_decoding`, `budget_forcing`,
+`routed_decoding`) together, while their `config_id` is unchanged. This means that a re-run into a
+0.5.2 `save_dir` resumes these arms from logs produced under different generation limits.
 
 The runner draws a `tqdm` bar over the (configuration, trial, suite) cells (`progress=True` by
 default) and logs a summary line and one line per cell at INFO. `display="plain"` streams Inspect's
@@ -139,6 +156,32 @@ results frame:
 pivot = frame.pivot_table(index=["suite", "task", "metric"], columns="config", values="value")
 deltas = pivot.sub(pivot["baseline"], axis=0)
 ```
+
+For per-trial analysis, `runner.runs_frame(metrics=...)` pivots the results of one task (selected with
+`suite=` and `task=`) into one row per (pipeline, trial) with one column per metric. Its `params`
+argument attaches a swept constructor argument as a column, given as a (spec name, argument name)
+pair, where the spec name is the `ControlSpec`'s `name` (the control class name by default). The
+`summarize_runs` function (in `steerability.evaluation.runner`) then aggregates the trials of each
+configuration into `{metric}_mean`, `{metric}_std`, and `{metric}_sem` columns and keeps the columns
+listed in `param_cols`. For instance, for a `pasta` arm defined as a `ControlSpec` that sweeps the
+`alpha` argument of `PASTA`:
+
+```python
+from steerability.evaluation.runner import summarize_runs
+
+runs = runner.runs_frame(
+    metrics={"accuracy": "accuracy"},
+    params={"alpha": ("PASTA", "alpha")},
+    suite="capability",
+)
+summary = summarize_runs(runs, metric_cols=["accuracy"], param_cols=["alpha"])
+```
+
+The plotting functions in `steerability.evaluation.plotting` (part of the `eval` extra) take the rows
+of the swept configurations from this summary frame and read the swept argument from the column given
+by `sweep_col`, e.g., `plot_sensitivity` for a metric against the swept argument and `plot_tradeoff`
+for two metrics against each other. Fixed arms such as the baseline are passed through
+`compare_to_pipelines` and drawn as references.
 
 The raw `.eval` logs contain per-sample generations, grades, and finish behavior, which is enough to
 trace a drop in score to its cause (e.g., unparseable output rather than a wrong answer).
@@ -251,6 +294,8 @@ def reranked_qa() -> Task:
     return Task(dataset=MemoryDataset(samples), solver=[runtime_kwargs_solver()], scorer=includes())
 ```
 
-Since the collator refuses one runtime-kwarg name on both tiers, an arm that passes per-sample
+Note that the `n=8` argument of `BestOfN` is the number of samples in one search, and a request for
+several candidates per sample (Inspect's `num_choices`) runs one search per candidate. Also note that
+since the collator refuses one runtime-kwarg name on both tiers, an arm that passes per-sample
 references through `reward_params` cannot also pass per-arm reward hyperparameters under the same
 name. Put those in the scorer's constructor instead.

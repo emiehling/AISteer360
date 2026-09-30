@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from steerability.utils.optional import require
 
-require("inspect_ai")  # anyio arrives through the inspect extra
+require("inspect_ai")  # anyio arrives through the eval extra
 import anyio
 import anyio.to_thread
 

@@ -26,6 +26,7 @@ from steerability.algorithms.core.execution.access import ModelAccess
 from steerability.algorithms.core.execution.session_utils import session_generate
 from steerability.algorithms.core.output import Output, infer_finish_reasons, truncate_at_stop_strings
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.core.utils.generate_call import current_generate_call
 from steerability.algorithms.input_control.base import InputControl
 from steerability.algorithms.input_control.gepa.control import GEPA
 from steerability.algorithms.input_control.prewrite.control import PRewrite
@@ -498,6 +499,25 @@ class TestSessionBatchedFastPath:
         entry_records = [r for r in caplog.records if "distinct state or output entries" in r.message]
         assert len(entry_records) == 1
 
+    @pytest.mark.parametrize("seed_scope", ["item", "dispatch"])
+    def test_each_model_generate_runs_in_its_own_marked_call(self, backend, model, tokenizer, seed_scope):
+        items = [GenerationItem(prompt=PreparedPrompt.from_text("the cat")) for _ in range(2)]
+        params = GenerationParams(max_new_tokens=3, greedy=False, seed=42, seed_scope=seed_scope)
+        observed: list[int | None] = []
+        handle = model.model.layers[0].register_forward_hook(
+            lambda module, args, output: observed.append(current_generate_call())
+        )
+        try:
+            with backend.open_session() as session:
+                session.generate(items, params)
+        finally:
+            handle.remove()
+        assert None not in observed
+        assert observed == sorted(observed)  # each call's passes are contiguous
+        # per-item seeds decode serially with one marked call per item, and a dispatch seed batches
+        assert len(set(observed)) == (2 if seed_scope == "item" else 1)
+        assert current_generate_call() is None
+
     def test_stop_strings_compose_and_classify(self, backend, tokenizer):
         item = GenerationItem(prompt=PreparedPrompt.from_text("the cat"))
         params = GenerationParams(
@@ -790,6 +810,45 @@ class TestDriversOverSessions:
         )
         assert torch.equal(via_session, direct)
 
+
+class TestWholeBatchDriverWithStateHooks:
+    """A driver whose one session call covers every row, under in-process state hooks built for the batch."""
+
+    @staticmethod
+    def _controls():
+        generator = torch.Generator().manual_seed(5)
+        vector = SteeringVector(model_type="llama", directions={1: torch.randn(1, 16, generator=generator)})
+        return [CAA(steering_vector=vector, layer_id=1, multiplier=4.0, token_scope="after_prompt")]
+
+    @staticmethod
+    def _batch(tokenizer):
+        encoded = tokenizer(["the cat sat on", "the dog"], return_tensors="pt", padding=True)
+        return {"input_ids": encoded["input_ids"], "attention_mask": encoded["attention_mask"]}
+
+    def test_batch_under_item_seeds_is_refused(self, model, tokenizer):
+        pipeline = _pipeline(model, tokenizer, [*self._controls(), _SessionProbeDriver()])
+        with pytest.raises(ValueError, match="seed_scope='dispatch' or generate one prompt per call"):
+            pipeline.generate(**self._batch(tokenizer), max_new_tokens=3, do_sample=True, seed=1)
+
+    @pytest.mark.parametrize(
+        "generate_kwargs",
+        [{"do_sample": True, "seed": 1, "seed_scope": "dispatch"}, {"do_sample": False}],
+        ids=["dispatch-seed", "unseeded"],
+    )
+    def test_batch_matches_the_driverless_pipeline(self, model, tokenizer, generate_kwargs):
+        with_driver = _pipeline(model, tokenizer, [*self._controls(), _SessionProbeDriver()])
+        driverless = _pipeline(model, tokenizer, self._controls())
+        kwargs = dict(**self._batch(tokenizer), max_new_tokens=3, eos_token_id=None, **generate_kwargs)
+        assert torch.equal(with_driver.generate(**kwargs), driverless.generate(**kwargs))
+
+    def test_single_prompt_under_item_seeds_runs(self, model, tokenizer):
+        pipeline = _pipeline(model, tokenizer, [*self._controls(), _SessionProbeDriver()])
+        outputs = pipeline.generate(
+            input_ids=torch.tensor([[0, 3, 4]]), n=2, max_new_tokens=3, do_sample=True, seed=1, return_output=True,
+        )
+        assert len(outputs) == 2  # one output per candidate of the one prompt row
+
+
 class TestPortableRequirements:
 
     def _generate_ok_on_vllm(self, control) -> bool:
@@ -1011,6 +1070,26 @@ class TestSerialSeedStateHooks:
         assert clone._gate is not control._gate  # per-row gate state never shared across clones
         assert type(clone._gate) is type(control._gate)
         assert clone.interventions[0].transform is control.interventions[0].transform  # artifacts shared
+
+    def test_clone_for_call_memo_shares_gate_across_controls(self, model, tokenizer):
+        from steerability.algorithms.state_control.common.gating import CallableReadout, Evidence, Gate, PerKeyThreshold
+
+        gate = Gate(
+            Evidence((0,), CallableReadout(lambda pooled, layer_id: pooled.mean(dim=-1))),
+            PerKeyThreshold(threshold=0.0, comparator="ge"),
+        )
+        driver = ActivationAdapter(transform=RecordingTransform(), layer_ids=[1], gate=gate)
+        follower = ActivationAdapter(
+            transform=RecordingTransform(), layer_ids=[1], gate=gate, gate_driven_externally=True,
+        )
+        driver.steer(model, tokenizer)
+        follower.steer(model, tokenizer)
+        memo: dict = {}
+        driver_clone = driver.clone_for_call(memo=memo)
+        follower_clone = follower.clone_for_call(memo=memo)
+        assert driver_clone._gate is follower_clone._gate  # one copy per memo, shared by both clones
+        assert driver_clone._gate is not gate
+        assert follower.clone_for_call(memo={})._gate is not driver_clone._gate
 
     def test_clone_for_call_keeps_ungated_interventions_ungated(self, model, tokenizer):
         control = ActivationAdapter(transform=RecordingTransform(), layer_ids=[1])

@@ -4,7 +4,6 @@ import warnings
 
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from steerability.algorithms.output_control.base import OutputControl
 from steerability.algorithms.output_control.common.drivers.phased import Fixed, Generated, PhasedDriver
 from steerability.algorithms.output_control.phased_decoding.args import PhasedDecodingArgs
 
@@ -60,23 +59,41 @@ def _parse_phase(entry: dict):
 
 
 class PhasedDecoding(PhasedDriver):
-    """Config-first phase-shape driver: forced / generated segments spliced into one stream.
+    """Decoding driver that runs a configured plan of fixed and generated phases.
 
-    `PhasedDecoding` is the generic over the phase shape, a thin `Args`-configured preset of the
-    `common` `PhasedDriver`. A declarative `plan` grammar (str-or-callable forced text and bounded
-    generated segments) makes a method from the literature an assignment of a config:
+    The `plan` argument is a list of phase dicts. Each dict has exactly one of two keys:
 
-        - Budget forcing (s1): a bounded thinking phase, a forced `"Wait"`, an extended thinking
-          phase, a forced closing tag, then an unbounded answer phase.
-        - Response prefill: `plan=[{"fixed": "Sure, here is the answer:\\n"}, {"generate": {}}]`.
-        - Scaffolded output: alternating `{"fixed": <header>}` / `{"generate": {"until": "\\n\\n"}}`.
-        - ThinkingIntervention-equivalent: a single replacing `Fixed` intervention + `Generated`,
-          with `extract_after="</think>"`.
+    - `{"fixed": text, "replace": False, "add_special_tokens": False}` appends `text` (a string, or a
+      callable `(prompt_text, params) -> str`) without generating. With `"replace": True`, the text
+      replaces the stream instead.
+    - `{"generate": {"until": None, "until_token_ids": (), "budget": None}}` generates until the
+      `until` text, a token in `until_token_ids`, or `budget` tokens, whichever comes first.
+      `{"generate": {}}` has no boundary of its own and is limited only by the call's generation
+      parameters.
 
-    `PhasedDecoding` is a decoding driver: at most one enabled driver runs per pipeline, and every
-    `Generated` phase delegates to `model.generate` with the composed stacks, so a step-level
-    control steers each generated phase. Plans are constructed per example (the driver
-    loops over rows), so `supports_batching` is True.
+    The plan is validated at construction, and an invalid entry raises `ValueError`. A plan without a
+    `"generate"` phase emits a `UserWarning`. The `extract_after` argument (default None) sets a
+    marker, e.g., `"</think>"`. When a candidate's decoded continuation contains the marker, only the
+    text after its last occurrence is returned. Methods from the literature correspond to the
+    following plans:
+
+    - Budget forcing (s1): a thinking phase with a budget, a fixed `"Wait"`, a second thinking phase,
+      a fixed closing tag, and an answer phase without a budget.
+    - Response prefill: `plan=[{"fixed": "Sure, here is the answer:\\n"}, {"generate": {}}]`.
+    - Scaffolded output: alternating `{"fixed": <header>}` and `{"generate": {"until": "\\n\\n"}}`
+      entries.
+    - Thinking intervention: a replacing `"fixed"` phase that rewrites the prompt with the
+      intervention text, then a `"generate"` phase, with `extract_after="</think>"`.
+
+    Every `"generate"` phase applies the composed logits processors and stopping criteria, and a
+    step-level control in the pipeline steers each generated phase. The caller's `max_new_tokens`
+    limits the tokens appended to each candidate across all phases. `supports_batching` is True since
+    the driver runs the plans of all rows and candidates together.
+
+    The following `runtime_kwargs` are accepted:
+
+    - `"params"`: A mapping passed as `params` to callable `"fixed"` texts. A list or tuple value
+      contains one entry per row, and any other value applies to every row.
 
     Reference:
 
@@ -96,16 +113,18 @@ class PhasedDecoding(PhasedDriver):
 
     tokenizer: PreTrainedTokenizerBase | None = None
 
-    def __init__(self, *args, **kwargs):
-        # route through OutputControl (validate PhasedDecodingArgs, mirror fields, then _configure)
-        OutputControl.__init__(self, *args, **kwargs)
-
     def _configure(self) -> None:
-        """Parse and validate the declarative plan into `Fixed` / `Generated` phases.
+        """Parse and validate the declarative plan into `Fixed` and `Generated` phases.
 
-        The `plan` arg is mirrored onto the instance by `OutputControl.__init__`, which would shadow
-        this class's `plan()` method (the driver calls `self.plan(...)`). Capture the raw list into
-        `_parsed_plan`, then drop the instance attribute so the method is visible again.
+        The constructor copies the `plan` argument onto the instance, where it would shadow the
+        `plan()` method that the driver calls. The parsed phases are stored in `_parsed_plan`, and
+        the instance attribute is removed so that `plan()` is visible again.
+
+        Raises:
+            ValueError: If a plan entry is malformed.
+
+        Warns:
+            UserWarning: If the plan contains no `generate` phase.
         """
         raw_plan = self.plan
         self._parsed_plan = [_parse_phase(entry) for entry in raw_plan]
@@ -125,9 +144,26 @@ class PhasedDecoding(PhasedDriver):
         return model
 
     def plan(self, prompt_text: str, params: dict) -> list:
-        """Return the parsed phase plan (per-example callables in `Fixed` are invoked by `_run_plan`)."""
+        """Return the phase plan parsed from the `plan` argument.
+
+        The same plan is returned for every row. Callable `Fixed` texts are evaluated per row when
+        the plan runs.
+
+        Args:
+            prompt_text: The row's decoded prompt (unused).
+            params: The row's plan parameters (unused).
+
+        Returns:
+            The list of `Fixed` and `Generated` phases.
+        """
         return self._parsed_plan
 
     def max_rollouts_per_query(self) -> int:
-        """The number of `Generated` phases in the parsed plan (each phase is one rollout)."""
+        """Return the number of `Generated` phases in the plan.
+
+        Each `Generated` phase requests one rollout per candidate.
+
+        Returns:
+            The bound on the rollouts for one candidate of one row.
+        """
         return sum(isinstance(phase, Generated) for phase in self._parsed_plan)

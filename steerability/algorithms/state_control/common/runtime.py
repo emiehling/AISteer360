@@ -5,18 +5,22 @@ owns one control's per-generation mutable state. It covers hidden-state extracti
 re-wrapping, KV-cache position tracking, token-scope masking, condition scoring, and gated
 transform application. Four behaviors define the runtime's contract:
 
-1. **Position tracking**: Each pass's absolute position offset is read from the hooked module's
-    pass positions when it supplies them (from the `cache_position` kwarg, or reconstructed from
-    `position_ids`; decoder layers receive `position_ids` on every pass), so positions are exact
-    per forwarded sequence even when a decoding driver issues several `generate` calls or an output
-    control forwards the model mid-step. Hook points whose modules receive neither kwarg (attention
-    output projections, norm sub-modules) fall back to counting, which assumes the model processes
-    the full prompt on the prefill pass and one new token per decode pass; exactly one designated
-    pass-opener hook advances the shared offset by the observed sequence length once per pass, and
-    every other hook in that pass reads the opener's snapshot. The fallback assumes a single
-    `generate` call per generation.
+1. **Position tracking**: The absolute position offset of each pass is read from the pass
+    positions of the hooked module when the module supplies them. The positions come from the
+    `cache_position` kwarg or are reconstructed from `position_ids`, which decoder layers receive
+    on every pass. Positions are then exact for each forwarded sequence, including when a decoding
+    driver issues several `generate` calls or an output control runs the model mid-step. Hook
+    points whose modules receive neither kwarg (attention output projections, norm sub-modules)
+    fall back to counting passes. Counting assumes that the prefill pass processes the full prompt
+    and that each decode pass processes one new token. Exactly one designated pass-opener hook
+    advances the shared offset by the observed sequence length once per pass. The other hooks in
+    that pass read the offset that the opener recorded. The count restarts at the first pass of
+    each `model.generate` call that an in-process session marks via `generate_call()`, since each
+    call prefills from position 0. The restart also applies to hooks that stay registered across
+    several session calls. Outside marked calls, counting assumes one `generate` call per
+    generation.
 
-2. **Row gating**: Gates hold one decision per logical row, one per prompt. HuggingFace
+2. **Row gating**: Gates store one decision per logical row, one per prompt. HuggingFace
     `generate` may expand the hidden batch to `B_logical * num_beams` via
     `repeat_interleave`. The runtime collapses condition scores from the expanded batch to
     logical rows before calling `gate.update()`, and expands `gate.open_rows()` back to the
@@ -30,7 +34,8 @@ transform application. Four behaviors define the runtime's contract:
 4. **Auxiliary passes**: Forwards marked via `auxiliary_pass()` (same-model candidate scoring,
     variant-prompt branches) never feed condition scorers or gates and never advance the
     fallback counter. Trajectory-aligned auxiliary passes are transformed at their true
-    positions when the pass positions are available; detached ones are never transformed.
+    positions when the pass positions are available. Detached auxiliary passes are never
+    transformed.
 """
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ import torch
 
 from steerability.algorithms.core.internals.pooling import aggregate_condition_hidden
 from steerability.algorithms.core.utils.auxiliary_pass import current_auxiliary_pass
+from steerability.algorithms.core.utils.generate_call import current_generate_call
 
 from .gating import Gate
 from .hook_utils import extract_hidden_states, replace_hidden_states
@@ -81,6 +87,7 @@ class TransformHookRuntime:
         self._offset: int = 0
         self._pass_offset: int = 0
         self._prefill_seen: bool = False
+        self._generate_call: int | None = None
         self._opener_built: bool = False
         self._clock_seen: bool = False
         self._warned: set[str] = set()
@@ -116,6 +123,7 @@ class TransformHookRuntime:
         self._offset = 0
         self._pass_offset = 0
         self._prefill_seen = False
+        self._generate_call = None
         self._opener_built = False
         self._clock_seen = False
         self._warned = set()
@@ -179,15 +187,18 @@ class TransformHookRuntime:
     def _position_offset(
         self, seq_len: int, cache_position: torch.Tensor | None, is_pass_opener: bool
     ) -> int | None:
-        """Resolve the absolute position offset for the current pass, or None to skip the pass.
+        """Return the absolute position offset of the current pass, or None to skip the pass.
 
-        Auxiliary passes (marked via `auxiliary_pass()`) never advance the fallback counter. An
-        aligned auxiliary pass is positioned by the pass positions when the hooked module supplies
-        them (from `cache_position` or `position_ids`) and skipped otherwise; a detached auxiliary
-        pass is always skipped. Ordinary passes take their offset from the pass positions when
-        present. The opener maintains the fallback counter on every ordinary pass, so hook points
-        without either kwarg keep the one-pass-one-step accounting unchanged and an anomalous pass
-        missing them degrades to counting.
+        An auxiliary pass (marked via `auxiliary_pass()`) never advances the fallback counter. An
+        aligned auxiliary pass takes its offset from the pass positions when the hooked module
+        supplies them (from `cache_position` or `position_ids`), and is skipped otherwise. A
+        detached auxiliary pass is always skipped. An ordinary pass takes its offset from the pass
+        positions when they are present, and from the fallback counter otherwise. The opener
+        advances the counter on every ordinary pass, including passes that supply positions. The
+        counter therefore stays current for hooks at points that receive neither kwarg, and for
+        a pass that lacks positions after earlier passes supplied them. The opener restarts the
+        counter on the first ordinary pass of each `model.generate` call marked via
+        `generate_call()`, since the prefill of each call starts at position 0.
 
         Args:
             seq_len: The sequence length seen by this hook on this call.
@@ -200,10 +211,14 @@ class TransformHookRuntime:
             pass must be skipped.
 
         Warns:
-            UserWarning: Once per generation for each of: an aligned auxiliary pass at a hook point
-                without pass positions (its transform is skipped); a multi-token ordinary pass
-                after prefill at such a hook point (a multi-call decode pattern that counting cannot
-                place); pass positions disappearing after having been observed.
+            UserWarning: At most once per generation for each of the following cases:
+
+                - An aligned auxiliary pass reaches a hook point without pass positions. Its
+                    transform is skipped.
+                - An ordinary pass with more than one token reaches such a hook point after the
+                    prefill, as happens with a second `generate` call that is not marked via
+                    `generate_call()`. Counting cannot place such a pass.
+                - A pass lacks positions after earlier passes supplied them.
         """
         aux = current_auxiliary_pass()
         if aux is not None:
@@ -221,6 +236,11 @@ class TransformHookRuntime:
             return None
 
         if is_pass_opener:
+            call = current_generate_call()
+            if call is not None and (self._generate_call is None or call > self._generate_call):
+                # a new marked generate call prefills its stream from position 0
+                self._generate_call = call
+                self._prefill_seen = False
             if self._prefill_seen:
                 if seq_len > 1 and cache_position is None:
                     self._warn_once(

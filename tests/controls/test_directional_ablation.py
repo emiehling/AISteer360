@@ -10,11 +10,17 @@ import pytest
 import torch
 
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.common.estimators import (
+    ContrastiveDirectionEstimator,
+    MeanDifferenceEstimator,
+)
+from steerability.algorithms.state_control.common.fit_specs import VectorTrainSpec
 from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 from steerability.algorithms.state_control.common.transforms import ProjectionTransform
 from steerability.algorithms.state_control.directional_ablation.args import DirectionalAblationArgs
 from steerability.algorithms.state_control.directional_ablation.control import DirectionalAblation
 from tests.utils.sweep import build_param_grid
+from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 PROMPT_TEXT = "Give me a short set of instructions to follow when you respond."
 
@@ -299,3 +305,38 @@ def test_ablation_estimation_path(model_and_tokenizer, device: torch.device):
     assert isinstance(out_ids, torch.Tensor)
     assert out_ids.ndim == 2
     assert out_ids.size(1) >= 1
+
+
+@pytest.mark.parametrize("method, estimator_name", [
+    ("mean_diff", "MeanDifferenceEstimator"),
+    ("pca_pairwise", "ContrastiveDirectionEstimator"),
+    ("pca_center", "ContrastiveDirectionEstimator"),
+])
+def test_train_spec_method_selects_estimator(monkeypatch, method, estimator_name):
+    """`mean_diff` fits by the difference in means; both PCA methods fit through the PCA estimator."""
+    fits = []
+    for estimator_cls in (MeanDifferenceEstimator, ContrastiveDirectionEstimator):
+        def _recording_fit(self, *args, _fit=estimator_cls.fit, **kwargs):
+            vector = _fit(self, *args, **kwargs)
+            fits.append((type(self).__name__, kwargs["spec"].method, vector))
+            return vector
+
+        monkeypatch.setattr(estimator_cls, "fit", _recording_fit)
+
+    data = {
+        "positives": ["the cat sat on the mat", "the dog ran fast", "the cat ran"],
+        "negatives": ["the mat", "the dog sat", "on the mat"],
+    }
+    ablation = DirectionalAblation(
+        data=data,
+        train_spec=VectorTrainSpec(method=method, accumulate="all", prompt_format="raw"),
+        layer_ids=[1],
+    )
+    torch.manual_seed(0)
+    pipeline = SteeringPipeline(controls=[ablation], model=tiny_llama(), tokenizer=wordlevel_tokenizer())
+    pipeline.steer()
+
+    assert [(name, used_method) for name, used_method, _ in fits] == [(estimator_name, method)]
+    fitted = fits[0][2]
+    assert (fitted.explained_variances is not None) == (method != "mean_diff")
+    assert ablation._layer_ids == [1]

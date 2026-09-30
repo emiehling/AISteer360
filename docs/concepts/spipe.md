@@ -63,8 +63,12 @@ or `allow_stale=True`).
 ## Verification
 
 `spipe.verify()` reports on a bundle without loading a model: format validity, artifact integrity, staleness, version
-compatibility, and whether the bundle references code. At `steer()` time, frozen steering artifacts are checked
-against the model they are being installed on, under a policy chosen at `pipeline(verify=...)`:
+compatibility, and whether the bundle references code. The staleness check decodes the recipe of each entry whose
+frozen artifacts record a digest. An entry whose recipe does not decode in this process (e.g., a method key that is
+not registered) is reported with a warning that its staleness check could not run. When the recorded or the running
+toolkit version is `"unknown"` (the package is not installed), the versions are not compared. At `steer()` time,
+frozen steering artifacts are checked against the model they are being installed on, under a policy chosen at
+`pipeline(verify=...)`:
 
 - `"strict"` (default): a wrong architecture or width is an error. A calibrated artifact (a probe, a gate threshold)
   on a model with a different weight fingerprint is an error. A direction artifact on different weights of the same
@@ -75,21 +79,66 @@ against the model they are being installed on, under a policy chosen at `pipelin
 ## Trust and `allow_code`
 
 A `.spipe` from someone else is untrusted input. Loading never unpickles by default. Tensors are stored only as
-safetensors, archives are extracted behind zip-safety guards, and every artifact is verified against its content
-hash. Two things require an explicit `allow_code=True` at load, similar to `trust_remote_code`:
+safetensors, archives are extracted behind zip-safety guards (symlinks are rejected, both as archive members and as
+artifact entries), and every artifact is verified against its content hash (an id of the form `sha256:` followed by 64
+lowercase hex digits). A store sidecar whose type or encoding disagrees with the manifest's artifact record raises
+`SpipeIntegrityError`. Three things require an explicit `allow_code=True` at load, similar to `trust_remote_code`:
 
-- References to Python callables, e.g., a scorer function a prompt optimizer was configured with. The manifest's
-  `code_dependent` flag says up front whether a bundle needs this, and the referenced modules must be on the import
-  path.
-- Pickle-backed memory payloads (CPO's trained scorer memory), since unpickling executes code.
+- References to Python callables (`$ref`), e.g., a scorer function a prompt optimizer was configured with. The
+  manifest's `code_dependent` flag says up front whether a bundle needs this, and the referenced modules must be on the
+  import path.
+- Dataclasses (`$dc`) other than the toolkit dataclasses whose construction only validates their fields
+  (`codec.DECODABLE_DATACLASSES`), since decoding a dataclass calls its constructor. Toolkit enums decode without it,
+  and `$dc` never constructs anything other than a dataclass or an enum.
+- Artifact payloads that contain pickled files, since unpickling executes code. These include CPO's trained scorer
+  memory, `PoolMemory` payloads, and any adapter or checkpoint directory with pickle-format files (e.g., `.pkl`, `.pt`,
+  `.pth`, `.ckpt`, or a `.bin` file that is a zip archive or a pickle stream). Freezing leaves TRL trainer state
+  (`training_args.bin`, optimizer, scheduler, scaler, and RNG state) out of adapter and checkpoint directories, and
+  logs a warning when a frozen directory still contains pickled files.
+
+Note that `allow_code` governs decoding only. Recipe args such as `trust_remote_code` take effect when the pipeline is
+steered, which means that an untrusted bundle should be steered in a sandbox.
+
+LoRA and checkpoint bundles that version 0.5.2 froze from the TRL wrappers contain `training_args.bin` and therefore
+need `allow_code=True`. Re-freezing such a bundle with version 0.5.3 or later leaves the trainer state out, and the
+re-frozen bundle loads without `allow_code` when its weights are stored as safetensors.
 
 Frozen prompt-optimization bundles keep their search-only arguments (scorers, budgets) for provenance. A bundle whose
 optimizer used a custom scorer is therefore code-dependent even though the frozen memory never calls it.
 
 A bundle can also name a method defined outside the toolkit tree, registered with `register_method` (see
 [adding your own steering method](../tutorials/add_new_steering_method.md#controls-outside-the-toolkit-tree)). Since
-registration happens at import time, the defining package must be imported before the bundle is loaded. The registry
-error raised otherwise names `register_method` as the fix.
+registration happens at import time, the defining package must be imported before the bundle's controls are
+instantiated. Without it the bundle still loads, and instantiating that entry fails with an error that points at
+`register_method`. Note that `recipe_id`, the `config_id` of an unfrozen bundle, and `describe()` instantiate every
+entry, and they fail the same way.
+
+## Inspecting entries
+
+The `entries` property lists the manifest's control entries as `SpipeEntry` records (`index`, `method`, `enabled`,
+the encoded `args`, and whether a `resolved` section exists) without decoding them. The
+`instantiate_entry(index, prefer=, verify=, lenient=)` method returns the control(s) of one entry through the same
+decoding path that `pipeline()` uses. Errors are raised per entry. An unregistered method key, a malformed value, or
+args the constructor rejects raise `SpipeFormatError`, and an entry that needs code raises `SpipeCodeRefError`.
+With `lenient=True`, no bundle code is imported or run (`$ref` values become inert markers, `$data` stays an unloaded
+`DataRef`, and no dataset loads). This allows each entry's base class, `steer_access()`, and `requirements()` to be
+inspected before the bundle is steered:
+
+```python
+from steerability.spipe import SPipe, SpipeError
+
+spipe = SPipe.load("submission.spipe")
+for entry in spipe.entries:
+    try:
+        controls = spipe.instantiate_entry(entry.index, lenient=True)
+    except SpipeError as error:  # e.g., an unregistered method key, or an entry that needs code
+        print(entry.method, error)
+        continue
+    print(entry.method, [control.steer_access() for control in controls])
+```
+
+Note that an entry that needs code (e.g., a `$dc` class outside `codec.DECODABLE_DATACLASSES`, or a pickle-bearing
+artifact) raises `SpipeCodeRefError` under `lenient=True`, even when the bundle was loaded with `allow_code=True`.
 
 ## Identity
 

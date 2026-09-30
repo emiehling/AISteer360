@@ -4,6 +4,7 @@ Core steering pipeline for composing and applying multiple LLM control methods.
 import contextlib
 import logging
 import time
+import traceback
 import warnings
 import weakref
 from collections.abc import Mapping
@@ -20,6 +21,7 @@ from steerability.algorithms.core.execution.backend import SteeredSession, capab
 from steerability.algorithms.core.execution.contracts import (
     BackendCapabilities,
     Capability,
+    SupportFailure,
     SupportReport,
     evaluate_support,
 )
@@ -38,7 +40,12 @@ from steerability.algorithms.core.execution.payloads import (
 )
 from steerability.algorithms.core.execution.session_utils import ScopedSession
 from steerability.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
-from steerability.algorithms.core.execution.staging import capture_smoke_failure, verify_stage_released
+from steerability.algorithms.core.execution.staging import (
+    capture_smoke_failure,
+    free_stage_memory,
+    split_artifacts,
+    verify_stage_released,
+)
 from steerability.algorithms.core.output import Output, infer_finish_reasons, truncate_at_stop_strings
 from steerability.algorithms.core.utils.assembly import (
     apply_scoring_processors,
@@ -300,12 +307,41 @@ class SteeringPipeline:
             self.device = self.model.device
         logger.info("Loaded model %s in %.0fs.", model_ref, time.monotonic() - started)
 
+    def _load_stage_model(self, model_ref: str, artifacts: Sequence[Artifact] = ()) -> None:
+        """Load the staged in-process model and bind it as `model`.
+
+        With no artifacts, the stage loads `model_ref`. Otherwise the stage loads the weights
+        that the engine serves, using the first artifact of each type in `artifacts`. A
+        `CheckpointArtifact` is loaded from its path in place of `model_ref`. The adapter of a
+        `LoRAArtifact` is loaded for inference onto the loaded model and merged into its weights.
+
+        Args:
+            model_ref: The base model reference.
+            artifacts: The structural artifacts handed to the engine, or an empty sequence to
+                load the base weights.
+        """
+        checkpoint, lora = split_artifacts(artifacts)
+        self._load_in_process_model(checkpoint.path if checkpoint is not None else model_ref)
+        if lora is not None:
+            from peft import PeftModel
+
+            logger.info("Attaching LoRA adapter %s to the staged model.", lora.path)
+            adapted = PeftModel.from_pretrained(self.model, lora.path, is_trainable=False)
+            self.model = adapted.merge_and_unload()
+
     @property
     def supports_batching(self) -> bool:
         """Return True if all enabled controls in this pipeline are batch-safe.
 
-        The default decoding driver is batch-safe, so an empty `output_controls` list is vacuously
-        true and does not constrain batching.
+        An empty `output_controls` list does not constrain batching, since the default decoding
+        driver is batch-safe. An enabled decoding driver that sets `whole_batch_rollouts` to
+        False is not batch-safe when an enabled state control is present, because state hooks
+        are built once for the whole batch. A driver that keeps `whole_batch_rollouts` True is
+        batch-safe with state controls. The result does not depend on the backend or on the
+        arguments of a `generate()` call. Note that `generate()` rejects a batch of more than one
+        prompt for any decoding driver when enabled state controls run as in-process hooks and
+        the call passes a seed with `seed_scope="item"`. Passing `seed_scope="dispatch"` avoids
+        this.
         """
         controls = (
             *self.structural_controls,
@@ -313,11 +349,12 @@ class SteeringPipeline:
             *self.state_controls,
             *self.output_controls,
         )
-        return all(
-            getattr(control, "supports_batching", False)
-            for control in controls
-            if control.enabled
-        )
+        if not all(getattr(control, "supports_batching", False) for control in controls if control.enabled):
+            return False
+        decoding_driver = resolve_decoding_driver(self.output_controls)
+        if decoding_driver is not None and not decoding_driver.whole_batch_rollouts:
+            return not any(control.enabled for control in self.state_controls)
+        return True
 
     def _inject_tokenizer(self) -> None:
         """Attach the pipeline tokenizer to every control exposing an unset `tokenizer`."""
@@ -443,29 +480,83 @@ class SteeringPipeline:
         self.release_backends()
 
     def check(self, backend: BackendSpec | str | None = None) -> SupportReport:
-        """Evaluate every enabled control's backend requirements and compute the steer plan.
+        """Check every enabled control's backend requirements and compute the steer plan.
 
-        Runs automatically at `steer()` (which raises on generate-phase failures) and is
-        callable standalone against any backend. Disabled controls, including the pipeline's
-        default identity controls, never gate a backend and do not appear in the report. The
-        returned report's `plan` states, per enabled control and per fit artifact, where the
-        steer phase will run each step; the plan is a pure function of the declarations and
-        the spec, so the same configuration always yields the same verdicts and plan.
+        `steer()` runs this check and raises `UnsupportedPipelineError` on any generate-phase
+        failure. The check can also run on its own against any backend. Disabled controls do not
+        affect the result and do not appear in the report. The `plan` of the report states where
+        the steer phase runs each step, for each enabled control and each fit artifact. The
+        verdicts and the plan depend only on the controls' declarations and the backend spec.
+        The same configuration therefore always gives the same report.
+
+        Declarative constraints and processor specs are lowered onto the backend only on the
+        default decode path. Under an enabled `DecodingDriver`, each enabled output control that
+        exports either form requires `Capability.IN_PROCESS_TORCH` at generate. When the backend
+        lacks it, the report contains a failure that identifies the control and the driver.
 
         Args:
-            backend: Backend to evaluate against. Defaults to the pipeline's `backend`, then
-                to the implicit in-process backend.
+            backend: Backend to check against. Defaults to the pipeline's `backend`, then to the
+                implicit in-process backend.
 
         Returns:
             The `SupportReport` with the steer plan and one failure per unsupported
             (control, phase) pair.
+
+        Raises:
+            TypeError: If `backend` is not None, a known backend kind, or a `BackendSpec`.
         """
         spec = self._resolve_backend_spec(backend if backend is not None else self.backend)
         capabilities = capabilities_for_spec(spec)
         controls = (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls)
         report = evaluate_support(controls, spec, capabilities)
+        failures = report.failures + self._driver_lowering_failures(spec, capabilities)
         plan = self._compute_plan(controls, spec, capabilities)
-        return replace(report, plan=plan)
+        return replace(report, failures=failures, plan=plan)
+
+    def _driver_lowering_failures(
+        self, spec: BackendSpec, capabilities: BackendCapabilities,
+    ) -> tuple[SupportFailure, ...]:
+        """Return a generate-phase failure for each output control whose export cannot be lowered under the driver.
+
+        A control's declarative constraint (`export_constraint()`) or processor spec
+        (`export_processor_spec()`) is lowered onto the backend's request parameters only when no
+        `DecodingDriver` is enabled. Under an enabled driver, the control adds its in-process
+        logits processor to the driver's `logits_processors`, which requires
+        `Capability.IN_PROCESS_TORCH`. The exports are read with no runtime kwargs.
+
+        Args:
+            spec: The backend spec, used in the failure messages.
+            capabilities: The capabilities of the backend.
+
+        Returns:
+            One failure for each enabled output control that exports a constraint or a processor
+            spec, when an enabled driver is present and the backend lacks
+            `Capability.IN_PROCESS_TORCH`. Otherwise an empty tuple.
+        """
+        if Capability.IN_PROCESS_TORCH in capabilities.atoms:
+            return ()
+        driver = resolve_decoding_driver(self.output_controls)
+        if driver is None:
+            return ()
+        driver_name = type(driver).__name__
+        failures: list[SupportFailure] = []
+        for control in self.output_controls:
+            if not control.enabled:
+                continue
+            if control.export_constraint() is None and control.export_processor_spec() is None:
+                continue
+            name = type(control).__name__
+            failures.append(SupportFailure(
+                control=name,
+                phase="generate",
+                message=(
+                    f"{name} is unsupported at generate on backend kind '{spec.kind}': missing "
+                    f"{Capability.IN_PROCESS_TORCH.name}, because {name} lowers to the backend only "
+                    f"without a decoding driver and {driver_name} is the pipeline's decoding driver; "
+                    f"run this pipeline on the huggingface backend or drop {driver_name}."
+                ),
+            ))
+        return tuple(failures)
 
     def _compute_plan(
         self,
@@ -542,9 +633,12 @@ class SteeringPipeline:
         is the pipeline model, and every control that can touch it runs in the stage phase, so
         per-phase global order preserves the composition semantics of the single-phase order.
 
-        A failed steer releases any backends it constructed before re-raising, so it does not
-        leave an engine behind and a retried steer re-boots. A repeated call on an
-        already-steered pipeline is a no-op.
+        When a steer fails, the pipeline's backends are released and any staged in-process model
+        is freed before the error propagates. No engine or stage weights remain loaded, and a
+        retried `steer()` starts new engines. The stage frames in the error's traceback are
+        cleared of their local variables, which frees the stage weights even while the caller
+        keeps a reference to the error. A post-mortem debugger shows those frames without their
+        local variables. A repeated call on an already-steered pipeline is a no-op.
 
         Warns:
             UserWarning: If two or more enabled controls declare the same `RUNTIME_KWARGS_SCHEMA`
@@ -704,20 +798,33 @@ class SteeringPipeline:
             )
 
     def _steer_on_engine(self, spec: BackendSpec, plan: SteerPlan, steer_kwargs: dict) -> None:
-        """Run the staged steer: stage-venued steps on a temporary in-process model, freed
-        before the engine boots, then session-venued steps through the engine session.
+        """Run the steer on an engine backend, first on a staged model and then on the engine.
 
-        When the plan assigned any fit to engine capture, one single-prompt capture smoke test
-        runs before any session-venued steer; on failure the affected controls' venues revise
-        to the stage (the engine is released first, so weights and engine never coexist) and
-        the remaining session-venued steers run against a re-booted engine. No control's
-        steer() ever runs twice.
+        The stage-venued steps run first on a temporary in-process model, which is freed before
+        the engine starts. The session-venued steps then run through the engine session. When the
+        plan runs any fit on the engine session, one single-prompt capture smoke test runs before
+        the session-venued steps. If the test fails, the engine is released, and the controls
+        with those fits run on a new stage instead. The stage model and the engine are never
+        loaded at the same time. The new stage loads the model that the engine serves, including
+        the structural artifacts. The remaining session-venued steps then run on a new engine.
+        The `steer()` of each control runs at most once.
+
+        Args:
+            spec: The engine backend spec.
+            plan: The steer plan computed by `check()`.
+            steer_kwargs: Keyword arguments forwarded to each control's `steer()`.
+
+        Warns:
+            UserWarning: For each notice in `plan` when the plan has stage-venued steps, and when
+                the capture smoke test fails.
         """
         controls = self._enabled_controls()
         steps = {id(control): step for control, step in zip(controls, plan.steps)}
         stage_controls = [c for c in controls if steps[id(c)].venue == "stage"]
         session_controls = [c for c in controls if steps[id(c)].venue == "session"]
 
+        # the first stage collects the artifacts of this call's structural steers
+        self._structural_artifacts = ()
         if plan.stages:
             for notice in plan.notices:
                 warnings.warn(notice, UserWarning)
@@ -740,7 +847,9 @@ class SteeringPipeline:
                     )
                     session.close()
                     self.release_backends()
-                    self._run_stage(spec, fit_controls, steps, steer_kwargs)
+                    self._run_stage(
+                        spec, fit_controls, steps, steer_kwargs, artifacts=self._structural_artifacts,
+                    )
                     session_controls = [c for c in session_controls if c not in fit_controls]
                     backend = self._backend_for(spec)
                     session = backend.open_session()
@@ -749,17 +858,39 @@ class SteeringPipeline:
         finally:
             session.close()
 
-    def _run_stage(self, spec: BackendSpec, stage_controls, steps, steer_kwargs: dict) -> None:
-        """Load the staged in-process model, run `stage_controls`' steers on it, collect
-        structural artifacts, and free the stage.
+    def _run_stage(
+        self,
+        spec: BackendSpec,
+        stage_controls,
+        steps,
+        steer_kwargs: dict,
+        artifacts: Sequence[Artifact] = (),
+    ) -> None:
+        """Load the staged in-process model, run the steers of `stage_controls` on it, and free it.
 
-        The stage is configured by the constructor's placement knobs and loads
-        `spec.model` (or `model_name_or_path`). Structural returns thread through the stage,
-        and the exported artifacts are the handoff to the engine.
+        The stage uses the constructor's placement arguments. It loads `spec.model` (or
+        `model_name_or_path`), or the weights that `artifacts` describe when given. A model
+        returned by a structural control replaces the stage model for the controls that follow.
+        When no structural artifacts are collected yet, the stage collects them after the steers,
+        and the engine then serves them.
+
+        The stage model is dropped whether or not the load and the steers succeed. Afterwards
+        `model` is None and `device` has its value from before the stage. On failure, the frames
+        below this one in the error's traceback are cleared of their local variables, which frees
+        the stage weights before the error propagates. The check that no control retains the
+        stage model runs only after a successful stage.
+
+        Args:
+            spec: The engine backend spec.
+            stage_controls: The controls to steer on the stage, in global steer order.
+            steps: The planned step of each enabled control, keyed by `id(control)`.
+            steer_kwargs: Keyword arguments forwarded to each control's `steer()`.
+            artifacts: The structural artifacts that the stage loads, or an empty sequence to load
+                the base weights.
 
         Raises:
-            RuntimeError: If no model reference is available to load the stage from, or the
-                staged model was retained past the stage by a control.
+            RuntimeError: If neither `spec.model` nor `model_name_or_path` gives a model to load,
+                or if a control retains the stage model after the stage.
         """
         model_ref = spec.model or (
             str(self.model_name_or_path) if self.model_name_or_path is not None else None
@@ -779,24 +910,37 @@ class SteeringPipeline:
                 "tokenizer_name_or_path": self.tokenizer_name_or_path,
             },
         )
-        self._load_in_process_model(model_ref)
-        stage_backend = resolve_backend_class(stage_spec).adopt(
-            stage_spec, lambda: self.model, lambda: self.tokenizer,
-        )
+        stage_ref: weakref.ref | None = None
+        # a stage load binds `device`; restoring it keeps every stage load on the constructor's placement
+        device_before_stage = self.device
         try:
-            with stage_backend.open_session() as stage_session:
-                for control in stage_controls:
-                    self._run_control_steer(
-                        control, steps[id(control)].access, stage_session, steer_kwargs,
-                    )
-            if not self._structural_artifacts:
-                self._structural_artifacts = self._collect_structural_artifacts(stage_spec)
+            self._load_stage_model(model_ref, artifacts)
+            stage_backend = resolve_backend_class(stage_spec).adopt(
+                stage_spec, lambda: self.model, lambda: self.tokenizer,
+            )
+            try:
+                with stage_backend.open_session() as stage_session:
+                    for control in stage_controls:
+                        self._run_control_steer(
+                            control, steps[id(control)].access, stage_session, steer_kwargs,
+                        )
+                if not self._structural_artifacts:
+                    self._structural_artifacts = self._collect_structural_artifacts(stage_spec)
+            finally:
+                stage_backend.release()
+            if self.model is not None:
+                stage_ref = weakref.ref(self.model)
+        except BaseException as error:
+            # the finished frames in the traceback hold the stage model as a local until cleared
+            traceback.clear_frames(error.__traceback__)
+            raise
         finally:
-            stage_backend.release()
-        if self.model is not None:
-            ref = weakref.ref(self.model)
             self.model = None
-            verify_stage_released(ref, self._enabled_controls())
+            self.device = device_before_stage
+            if stage_ref is None:
+                free_stage_memory()
+        if stage_ref is not None:
+            verify_stage_released(stage_ref, self._enabled_controls())
 
     def _collect_structural_artifacts(self, spec: BackendSpec) -> tuple[Artifact, ...]:
         """Enabled structural controls' steer-time artifacts, provenance-stamped.
@@ -1029,9 +1173,13 @@ class SteeringPipeline:
                 `chat_template_kwargs` is paired with `text=`/`input_ids=`, or if
                 `chat_template_kwargs` is not a mapping.
             ValueError: If a token tensor is not 1-D/2-D, nested token lists are ragged, a text/
-                chat sequence is empty, `chat_template_kwargs` names a pipeline-owned template
+                chat sequence is empty, `chat_template_kwargs` contains a pipeline-owned template
                 argument, or multiple candidates per prompt (`num_return_sequences`/`n` greater
-                than 1) are requested on a decoded text return without `return_output=True`.
+                than 1) are requested on a decoded text return without `return_output=True`. Also
+                raised if a batch of more than one prompt reaches a decoding driver while enabled
+                state controls run as in-process hooks, and either the driver sets
+                `whole_batch_rollouts` to False or the call passes a seed with `seed_scope="item"`
+                (the default).
         """
         if not self._is_steered:
             raise RuntimeError("Must call `.steer()` before `.generate()`.")
@@ -1370,18 +1518,19 @@ class SteeringPipeline:
             return_full_sequence: bool,
             gen_kwargs: dict,
     ) -> str | list[str] | torch.Tensor | Output | list[Output]:
-        """Run the shared generation tail from prompt tensors through the shaped return.
+        """Run generation from the prompt tensors and shape the return value.
 
-        Applies the token-level input-control chain, then left-packs the steered prompt tensors
-        so hook assembly, per-item prompts, driver inputs, and full-sequence returns share the
-        left-packed layout the sessions execute batched forwards in. Merges sampling-expressible
-        output controls into the call's `GenerationParams` and configures state hooks. With the
-        default decoding driver, each prompt row becomes a `GenerationItem` executed by the
-        inference backend's session; an explicit `DecodingDriver` instead runs client-side
-        under the state-control hook context with `session=` passed for its rollouts. The
-        return is then shaped per modality: decoded continuation text truncates at the first
-        stop string, and the prompt slice is removed by default (`return_full_sequence=False`
-        returns continuation tokens only).
+        The token-level input-control chain runs first. The steered prompt tensors are then
+        left-packed, since the sessions run batched forwards in that layout. The later steps
+        (state hooks, per-item prompts, driver inputs, full-sequence returns) use the same
+        layout. Output controls that export generation parameters are merged into the call's
+        `GenerationParams`, and the state-control entries are collected for the backend. With
+        the default decoding driver, each prompt row becomes a `GenerationItem` that the
+        inference backend's session runs. An enabled `DecodingDriver` instead runs in the client
+        process and issues its rollouts through `session=`. In-process state hooks then stay
+        registered for the whole decode. The returned token IDs contain only the continuation
+        unless `return_full_sequence` is True. Decoded continuation text is truncated at the
+        first stop string.
 
         Args:
             prompt_input_ids: Prompt token IDs [seq_len] or [batch, seq_len] before the token-level
@@ -1397,11 +1546,18 @@ class SteeringPipeline:
             return_output: If True, return `Output` (single) or `list[Output]` (batched) regardless
                 of `decode_text`.
             return_full_sequence: If True, include the prompt in the returned token IDs.
-            gen_kwargs: Generation parameters forwarded to the decoding driver.
+            gen_kwargs: Generation parameters, normalized through `GenerationParams` and passed to
+                the decoding driver or the session.
 
         Returns:
             `str` or `list[str]` when `decode_text` is True, `torch.Tensor` when False, or
             `Output`/`list[Output]` when `return_output` is True.
+
+        Raises:
+            ValueError: If a batch of more than one row reaches a decoding driver while enabled
+                state controls run as in-process hooks, and either the driver sets
+                `whole_batch_rollouts` to False or the call passes a seed with
+                `seed_scope="item"` (the default).
         """
         # input controls (token-level adapt chain) + normalize
         device = self.model.device if self.model is not None else torch.device("cpu")
@@ -1449,6 +1605,23 @@ class SteeringPipeline:
                 intervention_kinds=inference_capabilities.intervention_kinds,
                 model=self.model, **gen_kwargs
             )
+            # in-process hooks index their gates and masks by batch row, which session calls over
+            # subsets of the rows do not preserve, and per-item seeds make the session decode each
+            # session call one row at a time
+            if state_entries and hooks_in_process and steered_input_ids.size(0) > 1:
+                if not decoding_driver.whole_batch_rollouts:
+                    raise ValueError(
+                        f"{type(decoding_driver).__name__} issues session calls over subsets of the batch, but the "
+                        f"in-process state hooks are built for all {steered_input_ids.size(0)} rows; generate one "
+                        "prompt per call when state controls are enabled."
+                    )
+                if gen_kwargs.get("seed") is not None and gen_kwargs.get("seed_scope", "item") == "item":
+                    raise ValueError(
+                        "Under a seed with seed_scope='item', the session decodes each session call of "
+                        f"{type(decoding_driver).__name__} one row at a time, but the in-process state hooks are "
+                        f"built for all {steered_input_ids.size(0)} rows; pass seed_scope='dispatch' or generate one "
+                        "prompt per call when state controls are enabled."
+                    )
         elif not hooks_in_process:
             if has_enabled_state:
                 state_entries = collect_state_entries(

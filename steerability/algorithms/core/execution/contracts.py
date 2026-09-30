@@ -371,12 +371,19 @@ class SupportFailure:
 
 @dataclass(frozen=True, slots=True)
 class SupportReport:
-    """The result of evaluating every enabled control against a backend.
+    """The result of checking every enabled control against a backend.
+
+    `SteeringPipeline.check()` builds the report, and `steer()` raises `UnsupportedPipelineError`
+    when the report contains a generate-phase failure. `ok` is True when the report contains no
+    failures. The `failures_for()`, `supported()`, and `raise_for()` methods consider only the
+    given phases.
 
     Attributes:
-        spec: The backend spec the phases were evaluated against.
-        plan: The deterministic steer plan for this configuration.
-        failures: All unsupported verdicts, in controls-list order then phase order.
+        spec: The backend spec that the controls were checked against.
+        plan: The steer plan for this configuration. The same configuration always gives the same
+            plan.
+        failures: The unsupported verdicts. The verdicts of individual controls come first, in
+            control order and then phase order. Verdicts on combinations of controls follow.
     """
 
     spec: BackendSpec

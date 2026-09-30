@@ -588,24 +588,22 @@ def samples_frame(
     task: str | None = None,
     include_text: bool = False,
 ) -> pandas.DataFrame:
-    """One row per (pipeline, trial, sample) with per-sample scores read from the eval logs.
+    """Build a frame of per-sample scores read from the eval logs, one row per (pipeline, trial, sample).
 
-    Reads each run record's task logs under `log_root` (the runner's `save_dir`) and flattens
-    their samples. `scores` maps an output column to a score key, either `"scorer"` for a
-    scalar-valued score or `"scorer/key"` for one key of a dict-valued score; scalar values
-    (numbers, booleans, and the `C`/`I`/`P`/`N` letter grades) are converted through
-    `inspect_ai.scorer.value_to_float()`, and any other value is kept raw. `metadata_keys` names
-    sample metadata entries to carry as columns. `include_text` adds the sample input and the
-    model completion.
+    The function reads the task log of each run record and adds one row per sample in the log. Scalar
+    score values (numbers, booleans, and the `C`/`I`/`P`/`N` letter grades) are converted with
+    `inspect_ai.scorer.value_to_float()`. Other score values are kept unchanged.
 
     Args:
-        results: The `SteeringEval.run()` mapping from pipeline name to run records.
-        log_root: Directory the run wrote its logs under (the runner's `save_dir`); each record's
-            log path is resolved against it.
-        scores: Mapping from output column name to a score key. Must be non-empty.
-        metadata_keys: Sample metadata entries to carry as columns.
-        suite: Suite to select; required when the results span several.
-        task: Task to select; required when the results span several.
+        results: The mapping from pipeline name to run records returned by `SteeringEval.run()`.
+        log_root: The directory the run wrote its logs under (the runner's `save_dir`, or the
+            temporary directory it used when none was given). A relative log path in a record is
+            resolved against it.
+        scores: Mapping from output column name to a score key, either `"scorer"` for a scalar-valued
+            score or `"scorer/key"` for one key of a dict-valued score. Must be non-empty.
+        metadata_keys: Sample metadata entries to add as columns. A sample without an entry gets None.
+        suite: Suite to select. Required when the results span several suites.
+        task: Task to select. Required when the results span several tasks.
         include_text: Add the sample input and the model completion as `input` and `completion`
             columns.
 
@@ -617,10 +615,14 @@ def samples_frame(
     Raises:
         ValueError: If `scores` is empty, the selection is empty, or the results span several
             suites or tasks without a selector.
-        KeyError: If a score key names a scorer or dict key absent from a sample.
+        KeyError: If a score key refers to a scorer or dict key that is absent from a sample.
+        ModuleNotFoundError: If `inspect_ai` (from the `eval` extra) is not installed.
     """
     if not scores:
         raise ValueError("scores must name at least one output column.")
+    from steerability.utils.optional import require
+
+    require("inspect_ai")
     from inspect_ai.scorer import value_to_float
 
     converter = value_to_float()

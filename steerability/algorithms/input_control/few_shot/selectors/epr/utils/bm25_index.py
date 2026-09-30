@@ -1,7 +1,7 @@
 """BM25 candidate retrieval for EPR labeling.
 
-Prefers `rank_bm25` when installed; falls back to a minimal pure-NumPy implementation otherwise so
-smoke tests can run on the [epr] extra-free baseline.
+The index uses `rank_bm25` when it is installed. Otherwise it uses a minimal pure-Python BM25
+implementation, since `rank_bm25` is not a toolkit dependency.
 """
 from __future__ import annotations
 

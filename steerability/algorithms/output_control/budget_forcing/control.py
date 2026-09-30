@@ -2,33 +2,39 @@ from __future__ import annotations
 
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from steerability.algorithms.output_control.base import OutputControl
 from steerability.algorithms.output_control.budget_forcing.args import BudgetForcingArgs
 from steerability.algorithms.output_control.common.drivers.phased import Fixed, Generated, PhasedDriver
 
 
 class BudgetForcing(PhasedDriver):
-    """
-    Implementation of Budget Forcing (s1) from Muennighoff et al., 2025.
+    """Implementation of Budget Forcing (s1) from Muennighoff et al., 2025.
 
-    Budget Forcing controls the length of a reasoning model's thinking at test time. It caps the
-    thinking phase at a token budget, and can either shorten reasoning (force the closing think tag
-    once the budget is hit) or lengthen it (suppress the early stop and append an `extension_text`
-    such as "Wait" to prompt continued reasoning) before generating the final answer.
+    Budget Forcing controls the length of a reasoning model's thinking at test time. It limits each
+    thinking segment to a token budget and forces the closing think tag before the answer. It can
+    also lengthen the thinking by appending an extension text such as `"Wait"` and generating another
+    thinking segment. The constructor arguments configure the plan:
 
-    BudgetForcing is a decoding driver: a thin preset of the generic `PhasedDriver`. Its plan is:
+    - `max_thinking_tokens` (default 512): the token budget of each thinking segment.
+    - `end_think` (default `"</think>"`): the closing think tag, which ends a thinking segment and is
+      appended before the answer.
+    - `end_think_token_ids` (default empty): token ids that also end a thinking segment, used for a
+      closing tag that tokenizes to a special token.
+    - `num_extensions` (default 0): the number of extension rounds.
+    - `extension_text` (default `"Wait"`): the text appended at the start of each extension round.
 
-    1. A thinking phase generating until the closing think tag or `max_thinking_tokens`, whichever
-       first.
+    The plan runs in three steps:
 
-    2. Up to `num_extensions` extension rounds, each appending `extension_text` and generating another
-       bounded thinking segment.
+    1. **Thinking**: a `Generated` phase runs until `end_think`, a token in `end_think_token_ids`, or
+       `max_thinking_tokens` tokens, whichever comes first.
+    2. **Extensions**: each of the `num_extensions` rounds appends `extension_text` and generates
+       another thinking segment with the same boundaries.
+    3. **Answer**: `end_think` is appended, followed by a `Generated` phase with no budget of its own.
 
-    3. A forced closing think tag (`Fixed`) followed by the answer phase (unbounded `Generated`).
-
-    Every `Generated` phase delegates to `model.generate` with the received stacks, so a step-level
-    control steers each phase. The `Fixed` phases are plain appends. Plans are
-    constructed per example (the driver loops over rows).
+    When a thinking segment ends on the closing tag or token, the tag stays in the stream, and the
+    extension text or the forced closing tag is appended after it. Every `Generated` phase applies
+    the composed logits processors and stopping criteria, and a step-level control in the pipeline
+    steers each phase. The caller's `max_new_tokens` limits each candidate's thinking and answer
+    together. The full thinking and answer are returned as the continuation.
 
     Reference:
 
@@ -42,10 +48,6 @@ class BudgetForcing(PhasedDriver):
 
     tokenizer: PreTrainedTokenizerBase | None = None
 
-    def __init__(self, *args, **kwargs):
-        # route through OutputControl (validate BudgetForcingArgs, mirror fields, then _configure)
-        OutputControl.__init__(self, *args, **kwargs)
-
     def _configure(self) -> None:
         """Budget forcing keeps the full thinking + answer stream (no extract rule)."""
         self.extract_after = None
@@ -56,8 +58,14 @@ class BudgetForcing(PhasedDriver):
         return model
 
     def max_rollouts_per_query(self) -> int:
-        """`num_extensions + 2`: the initial thinking phase, one per extension round, and the
-        answer phase."""
+        """Return `num_extensions + 2`, the number of `Generated` phases in the plan.
+
+        The plan has the initial thinking phase, one thinking phase per extension round, and the
+        answer phase. Each phase requests one rollout per candidate.
+
+        Returns:
+            The bound on the rollouts for one candidate of one row.
+        """
         return self.num_extensions + 2
 
     def plan(self, prompt_text: str, params: dict) -> list:

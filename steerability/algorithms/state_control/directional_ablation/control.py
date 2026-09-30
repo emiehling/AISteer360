@@ -2,10 +2,7 @@
 from __future__ import annotations
 
 from steerability.algorithms.state_control.base import InterventionControl
-from steerability.algorithms.state_control.common.estimators import (
-    ContrastiveDirectionEstimator,
-    MeanDifferenceEstimator,
-)
+from steerability.algorithms.state_control.common.estimators import estimator_for
 from steerability.algorithms.state_control.common.selectors import FractionalDepthSelector
 from steerability.algorithms.state_control.common.sources import ContrastiveFit, LayerFilteredFit, _Precomputed
 from steerability.algorithms.state_control.common.specs import CoveredLayers, Intervention, TokenScope
@@ -20,26 +17,25 @@ class DirectionalAblation(InterventionControl):
     """Directional Ablation (feature removal via projection).
 
     Removes a learned feature direction from the residual stream at one or more layers during
-    generation, `h' = h - alpha * (d_hat^T h) d_hat` at masked positions. This is the abliteration
-    technique of Arditi et al., which learns a direction as the difference in means over
-    contrastive data and projects it out.
+    generation. At each steered position, the hidden state is updated as
+    `h' = h - alpha * (d_hat^T h) d_hat`. This is the abliteration technique of Arditi et al.,
+    which learns a direction as the difference in means over contrastive data and projects it out.
 
     The method operates in two phases:
 
-    1. Training (offline). Extract residual activations for contrastive pairs and take the mean
-       difference, or the PCA of paired differences, as the feature direction. A precomputed
-       direction (or an orthonormal subspace, `K > 1`) may be supplied directly.
+    1. **Training (offline)**: extract residual activations for the contrastive pairs in `data` and
+       take the mean difference (`train_spec.method="mean_diff"`) or a PCA direction
+       (`"pca_pairwise"`, `"pca_center"`) as the feature direction. A precomputed direction, or a
+       subspace of `K > 1` directions (orthonormalized before use), may be given directly as
+       `steering_vector`.
+    2. **Inference (online)**: at the output of each target layer, project the direction out of the
+       residual stream at the positions selected by `token_scope`. `alpha = 1.0` fully removes the
+       component (`h'.d_hat == 0`), and `alpha < 1.0` gives graded partial suppression.
 
-    2. Inference (online). At each target layer's output, project the direction out of the
-       residual stream at masked positions. `alpha = 1.0` fully removes the component
-       (`h'.d_hat == 0`); `alpha < 1.0` gives graded partial suppression.
-
-    Ablation is a projection (idempotent at `alpha=1`, norm-reducing). It can compose with the
-    alignment-adaptive gate (`AlignmentAdaptiveTransform`) to ablate only where the feature is
-    present.
-
-    The control is declarative: `_configure` maps the validated args onto one `Intervention`
-    whose behavior layers are the target layers intersected with the artifact's coverage.
+    The target layers are `layer_ids` (or one layer at about 40% depth when None) intersected with
+    the layers that have a direction, after the directions are restricted to `layer_range`.
+    `steer()` raises `ValueError` when no target layer has a direction. Ablation is a projection,
+    which is idempotent at `alpha=1` and reduces the norm of the hidden state.
 
     Reference:
 
@@ -55,13 +51,10 @@ class DirectionalAblation(InterventionControl):
         if self.steering_vector is not None:
             inner = _Precomputed(self.steering_vector.clone())
         else:
-            estimator = (
-                ContrastiveDirectionEstimator()
-                if self.train_spec.method == "pca_pairwise"
-                else MeanDifferenceEstimator()
-            )
             inner = ContrastiveFit(
-                data=self.data, estimator=estimator, estimator_kwargs={"spec": self.train_spec},
+                data=self.data,
+                estimator=estimator_for(self.train_spec.method),
+                estimator_kwargs={"spec": self.train_spec},
             )
         source = LayerFilteredFit(inner, layer_range=self.layer_range)
 

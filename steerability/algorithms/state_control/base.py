@@ -1,18 +1,13 @@
 """State control base classes.
 
-This module provides the abstract base classes for methods that steer through hooks into the
-model's forward pass (modifying intermediate representations during inference); state controls
-do not change model weights.
+This module provides the base classes for methods that steer the model through hooks on its forward pass:
 
-Three classes are provided:
-
-- `StateControl`: Abstract root the pipeline type-checks.
-- `InterventionControl`: A state control that is a tuple of declarative interventions.
+- `StateControl`: The abstract base class that the pipeline checks for.
+- `InterventionControl`: A state control defined by a tuple of declarative interventions.
 - `HookControl`: A state control that writes its own torch hooks.
 
-State controls implement steering through runtime intervention in the model's forward pass, modifying internal states
-(activations, attention patterns) to produce generations following y ~ p_θᵃ(x), where "p_θᵃ" is the model with state
-controls.
+State controls modify internal states (activations, attention patterns) during inference and do not change
+model weights. Generations then follow y ~ p_θᵃ(x), where p_θᵃ is the model with the state controls applied.
 
 Examples of state controls:
 
@@ -22,13 +17,14 @@ Examples of state controls:
 - Dynamic routing between components
 - Representation engineering techniques
 
-Hooks travel only as `HookEntry` contributions on session items; the session that executes
-forwards owns registration. Controls never register hooks and hold no model reference.
+A state control returns its hooks from `get_hooks()`, and the pipeline passes them to the session as
+`HookEntry` contributions. The session that runs the forward passes registers the hooks. Controls do not
+register hooks themselves.
 
 See Also:
 
 - `steerability.algorithms.state_control`: Implementations of state control methods
-- `steerability.core.steering_pipeline`: Integration with steering pipeline
+- `steerability.algorithms.core.steering_pipeline`: Integration with steering pipeline
 """
 import copy
 from abc import abstractmethod
@@ -136,19 +132,22 @@ class StateControl(BaseControl):
         pass
 
     def export_intervention_spec(self, runtime_kwargs: dict | None = None) -> "InterventionSpec | None":
-        """The control's `InterventionSpec` for intervention-capable backends, or None.
+        """Return the control's `InterventionSpec` for backends that run interventions as specs.
 
-        The spec is the second serialization of the tuple the control's hooks close over,
-        emitted from the same transform, gate, and scope objects. Must be called after
-        `steer()`. Returns None when the configuration has no wire form (the configuration is
-        then hook-only) or when the control does not implement spec export at all.
+        The spec describes the same interventions as the control's hooks and is built from the
+        same transform, gate, and scope objects. Must be called after `steer()`. On a backend
+        that runs interventions as specs, the pipeline calls this method once at the end of
+        `SteeringPipeline.steer()` and reuses the spec for every generation. The base
+        implementation returns None.
 
         Args:
-            runtime_kwargs: Per-call parameters, mirroring `get_hooks`; per-item values
-                (strengths, positions) serialize into the returned spec.
+            runtime_kwargs: Per-call parameters, accepted to match the `get_hooks()` signature.
+                The pipeline does not pass them, and the returned spec does not depend on them.
 
         Returns:
-            The validated `InterventionSpec` with tensor payloads attached, or None.
+            The validated `InterventionSpec` with tensor payloads attached. None when the
+            configuration has no intervention-spec form (it then runs only as hooks) or when the
+            control does not implement spec export.
         """
         return None
 
@@ -514,19 +513,30 @@ class InterventionControl(StateControl):
             score=score,
         )
 
-    def clone_for_call(self, seed: int | None = None):
-        """A per-call clone whose interventions carry independent gate state.
+    def clone_for_call(self, seed: int | None = None, *, memo: dict | None = None):
+        """Return a clone for one generation call whose interventions have their own gate state.
 
-        Gates are deep-copied with one shared memo across the control's interventions, so a
-        gate instance shared by several interventions stays shared inside the clone while
-        being isolated from the original and from sibling clones. Transforms, scorers, and
-        steer-time artifacts stay shared.
+        The gates of all interventions are deep-copied with one `copy.deepcopy` memo. A gate
+        that several interventions share is therefore shared inside the clone and is separate
+        from the original's gate. Clones of several controls made with the same `memo` share one
+        copy of any gate their controls share, e.g., a gate that one control drives and other
+        controls follow. Transforms, scorers, and steer-time artifacts are shared with the
+        original.
+
+        Args:
+            seed: Optional seed forwarded to the clone's `reseed()`.
+            memo: Optional `copy.deepcopy` memo shared with the clones of other controls made
+                for the same call. A fresh memo is used when None.
+
+        Returns:
+            The clone.
         """
         import dataclasses
 
-        clone = super().clone_for_call(seed)
+        clone = super().clone_for_call(seed, memo=memo)
         if self.interventions:
-            memo: dict = {}
+            if memo is None:
+                memo = {}
             clone.interventions = tuple(
                 dataclasses.replace(intervention, gate=copy.deepcopy(intervention.gate, memo))
                 for intervention in self.interventions

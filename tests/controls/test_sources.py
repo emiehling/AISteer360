@@ -8,6 +8,11 @@ import warnings
 import pytest
 import torch
 
+from steerability.algorithms.state_control.common.estimators import (
+    ContrastiveDirectionEstimator,
+    MeanDifferenceEstimator,
+    estimator_for,
+)
 from steerability.algorithms.state_control.common.estimators.base import BaseEstimator
 from steerability.algorithms.state_control.common.sources import (
     ArtifactSource,
@@ -103,6 +108,14 @@ class TestContrastiveFitResolve:
 
 
 class TestBuiltinDispatch:
+    @pytest.mark.parametrize("method, expected", [
+        ("mean_diff", MeanDifferenceEstimator),
+        ("pca_pairwise", ContrastiveDirectionEstimator),
+        ("pca_center", ContrastiveDirectionEstimator),
+    ])
+    def test_estimator_for_maps_methods(self, method, expected):
+        assert type(estimator_for(method)) is expected
+
     def test_mean_diff_dispatch_fits(self):
         fit = ContrastiveFit(data=_pairs(), method="mean_diff", accumulate="last_token", prompt_format="raw")
         model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
@@ -124,7 +137,7 @@ class TestLocationForwarding:
                     directions={lid: torch.randn(1, HIDDEN) for lid in range(LAYERS)},
                 )
 
-        monkeypatch.setattr(sources, "ContrastiveDirectionEstimator", _SpecCapture)
+        monkeypatch.setattr(sources, "estimator_for", lambda method: _SpecCapture())
         fit = ContrastiveFit(data=_pairs(), method="pca_center", prompt_format="raw", location="layer_input")
         fit.resolve(tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS), wordlevel_tokenizer())
         assert captured["location"] == "layer_input"

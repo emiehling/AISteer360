@@ -12,6 +12,7 @@ from steerability.algorithms.input_control.cpo.control import CPOMemory
 from steerability.algorithms.input_control.cpo.utils import causal_reward, refinement_meta_prompt
 
 TINY_LM = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+# not in the CI model set; tests that load it are marked `network`
 TINY_BERT = "hf-internal-testing/tiny-random-BertModel"
 
 
@@ -66,6 +67,7 @@ class TestCPOArgs:
             CPOArgs(seed_prompt="x", offline_data=offline_rows, rounds=0)
 
 
+@pytest.mark.network
 class TestCausalRewardScorer:
     def test_train_and_score_gbr_path(self, offline_rows):
         scorer = causal_reward.train(
@@ -113,6 +115,7 @@ class TestCausalRewardScorer:
 
 
 class TestCPOSteer:
+    @pytest.mark.network
     def test_with_offline_data(self, tiny_lm, offline_rows):
         model, tokenizer = tiny_lm
         cpo = CPO(
@@ -137,6 +140,7 @@ class TestCPOSteer:
             CPO(seed_prompt="x")
 
 
+@pytest.mark.network
 class TestCPOTreeSearchAndCache:
     def test_adapt_messages_caches_per_query(self, tiny_lm, offline_rows):
         model, tokenizer = tiny_lm
@@ -188,6 +192,7 @@ class TestCPOTreeSearchAndCache:
         assert cpo.memory.query_cache == {}
 
 
+@pytest.mark.network
 class TestCPOCacheKeyNormalizer:
     """`cache_key_normalizer` lets near-duplicate queries share a cache entry; the default is unchanged."""
 
@@ -253,6 +258,7 @@ class TestCPOCacheKeyNormalizer:
         assert len(cpo.memory.query_cache) == 2
 
 
+@pytest.mark.network
 class TestCausalRewardVarianceWarning:
     def test_warns_on_constant_scores(self, offline_rows):
         constant_rows = [{**row, "score": 0.7} for row in offline_rows]
@@ -309,6 +315,7 @@ class TestCPODefaultTemplate:
         assert "}" not in rendered
 
 
+@pytest.mark.network
 class TestCPOMemoryRoundTrip:
     def test_save_load(self, tiny_lm, offline_rows, tmp_path):
         model, tokenizer = tiny_lm
@@ -346,6 +353,7 @@ class TestCPOTrustRemoteCode:
 class TestCPOBackendPosture:
     """D12: the proposer binds once at steer; the module configuration is declared."""
 
+    @pytest.mark.network
     def test_unset_prompt_lm_never_reads_a_pipeline_attribute_at_adapt(self, tiny_lm, offline_rows):
         model, tokenizer = tiny_lm
         cpo = CPO(

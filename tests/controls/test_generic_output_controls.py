@@ -372,6 +372,98 @@ class TestValueGuidanceBehavior:
         # with the full vocabulary as candidates and a dominating value, every step picks the target
         assert torch.all(out[0] == target)
 
+    @pytest.mark.parametrize("seed", [None, 0], ids=["batched", "per_item"])
+    @pytest.mark.parametrize(
+        "layout_kwargs",
+        [{"num_return_sequences": 2, "do_sample": True}, {"num_beams": 2, "do_sample": False}],
+        ids=["candidates", "beams"],
+    )
+    def test_step_attention_mask_spans_the_prefix(self, layout_kwargs, seed):
+        """Under candidate and beam rows the value's mask matches the prefix rows it scores.
+
+        A seed decodes each prompt on its own, so every step there has two rows of one prompt.
+        """
+        steps = []
+
+        def record(ctx):
+            steps.append((ctx.prefix_ids.clone(), ctx.attention_mask))
+            return torch.zeros(ctx.candidate_ids.shape)
+
+        vg = ValueGuidance(value=record, policy="top_k", k=5, normalize="none", mask_non_candidates=False)
+        pipeline, _, tokenizer = _pipeline([vg])
+        prompts = ["the cat sat on the mat", "the dog"]
+        pipeline.generate(
+            text=prompts, max_new_tokens=3, return_output=True, eos_token_id=None, seed=seed, **layout_kwargs,
+        )
+
+        prompt_ids = [tokenizer(prompt).input_ids for prompt in prompts]
+        width = max(len(ids) for ids in prompt_ids)
+        padded = [[tokenizer.pad_token_id] * (width - len(ids)) + ids for ids in prompt_ids]
+        assert steps
+        for prefix_ids, attention_mask in steps:
+            assert attention_mask is not None
+            assert attention_mask.shape == prefix_ids.shape
+            for row in range(prefix_ids.size(0)):
+                prompt = padded.index(prefix_ids[row, :width].tolist())
+                pad_count = width - len(prompt_ids[prompt])
+                assert int(attention_mask[row, :pad_count].sum()) == 0
+                assert bool(attention_mask[row, pad_count:].all())
+
+    def test_prompt_mask_applies_to_rows_that_begin_with_a_prompt_row(self):
+        """A row that begins with a prompt row takes that row's mask; other rows mask their leading pads."""
+        seen = []
+
+        def record(ctx):
+            seen.append(ctx.attention_mask.clone())
+            return torch.zeros(ctx.candidate_ids.shape)
+
+        tokenizer = wordlevel_tokenizer()
+        pad = tokenizer.pad_token_id
+        # the second pad of the first prompt is a real token, as when the pad token equals the bos token
+        prompt_ids = torch.tensor([[pad, pad, 3], [0, 4, 5]])
+        prompt_mask = torch.tensor([[0, 1, 1], [1, 1, 1]])
+        proc = ValueGuidedProcessor(
+            CallableValue(record), k=2, mask_non_candidates=False, lm_tokenizer=tokenizer,
+            prompt_ids=prompt_ids, attention_mask=prompt_mask,
+        )
+        # two candidate rows of the second prompt, as when each prompt decodes on its own
+        proc(torch.tensor([[0, 4, 5], [0, 4, 5]]), torch.randn(2, VOCAB))
+        # a later step over two candidate rows per prompt
+        proc(torch.tensor([[pad, pad, 3, 6], [pad, pad, 3, 7], [0, 4, 5, 6], [0, 4, 5, 7]]), torch.randn(4, VOCAB))
+        # rows that begin with no prompt row; only the leading pad run is padding
+        proc(torch.tensor([[pad, pad, 6, 7], [pad, 3, pad, 5]]), torch.randn(2, VOCAB))
+        assert seen[0].tolist() == [[1, 1, 1], [1, 1, 1]]
+        assert seen[1].tolist() == [[0, 1, 1, 1], [0, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1]]
+        assert seen[2].tolist() == [[0, 0, 1, 1], [0, 1, 1, 1]]
+
+    def test_mask_without_prompt_ids_applies_row_for_row(self):
+        """Without `prompt_ids` the mask applies to prefixes with its row count, right-extended with ones."""
+        seen = []
+
+        def record(ctx):
+            seen.append(ctx.attention_mask.clone())
+            return torch.zeros(ctx.candidate_ids.shape)
+
+        proc = ValueGuidedProcessor(
+            CallableValue(record), k=2, mask_non_candidates=False, attention_mask=torch.tensor([[0, 1, 1], [1, 1, 1]]),
+        )
+        proc(torch.tensor([[2, 3, 4], [5, 6, 7]]), torch.randn(2, VOCAB))
+        proc(torch.tensor([[2, 3, 4, 8], [5, 6, 7, 8]]), torch.randn(2, VOCAB))
+        # a different row count, with no tokenizer to identify pads, attends every position
+        proc(torch.tensor([[2, 3, 4, 8]]), torch.randn(1, VOCAB))
+        assert seen[0].tolist() == [[0, 1, 1], [1, 1, 1]]
+        assert seen[1].tolist() == [[0, 1, 1, 1], [1, 1, 1, 1]]
+        assert seen[2].tolist() == [[1, 1, 1, 1]]
+
+    def test_value_output_moves_to_the_scores_device(self, device):
+        value = CallableValue(lambda ctx: torch.ones(ctx.candidate_ids.shape, dtype=torch.float64))
+        proc = ValueGuidedProcessor(value, k=3, mask_non_candidates=False, lm_tokenizer=wordlevel_tokenizer())
+        scores = torch.zeros(1, VOCAB, device=device)
+        out = proc(torch.tensor([[0, 3, 4]], device=device), scores)
+        assert out.device == scores.device
+        assert out.dtype == scores.dtype
+        assert int((out == 1.0).sum()) == 3
+
 
 # ContrastiveGuidance
 class TestContrastiveGuidanceValidation:
@@ -421,6 +513,15 @@ class TestContrastiveGuidanceMath:
         keep = base_probs >= threshold
         assert torch.all(torch.isinf(out[~keep]))  # masked-out tokens are -inf
         assert not torch.any(torch.isinf(out[keep]))
+
+    def test_source_logprobs_move_to_the_scores_device(self, device):
+        source = CallableSource(lambda prefix_ids: torch.zeros(prefix_ids.size(0), VOCAB, dtype=torch.float64))
+        proc = ContrastiveMixtureProcessor([(source, 1.0)])
+        scores = torch.randn(1, VOCAB, device=device)
+        out = proc(torch.tensor([[0, 3, 4]], device=device), scores.clone())
+        assert out.device == scores.device
+        assert out.dtype == scores.dtype
+        assert torch.allclose(out, torch.log_softmax(scores, dim=-1))
 
     def test_cleanup_releases_sources(self, tmp_path):
         expert = _save_aux(tmp_path, "expert")

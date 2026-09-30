@@ -15,10 +15,11 @@ from steerability.spipe.errors import (
     SpipeSaveError,
     SpipeStaleError,
 )
-from steerability.spipe.spipe import SPipe, SpipeReport
+from steerability.spipe.spipe import SPipe, SpipeEntry, SpipeReport
 
 __all__ = [
     "SPipe",
+    "SpipeEntry",
     "SpipeReport",
     "DataRef",
     "SpipeError",

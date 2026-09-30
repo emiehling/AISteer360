@@ -1,14 +1,17 @@
 """Tests for `steerability.evaluation.runner.samples_frame` and the `SteeringEval.samples_frame`
 method, over stubbed eval logs.
 
-Pure pandas; `runner._read_eval_log` is monkeypatched to return `SimpleNamespace` logs (mirroring
-how `tests/evaluation/test_suite.py` stubs `eval_set`), so no `.eval` files are read and no model
-runs.
+`runner._read_eval_log` is monkeypatched to return `SimpleNamespace` logs (mirroring how
+`tests/evaluation/test_suite.py` stubs `eval_set`), so no `.eval` files are read and no model runs.
+The module is skipped without `inspect_ai`, since `samples_frame` converts score values through
+`inspect_ai.scorer.value_to_float`.
 """
 from types import SimpleNamespace
 
 import pandas
 import pytest
+
+pytest.importorskip("inspect_ai")
 
 import steerability.evaluation.runner as runner_module
 from steerability.evaluation.runner import SteeringEval, samples_frame

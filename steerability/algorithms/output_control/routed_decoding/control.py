@@ -1,4 +1,4 @@
-"""RoutedDecoding control: route each row to a response strategy based on probe decisions."""
+"""Decoding driver that routes each row to a response strategy based on probe decisions."""
 from __future__ import annotations
 
 import warnings
@@ -12,66 +12,58 @@ from steerability.algorithms.core.execution.backend import SteeringSession
 from steerability.algorithms.core.execution.contracts import Capability, CaptureKinds, Requirements, any_of, needs
 from steerability.algorithms.core.internals.fingerprint import model_fingerprint
 from steerability.algorithms.core.internals.probes import ProbeSetFit
-from steerability.algorithms.output_control.base import OutputControl, resolve_generate_callable
-from steerability.algorithms.output_control.common.drivers.phased import Fixed, PhasedDriver
+from steerability.algorithms.output_control.common.drivers.phased import Fixed, Generated, PhasedDriver
 
 from .actions import Generate, Prefix, Respond
 from .args import RoutedDecodingArgs
 
 
 class RoutedDecoding(PhasedDriver):
-    """Decoding driver that routes each prompt to a response strategy via probe decisions.
+    """Decoding driver that routes each prompt to a response strategy based on probe decisions.
 
-    `RoutedDecoding` pairs a `ProbeSet` (named calibrated probes scored in one read-only
-    forward) with a `Router` (ordered routes over the probe names, first match wins, evaluated
-    per row). Decoding proceeds in three steps:
+    `RoutedDecoding` combines a `ProbeSet` with a `Router` (the `rules` argument). The probe
+    set contains named, calibrated probes that are scored together in one read-only forward
+    pass. The router contains an ordered list of routes, each a condition over the probe
+    names. Routes are evaluated per row, and the first route that matches is used. Decoding
+    proceeds in three steps:
 
-    1. **Probe pass**: one read-only forward of the prompt, issued by `ProbeSet.read()`, yields
-       each probe's per-row signed score and decision (`score >= 0`).
-    2. **Routing**: the decisions feed `rules.route()`, matching each row to its first
-       satisfied route (or the default).
-    3. **Execution**: each row's action is lowered to a phase plan and executed by the
-       inherited plan runner. `Respond(text)` splices the canned tokens with no generation;
-       `Prefix(text)` splices the prefix then generates; `Generate()` delegates the row to
-       `model.generate`. A raw `list[Fixed | Generated]` is also accepted as an action. The
-       composed logits processors and stopping criteria apply in every generated phase, so the
-       driver contract is preserved.
+    1. **Probe pass**: `ProbeSet.read()` runs one read-only forward pass over the prompt and
+       returns each probe's signed score and decision (`score >= 0`) for every row. The probe
+       set stores the readings of the most recent pass in `latest`.
+    2. **Routing**: `rules.route()` matches each row to the first route its decisions
+       satisfy, or to the default action when no route matches.
+    3. **Execution**: each row's action is converted to a phase plan. `PhasedDriver` runs the
+       plan once per candidate (`num_return_sequences` candidates per row), with
+       `max_new_tokens` as the ceiling for each candidate. `Respond(text)` appends the tokens
+       of `text` without generating. `Prefix(text)` appends the tokens of `text` and then
+       generates. `Generate()` generates without appending text. An action can also be given
+       directly as a list of `Fixed` and `Generated` phases. The composed logits processors
+       and stopping criteria apply in every generated phase.
 
-    The probes arrive fitted (a `ProbeSet`) or as a deferred recipe (a `ProbeSetFit`) that
-    `steer()` fits on the model the pipeline provides, so pipelines whose structural controls
-    produce the final weights fit on those weights. A fitted set whose recorded model
-    fingerprints differ from the pipeline's model raises at `steer()` unless
-    `allow_model_mismatch=True`.
+    The `probes` argument accepts a fitted `ProbeSet` or a `ProbeSetFit`, which `steer()`
+    fits on the model the pipeline provides. `steer()` raises `ValueError` when a fitted
+    `ProbeSet` records a model that differs from the pipeline's. With
+    `allow_model_mismatch=True`, only the model type must match.
 
-    The read wraps its forward in `auxiliary_pass(aligned=True)`, the standard marking for
-    same-model forwards issued during decoding (`same_model_forwards = True`). Its capture
-    hooks are closures registered for the duration of that single forward and are removed
-    before decoding begins, so the re-processing of the prompt inside generated phases is
-    never re-scored.
+    The probe pass runs inside `auxiliary_pass(aligned=True)`, and its capture hooks are
+    removed before decoding begins. Behavior transforms from other state controls in the
+    pipeline apply to the pass when their scope includes prompt positions, and probe scores
+    are measured under that steering. The condition scorers, gates, and position counters of
+    those controls ignore the pass. A row routed to `Respond` requires one forward pass over
+    the prompt and no decode steps. Any other row requires one forward pass over the prompt
+    more than the default driver.
 
-    Costs per row: a routed canned response costs one prompt forward and zero decode steps; a
-    pass-through row costs one extra prompt forward compared to the default driver.
+    The following `runtime_kwargs` are accepted:
 
-    When state controls carrying behavior transforms share the pipeline, their hooks are live
-    during the probe pass. The pass is trajectory-aligned, so `"all"`-scope transforms, and
-    position-scoped ones covering prompt positions, apply to it, and probe scores are measured
-    under that steering; `token_scope="after_prompt"` transforms are inert (the pass contains
-    only prompt positions). Those controls' condition scorers, gates, and position counters
-    ignore the pass entirely, since it is auxiliary.
+    - `"canned_responses"`: A dict mapping route names to replacement text. It replaces the
+      `text` of the `Respond` or `Prefix` action of each listed route for the current call
+      only. A key that is not the name of a `Respond` or `Prefix` route is ignored with a
+      `UserWarning`.
 
-    Padding is handled per row: pad positions are stripped (via the attention mask) before plan
-    execution, and each returned row is the original padded prompt plus its continuation, so
-    the pipeline's prompt-length slicing stays exact.
-
-    The most recent routing outcome is retained on `latest_routes` (one route name per row,
-    `"default"` for unmatched rows); per-probe decisions and scores are available on the probe
-    set's `latest` readings.
-
-    `runtime_kwargs`:
-
-    - `"canned_responses"`: dict mapping route names to replacement text, overriding the
-      `Respond`/`Prefix` text of matching routes for this call only. Keys that do not name a
-      `Respond`/`Prefix` route are ignored with a warning.
+    Attributes:
+        latest_routes: The route name chosen for each row in the most recent `decode()`
+            call, with `"default"` for rows that matched no route.
+        tokenizer: The tokenizer attached by `steer()`, or None before `steer()` runs.
     """
 
     Args = RoutedDecodingArgs
@@ -90,24 +82,38 @@ class RoutedDecoding(PhasedDriver):
 
     tokenizer: PreTrainedTokenizerBase | None = None
 
-    def __init__(self, *args, **kwargs):
-        # route through OutputControl (validate RoutedDecodingArgs, mirror fields, _configure)
-        OutputControl.__init__(self, *args, **kwargs)
-
     def _configure(self) -> None:
-        """Initialize the `PhasedDriver` fields the plan runner reads."""
+        """Initialize the `PhasedDriver` fields that the plan runner reads."""
         self.extract_after = None
         self.tokenizer = None
         self.latest_routes: list[str] = []
 
-    def max_rollouts_per_query(self) -> int:
-        """1: every route lowers to at most one `Generated` phase, and the probe pass is a
-        read-only capture rather than a generation."""
-        return 1
+    def max_rollouts_per_query(self) -> int | None:
+        """Return the largest number of `Generated` phases in any route's plan.
+
+        The default action is included. The bound applies per candidate. The probe pass is a
+        read-only capture and does not count as a rollout.
+
+        Returns:
+            The bound, or None when an action cannot be converted to a phase plan.
+        """
+        actions = [route.action for route in self.rules.routes] + [self._default_action()]
+        counts = []
+        for action in actions:
+            try:
+                plan = self._lower(action)
+            except (TypeError, ValueError):
+                return None
+            counts.append(sum(isinstance(phase, Generated) for phase in plan))
+        return max(counts)
 
     def requirements(self) -> Requirements:
-        """In-process torch or hidden-state capture at generate; the probe pass reads the
-        prompt's hidden states, which a backend must either host in process or return."""
+        """Return the backend capabilities the probe pass needs at generation time.
+
+        The probe pass reads the prompt's hidden states. The backend must either run the
+        model in process (`Capability.IN_PROCESS_TORCH`) or return residual captures at layer
+        inputs for all tokens (`Capability.HIDDEN_CAPTURE`).
+        """
         return Requirements(
             generate=any_of(
                 needs(Capability.IN_PROCESS_TORCH),
@@ -127,27 +133,50 @@ class RoutedDecoding(PhasedDriver):
         )
 
     def steer_access(self) -> ModelAccess:
-        """`ModelAccess.CAPTURE` when `probes` is a `ProbeSetFit` (the fit extracts hidden
-        states), `ModelAccess.FACTS` for a fitted `ProbeSet` (identity checks read the session
-        layout)."""
+        """Return the model access that `steer()` needs.
+
+        Returns:
+            `ModelAccess.CAPTURE` when `probes` is a `ProbeSetFit`, since fitting extracts
+            hidden states. `ModelAccess.FACTS` when `probes` is a fitted `ProbeSet`, since the
+            identity checks read only the session layout.
+        """
         if isinstance(self.probes, ProbeSetFit):
             return ModelAccess.CAPTURE
         return ModelAccess.FACTS
 
     def steer_fits(self) -> tuple[tuple[str, str], ...]:
-        """One `("ProbeSetFit", "calibrated")` entry when the probes arrive as a fit recipe."""
+        """Return the fits that `steer()` performs.
+
+        Returns:
+            One `("ProbeSetFit", "calibrated")` entry when `probes` is a `ProbeSetFit`,
+            otherwise an empty tuple.
+        """
         if isinstance(self.probes, ProbeSetFit):
             return (("ProbeSetFit", "calibrated"),)
         return ()
 
     def export_state(self) -> dict:
-        """The fitted probe set under the `"probes"` key (after `steer()`)."""
+        """Return the fitted probe set for export.
+
+        Returns:
+            A dict with the fitted `ProbeSet` under the `"probes"` key, or an empty dict when
+            the probes are not yet fitted.
+        """
         if self.probes is not None and not isinstance(self.probes, ProbeSetFit):
             return {"probes": self.probes}
         return {}
 
     def frozen_form(self, state: dict) -> tuple[str, dict]:
-        """A same-class frozen form: the fitted `ProbeSet` plus the recipe's routing rules."""
+        """Return the frozen form of this control.
+
+        Args:
+            state: The state returned by `export_state()`.
+
+        Returns:
+            The name `"output_control/routed_decoding"` and the constructor kwargs of the
+            frozen control, i.e., the fitted `ProbeSet` from `state`, the configured `rules`,
+            and `allow_model_mismatch`.
+        """
         return "output_control/routed_decoding", {
             "probes": state["probes"],
             "rules": self.args.rules,
@@ -155,7 +184,7 @@ class RoutedDecoding(PhasedDriver):
         }
 
     def fit_identity(self):
-        """The `ProbeSetFit` recipe, or None when the probes arrived fitted."""
+        """Return the `ProbeSetFit` when `probes` was given as one, otherwise None."""
         if isinstance(self.args.probes, ProbeSetFit):
             return self.args.probes
         return None
@@ -167,28 +196,32 @@ class RoutedDecoding(PhasedDriver):
         session: SteeringSession | None = None,
         **__,
     ) -> PreTrainedModel | None:
-        """Attach the tokenizer, resolve the probes, and validate their identity.
+        """Attach the tokenizer, fit or check the probes, and validate the routing rules.
 
-        A `ProbeSetFit` is fitted here, on the model or session the pipeline provides (its
+        A `ProbeSetFit` is fitted on the model or session the pipeline provides (its
         `StatsSpec`, when present, is estimated first). A fitted `ProbeSet` is checked
-        instead, venue-matched: with a live model, any probe whose recorded
-        `model_fingerprint` differs raises unless `allow_model_mismatch=True` (probes with no
-        recorded fingerprint are exempt); without one, the recorded `model_ref` and
-        `model_type` are compared against the session layout's, with unrecorded values
-        exempt.
+        against the pipeline's model instead. With a loaded model or an in-process session,
+        a probe whose recorded `model_fingerprint` differs from the model's raises
+        `ValueError`. On other backends, a probe whose recorded `model_ref` differs from the
+        session layout's raises `ValueError`. Probes with no recorded value are exempt, and
+        `allow_model_mismatch=True` disables both checks. The probe set's `model_type` must
+        also match the model's. On backends without a loaded model, it is compared with the
+        layout's `model_type` when both are known. `allow_model_mismatch` does not disable
+        the `model_type` check.
 
         Args:
-            model: The pipeline's model, or None on backends without a live model.
-            tokenizer: Tokenizer used for splicing and padding. If None, attempts to retrieve
-                from model attributes.
-            session: `SteeringSession` scoped to this control, provided by the pipeline.
+            model: The pipeline's model, or None on backends without a loaded model.
+            tokenizer: Tokenizer used for splicing and padding. If None, `model.tokenizer` is
+                used when present.
+            session: The `SteeringSession` scoped to this control, provided by the pipeline.
 
         Returns:
             The input model, unchanged.
 
         Raises:
-            ValueError: If a fitted set's recorded identity differs from the venue's, or a
-                route references a probe name the set does not define.
+            ValueError: If a fitted `ProbeSet` records a model fingerprint, model reference,
+                or model type that differs from the pipeline's, or if a route references a
+                probe name the set does not define.
         """
         self.tokenizer = tokenizer or getattr(model, "tokenizer", None)
 
@@ -255,43 +288,48 @@ class RoutedDecoding(PhasedDriver):
                model: PreTrainedModel | None, logits_processors: LogitsProcessorList,
                stopping_criteria: StoppingCriteriaList, runtime_kwargs: dict | None,
                session: SteeringSession | None = None, **gen_kwargs) -> torch.Tensor:
-        """Read the probes on the prompt, route each row, and execute the routed phase plans.
+        """Score the probes on the prompt, route each row, and run the routed phase plans.
+
+        Pad positions are removed from each row (using the attention mask) before its plan
+        runs.
 
         Args:
-            input_ids: Prompt token ids `[B, T]` (a 1-D tensor is treated as one row).
-            attention_mask: Prompt attention mask matching `input_ids`, or None.
+            input_ids: Prompt token ids of shape `[B, T]`. A 1-D tensor is treated as one
+                row.
+            attention_mask: Prompt attention mask with the same shape as `input_ids`, or
+                None.
             model: The pipeline's model.
-            logits_processors: Composed logits-processor stack, applied in every generated
-                phase.
-            stopping_criteria: Composed stopping-criteria stack, applied in every generated
-                phase.
+            logits_processors: The composed `LogitsProcessorList`, applied in every
+                generated phase.
+            stopping_criteria: The composed `StoppingCriteriaList`, applied in every
+                generated phase.
             runtime_kwargs: Per-call parameters (see the class docstring).
+            session: The `SteeringSession` on which the probe pass and the generated phases
+                run.
+            **gen_kwargs: Generation keyword arguments. `max_new_tokens` bounds each
+                candidate, and `num_return_sequences` sets the number of candidates per row.
 
         Returns:
-            Full sequence ids `[B, L]` (prompt + continuation), padded per row.
+            A tensor of shape `[B * n, T + L]`, where `n` is `num_return_sequences` and `L`
+            is the length of the longest continuation. Rows are ordered by prompt row and
+            then by candidate. Each row is the padded prompt followed by one candidate's
+            continuation, right-padded.
 
         Raises:
-            RuntimeError: If no tokenizer is attached; `steer()` must run first.
-            TypeError: If a matched action cannot be lowered to a phase plan.
-            ValueError: If a matched plan contains a prompt-replacing `Fixed` phase
-                (`replace=True`).
+            RuntimeError: If no tokenizer is attached because `steer()` has not run.
+            TypeError: If a matched action cannot be converted to a phase plan.
+            ValueError: If no session was provided, if a matched plan contains a `Fixed`
+                phase with `replace=True`, or if beam search (`num_beams > 1`) is requested
+                with more than one candidate.
 
         Warns:
-            UserWarning: If `canned_responses` carries keys that do not name a
-                `Respond`/`Prefix` route.
+            UserWarning: If `canned_responses` contains a key that is not the name of a
+                `Respond` or `Prefix` route.
         """
-        if self.tokenizer is None:
-            raise RuntimeError("RoutedDecoding requires a tokenizer; steer() must run first.")
-
+        self._check_ready(session)
         runtime_kwargs = runtime_kwargs or {}
-        base_generate = resolve_generate_callable(model, runtime_kwargs, session)
         overrides = runtime_kwargs.get("canned_responses") or {}
-
-        if input_ids.dim() == 1:
-            input_ids = input_ids.unsqueeze(0)
-        if attention_mask is not None and attention_mask.dim() == 1:
-            attention_mask = attention_mask.unsqueeze(0)
-        batch_size = input_ids.size(0)
+        input_ids, attention_mask = self._as_batch(input_ids, attention_mask)
 
         readings = self.probes.read(model, input_ids, attention_mask, session=session)
         matched = self.rules.route(readings.decisions)
@@ -311,57 +349,47 @@ class RoutedDecoding(PhasedDriver):
                     UserWarning,
                 )
 
-        prompts = self.tokenizer.decode(input_ids, skip_special_tokens=True)
-
-        final_sequences: list[torch.Tensor] = []
-        for i in range(batch_size):
-            route = matched[i]
+        plans = []
+        for route in matched:
             if route is not None:
                 action = route.action
                 if route.name in overrides and isinstance(action, (Respond, Prefix)):
                     action = replace(action, text=overrides[route.name])
             else:
-                action = self.rules.default_action if self.rules.default_action is not None else Generate()
-            plan = self._lower(action)
+                action = self._default_action()
+            plans.append(self._lower(action))
 
-            row_full = input_ids[i:i + 1]
-            if attention_mask is not None:
-                row_ids = row_full[:, attention_mask[i].bool()]  # strip pad positions
-            else:
-                row_ids = row_full
-            full = self._run_plan(
-                plan, row_ids, prompts[i], {}, base_generate, False,
-                logits_processors, stopping_criteria, gen_kwargs,
-            )
-            continuation = full[0][row_ids.size(1):]
-            final_sequences.append(torch.cat([row_full[0], continuation]))
+        rows = self._unpadded_rows(input_ids, attention_mask)
+        prompt_texts = [self.tokenizer.decode(row, skip_special_tokens=True) for row in rows]
+        return self._run_plans(
+            input_ids, rows, plans, prompt_texts, [{} for _ in rows], model, session,
+            logits_processors, stopping_criteria, gen_kwargs,
+        )
 
-        # right padding keeps each prompt at offsets [0, T), which the pipeline's
-        # prompt-length slicing requires regardless of the tokenizer's configured side
-        padded = self.tokenizer.pad(
-            {"input_ids": [seq.tolist() for seq in final_sequences]},
-            padding=True,
-            padding_side="right",
-            return_tensors="pt",
-        ).to(input_ids.device)
-        return padded["input_ids"]
+    def _default_action(self):
+        """Return the action for rows that match no route.
+
+        Returns:
+            `rules.default_action`, or `Generate()` when the router sets no default.
+        """
+        return self.rules.default_action if self.rules.default_action is not None else Generate()
 
     @staticmethod
     def _lower(action) -> list:
-        """Lower an action to a phase plan.
+        """Convert an action to a phase plan.
 
         Args:
-            action: A `Respond`/`Prefix`/`Generate` (or any object with a `plan()` method), or
-                a raw list/tuple of `Fixed`/`Generated` phases.
+            action: A `Respond`, `Prefix`, or `Generate` (or any object with a `plan()`
+                method), or a list or tuple of `Fixed` and `Generated` phases.
 
         Returns:
-            The phase plan list.
+            The phase plan as a list.
 
         Raises:
-            TypeError: If the action is neither plan-bearing nor a phase sequence.
-            ValueError: If the plan contains a prompt-replacing `Fixed` phase (`replace=True`);
-                routed actions append to the row's prompt, which the returned-continuation
-                accounting relies on.
+            TypeError: If `action` has no `plan()` method and is not a list or tuple.
+            ValueError: If the plan contains a `Fixed` phase with `replace=True`. Routed
+                actions append to the row's prompt, and the layout of the returned tensor
+                depends on the prompt being kept.
         """
         if hasattr(action, "plan"):
             plan = action.plan()

@@ -1,6 +1,6 @@
 [project]
 name            = "steerability"
-version         = "0.5.2"
+version         = "0.5.3"
 description     = "Steerability Toolkit"
 readme          = "README.md"
 license         = { text = "Apache-2.0" }
@@ -123,6 +123,11 @@ module-name = "steerability"
 profile = "black"
 line_length = 120
 extend_skip = [".claude"]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: downloads a Hub model outside tests/utils/ci_models.yaml (deselect with -m 'not network')",
+]
 
 # build
 [build-system]

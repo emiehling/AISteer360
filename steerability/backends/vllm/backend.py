@@ -24,12 +24,12 @@ from steerability.algorithms.core.execution.contracts import BackendCapabilities
 from steerability.algorithms.core.execution.fanout import TransportError
 from steerability.algorithms.core.execution.payloads import (
     Artifact,
-    CheckpointArtifact,
     InterventionSpec,
     LoRAArtifact,
     ModelFacts,
 )
 from steerability.algorithms.core.execution.spec import BackendSpec
+from steerability.algorithms.core.execution.staging import split_artifacts
 from steerability.algorithms.core.internals.fingerprint import is_absent_chat_template_fingerprint
 from steerability.algorithms.core.internals.model_layout import text_config
 from steerability.backends.vllm.capabilities import _DISCOVERY_CACHE, _reconcile_discovery, _vllm_capabilities
@@ -138,12 +138,6 @@ def _client_tokenizer(source: str, trust_remote_code: bool = False):
     return ensure_pad_token(tokenizer)
 
 
-def _split_artifacts(artifacts: Sequence[Artifact]) -> tuple[CheckpointArtifact | None, LoRAArtifact | None]:
-    checkpoint = next((a for a in artifacts if isinstance(a, CheckpointArtifact)), None)
-    lora = next((a for a in artifacts if isinstance(a, LoRAArtifact)), None)
-    return checkpoint, lora
-
-
 class VLLMBackend(Backend):
     """The offline vLLM engine backend.
 
@@ -165,7 +159,7 @@ class VLLMBackend(Backend):
 
         from vllm import LLM
 
-        checkpoint, lora = _split_artifacts(artifacts)
+        checkpoint, lora = split_artifacts(artifacts)
         model_ref = checkpoint.path if checkpoint is not None else spec.model
         if model_ref is None:
             raise ValueError("VLLMBackend needs a model reference on the spec or a checkpoint artifact.")
@@ -366,7 +360,7 @@ class VLLMServeBackend(Backend):
                 _DISCOVERY_CACHE[spec.spec_hash] = self._discovery
                 _reconcile_discovery(spec, self.capabilities_for_spec(spec), self._discovery)
 
-        checkpoint, lora = _split_artifacts(artifacts)
+        checkpoint, lora = split_artifacts(artifacts)
         expected_model = checkpoint.path if checkpoint is not None else spec.model
         if lora is not None:
             self._served_model = self._load_lora_adapter(lora)

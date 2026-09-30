@@ -20,10 +20,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from steerability.algorithms.core.execution.access import ModelAccess
 from steerability.algorithms.core.internals.capture import HiddenStateLocation
 from steerability.algorithms.core.internals.data import ContrastivePairs, as_contrastive_pairs
-from steerability.algorithms.state_control.common.estimators import (
-    ContrastiveDirectionEstimator,
-    MeanDifferenceEstimator,
-)
+from steerability.algorithms.state_control.common.estimators import estimator_for
 from steerability.algorithms.state_control.common.estimators.base import BaseEstimator
 from steerability.algorithms.state_control.common.fit_specs import (
     Comparator,
@@ -151,8 +148,7 @@ class ContrastiveFit:
                 prompt_format=self.prompt_format,
                 location=self.location,
             )
-            estimator = MeanDifferenceEstimator() if self.method == "mean_diff" else ContrastiveDirectionEstimator()
-            master = estimator.fit(model, tokenizer, data=self.data, spec=spec, session=session)
+            master = estimator_for(self.method).fit(model, tokenizer, data=self.data, spec=spec, session=session)
             master.meta["location"] = self.location
 
         if self.normalize:
@@ -513,12 +509,7 @@ class ConditionPointSearch:
                     "method='mean_diff' does not support accumulate='suffix-only'; "
                     "use accumulate='all' or 'last_token', or method='pca_pairwise'/'pca_center'."
                 )
-            estimator = (
-                MeanDifferenceEstimator()
-                if self.condition_fit.method == "mean_diff"
-                else ContrastiveDirectionEstimator()
-            )
-            condition_vec = estimator.fit(
+            condition_vec = estimator_for(self.condition_fit.method).fit(
                 model, tokenizer, data=self.condition_data, spec=self.condition_fit, session=session,
             )
             if model is not None:

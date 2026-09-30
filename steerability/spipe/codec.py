@@ -31,7 +31,14 @@ import numpy as np
 import torch
 
 from steerability.spipe.errors import SpipeCodeRefError, SpipeFormatError, SpipeSaveError
-from steerability.spipe.store import ArtifactRecord, ArtifactStore, tensors_payload
+from steerability.spipe.store import (
+    ArtifactRecord,
+    ArtifactStore,
+    check_artifact_id,
+    check_sidecar,
+    pickle_bearing_files,
+    tensors_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +46,39 @@ TAGS = ("$artifact", "$dc", "$component", "$ref", "$data", "$map")
 
 TRUSTED_DC_PREFIX = "steerability."
 
+# toolkit dataclasses that control args contain and whose construction only validates and stores
+# its fields; `$dc` constructs any other dataclass only under `allow_code`
+DECODABLE_DATACLASSES = frozenset({
+    "steerability.algorithms.core.execution.payloads.ConstraintSource",
+    "steerability.algorithms.core.internals.data.ContrastivePairs",
+    "steerability.algorithms.core.internals.data.LabeledExamples",
+    "steerability.algorithms.core.internals.probes.fitting.ProbeFitSpec",
+    "steerability.algorithms.core.internals.probes.probe_set.ProbeSetFit",
+    "steerability.algorithms.core.internals.stats.ActivationStats",
+    "steerability.algorithms.core.internals.stats.StatsSpec",
+    "steerability.algorithms.output_control.common.drivers.phased.Fixed",
+    "steerability.algorithms.output_control.common.drivers.phased.Generated",
+    "steerability.algorithms.output_control.routed_decoding.actions.Generate",
+    "steerability.algorithms.output_control.routed_decoding.actions.Prefix",
+    "steerability.algorithms.output_control.routed_decoding.actions.Respond",
+    "steerability.algorithms.state_control.common.fit_specs.ConditionSearchSpec",
+    "steerability.algorithms.state_control.common.fit_specs.VectorTrainSpec",
+    "steerability.algorithms.state_control.common.selectors.condition_point.ConditionPoint",
+    "steerability.algorithms.state_control.common.sources.ConditionPointSearch",
+    "steerability.algorithms.state_control.common.sources.ContrastiveFit",
+    "steerability.algorithms.state_control.common.sources.LayerFilteredFit",
+    "steerability.algorithms.state_control.common.sources.SinglePairFit",
+    "steerability.algorithms.state_control.pasta.profiling.HeadProfile",
+})
+
+# trainer state written next to trained weights by `Trainer.save_model` and trainer checkpoints
+TRAINER_STATE_PATTERNS = (
+    "training_args.bin", "optimizer.pt", "optimizer.bin", "scheduler.pt", "scaler.pt", "rng_state*.pth",
+)
+
 
 def _trusted_dc_qualnames() -> frozenset[str]:
-    """Qualnames of non-`steerability.` classes decodable without `allow_code`."""
+    """Return the qualnames of the enums and dtypes outside `steerability.` that decode without `allow_code`."""
     from peft import PeftType, TaskType
 
     return frozenset({
@@ -118,9 +155,12 @@ class DataRef:
 
 @dataclass(frozen=True)
 class CodeRef:
-    """Inert stand-in for a `$ref` callable, used by internal digest decoding.
+    """Placeholder for a `$ref` callable that was decoded without importing it.
 
-    Encodes back to the same `$ref`; calling it raises.
+    Decoding with `code_mode="sentinel"` returns a `CodeRef` for each `$ref` callable. The
+    staleness check, the `recipe_id` and `config_id` digests of a spipe without a lock section,
+    and `SPipe.instantiate_entry(lenient=True)` decode this way. A `CodeRef` encodes back to the
+    same `$ref`. Calling it raises `SpipeCodeRefError`.
 
     Attributes:
         target: The `"<module>:<qualname>"` reference.
@@ -130,8 +170,9 @@ class CodeRef:
 
     def __call__(self, *args, **kwargs):
         raise SpipeCodeRefError(
-            f"Callable reference {self.target!r} was not resolved; load the spipe with "
-            "allow_code=True to import it."
+            f"Callable reference {self.target!r} was decoded without importing it (lenient or "
+            "digest decoding); to import it, load the spipe with allow_code=True and instantiate "
+            "without lenient=True."
         )
 
 
@@ -177,24 +218,31 @@ class EncodeContext:
 
 @dataclass
 class DecodeContext:
-    """State threaded through one decoding pass.
+    """The artifact store and the policies that apply during one decoding pass.
 
     Attributes:
-        store: Source artifact store, or None when artifacts are unavailable (thin bundle
-            without an external store).
-        allow_code: Whether `$ref` imports, non-`steerability.` `$dc` imports, and pickle-backed
-            memory payloads are permitted.
-        code_mode: `"strict"` raises on ungranted code references; `"sentinel"` substitutes
-            inert `CodeRef` markers for `$ref` without importing, even under `allow_code`
-            (internal digest decoding only).
-        verify: Verification policy applied to frozen steering artifacts (`"strict"`,
-            `"warn"`, or `"off"`).
-        data_mode: `"load"` materializes `$data` references; `"keep"` returns `DataRef`
-            values unchanged.
-        manifest_records: Artifact records from the manifest's resolved entries, keyed by
-            artifact id. When an artifact has one, its `artifact_class` and `provenance` decide
-            the verification wrap; the store sidecar supplies the encoding, type, and
-            reconstruction metadata.
+        store: The artifact store that `$artifact` references are read from, or None when no
+            store is available. Decoding an `$artifact` reference without a store raises
+            `SpipeIntegrityError`.
+        allow_code: Whether decoding may import `$ref` callables, decode `$dc` values whose
+            class is outside the data-only set, and load artifact payloads that contain pickled
+            data. The data-only set consists of the enums in the `steerability.` namespace, the
+            enums in `_trusted_dc_qualnames()`, and the dataclasses in `DECODABLE_DATACLASSES`.
+        code_mode: How `$ref` callables decode. With `"strict"`, decoding imports the `$ref`
+            target when `allow_code` is True and raises `SpipeCodeRefError` otherwise. With
+            `"sentinel"`, a `$ref` decodes to a `CodeRef` without importing, whatever the value
+            of `allow_code`.
+        verify: The verification policy for frozen steering artifacts (`"strict"`, `"warn"`,
+            or `"off"`).
+        data_mode: How `$data` references decode. With `"load"`, a reference of kind `"hf"`
+            or `"path"` is loaded, and an `"opaque"` reference decodes to a `DataRef`. With
+            `"keep"`, every reference decodes to a `DataRef`.
+        manifest_records: The artifact records of the manifest's resolved entries, keyed by
+            artifact id. When an `$artifact` reference has a manifest record, the store
+            sidecar must match the record's `encoding` and `type`. The record's
+            `artifact_class` and `provenance` then determine whether and how a decoded
+            `SteeringVector` is verified at `steer()`. The sidecar supplies the reconstruction
+            metadata.
     """
 
     store: ArtifactStore | None = None
@@ -363,12 +411,34 @@ def _encode_artifact_object(value: Any, ctx: EncodeContext, path: str, as_path: 
 
 
 def _copy_tree_contents(source: str | Path, dest: Path) -> None:
+    """Copy the contents of an adapter or checkpoint directory into `dest`, leaving out trainer state.
+
+    Files that match `TRAINER_STATE_PATTERNS` are not copied. They contain pickled data, and the
+    `load_lora` and `load_checkpoint` controls do not read them. A warning is logged when the
+    copied files still contain pickled data (e.g., `pytorch_model.bin` weights), since decoding
+    the resulting artifact requires `allow_code=True`.
+
+    Args:
+        source: The adapter or checkpoint directory.
+        dest: The directory to copy into, which may already exist.
+
+    Raises:
+        SpipeSaveError: If `source` is not a directory.
+    """
     import shutil
 
     source = Path(source)
     if not source.is_dir():
         raise SpipeSaveError(f"Artifact directory {source} does not exist.")
-    shutil.copytree(source, dest, symlinks=False, dirs_exist_ok=True)
+    shutil.copytree(
+        source, dest, symlinks=False, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*TRAINER_STATE_PATTERNS),
+    )
+    pickled = pickle_bearing_files(dest)
+    if pickled:
+        logger.warning(
+            "Artifact directory %s contains pickled files (%s); loading a spipe that embeds it "
+            "requires allow_code=True.", source, ", ".join(pickled),
+        )
 
 
 def _encode_dataclass(value: Any, ctx: EncodeContext, path: str) -> dict:
@@ -532,6 +602,33 @@ def digest_of(value: Any) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
 
 
+def _resolve_target(module_name: str, qual: str, target: str, path: str) -> Any:
+    """Import a module and return the object at a dotted attribute path in it.
+
+    Args:
+        module_name: The module to import.
+        qual: The dotted attribute path in the module.
+        target: The full reference, used in the error message.
+        path: The position of the value in the manifest, used in the error message.
+
+    Returns:
+        The object at `qual` in the module.
+
+    Raises:
+        SpipeFormatError: If the module cannot be imported in this process, or if `qual` does not
+            resolve in it.
+    """
+    try:
+        obj: Any = import_module(module_name)
+        for part in qual.split("."):
+            obj = getattr(obj, part)
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        raise SpipeFormatError(
+            f"{path}: {target!r} does not resolve in this process ({type(exc).__name__}: {exc})."
+        ) from exc
+    return obj
+
+
 def _import_qualname(target: str, ctx: DecodeContext, path: str) -> type:
     trusted = target.startswith(TRUSTED_DC_PREFIX) or target in _trusted_dc_qualnames()
     if not trusted and not ctx.allow_code:
@@ -540,25 +637,72 @@ def _import_qualname(target: str, ctx: DecodeContext, path: str) -> type:
             "namespace; pass allow_code=True to load() to permit it."
         )
     module_name, _, qual = target.rpartition(".")
-    obj: Any = import_module(module_name)
-    for part in qual.split("."):
-        obj = getattr(obj, part)
-    return obj
+    return _resolve_target(module_name, qual, target, path)
 
 
-def _decode_artifact(ref: Mapping, ctx: DecodeContext, path: str) -> Any:
+def _decodable_without_code(cls: type) -> bool:
+    """Return whether `$dc` may decode `cls` without `allow_code`.
+
+    The check uses the qualname of the resolved class, which includes the module that defines the
+    class. A class that a toolkit module imports from another package therefore does not qualify
+    under the toolkit module's name. An enum qualifies when it is defined in the `steerability.`
+    namespace or is in `_trusted_dc_qualnames()`, since decoding an enum only looks up a member by
+    name. A dataclass qualifies only when it is in `DECODABLE_DATACLASSES`, since decoding a
+    dataclass calls its constructor with the manifest's field values.
+
+    Args:
+        cls: The resolved `$dc` target, a dataclass or an enum.
+
+    Returns:
+        True when `cls` qualifies.
+    """
+    qualname = _qualname(cls)
+    if issubclass(cls, Enum):
+        return qualname.startswith(TRUSTED_DC_PREFIX) or qualname in _trusted_dc_qualnames()
+    return qualname in DECODABLE_DATACLASSES
+
+
+def _available_artifact_id(ref: Any, ctx: DecodeContext, path: str) -> str:
+    """Return the artifact id of an `$artifact` reference, after checking that `ctx` has a store.
+
+    The check does not look up the artifact in the store.
+
+    Args:
+        ref: The encoded `$artifact` reference.
+        ctx: The decoding context.
+        path: The position of `ref` in the manifest, used in error messages.
+
+    Returns:
+        The artifact id.
+
+    Raises:
+        SpipeFormatError: If `ref` is not an object with an `$artifact` key, or if the id is
+            malformed.
+        SpipeIntegrityError: If `ctx` has no artifact store.
+    """
     from steerability.spipe.errors import SpipeIntegrityError
 
-    artifact_id = ref["$artifact"]
+    if not isinstance(ref, Mapping) or "$artifact" not in ref:
+        raise SpipeFormatError(f"{path}: expected an '$artifact' reference.")
+    artifact_id = check_artifact_id(ref["$artifact"], path)
     if ctx.store is None:
         raise SpipeIntegrityError(
             f"{path}: artifact {artifact_id} is unavailable; this is a thin bundle, pass "
             "artifact_store= to load()."
         )
+    return artifact_id
+
+
+def _decode_artifact(ref: Mapping, ctx: DecodeContext, path: str) -> Any:
+    artifact_id = _available_artifact_id(ref, ctx, path)
     record = ctx.store.record_for(artifact_id)
-    # the manifest record, when present, decides the verification wrap; the sidecar keeps the
-    # encoding, type, and reconstruction metadata
-    manifest_record = ctx.manifest_records.get(artifact_id, record)
+    # the manifest record, when present, decides the verification wrap and must agree with the
+    # sidecar on the encoding and type; the sidecar keeps the reconstruction metadata
+    manifest_record = ctx.manifest_records.get(artifact_id)
+    if manifest_record is None:
+        manifest_record = record
+    else:
+        check_sidecar(record, manifest_record)
 
     if record.type in ("CPOMemory", "PoolMemory") and not ctx.allow_code:
         raise SpipeCodeRefError(
@@ -566,10 +710,8 @@ def _decode_artifact(ref: Mapping, ctx: DecodeContext, path: str) -> Any:
             "when loaded; pass allow_code=True to load() to permit it."
         )
 
-    if ref.get("as") == "path":
-        if record.encoding != "tree":
-            raise SpipeFormatError(f"{path}: 'as: path' applies to tree artifacts only.")
-        return str(ctx.store.payload_path(artifact_id))
+    if ref.get("as") == "path" and record.encoding != "tree":
+        raise SpipeFormatError(f"{path}: 'as: path' applies to tree artifacts only.")
 
     if record.encoding == "tensors":
         tensors = ctx.store.load_tensors(artifact_id)
@@ -590,6 +732,16 @@ def _decode_artifact(ref: Mapping, ctx: DecodeContext, path: str) -> Any:
         raise SpipeFormatError(f"{path}: unknown tensors artifact type {record.type!r}.")
 
     payload = ctx.store.payload_path(artifact_id)
+    if not ctx.allow_code:
+        pickled = pickle_bearing_files(payload)
+        if pickled:
+            listed = ", ".join(pickled[:3]) + (f", and {len(pickled) - 3} more" if len(pickled) > 3 else "")
+            raise SpipeCodeRefError(
+                f"{path}: artifact {artifact_id} contains pickled data ({listed}), which executes "
+                "code when loaded; pass allow_code=True to load() to permit it."
+            )
+    if ref.get("as") == "path":
+        return str(payload)
     if record.type == "Probe":
         from steerability.algorithms.core.internals.probes.probe import Probe
 
@@ -642,20 +794,36 @@ def _rebuild_steering_vector(tensors: Mapping[str, torch.Tensor], record: Artifa
 
 
 def decode(value: Any, ctx: DecodeContext, path: str = "$") -> Any:
-    """Decode one manifest JSON value back to its constructor form.
+    """Decode one manifest JSON value to its constructor form.
+
+    JSON scalars are returned unchanged. Lists and objects without a tag are decoded item by
+    item.
 
     Args:
         value: The encoded value.
-        ctx: The decoding context (store, code and data policies, verification policy).
-        path: Breadcrumb naming the position of `value`, used in error messages.
+        ctx: The decoding context, which gives the artifact store and the decoding policies.
+        path: The position of `value` in the manifest, used in error messages.
 
     Returns:
         The decoded value.
 
     Raises:
-        SpipeFormatError: If a tagged object is malformed or names an unknown kind or type.
-        SpipeCodeRefError: If decoding requires code and `allow_code` was not granted.
-        SpipeIntegrityError: If a referenced artifact is unavailable or fails verification.
+        SpipeFormatError: If a value is malformed or specifies an unknown component kind or
+            artifact type, if a `$dc` or `$ref` target cannot be imported in this process, if a
+            `$dc` target is neither a dataclass nor an enum, if the decoded values do not
+            construct the target class or component, or if an artifact entry in the store is a
+            symlink.
+        SpipeCodeRefError: If decoding requires code and `ctx.allow_code` is False, e.g., for a
+            `$ref` callable under `code_mode="strict"`, a `$dc` dataclass outside
+            `DECODABLE_DATACLASSES`, or an artifact payload that contains pickled data.
+        SpipeIntegrityError: If a referenced artifact is unavailable or fails verification, if
+            its store sidecar differs from its manifest record on the encoding or type, or if a
+            loaded `"path"` data file does not match its recorded digest.
+
+    Warns:
+        UserWarning: If `ctx.verify` is `"warn"` and a gate readout artifact records the
+            fingerprint of the model that produced it. The rebuilt gate does not check that
+            fingerprint under any policy other than `"strict"`.
     """
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -667,43 +835,73 @@ def decode(value: Any, ctx: DecodeContext, path: str = "$") -> Any:
     if "$artifact" in value:
         return _decode_artifact(value, ctx, path)
     if "$map" in value:
-        return {
-            entry[0]: decode(entry[1], ctx, f"{path}[{entry[0]!r}]")
-            for entry in value["$map"]
-        }
+        entries = value["$map"]
+        if not isinstance(entries, list) or not all(
+            isinstance(entry, list) and len(entry) == 2 and isinstance(entry[0], (str, int, float, bool))
+            for entry in entries
+        ):
+            raise SpipeFormatError(f"{path}: '$map' must be a list of [key, value] pairs with scalar keys.")
+        return {key: decode(item, ctx, f"{path}[{key!r}]") for key, item in entries}
     if "$dc" in value:
         target = value["$dc"]
+        if not isinstance(target, str):
+            raise SpipeFormatError(f"{path}: '$dc' target must be a string; got {type(target).__name__}.")
         if target == "torch.dtype":
-            dtype = getattr(torch, value["value"], None)
+            name = value.get("value")
+            dtype = getattr(torch, name, None) if isinstance(name, str) else None
             if not isinstance(dtype, torch.dtype):
-                raise SpipeFormatError(f"{path}: {value['value']!r} does not name a torch dtype.")
+                raise SpipeFormatError(f"{path}: {name!r} does not name a torch dtype.")
             return dtype
         cls = _import_qualname(target, ctx, path)
-        if isinstance(cls, type) and issubclass(cls, Enum):
-            return cls[value["value"]]
+        if not isinstance(cls, type) or not (is_dataclass(cls) or issubclass(cls, Enum)):
+            raise SpipeFormatError(
+                f"{path}: '$dc' target {target!r} is neither a dataclass nor an enum; '$dc' "
+                "decodes only those."
+            )
+        if not ctx.allow_code and not _decodable_without_code(cls):
+            raise SpipeCodeRefError(
+                f"{path}: '$dc' target {target!r} resolves to {_qualname(cls)!r}, which is not a "
+                "data-only toolkit class; pass allow_code=True to load() to construct it."
+            )
+        if issubclass(cls, Enum):
+            member = value.get("value")
+            if not isinstance(member, str) or member not in cls.__members__:
+                raise SpipeFormatError(f"{path}: {member!r} is not a member of {target!r}.")
+            return cls[member]
+        encoded_fields = value.get("fields", {})
+        if not isinstance(encoded_fields, Mapping):
+            raise SpipeFormatError(f"{path}: '$dc' fields must be an object.")
         decoded_fields = {
             name: decode(item, ctx, f"{path}.{name}")
-            for name, item in value.get("fields", {}).items()
+            for name, item in encoded_fields.items()
         }
-        return cls(**decoded_fields)
+        try:
+            return cls(**decoded_fields)
+        except (AttributeError, LookupError, TypeError, ValueError) as exc:
+            raise SpipeFormatError(
+                f"{path}: the fields do not construct {target!r} ({type(exc).__name__}: {exc})."
+            ) from exc
     if "$component" in value:
         return _decode_component(value, ctx, path)
     if "$ref" in value:
         target = value["$ref"]
+        if not isinstance(target, str):
+            raise SpipeFormatError(f"{path}: '$ref' target must be a string; got {type(target).__name__}.")
         if ctx.code_mode == "sentinel":
             return CodeRef(target)
         if ctx.allow_code:
             module_name, _, qual = target.partition(":")
-            obj: Any = import_module(module_name)
-            for part in qual.split("."):
-                obj = getattr(obj, part)
-            return obj
+            return _resolve_target(module_name, qual, target, path)
         raise SpipeCodeRefError(
             f"{path}: this spipe references code ({target!r}); pass allow_code=True to load() "
             "to import it."
         )
     if "$data" in value:
         payload = value["$data"]
+        if not isinstance(payload, Mapping) or not all(
+            isinstance(payload.get(data_field.name), (str, type(None))) for data_field in fields(DataRef)
+        ):
+            raise SpipeFormatError(f"{path}: '$data' must be an object whose values are strings.")
         ref = DataRef(
             kind=payload.get("kind", "opaque"),
             repo_id=payload.get("repo_id"),
@@ -865,9 +1063,40 @@ COMPONENT_KINDS = _component_kinds
 
 
 def _decode_component(value: Mapping, ctx: DecodeContext, path: str) -> Any:
+    """Decode a `$component` value to a state-control component or a routing object.
+
+    Args:
+        value: The encoded `$component` object.
+        ctx: The decoding context.
+        path: The position of `value` in the manifest, used in error messages.
+
+    Returns:
+        The rebuilt component.
+
+    Raises:
+        SpipeFormatError: If the kind is not a string, if `params` is not an object, if the kind
+            is unknown, or if the params do not rebuild the component.
+        SpipeCodeRefError: If a nested value requires code and `ctx.allow_code` is False.
+        SpipeIntegrityError: If an artifact the component references is unavailable or fails
+            verification.
+
+    Warns:
+        UserWarning: If `ctx.verify` is `"warn"` and a gate readout artifact records the
+            fingerprint of the model that produced it.
+    """
     kind = value["$component"]
     params_raw = value.get("params", {})
+    if not isinstance(kind, str) or not isinstance(params_raw, Mapping):
+        raise SpipeFormatError(f"{path}: '$component' must be a kind string with an object of params.")
+    try:
+        return _rebuild_component(kind, params_raw, value, ctx, path)
+    except (AttributeError, LookupError, TypeError, ValueError) as exc:
+        raise SpipeFormatError(
+            f"{path}: the params do not rebuild a {kind!r} component ({type(exc).__name__}: {exc})."
+        ) from exc
 
+
+def _rebuild_component(kind: str, params_raw: Mapping, value: Mapping, ctx: DecodeContext, path: str) -> Any:
     if kind == "router":
         from steerability.algorithms.output_control.routed_decoding.routing import Router
 
@@ -885,12 +1114,16 @@ def _decode_component(value: Mapping, ctx: DecodeContext, path: str) -> Any:
         from steerability.algorithms.output_control.routed_decoding.routing import P
 
         return P(params_raw["name"])
-    if kind in ("and", "or"):
-        left = decode(params_raw["left"], ctx, f"{path}.left")
-        right = decode(params_raw["right"], ctx, f"{path}.right")
-        return (left & right) if kind == "and" else (left | right)
-    if kind == "not":
-        return ~decode(params_raw["operand"], ctx, f"{path}.operand")
+    if kind in ("and", "or", "not"):
+        from steerability.algorithms.output_control.routed_decoding.routing import Predicate
+
+        names = ("operand",) if kind == "not" else ("left", "right")
+        operands = [decode(params_raw[name], ctx, f"{path}.{name}") for name in names]
+        if not all(isinstance(operand, Predicate) for operand in operands):
+            raise SpipeFormatError(f"{path}: the operands of a {kind!r} component must be predicates.")
+        if kind == "not":
+            return ~operands[0]
+        return (operands[0] & operands[1]) if kind == "and" else (operands[0] | operands[1])
 
     table = _component_kinds()
     cls = table.get(kind)
@@ -903,7 +1136,7 @@ def _decode_component(value: Mapping, ctx: DecodeContext, path: str) -> Any:
         params = decode(params_raw, ctx, f"{path}.params")
         readout_tensors = None
         if "artifact" in value:
-            artifact_id = value["artifact"]["$artifact"]
+            artifact_id = _available_artifact_id(value["artifact"], ctx, f"{path}.artifact")
             readout_tensors = ctx.store.load_tensors(artifact_id)
             record = ctx.store.record_for(artifact_id)
             params = dict(params)
