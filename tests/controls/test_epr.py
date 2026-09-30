@@ -15,6 +15,7 @@ from steerability.algorithms.input_control.few_shot.selectors.epr import EPRSele
 from steerability.algorithms.input_control.few_shot.selectors.epr.utils import bm25_index
 
 TINY_LM = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+# not in the CI model set; tests that load it are marked `network`
 TINY_BERT = "hf-internal-testing/tiny-random-BertModel"
 
 
@@ -75,6 +76,7 @@ class TestEPRSelector:
         assert issubclass(EPRSelector, BaseSelector)
         assert isclass(EPRSelector)
 
+    @pytest.mark.network
     def test_prepare_then_select(self, tiny_scoring_lm):
         scoring_lm, scoring_tok = tiny_scoring_lm
         items = [
@@ -104,6 +106,7 @@ class TestEPRSelector:
         assert len(out) == 2
         assert all(isinstance(item, dict) for item in out)
 
+    @pytest.mark.network
     def test_query_extracted_from_chat(self, tiny_scoring_lm):
         scoring_lm, scoring_tok = tiny_scoring_lm
         items = [{"input": f"q{i}", "output": f"a{i}"} for i in range(3)]
@@ -131,6 +134,7 @@ class TestEPRSelector:
         assert len(out) == 1
 
 
+@pytest.mark.network
 class TestEPRWithFewShot:
     """End-to-end: EPRSelector slotted into FewShot and exercised through the pipeline."""
 

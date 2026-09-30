@@ -78,45 +78,54 @@ _STOP_REASON_MAP: dict[str | None, str] = {"length": "max_tokens", "stop": "stop
 
 @dataclass(frozen=True, slots=True)
 class ProviderOptions:
-    """Description of one steering-pipeline provider.
+    """Options for the Inspect model provider that serves a steering pipeline.
 
-    Both `InspectSuite.run` and `SteeringEval` accept it, so the two surfaces cannot drift.
+    `InspectSuite.run` (via `options`) and `SteeringEval` (via `provider_options`) accept these options
+    and pass them to the provider.
 
     Attributes:
-        runtime_kwargs: Static runtime kwargs applied to every dispatch. A `"call"`-scoped key
-            passes through unchanged; a `"row"`-scoped key's value is one row's value in the
-            consuming control's per-row form and is broadcast to every row; a key that no enabled
-            control declares is inert. Correct for catalog tasks whose datasets carry no steering
-            columns, and for any kwarg that is a property of the arm rather than the sample.
-        chat_template_kwargs: Forwarded to `apply_chat_template` on the messages path; must be
-            None when the tokenizer has no chat template.
-        max_batch_size: Collator dispatch ceiling; clamped to 1 when the pipeline does not
-            support batching.
-        default_max_tokens: Served through `ModelAPI.max_tokens()` when a request sets no
-            `max_tokens`.
-        reasoning_tags: `(open_tag, close_tag)` pair splitting each generation into a reasoning
-            part and an answer part, so scorers grade the answer only; None disables the split.
-        reasoning_opened_at_start: Whether the chat template's generation prompt already opened the
-            reasoning channel (some thinking-mode templates emit the open tag in the generation
-            prompt, as a `<think>\n` prompt tail). A close-only continuation splits into reasoning
-            and answer in either mode without the flag; the flag matters only for a continuation
-            carrying neither tag (reasoning truncated before the close), which is classified as
-            unclosed reasoning when set and as a plain answer otherwise.
-        reasoning_split: How the split locates the delimiters, resolved once against the pipeline
-            tokenizer. `"text"` splits substrings on the decoded continuation; `"tokens"` splits the
-            continuation ids and decodes each segment; `"auto"` (default) picks `"text"` when both
-            tags survive `skip_special_tokens=True` under the tokenizer and `"tokens"` otherwise,
-            which is the mode that keeps delimiters encoded as special tokens from being stripped
-            before the split can see them.
-        on_unsupported_param: `"raise"` (default) rejects a request carrying a `GenerateConfig`
-            parameter the pipeline surface cannot honor; `"warn"` warns once per parameter per
-            provider and ignores it. Silent dropping is not allowed.
-        seed_scope: How a seeded sampling dispatch maps a seed onto its items, forwarded to
-            `pipeline.generate()`. The default `"dispatch"` decodes a seeded batch in one pass on
-            the Hugging Face backend (the batch is reproducible as a whole); `"item"` derives a
-            seed per row and decodes rows one at a time. Under the collator per-item
-            reproducibility is already unattainable, so `"item"` only serializes the batch without
-            protecting anything. Inert on the vLLM backends.
+        runtime_kwargs: Static runtime kwargs applied to every dispatch. The value of a `"call"`-scoped
+            key is passed through unchanged. The value of a `"row"`-scoped key is one row's value, in
+            the per-row form the consuming control expects, and it is broadcast to every row. A key that
+            no enabled control declares is ignored (and logged once). A key that is also supplied per
+            sample raises `ValueError` when the request is admitted. Static kwargs suit catalog tasks
+            whose datasets have no steering columns, and kwargs that belong to the pipeline rather than
+            to the sample.
+        chat_template_kwargs: Keyword arguments forwarded to `apply_chat_template` on the messages
+            path. Must be None when the tokenizer has no chat template, since the provider raises
+            `TypeError` otherwise.
+        max_batch_size: Maximum number of requests the collator combines into one dispatch. The
+            provider uses 1 when the pipeline does not support batching.
+        default_max_tokens: The value `ModelAPI.max_tokens()` returns, which Inspect uses when a
+            request sets no `max_tokens`.
+        reasoning_tags: The `(open_tag, close_tag)` pair used to split each generation into a
+            reasoning part and an answer part, which lets scorers grade only the answer. Defaults to
+            `("<think>", "</think>")`. None disables the split.
+        reasoning_opened_at_start: Whether the chat template's generation prompt already opens the
+            reasoning channel (some thinking-mode templates end the generation prompt with the open
+            tag). A continuation that contains the close tag is split the same way under either
+            setting. The setting affects only a continuation that contains neither tag (reasoning
+            truncated before the close tag). Such a continuation is treated as unclosed reasoning when
+            True and as an answer when False.
+        reasoning_split: How the split finds the tags, resolved once against the pipeline tokenizer.
+            `"text"` splits the decoded continuation by substring. `"tokens"` splits the continuation
+            ids and decodes each segment. `"auto"` (default) picks `"text"` when decoding with
+            `skip_special_tokens=True` keeps both tags, and `"tokens"` otherwise. Splitting on the ids
+            keeps tags that are special tokens from being removed before the split.
+        on_unsupported_param: `"raise"` (default) rejects a request with `ValueError` when it sets a
+            `GenerateConfig` parameter the pipeline cannot honor. `"warn"` emits one `UserWarning` per
+            parameter per provider and ignores the parameter. Log-probability parameters raise
+            `NotImplementedError` under either setting.
+        seed_scope: How the seed of a seeded sampling dispatch applies to its rows, forwarded to
+            `pipeline.generate()`. The seed is the request's seed, or `base_seed` when the request sets
+            none. With `"dispatch"` (default), the Hugging Face backend decodes the dispatch in one
+            batched pass under one derived seed, and the batch is reproducible as a whole. Each
+            `pipeline.generate()` call opens a new session on that backend. Every dispatch with the
+            same seed therefore starts sampling from the same random state (common random numbers
+            across prompts). With `"item"`, each row derives its own seed and the rows are decoded one
+            at a time. The collator groups requests by arrival time, which makes per-row
+            reproducibility unattainable under either setting. `"item"` therefore only makes decoding
+            serial. The setting has no effect on the vLLM backends.
     """
 
     runtime_kwargs: Mapping[str, Any] = field(default_factory=dict)

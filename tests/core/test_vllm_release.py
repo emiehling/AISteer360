@@ -15,6 +15,9 @@ import pytest
 
 vllm = pytest.importorskip("vllm")
 
+# every engine boots `JackFram/llama-68m`, which is not in the CI model set
+pytestmark = pytest.mark.network
+
 from steerability.algorithms.core.execution import GenerationItem, GenerationParams, PreparedPrompt  # noqa: E402
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline  # noqa: E402
 from steerability.backends.vllm import VLLMBackend  # noqa: E402
