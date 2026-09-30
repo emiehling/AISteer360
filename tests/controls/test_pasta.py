@@ -524,6 +524,115 @@ class TestIncludeModeSingleTouch:
             assert torch.equal(row[column], torch.zeros((), dtype=row.dtype))
 
 
+class TestExcludeModeSingleTouch:
+    """Exclude mode edits each prompt column once, adding `scale_constant` off the span union and 0 on it."""
+
+    SCALE = torch.tensor([0.25]).log()
+
+    def _apply(self, token_ranges, batch_size=1, seq_len=8, input_len=8, num_heads=2, head_idx=(0, 1)):
+        pasta = PASTA.__new__(PASTA)
+        pasta.model = SimpleNamespace(config=SimpleNamespace(num_attention_heads=num_heads))
+        pasta.scale_position = "exclude"
+        attention_mask = torch.zeros(batch_size, num_heads, seq_len, seq_len)
+        _, out = pasta._attention_pre_hook(
+            module=None,
+            input_args=(torch.zeros(batch_size, seq_len, 4),),
+            input_kwargs={"attention_mask": attention_mask.clone()},
+            head_idx=list(head_idx),
+            token_ranges=[torch.tensor(ranges) for ranges in token_ranges],
+            input_len=input_len,
+            scale_constant=self.SCALE,
+        )
+        return out["attention_mask"]
+
+    def _expected_row(self, span_columns, seq_len=8, input_len=8):
+        """The per-column delta: `scale_constant` on prompt columns outside every span, 0 elsewhere."""
+        row = torch.zeros(seq_len)
+        row[:input_len] = float(self.SCALE)
+        row[list(span_columns)] = 0.0
+        return row
+
+    def test_two_disjoint_spans_edit_each_column_once(self):
+        mask = self._apply([[[1, 3], [5, 6]]])
+        expected = self._expected_row({1, 2, 5})
+        for head in (0, 1):
+            torch.testing.assert_close(mask[0, head], expected.expand(8, -1))
+
+    def test_one_span_edits_the_complement(self):
+        mask = self._apply([[[2, 4]]])
+        torch.testing.assert_close(mask[0, 0], self._expected_row({2, 3}).expand(8, -1))
+
+    def test_overlapping_spans_leave_the_union_untouched(self):
+        mask = self._apply([[[1, 4], [3, 6]]])
+        torch.testing.assert_close(mask[0, 0], self._expected_row({1, 2, 3, 4, 5}).expand(8, -1))
+
+    def test_spans_across_a_batch_edit_each_row_independently(self):
+        # row 1 mixes the (0, 0) sentinel with a real span; row 2 has only the sentinel; only head 1 is steered;
+        # key columns past input_len (generated positions) are left untouched
+        token_ranges = [[[0, 2], [4, 5]], [[0, 0], [3, 5]], [[0, 0]]]
+        mask = self._apply(token_ranges, batch_size=3, input_len=6, head_idx=(1,))
+        torch.testing.assert_close(mask[0, 1], self._expected_row({0, 1, 4}, input_len=6).expand(8, -1))
+        torch.testing.assert_close(mask[1, 1], self._expected_row({3, 4}, input_len=6).expand(8, -1))
+        assert torch.equal(mask[2], torch.zeros_like(mask[2]))
+        assert torch.equal(mask[:, 0], torch.zeros_like(mask[:, 0]))
+
+
+class TestSlidingWindowMask:
+    """A mask whose key axis is narrower than the prompt is edited at the prompt positions it covers."""
+
+    def test_narrow_mask_is_edited_at_its_window_positions(self):
+        scale = torch.tensor([0.25]).log()
+        pasta = PASTA.__new__(PASTA)
+        pasta.model = SimpleNamespace(config=SimpleNamespace(num_attention_heads=2))
+        pasta.scale_position = "exclude"
+        # decode step after an 8-token prompt under a 4-key window, so the mask columns are key positions 5..8
+        cache = SimpleNamespace(get_seq_length=lambda layer_idx=0: 8)
+        _, out = pasta._attention_pre_hook(
+            module=None,
+            input_args=(torch.zeros(1, 1, 4),),
+            input_kwargs={"attention_mask": torch.zeros(1, 2, 1, 4), "past_key_values": cache},
+            head_idx=[0, 1],
+            token_ranges=[torch.tensor([[5, 6]])],
+            input_len=8,
+            scale_constant=scale,
+        )
+        # position 5 is the span, 6 and 7 are non-span prompt positions, and 8 is the generated token
+        expected = torch.tensor([0.0, float(scale), float(scale), 0.0])
+        for head in (0, 1):
+            torch.testing.assert_close(out["attention_mask"][0, head, 0], expected)
+
+    @pytest.mark.parametrize("scale_position", ["include", "exclude", "generation"])
+    def test_prompt_longer_than_the_window_generates(self, scale_position):
+        from transformers import MistralConfig, MistralForCausalLM
+
+        torch.manual_seed(0)
+        tokenizer = wordlevel_tokenizer()
+        config = MistralConfig(
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=4,
+            vocab_size=16,
+            sliding_window=4,
+        )
+        model = MistralForCausalLM(config).eval()
+        pasta = PASTA(head_config=[0, 1], alpha=0.1, scale_position=scale_position)
+        pipeline = SteeringPipeline(controls=[pasta], model=model, tokenizer=tokenizer)
+        pipeline.steer()
+
+        prompt_ids = tokenizer("the cat sat on the mat the dog ran fast", return_tensors="pt").input_ids
+        assert prompt_ids.size(1) > config.sliding_window
+        out_ids = pipeline.generate(
+            input_ids=prompt_ids,
+            runtime_kwargs={"substrings": ["cat sat"]},
+            max_new_tokens=3,
+            min_new_tokens=3,
+            do_sample=False,
+        )
+        assert out_ids.shape == (1, 3)
+
+
 class TestProfiledPASTAFreezes:
     def test_profiled_pasta_freezes_and_loads(self, tmp_path):
         from steerability.spipe import SPipe

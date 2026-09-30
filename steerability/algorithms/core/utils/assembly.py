@@ -113,30 +113,35 @@ def per_item_state_entries(
         model: "PreTrainedModel | None" = None,
         **gen_kwargs,
 ) -> list[tuple[HookEntry, ...]]:
-    """Per-row state entries computed by per-call control clones.
+    """Build the state entries of each row with per-call clones of the state controls.
 
-    Distinct per-item derived seeds force the in-process session onto its serial path, where
-    each row runs its own forward. Hooks computed once on the batch hold batch-sized position
-    and gate state, so each row instead gets hooks computed by a fresh clone on that row's
-    prompt tensors.
+    The pipeline uses these entries when distinct per-item seeds make the in-process session
+    run a separate forward for each row. Hooks built once for the batch contain position and
+    gate state sized for the whole batch. Each row therefore gets hooks that fresh clones build
+    on that row's prompt tensors. The clones for one row share one `copy.deepcopy` memo. A gate
+    shared by several controls (the control that drives it and the controls that follow it) is
+    then copied once per row, and every clone for that row reads the same copy.
 
     Args:
         state_controls: The pipeline's state controls, in list order.
         input_ids: Adapted prompt ids of shape `[batch, seq_len]`.
         attention_mask: Attention mask matching `input_ids`.
         runtime_kwargs: Per-call parameters for state controls.
-        model: Live model forwarded to `get_hooks()`.
+        model: The loaded model forwarded to `get_hooks()`, or None.
+        **gen_kwargs: Generation keyword arguments forwarded to `get_hooks()`.
 
     Returns:
-        One tuple of `HookEntry` per row, each in controls-list order.
+        One tuple of `HookEntry` per row, each in controls-list order. Disabled controls
+        contribute no entry.
     """
     rows: list[tuple[HookEntry, ...]] = []
     for index in range(input_ids.size(0)):
         entries: list[HookEntry] = []
+        memo: dict = {}
         for state_control in state_controls:
             if not state_control.enabled:
                 continue
-            clone = state_control.clone_for_call()
+            clone = state_control.clone_for_call(memo=memo)
             hooks = clone.get_hooks(
                 input_ids[index:index + 1],
                 runtime_kwargs,

@@ -12,26 +12,37 @@ from steerability.algorithms.state_control.common.token_scope import ScopeKind
 class DirectionalAblationArgs(BaseArgs):
     """Arguments for Directional Ablation.
 
-    Users provide EITHER a pre-computed steering vector OR contrastive training data. If data is
-    provided, the feature direction is fitted during `steer()` as the difference in means over the
-    contrastive data. A precomputed vector may carry any `K >= 1` directions per layer, where `K=1`
-    is single-direction ablation and `K>1` ablates the whole subspace.
+    Exactly one of `steering_vector` (a precomputed vector) or `data` (contrastive pairs) must be
+    given. With `data`, the feature direction is fitted during `steer()` with the method given by
+    `train_spec.method`. The default `train_spec` is `VectorTrainSpec(method="mean_diff",
+    accumulate="last_token")`, which takes the difference in means over the last-token hidden
+    states of the contrastive data. A `train_spec` given as a dict or `VectorTrainSpec` uses the
+    `VectorTrainSpec` defaults for the fields it omits (e.g., `method="pca_pairwise"`). A
+    precomputed vector may contain any `K >= 1` directions per layer. `K=1` ablates a single
+    direction and `K>1` ablates the whole subspace.
 
     Attributes:
-        steering_vector: Pre-computed direction(s), `[K, H]` per layer. If provided, skip fitting.
-        data: Contrastive pairs for fitting the direction. Required if `steering_vector` is None.
-        train_spec: Controls extraction method and accumulation mode.
-        alpha: Ablation strength in `[0, 1]`. `1.0` fully removes the component (`h'.d == 0`);
-            `< 1.0` gives graded partial suppression. Values `> 1.0` are disallowed (use rotation
-            or additive steering to induce the opposite behavior).
-        layer_ids: Explicit layers to ablate at. If None, a single heuristic layer at ~40% depth is
-            used.
-        layer_range: Optional half-open `[start, end)` filter applied to the resolved directions.
-        token_scope: Which tokens to ablate (see `make_token_mask`).
-        last_k: Required when `token_scope == "last_k"`.
-        from_position: Required when `token_scope == "from_position"`.
-        use_norm_preservation: If True, wrap the transform in `NormPreservingTransform`. Ablation
-            reduces the residual norm, and this defaults to False.
+        steering_vector: Precomputed direction(s), `[K, H]` per layer. When given, no fit runs.
+        data: Contrastive pairs for fitting the direction. Required if `steering_vector` is None. A
+            dict is converted to `ContrastivePairs`.
+        train_spec: Fit configuration (extraction method and accumulation mode). A dict is converted
+            to `VectorTrainSpec`.
+        alpha: Ablation strength in `[0, 1]`. `1.0` fully removes the component (`h'.d == 0`), and
+            values below `1.0` give graded partial suppression. Values outside `[0, 1]` raise
+            `ValueError` (use rotation or additive steering to induce the opposite behavior).
+        layer_ids: Layers to ablate at. If None, a single layer at about 40% depth is used.
+        layer_range: Optional half-open `[start, end)` range that restricts the layers of the
+            fitted or precomputed directions.
+        token_scope: Which tokens to ablate (`"all"`, `"after_prompt"`, `"last_k"`, or
+            `"from_position"`).
+        last_k: Number of final positions of each forward pass to ablate. Required (at least 1)
+            when `token_scope` is `"last_k"`.
+        from_position: The absolute position from which ablation starts. Required (at least 0)
+            when `token_scope` is `"from_position"`.
+        use_norm_preservation: If True, wrap the transform in `NormPreservingTransform`, which
+            rescales any position whose norm increased back to its original norm. Defaults to
+            False. Ablation does not increase the norm, and the wrapper therefore has no effect up
+            to rounding.
     """
 
     # direction source (provide exactly one)

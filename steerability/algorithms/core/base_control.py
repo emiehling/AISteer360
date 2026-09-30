@@ -65,10 +65,12 @@ class BaseControl(ABC):
         self._configure()
 
     def _configure(self) -> None:
-        """Post-construction hook, called after `Args` fields are mirrored onto the instance.
+        """Set up attributes derived from the args at the end of construction.
 
-        Driver presets override this to map their mirrored args onto the fields their generic base
-        reads, so subclasses never bypass a parent `__init__`. Default no-op.
+        `__init__` calls this method after it copies the `Args` fields onto the instance (a control
+        with `Args = None` has no fields to copy). The default does nothing. A subclass overrides
+        it to derive attributes from its args, e.g., a driver preset sets the fields that its
+        generic driver reads.
         """
         pass
 
@@ -171,16 +173,21 @@ class BaseControl(ABC):
         """
         return None
 
-    def clone_for_call(self, seed: int | None = None) -> "BaseControl":
-        """A configuration-preserving shallow clone for one generation call.
+    def clone_for_call(self, seed: int | None = None, *, memo: dict | None = None) -> "BaseControl":
+        """Return a shallow copy of the control for one generation call.
 
-        The clone shares steer-time artifacts (memories, steering vectors, attached tokenizers)
-        with the original but has its own attribute namespace, so per-call attribute mutation on
-        the clone never races another call using the original. When `seed` is given and the
-        control defines `reseed(seed)`, the clone's client-side RNG is re-seeded.
+        The clone keeps the configuration of the original and shares its steer-time artifacts
+        (e.g., memories, steering vectors, and attached tokenizers). Assigning an attribute on
+        the clone does not affect the original, which other calls may be using at the same time.
+        In-place changes to a shared object affect both. When `seed` is given and the control
+        defines `reseed(seed)`, the clone's `reseed()` is called to re-seed its client-side RNG.
 
         Args:
-            seed: Optional seed forwarded to the clone's `reseed()`.
+            seed: Optional seed passed to the clone's `reseed()`.
+            memo: Optional `copy.deepcopy` memo for subclasses that deep-copy per-call state.
+                Clones of several controls made with one memo share the copy of any object that
+                those controls share. The base implementation copies nothing deeply and ignores
+                `memo`.
 
         Returns:
             The clone.
