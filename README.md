@@ -14,7 +14,7 @@
 
 The Steerability toolkit is an open source Python package for steering large language models.
 
-The toolkit enables the development and evaluation of a wide range of steering methods via reusable components across four model control surfaces (input, structure, state, and output). Features include modular abstractions for the construction of steering methods, functionality for composition of steering methods into [steering pipelines](docs/concepts/steering_pipelines.md), and evaluation of steering pipelines on [Inspect](https://inspect.aisi.org.uk) tasks (including measurement of steering side effects).
+The toolkit enables the development and evaluation of a wide range of steering methods via reusable components across four model control surfaces (input, structure, state, and output). Features include modular abstractions for the construction of steering methods, functionality for composition of steering methods into [steering pipelines](docs/concepts/steering_pipelines.md), evaluation of steering pipelines on [Inspect](https://inspect.aisi.org.uk) tasks (including measurement of steering side effects), and a search over steering pipelines under accuracy constraints with certification on held-out items.
 
 To get started, please see the documentation at <https://generative-computing.github.io/steerability/> and the [example notebooks](examples/index.md).
 

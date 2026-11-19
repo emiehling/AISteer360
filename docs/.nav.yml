@@ -28,6 +28,7 @@ nav:
     - Tutorials: tutorials/index.md
     - Add a steering method: "tutorials/add_new_steering_method.md"
     - Evaluate steering pipelines: "tutorials/evaluate_steering_pipelines.md"
+    - Optimize steering pipelines: "tutorials/optimize_steering_pipelines.md"
     - Add a new input control: "tutorials/add_method_by_category/add_new_input_control.md"
     - Add a new output control: "tutorials/add_method_by_category/add_new_output_control.md"
     - Add a new state control: "tutorials/add_method_by_category/add_new_state_control.md"
@@ -137,3 +138,9 @@ nav:
         - Benchmarks: reference/evaluation/items.md
         - Runner: reference/evaluation/runner.md
         - Plotting: reference/evaluation/plotting.md
+    - Optimization:
+        - Study: reference/optimization/study.md
+        - Measurement: reference/optimization/measurement.md
+        - Evaluation: reference/optimization/evaluation.md
+        - Search: reference/optimization/search.md
+        - Release: reference/optimization/release.md

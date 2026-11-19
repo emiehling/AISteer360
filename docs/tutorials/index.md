@@ -1,6 +1,7 @@
 # Tutorials
 
-These tutorials cover extending the toolkit with new steering methods and evaluating steering pipelines.
+These tutorials cover extending the toolkit with new steering methods, evaluating steering pipelines, and searching
+steering pipelines under accuracy constraints.
 
 <div class="grid cards" markdown>
 
@@ -20,5 +21,14 @@ These tutorials cover extending the toolkit with new steering methods and evalua
     general-capability side effects.
 
     [:octicons-arrow-right-24: Evaluate steering pipelines](./evaluate_steering_pipelines.md)
+
+-   :material-target:  __Optimization__
+
+    ---
+
+    A study searches steering pipelines for the largest behavior gain whose capability loss stays within a margin,
+    and certifies the result on sealed items.
+
+    [:octicons-arrow-right-24: Optimize steering pipelines](./optimize_steering_pipelines.md)
 
 </div>

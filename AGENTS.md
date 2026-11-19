@@ -8,9 +8,10 @@ and the code disagree, the code is authoritative: verify against the source befo
 
 Steerability is a toolkit for steering large language models (Hugging Face causal LMs). It provides steering methods
 ("controls") across four model control surfaces, a `SteeringPipeline` that composes controls from any of the categories
-into one operation on a model, and an evaluation stack (recipes and templates, a measurement protocol, a store of fits
+into one operation on a model, an evaluation stack (recipes and templates, a measurement protocol, a store of fits
 and per-item evidence, benchmarks over Inspect AI tasks or prompts, and a sweep runner) for comparing steering
-pipelines.
+pipelines, and an optimization package that searches steering pipelines under accuracy constraints and certifies the
+result on sealed items.
 
 Pipelines execute on one configurable backend: the in-process Hugging Face backend (default), the offline vLLM
 engine (`kind="vllm"`), or a vLLM server (`kind="vllm-serve"`). For the generate and score phases, each control
@@ -78,13 +79,24 @@ steerability/
 │   ├── items.py                 # benchmarks (PromptBenchmark, InspectBenchmark), evaluate_items, direct generation
 │   ├── runner.py                # SteeringEval (points x trials x benchmarks), samples_frame, runs_frame
 │   └── plotting.py              # summary-frame plots over runs_frame output (optional `eval` extra)
+├── optimization/                # constrained search over steering pipelines; study.py (Study, Constraint, Settings,
+│   │                            # Candidate); layered: measurement <- evaluation <- search, release
+│   ├── measurement/             # pools.py (PoolSplit, split_items, check_pools, sealed ledger), stats.py (Paired and
+│   │                            # the decision rules), evidence.py (baseline, usable items, batches, point tables)
+│   ├── evaluation/              # plan.py, result.py, archive.py, evaluator.py and calibration.py (stages, not
+│   │                            # public), session.py (StudySession), service.py (EvaluationService)
+│   ├── search/                  # proposer.py (Proposer, run_study), enumerate.py (grid, random), openevolve.py and
+│   │                            # _openevolve_controller.py (the only modules that import openevolve)
+│   └── release/                 # certify.py (certification on sealed items, certificates, bundles)
 └── utils/                       # tokenization, rendering, thinking, optional-dependency guard, verbosity
                                  # (opt-in package logging)
 
 docs/                            # MkDocs site: home/, concepts/, tutorials/ (incl. add_method_by_category/),
                                  # reference/, .nav.yml
-examples/                        # notebooks/{algorithms (incl. generics/, wrappers/),studies,recipes}/, index.md
-tests/                           # controls/, core/, internals/, evaluation/, utils/; conftest.py
+examples/                        # notebooks/{algorithms (incl. generics/, wrappers/),studies,recipes,optimization}/,
+                                 # index.md; notebooks/optimization/ has the local GSM8K task of the
+                                 # optimization experiments and their scripts (scripts/)
+tests/                           # controls/, core/, internals/, evaluation/, optimization/, utils/; conftest.py
 ```
 
 ## Setup and commands
@@ -102,6 +114,7 @@ Optional extras, in three tiers:
   stays inside trl's supported vLLM range
 - workflows: `eval`, the Inspect AI evaluation stack plus matplotlib and seaborn for `evaluation/plotting.py`
 - method-specific: `merging` (MergeKit)
+- search: `optimize` (OpenEvolve, for `run_openevolve`); the optimization package also needs `eval`
 - `all`: `eval` and `merging`
 
 Contributor tooling lives in `[dependency-groups]`: `dev` (pytest, pre-commit, the plugin core, and the `notebooks`
@@ -567,6 +580,77 @@ guidance.
 
 The core layers (`recipe.py`, `protocol.py`, `store.py`, `fits.py`, `sweeps.py`) have no Inspect dependency.
 
+### Optimization
+
+The optimization package (`steerability/optimization/`) searches the steering pipelines of a space of templates for
+the one that maximizes a behavior score while the accuracy on each capability benchmark stays within a fixed margin
+of the unsteered model, and certifies the result once on sealed items. A `Study` (`optimization/study.py`) fixes the
+protocol, the space (a `Template` per structure), the objective (a behavior benchmark), the `Constraint`s (a
+benchmark and a margin each), the split of every benchmark's items into a search pool and a sealed pool
+(`split_items`, which keeps groups whole), the seed, and the `Settings`. Per-item scores are in [0, 1], and higher is
+better. Each template's ordered axis that is not in `study.searched` is its solved axis (at most one), which the
+evaluator solves for each candidate. Every other axis is a proposer axis, and a `Candidate` is a structure with one
+value per proposer axis (`Study.bind` is the only way to turn one into a template). A solved axis must not change a
+fit (every ladder position has the same `fit_digests`), so an ordered input of a fit belongs in `searched`.
+`study.monotone` lists the solved axes along which capability loss is assumed not to fall. `Study.validate(store)`
+checks the space, the versioning of callables, the pools, the axes, the benchmark names, and the feasibility of the
+pool sizes and margins before any model work.
+
+```python
+from steerability.optimization import Constraint, Study, split_items
+from steerability.optimization.evaluation.session import StudySession
+from steerability.optimization.release.certify import certify
+from steerability.optimization.search.enumerate import RandomProposer
+from steerability.optimization.search.proposer import run_study
+
+for benchmark in (gsm8k, formality):
+    benchmark.prepare(store)
+study = Study(
+    name="formality", protocol=protocol,
+    space={
+        "prompt": Template((entry(SystemPrompt, text=Text()),)),
+        "caa": Template((entry(CAA, data=pairs, layer_id=Choice((10, 14)), multiplier=Interval(0.0, 8.0)),)),
+    },
+    objective=formality, constraints=(Constraint(gsm8k, margin=0.03),),
+    pools={gsm8k.id: split_items(gsm8k, sealed=5000, seed=0), formality.id: split_items(formality, sealed=500, seed=0)},
+    monotone=frozenset({"caa.multiplier"}),
+)
+archive = run_study(study, RandomProposer(study, seed=0), store=store, max_generations=200_000)
+with StudySession(study, store=store) as session:
+    session.start()
+    certification = certify(session, bundle_dir="bundles")
+```
+
+Evaluation goes through one `StudySession` (`optimization/evaluation/session.py`). `start()` validates the study,
+records it in the store tables of the `"optimization/1"` schema, measures the unsteered baseline once
+(`ensure_baseline`: every search and sealed item, and the search items again in another batch order for the noise
+floor), and resumes the recorded rounds. An item with a baseline error row is excluded from its pool for the whole
+study. After the baseline, feasibility is checked again with twice the measured noise floor as the change rate. Greedy
+bf16 decoding changes completions with the batch composition (about 12% of GSM8K scores changed between batch orders
+for a 0.5B model with batches of 64, and none in float32). Studies therefore use a float32 protocol or
+`max_batch_size=1`.
+`screen` runs stages 0 to 3 (plan and support check, fits, a behavior quick look, a capability smoke test), and
+`finish` runs stage 4 (calibration of the solved axis on ladder blocks, then confirmation of the chosen position in up
+to three looks on fresh blocks) and stage 5 (the `Result`, recorded in the `Archive`). A candidate is accepted only
+with an eligible operating point (confirmed on every constraint and within the cost and degeneracy limits), and its
+fitness is the one-sided lower bound of its gain. Every estimate is a `Paired` table of per-item differences against
+the baseline (`measurement/stats.py`), and a point's tables use fresh-block items only, never the ladder block its
+position was chosen on. Results are memoized by candidate id, and a `budget` or `timeout` rejection is not recorded
+(its evidence rows stay). Every `settings.round_candidates` recorded candidates start a new round with new batches and
+re-score the best accepted results. `finalists()` spreads the finalists over levels and measures their levels again
+on items they were not evaluated on.
+
+Proposers see only the `ArchiveView` (per candidate the id, values, status, stage, reason, fitness, and a summary of
+search-pool aggregates). `run_study` drives an in-process `Proposer` (`GridProposer`, `RandomProposer`), and
+`run_openevolve` (`search/openevolve.py`, `optimize` extra) runs OpenEvolve in a subprocess. Its evaluator and its
+population strategy call an `EvaluationService` that serves the session over a local socket (JSON messages, one
+evaluation at a time, a deadline of 90% of the stage timeout), and the strategy admits and replaces programs by the
+archive's latest results. `certify` (`release/certify.py`) records the finalists and their order before it reads any
+sealed item, refuses sealed items that another study already used (unless `allow_reused_sealed`), tests the
+finalists in order at the full error rate until the first failure, and writes each certified point as a frozen bundle
+whose lock contains its `"certificate/1"` certificate. See `docs/tutorials/optimize_steering_pipelines.md` for the
+guide.
+
 ## Developer guide
 
 ### Adding a steering control
@@ -914,13 +998,17 @@ Rules that hold regardless of task:
     concurrently only when `supports_concurrent_generate` is True; a decoding driver's `decode` never runs
     concurrently with another generation of the same pipeline. A cancelled `CancelToken` stops its generation at the
     session's stated granularity and surfaces as `GenerationCancelled`.
+19. In a study, a decision is never judged on the items it was made on, and nothing item-level reaches a proposer.
+    `Result.summary` and `ArchiveView` contain numbers and short enumerated strings computed from search-pool
+    aggregates, no function in `optimization/search/` receives item text or item-level rows, and sealed items are
+    read only by `certify`, after the finalists are recorded.
 
 ## Pointers
 
 - `docs/concepts/`: conceptual guides on controls (with each control's `Backends` line), steering pipelines,
   probes, and the `.spipe` format.
 - `docs/tutorials/`: step-by-step guides for adding a steering method (with per-category walkthroughs under
-  `add_method_by_category/`) and evaluating steering pipelines.
+  `add_method_by_category/`), evaluating steering pipelines, and optimizing steering pipelines under constraints.
 - `examples/notebooks/`: runnable references for every method, the generic controls, and use-case studies.
 - `tests/index.md`: test-suite layout and the pattern for adding control tests.
 - Hosted documentation: <https://generative-computing.github.io/steerability/>.
