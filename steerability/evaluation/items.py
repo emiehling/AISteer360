@@ -512,6 +512,10 @@ class InspectBenchmark:
     assistant turn, so a scorer that reads the message history, the solver's state, or the answer
     choices disagrees with Inspect and the probe records `"inspect"`.
 
+    Direct generation samples each request on its own. Under a sampling protocol, a pipeline
+    without concurrent generation (`supports_concurrent_generate`) therefore runs through Inspect,
+    which batches concurrent requests, and no probe runs for it.
+
     Args:
         task: The task reference (a registry name such as `"inspect_evals/gsm8k"` or a file path,
             optionally `"<file>@<task>"`).
@@ -644,8 +648,12 @@ class InspectBenchmark:
         return captured
 
     def _captured_requests(self, logs: Sequence[Any]) -> dict[str, dict] | None:
-        """Each sample's input messages and generate config, or None when a sample is not capturable."""
-        from inspect_ai.log import resolve_sample_events_data
+        """Each sample's input messages and generate config, or None when a sample is not capturable.
+
+        Message pools and attachments (Inspect stores long strings as `attachment://` references)
+        are resolved before the request is read.
+        """
+        from inspect_ai.log import resolve_sample_attachments, resolve_sample_events_data
 
         from steerability.evaluation.provider import convert_input
 
@@ -655,7 +663,7 @@ class InspectBenchmark:
                 logger.info("The capture run of benchmark %r ended with status %r.", self.name, log.status)
                 return None
             for sample in log.samples or []:
-                sample = resolve_sample_events_data(sample)
+                sample = resolve_sample_attachments(resolve_sample_events_data(sample), "full")
                 events = [event for event in sample.events if event.event == "model"]
                 reason = None
                 if sample.error is not None:
@@ -796,10 +804,13 @@ class InspectBenchmark:
         """Evaluate the given samples in the benchmark's mode under the protocol; a failed sample is omitted.
 
         On the first run of a capturable benchmark under a protocol, the parity probe runs on up to
-        `PROBE_SIZE` of the items and records the mode.
+        `PROBE_SIZE` of the items and records the mode. Under a sampling protocol, a pipeline
+        without concurrent generation runs through Inspect.
         """
         self._require_prepared()
-        if not self.capturable:
+        if not self.capturable or not (
+            self._greedy(steered.protocol) or steered.pipeline.supports_concurrent_generate
+        ):
             return self._run_inspect(steered, item_ids, store=store, replicate=replicate)
         results: dict[str, ItemResult] = {}
         row = self._mode_row(store, steered.protocol.id)

@@ -23,9 +23,12 @@ from inspect_ai.scorer import exact, includes
 from inspect_ai.solver import generate
 
 
+LONG = " ".join(["the cat sat on the mat"] * 8)
+
+
 @task
 def tiny():
-    samples = [Sample(id=f"s{i}", input=f"the cat {i}", target="the") for i in range(4)]
+    samples = [Sample(id=f"s{i}", input=f"{LONG} {i}", target="the") for i in range(4)]
     return Task(dataset=MemoryDataset(samples), solver=[generate()], scorer=[includes(), exact()])
 '''
 
@@ -140,6 +143,8 @@ def test_the_probe_records_direct_and_later_rows_have_rollout_keys(tmp_path, ins
     steered = _steered()
     benchmark, store = _prepared(tmp_path, ONE_CALL)
     assert benchmark.capturable
+    request = store.get_items(benchmark.id)[0].payload["request"]
+    assert request["messages"][-1]["content"].startswith("the cat sat on the mat the cat")
     assert benchmark.mode(steered.protocol) is None
     first = evaluate_items(steered, benchmark, ["s0", "s1"], store=store)
     assert benchmark.mode(steered.protocol) == "direct", benchmark.mode_detail(steered.protocol)
@@ -150,6 +155,17 @@ def test_the_probe_records_direct_and_later_rows_have_rollout_keys(tmp_path, ins
     later = evaluate_items(steered, benchmark, ["s2", "s3"], store=store)
     assert inspect_runs == []
     assert all(row.status == "ok" and row.rollout_key is not None and row.generated for row in later.values())
+
+
+def test_a_sampling_protocol_without_concurrent_generation_runs_through_inspect(tmp_path):
+    steered = _steered()
+    sampling = Protocol.create("tiny", generate_defaults={"temperature": 0.8, "max_tokens": 3}, seed=3)
+    steered = Steered(steered.pipeline, BASELINE, "resolved", sampling)
+    assert not steered.pipeline.supports_concurrent_generate
+    benchmark, store = _prepared(tmp_path, ONE_CALL)
+    rows = evaluate_items(steered, benchmark, ["s0", "s1"], store=store)
+    assert all(row.status == "ok" and row.rollout_key is None for row in rows.values())
+    assert benchmark.mode(sampling) is None
 
 
 def test_a_solver_that_rewrites_the_output_records_inspect(tmp_path):
