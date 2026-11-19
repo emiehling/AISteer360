@@ -28,6 +28,7 @@ from steerability.algorithms.core.fits import (
     fit_cache_scope,
     record_control_fits,
     resolved_id,
+    stores_a_fit,
     weights_context,
 )
 from steerability.algorithms.core.internals.fingerprint import model_fingerprint
@@ -69,7 +70,7 @@ def expand_configurations(pipelines: Pipelines) -> Iterator[tuple[str, Point]]:
         seen: set[str] = set()
         for source in sources:
             if not isinstance(source, (Recipe, Template)):
-                raise TypeError(f"Pipeline {name!r} holds a {type(source).__name__}; expected Recipe or Template.")
+                raise TypeError(f"Pipeline {name!r} contains a {type(source).__name__}; expected Recipe or Template.")
             for point in expand(source, strategy="grid"):
                 if point.recipe.id in seen:
                     raise ValueError(f"Pipeline {name!r} has two points with recipe id {point.recipe.id}.")
@@ -399,11 +400,13 @@ class PipelineFactory:
     def prepare(self, recipes: Iterable[Recipe]) -> None:
         """Run the fits a batch of recipes needs, so that later `steered` calls only bind.
 
-        Recipes whose steer plan has no fit under the cache are skipped. When a plan has a step on
-        a staged in-process model, the pool's engines are released once and every such recipe
-        fits its staged steps (`SteeringPipeline.fit_staged`). Every recipe that still has a fit
-        is then steered once through `steered`, with its staged fits now served from the cache,
-        so an engine boots once and stays up. Call this once per batch, before generation.
+        Recipes whose steer plan has no fit under the cache are skipped, as are recipes whose fits
+        are not stored (a recipe with a structural control, or a control without a fit identity),
+        since their fits run again at every steer. When a plan has a step on a staged in-process
+        model, the pool's engines are released once and every such recipe fits its staged steps
+        (`SteeringPipeline.fit_staged`). Every recipe that still has a fit is then steered once
+        through `steered`, with its staged fits now served from the cache, so an engine boots once
+        and stays up. Call this once per batch, before generation.
 
         Args:
             recipes: The recipes.
@@ -411,7 +414,9 @@ class PipelineFactory:
         planned: list[tuple[Recipe, Any]] = []
         for recipe in dict.fromkeys(recipes):
             cache = self._cache(recipe)
-            controls, _ = apply_control_hits(recipe.instantiate(), cache)
+            controls, pending = apply_control_hits(recipe.instantiate(), cache)
+            if not stores_a_fit(controls, pending, cache):
+                continue
             probe = SteeringPipeline(
                 model_name_or_path=self.protocol.model, controls=controls, backend=self.protocol.backend,
                 fit=self.protocol.fit,

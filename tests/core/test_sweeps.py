@@ -93,10 +93,14 @@ def test_two_recipes_share_one_pooled_backend(monkeypatch, tmp_path):
     from tests.utils.tiny_models import wordlevel_tokenizer
 
     server = _FakeServer()
-    monkeypatch.setattr(VLLMServeBackend, "_request_json", lambda self, path, payload, expect_json=True: server.handle(path, payload))
+    monkeypatch.setattr(
+        VLLMServeBackend, "_request_json", lambda self, path, payload, expect_json=True: server.handle(path, payload)
+    )
     monkeypatch.setattr("steerability.backends.vllm.backend._client_tokenizer",
                         lambda source, trust_remote_code=False: wordlevel_tokenizer())
-    monkeypatch.setattr("steerability.backends.vllm.backend._config_layout", lambda source, trust_remote_code=False: None)
+    monkeypatch.setattr(
+        "steerability.backends.vllm.backend._config_layout", lambda source, trust_remote_code=False: None
+    )
     tokenizer_dir = tmp_path / "tokenizer"
     wordlevel_tokenizer().save_pretrained(tokenizer_dir)
 

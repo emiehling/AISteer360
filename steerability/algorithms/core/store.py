@@ -219,7 +219,7 @@ class Store:
             The store.
 
         Raises:
-            StoreIntegrityError: If `root` holds a `store.json` of another schema.
+            StoreIntegrityError: If `root` contains a `store.json` of another schema.
             ValueError: If `journal_mode` is not recognized.
         """
         if journal_mode not in ("WAL", "DELETE"):
@@ -230,7 +230,9 @@ class Store:
         if marker.exists():
             schema = _loads(marker.read_text(encoding="utf-8")).get("schema")
             if schema != STORE_SCHEMA:
-                raise StoreIntegrityError(f"{root} is a store of schema {schema!r}; this toolkit reads {STORE_SCHEMA!r}.")
+                raise StoreIntegrityError(
+                    f"{root} is a store of schema {schema!r}; this toolkit reads {STORE_SCHEMA!r}."
+                )
         else:
             temporary = root / f"{STORE_FILE}.tmp"
             temporary.write_text(json.dumps({"schema": STORE_SCHEMA}) + "\n", encoding="utf-8")
@@ -295,6 +297,18 @@ class Store:
         for statement in statements:
             connection.execute(statement)
         connection.execute("INSERT OR IGNORE INTO schemas (name, created_at) VALUES (?, ?)", (name, _now()))
+
+    def execute(self, sql: str, parameters: Sequence = ()) -> sqlite3.Cursor:
+        """Run one statement on the index, for the tables an extension created with `ensure_schema`.
+
+        Args:
+            sql: The statement.
+            parameters: Its parameters.
+
+        Returns:
+            The cursor.
+        """
+        return self._connection().execute(sql, parameters)
 
     def _execute(self, sql: str, parameters: Sequence = ()) -> sqlite3.Cursor:
         return self._connection().execute(sql, parameters)
@@ -450,7 +464,8 @@ class Store:
 
     def has_items(self, benchmark_id: str) -> bool:
         """Whether any item of the benchmark is stored."""
-        return self._execute("SELECT 1 FROM items WHERE benchmark_id = ? LIMIT 1", (benchmark_id,)).fetchone() is not None
+        row = self._execute("SELECT 1 FROM items WHERE benchmark_id = ? LIMIT 1", (benchmark_id,)).fetchone()
+        return row is not None
 
     # rollouts
 
@@ -507,8 +522,8 @@ class Store:
             The stored row.
         """
         self._execute(
-            """INSERT OR IGNORE INTO evidence (protocol_id, resolved_id, benchmark_id, item_id, replicate, value, status,
-                tokens, rollout_key, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT OR IGNORE INTO evidence (protocol_id, resolved_id, benchmark_id, item_id, replicate, value,
+                status, tokens, rollout_key, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (row.protocol_id, row.resolved_id, row.benchmark_id, row.item_id, int(row.replicate), float(row.value),
              row.status, row.tokens, row.rollout_key, None if row.detail is None else _dumps(row.detail),
              row.created_at),

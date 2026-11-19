@@ -1,6 +1,6 @@
 """`SPipe`: a portable serialization of a `SteeringPipeline`.
 
-One format holds both the recipe and the frozen resolution. A recipe-only spipe contains the
+One format contains both the recipe and the frozen resolution. A recipe-only spipe contains the
 model reference and the recipe (the recipe-entry JSON of the enabled controls, and its id);
 loading it and calling `steer()` re-runs fits. A frozen spipe additionally pins what the
 resolution produced (resolved entries with per-control fit digests) and records the protocol it
@@ -211,7 +211,8 @@ class SPipe:
         """
         from steerability.algorithms.core.recipe import Recipe
 
-        ctx = dataclasses.replace(self._decode_ctx(lenient=not self._allow_code, data_mode="keep"), verify_artifacts=False)
+        ctx = self._decode_ctx(lenient=not self._allow_code, data_mode="keep")
+        ctx = dataclasses.replace(ctx, verify_artifacts=False)
         entries = [{"method": entry["method"], "args": entry["args"]} for entry in self._manifest["controls"]]
         return Recipe.from_json({"schema": "recipe/1", "entries": entries}, context=ctx)
 
@@ -232,7 +233,7 @@ class SPipe:
 
     @property
     def is_frozen(self) -> bool:
-        """True iff every enabled entry with steer-time products carries a resolution.
+        """True iff every enabled entry with steer-time products has a resolution.
 
         Entries with `resolved: null` have nothing to pin (their recipe is their frozen
         form), which makes a manifest with a lock section frozen.
@@ -297,8 +298,9 @@ class SPipe:
            warning (a thin bundle). Each present artifact is verified against its content id,
            and its store sidecar against its manifest record. A failure is an error.
         3. **Staleness**: the fit digest of each frozen entry is recomputed from its recipe
-           args (the content id of its control's fit digests). The check stops at the first stale entry and reports it as an error. An entry
-           whose recipe does not decode in this process is reported as a warning. A check that
+           args (the content id of its control's fit digests). The check stops at the first stale
+           entry and reports it as an error. An entry whose recipe does not decode in this process
+           is reported as a warning. A check that
            cannot run for another reason (e.g., a missing artifact) is also reported as a
            warning.
         4. **Versions**: a major version difference between the toolkit that wrote the spipe

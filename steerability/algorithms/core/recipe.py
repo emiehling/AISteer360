@@ -4,7 +4,7 @@ A `Recipe` is an ordered tuple of `Entry` objects, each naming a registered stee
 constructor arguments. Its identity (`Recipe.id`) is the content id of a canonical form computed
 from the method's `Args` dataclass, so key order, explicit defaults, entry names, disabled entries,
 and the order of entries across categories do not change it. A `Template` is a recipe whose
-arguments may hold ranges (`Choice`, `Interval`, `Text`). Ranges form axes, which `expand` and
+arguments may contain ranges (`Choice`, `Interval`, `Text`). Ranges form axes, which `expand` and
 `assignments` enumerate or sample, and `Template.bind` replaces ranges with values.
 """
 from __future__ import annotations
@@ -500,7 +500,7 @@ def _encode(value: Any, ctx, path: str) -> Any:
 
 
 def _encode_template_value(value: Any, ctx, path: str) -> Any:
-    """Encode an argument value that may hold ranges, as `{"$range": {...}}` in place of each range."""
+    """Encode an argument value that may contain ranges, as `{"$range": {...}}` in place of each range."""
     if _is_range(value):
         kind = {Choice: "choice", Interval: "interval", Text: "text"}[type(value)]
         payload: dict[str, Any] = {"kind": kind}
@@ -594,7 +594,7 @@ class Recipe(_Described):
         entries: The entries.
 
     Raises:
-        RecipeError: If an entry holds a range, two entries resolve to one name, or an entry is
+        RecipeError: If an entry contains a range, two entries resolve to one name, or an entry is
             malformed.
     """
 
@@ -607,7 +607,7 @@ class Recipe(_Described):
         for item, name in zip(self.entries, self._names):
             for key, value in item.args.items():
                 for path, _, _ in _walk_ranges(value, f"{name}.{key}"):
-                    raise RecipeError(f"{path}: a Recipe holds no ranges; use a Template and bind it.")
+                    raise RecipeError(f"{path}: a Recipe contains no ranges; use a Template and bind it.")
 
     def _canonical_entry(self, item: Entry, name: str, ctx) -> dict:
         method = _resolve(item, name)
@@ -731,7 +731,7 @@ class Recipe(_Described):
 
 @dataclass(frozen=True, eq=False)
 class Template(_Described):
-    """A recipe whose arguments may hold ranges.
+    """A recipe whose arguments may contain ranges.
 
     Ranges may sit at the top level of an entry's args or inside nested dicts, lists, and tuples,
     not inside component objects or dataclass instances. Each range is an axis of its own unless it
@@ -776,7 +776,9 @@ class Template(_Described):
                     raise RecipeError(f"Axis {key!r}: only ordered ranges may share an axis; {unordered} are not.")
                 counts = {len(member.values) for member in members.values() if isinstance(member, Choice)}
                 if len(counts) > 1:
-                    raise RecipeError(f"Axis {key!r}: its Choice members have differing numbers of values {sorted(counts)}.")
+                    raise RecipeError(
+                        f"Axis {key!r}: its Choice members have differing numbers of values {sorted(counts)}."
+                    )
             axes[key] = Axis(key=key, members=dict(members), ordered=all(_ordered(m) for m in members.values()))
         return axes
 
@@ -824,7 +826,7 @@ class Template(_Described):
             A template with the bound ranges replaced.
 
         Raises:
-            RecipeError: If a path holds no range, a value is outside its range, or a shared axis
+            RecipeError: If a path has no range, a value is outside its range, or a shared axis
                 is bound in part or at differing positions (the message gives the path or key).
         """
         values: dict[str, Any] = {}
@@ -842,7 +844,7 @@ class Template(_Described):
                     values[path] = member_value
             else:
                 if key not in self._ranges:
-                    raise RecipeError(f"{key}: the template holds no range at this path.")
+                    raise RecipeError(f"{key}: the template has no range at this path.")
                 values[key] = value
 
         for path, value in values.items():
@@ -887,7 +889,7 @@ class Template(_Described):
             RecipeError: If a range remains.
         """
         if self._ranges:
-            raise RecipeError(f"The template still holds ranges at {sorted(self._ranges)}; bind them first.")
+            raise RecipeError(f"The template still has ranges at {sorted(self._ranges)}; bind them first.")
         return Recipe(self.entries)
 
 

@@ -63,6 +63,49 @@ def _run_coroutine_fn(coroutine_fn) -> Any:
     return anyio.run(coroutine_fn)
 
 
+def inspect_score(
+    scorer: Scorer,
+    response: str,
+    *,
+    prompt: str,
+    target: Any = None,
+    metadata: Mapping[str, Any] | None = None,
+    model_name: str = "steerability/sample-scorer",
+) -> Any:
+    """Run an Inspect scorer on a response, in a state with one user turn and one assistant turn.
+
+    Args:
+        scorer: The Inspect scorer.
+        response: The assistant turn, which is also the state's output.
+        prompt: The user turn.
+        target: The target (a string or a list of strings); None scores against an empty target.
+        metadata: The state's metadata.
+        model_name: Model name recorded on the constructed state and output.
+
+    Returns:
+        The scorer's `Score`, or None when it returns none.
+
+    Raises:
+        RuntimeError: If called from inside a running trio task.
+    """
+    target = Target(target if target is not None else "")
+    state = TaskState(
+        model=ModelName(model_name),
+        sample_id=0,
+        epoch=0,
+        input=prompt,
+        messages=[ChatMessageUser(content=prompt), ChatMessageAssistant(content=response)],
+        target=target,
+        output=ModelOutput.from_content(model_name, response),
+        metadata=dict(metadata or {}),
+    )
+
+    async def run_scorer():
+        return await scorer(state, target)
+
+    return _run_coroutine_fn(run_scorer)
+
+
 def sample_scorer_from_inspect(
     scorer: Scorer,
     *,
@@ -88,26 +131,12 @@ def sample_scorer_from_inspect(
         A `SampleScorer` mapping `(response, row)` to a float.
     """
     convert = to_float if to_float is not None else value_to_float()
-    state_model = ModelName(model_name)
 
     def score(response: str, row: Mapping[str, Any]) -> float:
         query = str(row.get("input", ""))
-        target = Target(row.get(target_key) or "")
-        state = TaskState(
-            model=state_model,
-            sample_id=0,
-            epoch=0,
-            input=query,
-            messages=[ChatMessageUser(content=query), ChatMessageAssistant(content=response)],
-            target=target,
-            output=ModelOutput.from_content(model_name, response),
-            metadata=dict(row),
+        result = inspect_score(
+            scorer, response, prompt=query, target=row.get(target_key) or "", metadata=row, model_name=model_name,
         )
-
-        async def run_scorer():
-            return await scorer(state, target)
-
-        result = _run_coroutine_fn(run_scorer)
         if result is None:
             raise ValueError(
                 f"The Inspect scorer returned no Score for input {query!r}; a SampleScorer must "

@@ -135,9 +135,14 @@ class TestRun:
         recipe = Recipe((entry(SystemPrompt, text="x"),))
         evaluation = SteeringEval(protocol, {"p": recipe}, [_benchmark()], progress=False)
         monkeypatch.setattr(PipelineFactory, "prepare", lambda self, recipes: pytest.fail("model work ran"))
-        monkeypatch.setattr("steerability.evaluation.runner.preflight", lambda points, protocol: ["p [x] C (generate): no"])
+        monkeypatch.setattr(
+            "steerability.evaluation.runner.preflight", lambda points, protocol: ["p [x] C (generate): no"]
+        )
         with pytest.raises(RuntimeError, match="Unsupported"):
             evaluation.run(tmp_path / "run")
+        written = (tmp_path / "run" / "protocol.json").read_text()
+        assert json.loads(written)["id"] == protocol.id
+        assert "secret" not in written
         assert "secret" not in json.dumps(protocol.identity())
 
 

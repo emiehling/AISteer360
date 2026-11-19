@@ -1,6 +1,6 @@
 """The `spipe/2` manifest schema and archive packing.
 
-The canonical form of a `.spipe` is a directory holding `spipe.json` and an optional
+The canonical form of a `.spipe` is a directory containing `spipe.json` and an optional
 `artifacts/` store; a `.spipe` file is a zip of that directory. Zips are written
 deterministically (sorted member names, stored uncompressed, fixed timestamps) under a size
 cap, and unpacked with a zip-slip guard, symlink rejection, and the same cap on the

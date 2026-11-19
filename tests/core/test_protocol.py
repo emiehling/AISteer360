@@ -52,7 +52,10 @@ class TestIdentity:
     def test_credentials_never_appear_in_the_identity(self):
         spec = BackendSpec(
             kind="vllm-serve", model=MODEL,
-            options={"base_url": "http://x:8000", "api_key": "secret", "hf_token": "secret", "nested": {"auth_key": "secret"}},
+            options={
+                "base_url": "http://x:8000", "api_key": "secret", "hf_token": "secret",
+                "nested": {"auth_key": "secret"},
+            },
         )
         protocol = _base(backend=spec)
         assert "secret" not in json.dumps(protocol.identity())

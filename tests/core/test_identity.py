@@ -60,7 +60,8 @@ class TestRecipeIdentity:
         assert {recipe.id for recipe in same} == {base.id}
 
     def test_one_and_one_point_zero_give_one_id(self):
-        assert Recipe((entry(CAA, data=PAIRS, multiplier=1),)).id == Recipe((entry(CAA, data=PAIRS, multiplier=1.0),)).id
+        as_int = Recipe((entry(CAA, data=PAIRS, multiplier=1),))
+        assert as_int.id == Recipe((entry(CAA, data=PAIRS, multiplier=1.0),)).id
 
     def test_a_transform_strength_changes_the_id(self):
         def adapter(strength):
@@ -185,8 +186,7 @@ class TestContentId:
 
 
 class TestDeriveSeed:
-    def test_matches_the_0_5_8_item_seed(self):
-        # derive_item_seed(7, "op", 3) in 0.5.8
+    def test_pinned_value(self):
         assert derive_seed(7, "op", 3) == 763721040572809648
 
     def test_range_and_distinctness(self):

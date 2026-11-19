@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 PROTOCOL_SCHEMA = "protocol/1"
 
-# backend options that carry credentials; they never enter an identity
+# backend options that contain credentials; they never enter an identity
 _CREDENTIAL_OPTIONS = ("api_key",)
 _CREDENTIAL_SUFFIXES = ("_token", "_key")
 
@@ -304,7 +304,7 @@ class Protocol:
             A JSON-serializable mapping, the input of `from_identity`.
 
         Raises:
-            SpipeSaveError: If a field holds a value with no serialized form.
+            SpipeSaveError: If a field contains a value with no serialized form.
         """
         if self._identity is None:
             object.__setattr__(self, "_identity", json.loads(canonical_json(self._identity_payload())))

@@ -47,7 +47,7 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 def _check_save_dir(save_dir: Path, protocol: Protocol, store: Store) -> None:
-    """Refuse a `save_dir` written under another protocol, and carry its recorded facts into the store.
+    """Refuse a `save_dir` written under another protocol, and copy its recorded facts into the store.
 
     Raises:
         ValueError: If `save_dir/protocol.json` records a different protocol id.
@@ -64,6 +64,15 @@ def _check_save_dir(save_dir: Path, protocol: Protocol, store: Store) -> None:
         )
     if recorded.get("observed"):
         store.put_protocol(protocol, ProtocolFacts.from_dict(recorded["observed"]))
+
+
+def _write_protocol(save_dir: Path, protocol: Protocol, store: Store) -> None:
+    """Write `save_dir/protocol.json` with the protocol's identity and the facts the store records for it."""
+    stored = store.get_protocol(protocol.id)
+    _write_json(save_dir / PROTOCOL_FILE, {
+        "schema": "protocol/1", "id": protocol.id, "identity": protocol.identity(),
+        "observed": stored.observed if stored is not None else None,
+    })
 
 
 class SteeringEval:
@@ -116,7 +125,7 @@ class SteeringEval:
             raise ValueError(f"Benchmark names must be distinct; duplicated: {duplicates}.")
         unknown = sorted(set(items or {}) - set(names))
         if unknown:
-            raise ValueError(f"items names unknown benchmark(s) {unknown}.")
+            raise ValueError(f"items refers to unknown benchmark(s) {unknown}.")
         if limit is not None and int(limit) < 1:
             raise ValueError(f"limit must be >= 1; got {limit}.")
         self.protocol = protocol
@@ -169,6 +178,7 @@ class SteeringEval:
             store = Store.open(save_dir / STORE_DIR)
         _check_save_dir(save_dir, self.protocol, store)
         store.put_protocol(self.protocol)
+        _write_protocol(save_dir, self.protocol, store)
         self._save_dir = save_dir
 
         points = list(expand_configurations(self.pipelines))
@@ -222,11 +232,7 @@ class SteeringEval:
             bar.close()
             factory.release()
 
-        stored = store.get_protocol(self.protocol.id)
-        _write_json(save_dir / PROTOCOL_FILE, {
-            "schema": "protocol/1", "id": self.protocol.id, "identity": self.protocol.identity(),
-            "observed": stored.observed if stored is not None else None,
-        })
+        _write_protocol(save_dir, self.protocol, store)
         _write_json(save_dir / POINTS_FILE, {
             "schema": "points/1",
             "protocol_id": self.protocol.id,
@@ -294,14 +300,16 @@ def _score_value(scores: Mapping[str, Any], key: str, converter) -> Any:
     """
     name, _, sub_key = key.partition("/")
     if name not in scores:
-        raise KeyError(f"Score key {key!r} names scorer {name!r}, absent from an item; present: {sorted(scores)}.")
+        raise KeyError(f"Score key {key!r} refers to scorer {name!r}, absent from an item; present: {sorted(scores)}.")
     value = scores[name]
     if sub_key:
         if not isinstance(value, Mapping) or sub_key not in value:
             available = sorted(value) if isinstance(value, Mapping) else value
-            raise KeyError(f"Score key {key!r} names dict key {sub_key!r}, absent from scorer {name!r}; present: {available}.")
+            raise KeyError(
+                f"Score key {key!r} refers to dict key {sub_key!r}, absent from scorer {name!r}; present: {available}."
+            )
         value = value[sub_key]
-    if isinstance(value, bool) or isinstance(value, (int, float)) or (isinstance(value, str) and value in _LETTER_GRADES):
+    if isinstance(value, (bool, int, float)) or (isinstance(value, str) and value in _LETTER_GRADES):
         return converter(value)
     return value
 
@@ -310,7 +318,7 @@ def _read_run(save_dir: str | Path) -> tuple[dict, Store]:
     save_dir = Path(save_dir)
     points_path = save_dir / POINTS_FILE
     if not points_path.exists():
-        raise FileNotFoundError(f"{save_dir} holds no {POINTS_FILE}; it is not a finished SteeringEval run.")
+        raise FileNotFoundError(f"{save_dir} contains no {POINTS_FILE}; it is not a finished SteeringEval run.")
     points = json.loads(points_path.read_text(encoding="utf-8"))
     return points, Store.open(points["store"])
 
@@ -320,7 +328,8 @@ def _select_benchmarks(points: dict, benchmark: str | None, required: bool) -> l
     if benchmark is not None:
         selected = [entry for entry in benchmarks if entry["name"] == benchmark]
         if not selected:
-            raise ValueError(f"The run has no benchmark {benchmark!r}; benchmarks are {[b['name'] for b in benchmarks]}.")
+            names = [b["name"] for b in benchmarks]
+            raise ValueError(f"The run has no benchmark {benchmark!r}; benchmarks are {names}.")
         return selected
     if required and len(benchmarks) > 1:
         raise ValueError(f"The run spans several benchmarks {[b['name'] for b in benchmarks]}; pass benchmark=.")
@@ -350,7 +359,7 @@ def samples_frame(
         save_dir: The run's directory.
         scores: Mapping from output column to score key (`"<scorer>"` for a scalar score or
             `"<scorer>/<key>"` for one key of a dict-valued score), or None for a single `value`
-            column holding each item's value.
+            column with each item's value.
         benchmark: The benchmark to select by name; required when the run has several and
             `scores` is given.
         metadata_keys: Item metadata entries to add as columns (None when absent).
@@ -431,7 +440,7 @@ def runs_frame(
     Args:
         save_dir: The run's directory.
         metrics: Mapping from output column to score key, or None for a single `value` column
-            holding the mean item value.
+            with the mean item value.
         benchmark: The benchmark to select by name; required when the run has several.
 
     Returns:
@@ -480,8 +489,8 @@ def summarize_runs(
 
     Produces the summary-frame contract the plotting layer (`steerability.evaluation.plotting`)
     consumes; the plots read `{metric}_mean` and `{metric}_std`, and `{metric}_sem` (the
-    standard error of the mean over trials) is carried for tabular reporting. Adds `n_trials`
-    (the non-null count of the first metric) and carries each `param_cols` entry with its
+    standard error of the mean over trials) is included for tabular reporting. Adds `n_trials`
+    (the non-null count of the first metric) and includes each `param_cols` entry with its
     first value per group; `param_cols` entries absent from `runs` are ignored. A
     single-trial group's std and sem are 0.0 rather than NaN, so the plotting layer draws a
     zero-length error bar.
@@ -490,7 +499,7 @@ def summarize_runs(
         runs: The wide per-trial frame from `runs_frame`.
         metric_cols: Metric column names to aggregate. Must be non-empty.
         group_cols: Grouping columns defining one configuration.
-        param_cols: Per-configuration columns (e.g. a swept argument) to carry through.
+        param_cols: Per-configuration columns (e.g. a swept argument) to include.
 
     Returns:
         One row per group with the aggregated columns.

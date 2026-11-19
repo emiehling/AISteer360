@@ -9,6 +9,7 @@ from steerability.algorithms.core.fits import (
     fit_digests,
     resolved_id,
     source_access,
+    stores_a_fit,
     weights_context,
 )
 from steerability.algorithms.core.protocol import Protocol
@@ -64,6 +65,14 @@ class TestKeys:
         (tmp_path / "adapter" / "adapter_config.json").write_text("{}")
         with_lora = Recipe((entry(LoadLoRA, path=str(tmp_path / "adapter"), base_model=MODEL), *_caa().entries))
         assert weights_context(with_lora) != "base"
+
+    def test_a_recipe_with_a_structural_control_stores_no_fit(self, tmp_path):
+        cache = FitCache(Protocol.create(MODEL), "base", None)
+        assert stores_a_fit(_caa().instantiate(), [], cache)
+        (tmp_path / "adapter").mkdir()
+        (tmp_path / "adapter" / "adapter_config.json").write_text("{}")
+        with_lora = Recipe((entry(LoadLoRA, path=str(tmp_path / "adapter"), base_model=MODEL), *_caa().entries))
+        assert not stores_a_fit(with_lora.instantiate(), [], cache)
 
     def test_resolved_id_depends_on_the_fits(self):
         recipe = _caa()
@@ -209,6 +218,30 @@ class TestFactory:
         assert PreparingSelector.prepared == 2
         assert first.resolved_id != recipe.id
         assert store.get_resolution(factory.protocol.id, recipe.id) is None
+
+    def test_prepare_skips_a_fit_that_is_not_stored(self, tmp_path, monkeypatch):
+        from steerability.algorithms.input_control.common.selectors.random import RandomSelector
+        from steerability.algorithms.input_control.few_shot import selectors
+
+        class PreparingSelector(RandomSelector):
+            prepared = 0
+
+            def prepare(self, model=None, tokenizer=None, data=None, **kwargs):
+                PreparingSelector.prepared += 1
+
+        monkeypatch.setitem(selectors.SELECTOR_REGISTRY, "preparing", PreparingSelector)
+        recipe = Recipe((entry(
+            FewShot, positive_example_pool=[{"prompt": "a", "response": "b"}], k_positive=1, selector="preparing",
+        ),))
+        factory, _ = _factory(tmp_path)
+        try:
+            factory.prepare([recipe])
+            assert PreparingSelector.prepared == 0
+            with factory.steered(recipe):
+                pass
+        finally:
+            factory.release()
+        assert PreparingSelector.prepared == 1
 
     def test_prepare_fits_once_before_generation(self, tmp_path, fit_calls):
         factory, _ = _factory(tmp_path)

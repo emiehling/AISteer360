@@ -408,6 +408,41 @@ def resolve_source(source: Any, model, tokenizer, *, session=None, **kwargs: Any
     return cache.put(digest, value, time.monotonic() - started)
 
 
+def stores_a_fit(controls: Sequence[BaseControl], pending: Sequence[BaseControl], cache: FitCache) -> bool:
+    """Whether steering a recipe's controls stores a fit that a later steer of the recipe reuses.
+
+    A recipe with an enabled structural control stores nothing, since structural controls steer
+    every time. Otherwise a pending control with a fit identity, or an intervention fit source with
+    a digest and no stored value, stores a fit.
+
+    Args:
+        controls: The controls after `apply_control_hits`.
+        pending: The controls `apply_control_hits` left to fit.
+        cache: The recipe's fit cache.
+
+    Returns:
+        Whether a fit would be stored.
+    """
+    from steerability.algorithms.state_control.base import InterventionControl
+    from steerability.algorithms.structural_control.base import StructuralControl
+
+    enabled = [control for control in controls if getattr(control, "enabled", True)]
+    if any(isinstance(control, StructuralControl) for control in enabled):
+        return False
+    if any(control.fit_identity() is not None for control in pending):
+        return True
+    for control in enabled:
+        if not isinstance(control, InterventionControl):
+            continue
+        for source in control.declared_fit_sources():
+            if getattr(source, "access", ModelAccess.MODULE) == ModelAccess.FACTS:
+                continue
+            digest = _cached_digest(source)
+            if digest is not None and not cache.has(digest):
+                return True
+    return False
+
+
 def _hook_route(control: BaseControl) -> bool:
     """Whether a control's fits go through the hook route (not intervention, not structural)."""
     from steerability.algorithms.state_control.base import InterventionControl
@@ -497,7 +532,8 @@ def resolved_id(recipe: Recipe, used: Mapping[str, str]) -> str:
     Returns:
         `content_id({"schema": "resolved/1", "recipe": recipe.id, "fits": sorted(used.items())})`.
     """
-    return content_id({"schema": "resolved/1", "recipe": recipe.id, "fits": [list(item) for item in sorted(used.items())]})
+    fits = [list(item) for item in sorted(used.items())]
+    return content_id({"schema": "resolved/1", "recipe": recipe.id, "fits": fits})
 
 
 __all__ = [
@@ -515,5 +551,6 @@ __all__ = [
     "source_access",
     "source_digest",
     "source_identity",
+    "stores_a_fit",
     "weights_context",
 ]

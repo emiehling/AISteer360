@@ -168,7 +168,7 @@ class TestBind:
             self._template().bind({"caa.data": PAIRS})
 
     def test_recipe_raises_while_a_range_remains(self):
-        with pytest.raises(RecipeError, match="still holds ranges"):
+        with pytest.raises(RecipeError, match="still has ranges"):
             self._template().bind({"caa.layer_id": 1}).recipe()
 
     def test_ranges_inside_nested_mappings(self):
@@ -243,7 +243,8 @@ class TestExpand:
             list(expand(text))
 
     def test_random_is_reproducible_and_deduplicated(self):
-        template = Template((entry(CAA, data=PAIRS, multiplier=Interval(1.0, 100.0, log=True), layer_id=Choice((1, 2))),))
+        multiplier = Interval(1.0, 100.0, log=True)
+        template = Template((entry(CAA, data=PAIRS, multiplier=multiplier, layer_id=Choice((1, 2))),))
         first = [point.recipe.id for point in expand(template, strategy="random", samples=5, seed=3)]
         assert first == [point.recipe.id for point in expand(template, strategy="random", samples=5, seed=3)]
         assert len(first) == len(set(first)) == 5

@@ -7,15 +7,19 @@ second call returns stored rows and generates nothing.
 
 `PromptBenchmark` scores prompts with a `SampleScorer` and generates them directly
 (`generate_requests`), storing each rollout by a key known before generation, so a changed scorer
-re-scores stored completions. `InspectBenchmark` runs one Inspect task through `inspect_ai.eval`.
+re-scores stored completions. `InspectBenchmark` runs one Inspect task through `inspect_ai.eval`,
+or, for a task that calls the model once per sample and passes a parity check against Inspect,
+generates the captured requests directly and scores the completions with the task's scorers.
 """
 from steerability.utils.optional import require
 
 require("inspect_ai")
+import glob
 import hashlib
 import importlib.metadata
 import json
 import logging
+import math
 import random
 import threading
 import typing
@@ -33,12 +37,21 @@ from steerability.algorithms.core.utils.controls import runtime_kwargs_schema
 from steerability.utils.rendering import has_chat_template, join_message_contents
 
 if TYPE_CHECKING:
+    from steerability.algorithms.core.protocol import Protocol
     from steerability.algorithms.core.sweeps import Steered
 
 logger = logging.getLogger(__name__)
 
 # `inspect_ai.eval` is called from one thread at a time
 _EVAL_LOCK = threading.Lock()
+
+DIRECT_SCHEMA = "direct/1"
+_MODES_TABLE = (
+    "CREATE TABLE IF NOT EXISTS benchmark_modes (benchmark_id TEXT NOT NULL, protocol_id TEXT NOT NULL, "
+    "mode TEXT NOT NULL, detail TEXT, PRIMARY KEY (benchmark_id, protocol_id))"
+)
+CAPTURE_LIMIT = 8
+PROBE_SIZE = 16
 
 
 def _now() -> str:
@@ -103,7 +116,9 @@ class Benchmark(typing.Protocol):
         """Mapping from item id to group id; empty when the benchmark is ungrouped."""
         ...
 
-    def run(self, steered: "Steered", item_ids: Sequence[str], *, store: Store, replicate: int) -> dict[str, ItemResult]:
+    def run(
+        self, steered: "Steered", item_ids: Sequence[str], *, store: Store, replicate: int
+    ) -> dict[str, ItemResult]:
         """Evaluate the given items without reading stored evidence.
 
         Returns a row for every item it completed and omits an item whose generation or scoring
@@ -247,7 +262,9 @@ def generate_requests(
         })
         stored = store.get_rollout(key)
         if stored is not None:
-            results[request.item_id] = Generated(stored.completion, stored.tokens or 0, stored.finish_reason, key, False)
+            results[request.item_id] = Generated(
+                stored.completion, stored.tokens or 0, stored.finish_reason, key, False
+            )
             continue
         record = admission.admit(prompt, gen_kwargs, runtime_kwargs, num_choices)
         (sampled if seed is not None or gen_kwargs.get("do_sample") else greedy).append(_Pending(request, key, record))
@@ -260,7 +277,9 @@ def generate_requests(
             completion=completion, finish_reason=output.finish_reasons[0],
             tokens=output_token_count(output, pad_token_id), created_at=_now(),
         ))
-        results[pending.request.item_id] = Generated(row.completion, row.tokens or 0, row.finish_reason, row.rollout_key, True)
+        results[pending.request.item_id] = Generated(
+            row.completion, row.tokens or 0, row.finish_reason, row.rollout_key, True
+        )
 
     def run_one(pending: _Pending) -> None:
         try:
@@ -405,7 +424,9 @@ class PromptBenchmark:
         value = float(self.scorer(completion, {"input": prompt, "reference": target}))
         return store.put_score(ScoreRow(key, content_id(self.scorer), value, None)).value
 
-    def run(self, steered: "Steered", item_ids: Sequence[str], *, store: Store, replicate: int) -> dict[str, ItemResult]:
+    def run(
+        self, steered: "Steered", item_ids: Sequence[str], *, store: Store, replicate: int
+    ) -> dict[str, ItemResult]:
         """Generate and score the given items; a failed item is omitted."""
         requests = [Request(item_id, self.items[item_id]) for item_id in item_ids]
         generations = generate_requests(
@@ -444,18 +465,52 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _finite(value: Any) -> Any:
+    """A JSON value with every non-finite float replaced by None, since the store writes strict JSON."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_finite(item) for item in value]
+    return value
+
+
+def _sample_id_filter(task_name: str, sample_id: Any) -> Any:
+    """A `sample_id` entry for `inspect_ai.eval` that matches exactly one sample.
+
+    A string id is scoped to its task (`"<task>:<id>"`), since Inspect reads the part of a string
+    id before its first colon as a task name, and its glob characters are escaped, since Inspect
+    matches ids with `fnmatch`.
+    """
+    if isinstance(sample_id, str):
+        return f"{task_name}:{glob.escape(sample_id)}"
+    return sample_id
+
+
 def _model_role_identity(roles: Mapping[str, Any]) -> dict[str, str]:
     return {name: model if isinstance(model, str) else str(model) for name, model in roles.items()}
 
 
 class InspectBenchmark:
-    """One Inspect task, run through `inspect_ai.eval`.
+    """One Inspect task, run through `inspect_ai.eval` or generated directly.
 
     The benchmark's id covers the task reference, the SHA-256 of the task file when the reference
     is a file path (so editing a local task gives a new benchmark), the task arguments, the scorer
     key, the generation arguments, the model roles (by name), the group key, and the installed
-    `inspect_ai` and `inspect_evals` versions. `prepare` loads the task and reads its dataset
-    without running a model. A sample without an id takes its 1-based position.
+    `inspect_ai` and `inspect_evals` versions. A sample without an id takes its 1-based position.
+
+    `prepare` reads the task's dataset and captures each sample's model request by running the
+    task with Inspect's `mockllm/model` (no scoring). A task without a sandbox whose samples each
+    make exactly one model call, without tools and with one choice, is "capturable". On the first
+    `run` of a capturable benchmark under a protocol, up to `PROBE_SIZE` requested items are
+    evaluated both ways under greedy decoding. When every completion and score agrees, the
+    benchmark is generated directly under that protocol (`mode="direct"`), with stored rollouts
+    and deterministic batches. Otherwise it runs through Inspect (`mode="inspect"`). Under a
+    greedy protocol the probe's rows of the recorded mode are returned as results, and under a
+    sampling protocol they are discarded. Direct scoring builds a state with one user turn and one
+    assistant turn, so a scorer that reads the message history, the solver's state, or the answer
+    choices disagrees with Inspect and the probe records `"inspect"`.
 
     Args:
         task: The task reference (a registry name such as `"inspect_evals/gsm8k"` or a file path,
@@ -466,7 +521,7 @@ class InspectBenchmark:
             `value_to_float`. None selects the task's first scorer.
         generate: `GenerateConfig` arguments passed to `eval`, over the protocol's defaults.
         model_roles: Inspect model roles (e.g. a grader), never the pipeline under evaluation.
-        group_key: The sample metadata key holding each sample's group id, or None.
+        group_key: The sample metadata key with each sample's group id, or None.
 
     Attributes:
         name: The task reference.
@@ -499,15 +554,24 @@ class InspectBenchmark:
             "generate": self.generate,
             "model_roles": _model_role_identity(self.model_roles),
             "group_key": group_key,
-            "versions": {"inspect_ai": _package_version("inspect-ai"), "inspect_evals": _package_version("inspect-evals")},
+            "versions": {
+                "inspect_ai": _package_version("inspect-ai"), "inspect_evals": _package_version("inspect-evals"),
+            },
         })
         self._store: Store | None = None
         self._original_ids: dict[str, Any] = {}
+        self._payloads: dict[str, dict] = {}
+        self._scorers: list[tuple[str, Any]] | None = None
 
     @property
     def id(self) -> str:
         """The benchmark's content id."""
         return self._id
+
+    @property
+    def capturable(self) -> bool:
+        """Whether `prepare` captured a model request for every sample."""
+        return bool(self._payloads) and all("request" in payload for payload in self._payloads.values())
 
     def _load_task(self):
         """The task object, loaded from its file or the registry with the task arguments."""
@@ -526,7 +590,7 @@ class InspectBenchmark:
         return tasks[0]
 
     def prepare(self, store: Store) -> None:
-        """Load the task, read its dataset, and write its items to the store once."""
+        """Load the task, read its dataset, capture its requests, and write its items to the store once."""
         if not store.has_items(self.id):
             task = self._load_task()
             rows = []
@@ -538,9 +602,81 @@ class InspectBenchmark:
                     "id": original, "input": _jsonable(sample.input), "target": _jsonable(sample.target),
                     "metadata": _jsonable(metadata),
                 }))
+            captured = self._capture(task, store)
+            if captured is not None and all(row.item_id in captured for row in rows):
+                for row in rows:
+                    row.payload["request"] = captured[row.item_id]
             store.put_items(rows)
         self._store = store
-        self._original_ids = {row.item_id: row.payload["id"] for row in store.get_items(self.id)}
+        items = store.get_items(self.id)
+        self._original_ids = {row.item_id: row.payload["id"] for row in items}
+        self._payloads = {row.item_id: row.payload for row in items}
+        if self.capturable:
+            store.ensure_schema(DIRECT_SCHEMA, [_MODES_TABLE])
+
+    def _capture(self, task: Any, store: Store) -> dict[str, dict] | None:
+        """The model request of every sample, read from runs on `mockllm/model`, or None.
+
+        A first run is limited to `CAPTURE_LIMIT` samples, so a task that is not capturable stops
+        early. Logs are written under `<store logs>/capture/<benchmark id>/`.
+        """
+        import inspect_ai
+
+        if task.sandbox is not None or any(sample.sandbox is not None for sample in task.dataset):
+            logger.info("Benchmark %r declares a sandbox; it runs through Inspect.", self.name)
+            return None
+        log_dir = store.logs / "capture" / self.id
+        kwargs: dict[str, Any] = {"model_roles": dict(self.model_roles)} if self.model_roles else {}
+        try:
+            for limit in (CAPTURE_LIMIT, None):
+                with _EVAL_LOCK:
+                    logs = inspect_ai.eval(
+                        self._load_task(), model="mockllm/model", score=False, limit=limit, display="none",
+                        log_dir=str(log_dir), epochs=1, **kwargs,
+                    )
+                captured = self._captured_requests(logs)
+                if captured is None:
+                    return None
+        except Exception:
+            logger.info("Capturing the requests of benchmark %r failed; it runs through Inspect.", self.name,
+                        exc_info=True)
+            return None
+        return captured
+
+    def _captured_requests(self, logs: Sequence[Any]) -> dict[str, dict] | None:
+        """Each sample's input messages and generate config, or None when a sample is not capturable."""
+        from inspect_ai.log import resolve_sample_events_data
+
+        from steerability.evaluation.provider import convert_input
+
+        requests: dict[str, dict] = {}
+        for log in logs:
+            if log.status != "success":
+                logger.info("The capture run of benchmark %r ended with status %r.", self.name, log.status)
+                return None
+            for sample in log.samples or []:
+                sample = resolve_sample_events_data(sample)
+                events = [event for event in sample.events if event.event == "model"]
+                reason = None
+                if sample.error is not None:
+                    reason = "an error"
+                elif len(events) != 1:
+                    reason = f"{len(events)} model calls"
+                elif events[0].tools:
+                    reason = "tools"
+                elif events[0].input_refs is not None and not events[0].input:
+                    reason = "unresolved input references"
+                elif (events[0].config.num_choices or 1) > 1:
+                    reason = "more than one choice"
+                if reason is not None:
+                    logger.info("Sample %r of benchmark %r has %s; it runs through Inspect.", sample.id, self.name,
+                                reason)
+                    return None
+                requests[str(sample.id)] = {
+                    "messages": convert_input(events[0].input),
+                    "config": events[0].config.model_dump(mode="json", exclude_none=True),
+                }
+        return requests
 
     def _require_prepared(self) -> Store:
         if self._store is None:
@@ -555,6 +691,93 @@ class InspectBenchmark:
         """Mapping from item id to the sample's `group_key` metadata value."""
         return {row.item_id: row.group_id for row in self._require_prepared().get_items(self.id) if row.group_id}
 
+    def mode(self, protocol: "Protocol") -> str | None:
+        """The recorded mode under a protocol: `"direct"`, `"inspect"`, or None before the probe.
+
+        A benchmark that is not capturable records no mode and always runs through Inspect.
+        """
+        row = self._mode_row(self._require_prepared(), protocol.id)
+        return None if row is None else row[0]
+
+    def mode_detail(self, protocol: "Protocol") -> str | None:
+        """The first difference the parity probe found under a protocol, or None."""
+        row = self._mode_row(self._require_prepared(), protocol.id)
+        return None if row is None else row[1]
+
+    def _mode_row(self, store: Store, protocol_id: str) -> tuple[str, str | None] | None:
+        if not self.capturable:
+            return None
+        row = store.execute(
+            "SELECT mode, detail FROM benchmark_modes WHERE benchmark_id = ? AND protocol_id = ?",
+            (self.id, protocol_id),
+        ).fetchone()
+        return None if row is None else (row[0], row[1])
+
+    def _record_mode(self, store: Store, protocol_id: str, mode: str, detail: str | None) -> str:
+        store.execute(
+            "INSERT OR IGNORE INTO benchmark_modes (benchmark_id, protocol_id, mode, detail) VALUES (?, ?, ?, ?)",
+            (self.id, protocol_id, mode, detail),
+        )
+        return self._mode_row(store, protocol_id)[0]
+
+    def _task_scorers(self) -> list[tuple[str, Any]]:
+        """The task's scorers with the names Inspect gives their scores."""
+        from inspect_ai.scorer._scorer import unique_scorer_name
+
+        if self._scorers is None:
+            names: list[str] = []
+            scorers = []
+            for scorer in self._load_task().scorer or []:
+                name = unique_scorer_name(scorer, names)
+                names.append(name)
+                scorers.append((name, scorer))
+            self._scorers = scorers
+        return self._scorers
+
+    def score(self, item_id: str, completion: str) -> tuple[float, Mapping[str, Any]]:
+        """Score a completion of an item with the task's scorers, outside an Inspect run.
+
+        Each scorer runs on a state with the item's input as the one user turn, the completion as
+        the assistant turn, and the item's target and metadata. Results are cached in the store
+        by benchmark, item, and completion.
+
+        Args:
+            item_id: The item.
+            completion: The completion.
+
+        Returns:
+            The value of the benchmark's score key and every scorer's value, by scorer name.
+
+        Raises:
+            ValueError: If a scorer returns no score.
+        """
+        from inspect_ai.scorer import value_to_float
+
+        from steerability.evaluation.scorers import inspect_score
+
+        store = self._require_prepared()
+        key = content_id({"schema": "inspect_score/1", "benchmark": self.id, "item": item_id, "completion": completion})
+        stored = store.get_score(key)
+        if stored is not None:
+            return stored.value, stored.detail
+        payload = self._payloads[item_id]
+        prompt = payload["input"]
+        if not isinstance(prompt, str):
+            prompt = join_message_contents([
+                message for message in payload["request"]["messages"] if message["role"] == "user"
+            ])
+        scores: dict[str, Any] = {}
+        for name, scorer in self._task_scorers():
+            result = inspect_score(
+                scorer, completion, prompt=prompt, target=payload["target"], metadata=payload["metadata"],
+            )
+            if result is None:
+                raise ValueError(f"Scorer {name!r} returned no score for item {item_id!r}.")
+            scores[name] = _jsonable(result.value)
+        value = self._value(scores, value_to_float())
+        row = store.put_score(ScoreRow(key, self.id, value, _finite(scores)))
+        return row.value, row.detail
+
     def _value(self, scores: Mapping[str, Any], converter) -> float:
         if not scores:
             raise ValueError("The sample has no scores.")
@@ -567,14 +790,99 @@ class InspectBenchmark:
                 value = value[key]
         return float(converter(value))
 
-    def run(self, steered: "Steered", item_ids: Sequence[str], *, store: Store, replicate: int) -> dict[str, ItemResult]:
+    def run(
+        self, steered: "Steered", item_ids: Sequence[str], *, store: Store, replicate: int
+    ) -> dict[str, ItemResult]:
+        """Evaluate the given samples in the benchmark's mode under the protocol; a failed sample is omitted.
+
+        On the first run of a capturable benchmark under a protocol, the parity probe runs on up to
+        `PROBE_SIZE` of the items and records the mode.
+        """
+        self._require_prepared()
+        if not self.capturable:
+            return self._run_inspect(steered, item_ids, store=store, replicate=replicate)
+        results: dict[str, ItemResult] = {}
+        row = self._mode_row(store, steered.protocol.id)
+        if row is None:
+            mode, probed = self._probe(steered, item_ids, store=store, replicate=replicate)
+            if self._greedy(steered.protocol):
+                results.update(probed)
+        else:
+            mode = row[0]
+        remaining = [item_id for item_id in item_ids if item_id not in results]
+        if remaining:
+            run = self._run_direct if mode == "direct" else self._run_inspect
+            results.update(run(steered, remaining, store=store, replicate=replicate))
+        return results
+
+    def _greedy(self, protocol: "Protocol") -> bool:
+        return {**protocol.generate_defaults, **self.generate}.get("temperature") == 0
+
+    def _probe(
+        self, steered: "Steered", item_ids: Sequence[str], *, store: Store, replicate: int
+    ) -> tuple[str, dict[str, ItemResult]]:
+        """Evaluate up to `PROBE_SIZE` items both ways under greedy decoding and record the mode.
+
+        Returns:
+            The recorded mode and the probe's rows of that mode.
+        """
+        probe_ids = list(item_ids)[:PROBE_SIZE]
+        through_inspect = self._run_inspect(steered, probe_ids, store=store, replicate=replicate, greedy=True)
+        try:
+            direct = self._run_direct(steered, probe_ids, store=store, replicate=replicate, greedy=True, strict=True)
+        except Exception as error:
+            direct, detail = {}, f"direct generation or scoring failed: {type(error).__name__}: {error}"
+        else:
+            detail = _first_difference(probe_ids, through_inspect, direct)
+        mode = self._record_mode(store, steered.protocol.id, "direct" if detail is None else "inspect", detail)
+        if detail is not None:
+            logger.info("Benchmark %r runs through Inspect under protocol %s: %s", self.name, steered.protocol.id,
+                        detail)
+        return mode, direct if mode == "direct" else through_inspect
+
+    def _run_direct(
+        self,
+        steered: "Steered",
+        item_ids: Sequence[str],
+        *,
+        store: Store,
+        replicate: int,
+        greedy: bool = False,
+        strict: bool = False,
+    ) -> dict[str, ItemResult]:
+        """Generate the captured requests directly and score them; a failed item is omitted unless `strict`."""
+        requests = []
+        for item_id in item_ids:
+            request = self._payloads[item_id]["request"]
+            config = {**request["config"], **({"temperature": 0} if greedy else {})}
+            requests.append(Request(item_id, request["messages"], generate=config))
+        generations = generate_requests(
+            steered, requests, store=store, benchmark_generate=self.generate, replicate=replicate,
+        )
+        results: dict[str, ItemResult] = {}
+        for item_id, generation in generations.items():
+            try:
+                value, scores = self.score(item_id, generation.completion)
+            except Exception:
+                if strict:
+                    raise
+                logger.warning("Scoring failed for item %r.", item_id, exc_info=True)
+                continue
+            results[item_id] = ItemResult(
+                item_id=item_id, value=value, status="ok", tokens=generation.tokens, completion=generation.completion,
+                scores=scores, rollout_key=generation.rollout_key, generated=generation.generated,
+            )
+        return results
+
+    def _run_inspect(
+        self, steered: "Steered", item_ids: Sequence[str], *, store: Store, replicate: int, greedy: bool = False
+    ) -> dict[str, ItemResult]:
         """Run the task on the given samples through `inspect_ai.eval`; a failed sample is omitted."""
         import inspect_ai
         from inspect_ai.scorer import value_to_float
 
         from steerability.evaluation.provider import as_inspect_model
 
-        self._require_prepared()
         protocol = steered.protocol
         model = as_inspect_model(
             steered.pipeline, options=protocol.resolved_provider,
@@ -582,12 +890,15 @@ class InspectBenchmark:
         )
         log_dir = store.logs / self.id / steered.resolved_id / f"replicate_{replicate}" / _now().replace(":", "-")
         kwargs: dict[str, Any] = {**protocol.generate_defaults, **self.generate}
+        if greedy:
+            kwargs["temperature"] = 0
         if self.model_roles:
             kwargs["model_roles"] = dict(self.model_roles)
+        task = self._load_task()
         with _EVAL_LOCK:
             logs = inspect_ai.eval(
-                self._load_task(), model=model,
-                sample_id=[self._original_ids[item_id] for item_id in item_ids],
+                task, model=model,
+                sample_id=[_sample_id_filter(task.name, self._original_ids[item_id]) for item_id in item_ids],
                 display="none", log_dir=str(log_dir), epochs=1, **kwargs,
             )
         converter = value_to_float()
@@ -609,6 +920,25 @@ class InspectBenchmark:
                     scores=_jsonable(scores), rollout_key=None, generated=True,
                 )
         return results
+
+
+def _scores_json(scores: Mapping[str, Any]) -> str:
+    return json.dumps(dict(scores), sort_keys=True, default=str)
+
+
+def _first_difference(
+    item_ids: Sequence[str], through_inspect: Mapping[str, ItemResult], direct: Mapping[str, ItemResult]
+) -> str | None:
+    """The first item whose completion or scores differ between the two runs, as text, or None."""
+    for item_id in item_ids:
+        first, second = through_inspect.get(item_id), direct.get(item_id)
+        if first is None or second is None:
+            return f"item {item_id!r} has no result through {'Inspect' if first is None else 'direct generation'}"
+        if first.completion != second.completion:
+            return f"item {item_id!r} completions differ: {first.completion!r} != {second.completion!r}"
+        if _scores_json(_finite(dict(first.scores))) != _scores_json(_finite(dict(second.scores))):
+            return f"item {item_id!r} scores differ: {dict(first.scores)!r} != {dict(second.scores)!r}"
+    return None
 
 
 def _from_evidence(row: EvidenceRow, store: Store, generated: bool) -> ItemResult:
@@ -677,7 +1007,7 @@ def evaluate_items(
             stored[item_id] = store.put_evidence(EvidenceRow(
                 protocol_id=protocol_id, resolved_id=steered.resolved_id, benchmark_id=benchmark.id,
                 item_id=item_id, replicate=replicate, value=float(result.value), status="ok", tokens=result.tokens,
-                rollout_key=result.rollout_key, detail=json.loads(json.dumps(detail, default=str)),
+                rollout_key=result.rollout_key, detail=_finite(json.loads(json.dumps(detail, default=str))),
                 created_at=_now(),
             ))
             if result.generated:

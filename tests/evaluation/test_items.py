@@ -95,7 +95,9 @@ class TestPromptBenchmark:
         assert first_order == sorted(PROMPTS.values(), key=lambda prompt: (len(prompt), prompt))
         assert [prompt for call in batches for prompt in call] != first_order
 
-    def test_a_new_scorer_version_writes_new_evidence_and_generates_nothing(self, tmp_path, steered, batches, monkeypatch):
+    def test_a_new_scorer_version_writes_new_evidence_and_generates_nothing(
+        self, tmp_path, steered, batches, monkeypatch
+    ):
         store = Store.open(tmp_path)
         first = _benchmark()
         first.prepare(store)
@@ -223,10 +225,20 @@ class TestInspectBenchmark:
         for row in rows.values():
             assert row.status == "ok"
             assert set(row.scores) == {"includes", "exact"}
-            assert row.rollout_key is None and row.completion is not None
+            assert row.completion is not None
         again = evaluate_items(steered, benchmark, ["s1", "s3"], store=store)
         assert not any(row.generated for row in again.values())
         assert {key: row.completion for key, row in again.items()} == {key: row.completion for key, row in rows.items()}
+
+    def test_sample_ids_with_colons_and_glob_characters(self, tmp_path, steered):
+        path = tmp_path / "tiny_task.py"
+        path.write_text(textwrap.dedent(TASK_FILE).replace('id=f"s{i}"', 'id=f"q:{i}[x]*"'))
+        store = Store.open(tmp_path / "store")
+        benchmark = InspectBenchmark(str(path), scorer="includes")
+        benchmark.prepare(store)
+        rows = evaluate_items(steered, benchmark, ["q:1[x]*", "q:3[x]*"], store=store, retries=0)
+        assert sorted(rows) == ["q:1[x]*", "q:3[x]*"]
+        assert all(row.status == "ok" for row in rows.values())
 
     def test_editing_the_task_file_changes_the_id(self, tmp_path):
         path = tmp_path / "tiny_task.py"
