@@ -33,10 +33,11 @@ def test_version_matches_pyproject():
 
 
 def test_manifest_records_the_package_version():
-    from steerability.spipe.freeze import _package_versions, _toolkit_version
+    from steerability.algorithms.core.protocol import package_versions
+    from steerability.spipe.freeze import _toolkit_version
 
     assert _toolkit_version() == steerability.__version__
-    assert _package_versions()["steerability"] == steerability.__version__
+    assert package_versions()["steerability"] == steerability.__version__
 
 
 def test_verify_skips_an_unknown_saved_version():

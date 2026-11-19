@@ -65,7 +65,27 @@ def content_id(value: Any, *, length: int = ID_LENGTH) -> str:
     Raises:
         SpipeSaveError: If the value has no serialized form.
     """
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()[:length]
+    from steerability.spipe.codec import EncodeContext, encode
+
+    return json_id(encode(value, EncodeContext(store=None)), length=length)
+
+
+def json_id(encoded: Any, *, length: int = ID_LENGTH) -> str:
+    """The content id of a value already in its canonical encoded form.
+
+    `json_id(encode(value))` equals `content_id(value)`. Recipes, protocols, and store keys whose
+    canonical form is already built use it, since encoding an encoded form again would reject
+    its `$`-prefixed tags.
+
+    Args:
+        encoded: A JSON-serializable value in the codec's encoded form.
+        length: Number of hex characters to keep (at most 64).
+
+    Returns:
+        The hex digest prefix.
+    """
+    serialized = json.dumps(encoded, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:length]
 
 
 def derive_seed(*parts: int | str) -> int:

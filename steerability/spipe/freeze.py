@@ -10,7 +10,6 @@ the artifact's record.
 from __future__ import annotations
 
 import logging
-import platform
 import tempfile
 from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
@@ -18,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from steerability.algorithms.core.base_control import NotFreezableError
+from steerability.algorithms.core.protocol import package_versions
 from steerability.spipe.codec import EncodeContext, encode, encoded_size
 from steerability.spipe.errors import SpipeSaveError
 from steerability.spipe.format import ARTIFACTS_DIR, FORMAT_VERSION
@@ -37,18 +37,6 @@ def _toolkit_version() -> str:
     import steerability
 
     return steerability.__version__
-
-
-def _package_versions() -> dict[str, str]:
-    import torch
-    import transformers
-
-    return {
-        "steerability": _toolkit_version(),
-        "transformers": transformers.__version__,
-        "torch": torch.__version__,
-        "python": platform.python_version(),
-    }
 
 
 def _resolve_model_ref(pipeline, model_ref: str | None) -> str:
@@ -365,7 +353,7 @@ def build_spipe(pipeline: SteeringPipeline, *, freeze: bool | None = None, model
             "steer_backend_spec_hash": spec.spec_hash,
             "fit": pipeline.fit,
             "seed": None,
-            "versions": _package_versions(),
+            "versions": package_versions(),
         }
 
     manifest = {
