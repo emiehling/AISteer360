@@ -13,6 +13,8 @@ import torch
 
 from steerability.algorithms.core.internals.model_layout import text_config
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+from steerability.algorithms.state_control.act_add.control import ActAdd
+from steerability.algorithms.state_control.caa.control import CAA
 from steerability.algorithms.state_control.cast.control import CAST
 from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 from steerability.utils.tokenization import to_left_pad
@@ -115,3 +117,108 @@ def test_full_sequence_return_has_no_interior_pads(model_and_tokenizer, device):
         assert torch.equal(returned[:, :prompt_len].cpu(), expected_prompt.cpu())
     finally:
         tokenizer.padding_side = original_padding_side
+
+
+RAGGED_PROMPTS = ["a b c d e f g h", "a b c"]
+
+
+def _ragged_batch(tokenizer, device):
+    """A right-padded two-row batch of unequal lengths, with each row's unpadded ids."""
+    encoded = tokenizer(RAGGED_PROMPTS, return_tensors="pt", padding=True)
+    input_ids = encoded["input_ids"].to(device)
+    attention_mask = encoded["attention_mask"].to(device)
+    rows = [input_ids[i][attention_mask[i].bool()].unsqueeze(0) for i in range(input_ids.size(0))]
+    return input_ids, attention_mask, rows
+
+
+def _assert_rows_match_singles(batched: torch.Tensor, singles: list[torch.Tensor]) -> None:
+    for index, single in enumerate(singles):
+        width = single.size(1)
+        assert torch.equal(batched[index, :width].cpu(), single[0].cpu()), f"row {index} differs"
+
+
+def test_from_position_batch_matches_single_rows(model_and_tokenizer, device):
+    """A ragged batch steered from an absolute position generates as each row does alone.
+
+    Absolute positions count from each row's first real token, so the short row (left-packed
+    behind pads) is not steered at its first real token when `from_position=1`.
+    """
+    base_model, tokenizer = model_and_tokenizer
+    model = base_model.to(device)
+    original_padding_side = tokenizer.padding_side
+    tokenizer.padding_side = "right"
+    try:
+        torch.manual_seed(0)
+        vector = SteeringVector(
+            model_type="test", directions={0: 8.0 * torch.randn(1, text_config(model).hidden_size)},
+        )
+        control = CAA(steering_vector=vector, layer_id=0, token_scope="from_position", from_position=1)
+        pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
+        pipeline.steer()
+        assert pipeline.supports_batching
+
+        input_ids, attention_mask, rows = _ragged_batch(tokenizer, device)
+        gen = {"max_new_tokens": 4, "do_sample": False}
+        batched = pipeline.generate(input_ids=input_ids, attention_mask=attention_mask, **gen)
+        singles = [pipeline.generate(input_ids=row, **gen) for row in rows]
+        _assert_rows_match_singles(batched, singles)
+
+        reference = rows[0][:, :3]
+        batched_logprobs = pipeline.compute_logprobs(
+            input_ids, attention_mask=attention_mask, ref_output_ids=reference,
+        )
+        for index, row in enumerate(rows):
+            single_logprobs = pipeline.compute_logprobs(row, ref_output_ids=reference)
+            torch.testing.assert_close(
+                batched_logprobs[index].cpu(), single_logprobs[0].cpu(), atol=1e-4, rtol=1e-4,
+            )
+    finally:
+        tokenizer.padding_side = original_padding_side
+
+
+def test_positional_injection_batch_matches_single_rows(model_and_tokenizer, device):
+    """A ragged batch with an aligned positional vector generates as each row does alone.
+
+    The pipeline batches only batch-safe controls, so the test checks the batched path directly.
+    """
+    base_model, tokenizer = model_and_tokenizer
+    model = base_model.to(device)
+    original_padding_side = tokenizer.padding_side
+    tokenizer.padding_side = "right"
+    try:
+        torch.manual_seed(0)
+        vector = SteeringVector(
+            model_type="test", directions={0: 8.0 * torch.randn(2, text_config(model).hidden_size)},
+        )
+        control = ActAdd(steering_vector=vector, layer_id=0, alignment=1)
+        control.supports_batching = True
+        pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
+        pipeline.steer()
+        assert pipeline.supports_batching
+
+        input_ids, attention_mask, rows = _ragged_batch(tokenizer, device)
+        gen = {"max_new_tokens": 4, "do_sample": False}
+        batched = pipeline.generate(input_ids=input_ids, attention_mask=attention_mask, **gen)
+        singles = [pipeline.generate(input_ids=row, **gen) for row in rows]
+        _assert_rows_match_singles(batched, singles)
+    finally:
+        tokenizer.padding_side = original_padding_side
+
+
+def test_batch_on_a_pipeline_that_is_not_batch_safe_splits_into_single_rows(model_and_tokenizer, device):
+    """A batch reaching a control without batch safety generates one prompt per call, in order."""
+    base_model, tokenizer = model_and_tokenizer
+    model = base_model.to(device)
+    torch.manual_seed(0)
+    vector = SteeringVector(
+        model_type="test", directions={0: 8.0 * torch.randn(2, text_config(model).hidden_size)},
+    )
+    control = ActAdd(steering_vector=vector, layer_id=0, alignment=1)
+    control.supports_batching = False
+    pipeline = SteeringPipeline(controls=[control], model=model, tokenizer=tokenizer)
+    pipeline.steer()
+    gen = {"max_new_tokens": 3, "do_sample": False}
+    batched = pipeline.generate(text=RAGGED_PROMPTS, **gen)
+    assert batched == [pipeline.generate(text=prompt, **gen) for prompt in RAGGED_PROMPTS]
+    outputs = pipeline.generate(text=RAGGED_PROMPTS, return_output=True, **gen)
+    assert [output.decode(tokenizer)[0] for output in outputs] == batched

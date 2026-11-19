@@ -1,5 +1,6 @@
 """Steering-plane estimator: per-layer 2D bases for angular steering."""
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 import torch
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
 class SteeringPlaneEstimator(BaseEstimator[SteeringVector]):
     """Learns a 2D steering plane per layer (paper sections 4.4-4.5).
 
@@ -87,7 +89,7 @@ class SteeringPlaneEstimator(BaseEstimator[SteeringVector]):
 
         # step 2: cross-layer PCA -> single companion axis
         feature_matrix = torch.stack([feature_dirs[lid] for lid in usable], dim=0)  # [L, H]
-        pca = PCA(n_components=1)
+        pca = PCA(n_components=1, random_state=0)
         pca.fit(feature_matrix.numpy())
         pc0 = torch.tensor(pca.components_[0], dtype=torch.float32)
         pc0_variance = float(pca.explained_variance_ratio_[0])

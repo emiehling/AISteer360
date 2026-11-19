@@ -1,5 +1,6 @@
 """Single-pair estimator for ActAdd steering vectors."""
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
 class SinglePairEstimator(BaseEstimator[SteeringVector]):
     """Extracts per-token positional steering vectors from a single prompt pair.
 

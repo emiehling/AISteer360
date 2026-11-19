@@ -58,10 +58,12 @@ class AdditiveTransform(BaseTransform):
         ``h'[p] = h[p] + mask[p] * strength * direction[p - alignment]``
 
         Row `t` of a `[T, H]` direction is added at absolute sequence position
-        ``alignment + t``. The window ``[alignment, alignment + T)`` is evaluated in
-        absolute positions, so during KV-cached generation a window inside the prompt
-        fires only on the prefill pass, and a window extending past the prompt fires at
-        exactly the covered generated positions, once each.
+        ``alignment + t``, where absolute positions count from each row's first real token
+        (column ``pad_count + alignment + t`` of a left-packed row with ``pad_count`` leading
+        pads). The window ``[alignment, alignment + T)`` is evaluated in absolute positions,
+        so during KV-cached generation a window inside the prompt fires only on the prefill
+        pass, and a window extending past the prompt fires at exactly the covered generated
+        positions, once each.
 
     Direction tensors are canonicalized to `[T, H]` at construction or bind (a 1-D `[H]`
     tensor becomes `[1, H]`). A direction with `T > 1` requires `positional=True`, since
@@ -194,6 +196,7 @@ class AdditiveTransform(BaseTransform):
         layer_id: int,
         token_mask: torch.BoolTensor,
         position_offset: int = 0,
+        pad_counts: torch.LongTensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
         """Apply additive steering.
@@ -202,10 +205,12 @@ class AdditiveTransform(BaseTransform):
             hidden_states: Shape [B, T_seq, H].
             layer_id: Which layer this is being applied at.
             token_mask: Shape [B, T_seq]. True at positions to modify.
-            position_offset: Absolute position of the pass's first token. Consumed in
-                positional mode, where the local slice covering absolute positions
-                `[alignment, alignment + T)` receives the direction rows; ignored in
-                broadcast mode.
+            position_offset: Column of the pass's first token in the padded sequence. Consumed
+                in positional mode, where the local slice covering absolute positions
+                `[alignment, alignment + T)` of each row receives the direction rows; ignored
+                in broadcast mode.
+            pad_counts: Shape [B], the number of leading pad columns of each row, or None for
+                no padding. Consumed in positional mode only.
 
         Returns:
             Modified hidden states, same shape as input.
@@ -224,31 +229,26 @@ class AdditiveTransform(BaseTransform):
             delta = token_mask.unsqueeze(-1).to(hidden_states.dtype) * v.view(1, 1, -1)
             return hidden_states + delta
 
-        # positional mode (e.g., ActAdd); the pass covers absolute positions
-        # [position_offset, position_offset + seq_len), the window covers [a, a + T)
+        # positional mode (e.g., ActAdd); the pass covers padded columns
+        # [position_offset, position_offset + seq_len), and row b's window covers columns
+        # [pad_b + a, pad_b + a + T)
         seq_len = hidden_states.size(1)
-        T_steer = direction.size(0)
-        a = self.alignment
-
-        window_start = max(a, position_offset)
-        window_end = min(a + T_steer, position_offset + seq_len)
-        if window_start >= window_end:
-            return hidden_states
-
-        local_start = window_start - position_offset
-        local_end = window_end - position_offset
-        vec_start = window_start - a
-        vec_end = vec_start + (window_end - window_start)
-
-        v = (self.strength * direction[vec_start:vec_end]).to(
-            dtype=hidden_states.dtype,
-            device=hidden_states.device,
-        )  # [inject_len, H]
-
-        mask_slice = token_mask[:, local_start:local_end]  # [B, inject_len]
-        gated_v = mask_slice.unsqueeze(-1).to(hidden_states.dtype) * v.unsqueeze(0)
-
-        # add in-place at the injection slice
-        out = hidden_states.clone()
-        out[:, local_start:local_end] += gated_v
-        return out
+        rows = range(hidden_states.size(0))
+        pads = [0] * len(rows) if pad_counts is None else [int(count) for count in pad_counts.tolist()]
+        steer = (self.strength * direction).to(dtype=hidden_states.dtype, device=hidden_states.device)  # [T, H]
+        out = None
+        for row in rows:
+            start = pads[row] + self.alignment
+            window_start = max(start, position_offset)
+            window_end = min(start + steer.size(0), position_offset + seq_len)
+            if window_start >= window_end:
+                continue
+            local_start = window_start - position_offset
+            local_end = window_end - position_offset
+            vec_start = window_start - start
+            vec_end = vec_start + (window_end - window_start)
+            mask_slice = token_mask[row, local_start:local_end].unsqueeze(-1).to(hidden_states.dtype)
+            if out is None:
+                out = hidden_states.clone()
+            out[row, local_start:local_end] += mask_slice * steer[vec_start:vec_end]
+        return hidden_states if out is None else out

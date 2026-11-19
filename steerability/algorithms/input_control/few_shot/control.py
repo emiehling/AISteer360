@@ -1,22 +1,23 @@
 """
 Few-shot learning control for prompt adaptation.
 """
+import copy
 import hashlib
-import json
 import warnings
 from typing import Any, Sequence
 
 import torch
 from transformers import PreTrainedTokenizerBase
 
-from steerability.algorithms.core.identity import canonical_value
+from steerability.algorithms.core.identity import canonical_json
 from steerability.algorithms.input_control.base import InputControl
 from steerability.algorithms.input_control.common.formatters.few_shot_block import FewShotBlockFormatter
 from steerability.algorithms.input_control.common.memory.pool import PoolMemory
 from steerability.algorithms.input_control.common.memory.text import TextMemory
 from steerability.algorithms.input_control.common.selectors.base import BaseSelector
+from steerability.algorithms.input_control.common.selectors.random import RandomSelector
 from steerability.algorithms.input_control.few_shot.args import FewShotArgs
-from steerability.algorithms.input_control.few_shot.selectors import selector_from_arg
+from steerability.algorithms.input_control.few_shot.selectors import SELECTOR_REGISTRY, selector_from_arg
 from steerability.utils.rendering import has_chat_template, render_messages
 
 
@@ -121,12 +122,33 @@ class FewShot(InputControl):
     _selector: BaseSelector | None = None
     _formatter: FewShotBlockFormatter | None = None
 
+    def _selector_class(self) -> type:
+        """The class `steer()` resolves the `selector` argument to."""
+        if self.selector is None:
+            return RandomSelector
+        if isinstance(self.selector, str):
+            return SELECTOR_REGISTRY.get(self.selector, BaseSelector)
+        return type(self.selector)
+
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """One `("SelectorFit", "calibrated")` fit when the resolved selector prepares itself at
+        steer (overrides `BaseSelector.prepare`, as EPR's encoder training does), else none."""
+        if self._selector_class().prepare is not BaseSelector.prepare:
+            return (("SelectorFit", "calibrated"),)
+        return ()
+
     def steer(
             self,
             model=None,
             tokenizer: PreTrainedTokenizerBase | None = None,
             **kwargs,
     ) -> None:
+        """Build the example pool, resolve and prepare the selector, and resolve the formatter.
+
+        A selector passed as an instance is deep-copied before it is prepared, so the constructor
+        argument is not changed. A prepared selector has no exported form, so its fit runs at
+        every steer.
+        """
         self.tokenizer = tokenizer
 
         # build the example pool
@@ -137,7 +159,9 @@ class FewShot(InputControl):
             self.pool.add(example, polarity="neg")
 
         # resolve selector argument (instance | name | None) into a BaseSelector[dict]
-        self._selector = selector_from_arg(self.selector)
+        self._selector = selector_from_arg(
+            copy.deepcopy(self.selector) if isinstance(self.selector, BaseSelector) else self.selector
+        )
         if self.selector_seed is not None and not callable(getattr(self._selector, "reseed", None)):
             raise ValueError(
                 f"selector_seed requires a selector with a reseed() method; {type(self._selector).__name__} has none."
@@ -300,7 +324,7 @@ class FewShot(InputControl):
         Returns:
             A non-negative integer below `2**64`.
         """
-        payload = json.dumps(canonical_value(query), sort_keys=True)
+        payload = canonical_json(query)
         digest = hashlib.sha256(f"{self.selector_seed}:{polarity}:{payload}".encode("utf-8")).digest()
         return int.from_bytes(digest[:8], "big")
 

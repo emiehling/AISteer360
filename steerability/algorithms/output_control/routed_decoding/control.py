@@ -182,7 +182,7 @@ class RoutedDecoding(PhasedDriver):
         return "output_control/routed_decoding", {
             "probes": state["probes"],
             "rules": self.args.rules,
-            "allow_model_mismatch": self.allow_model_mismatch,
+            "allow_model_mismatch": self.args.allow_model_mismatch,
         }
 
     def fit_identity(self):

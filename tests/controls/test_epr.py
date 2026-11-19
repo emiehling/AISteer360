@@ -96,8 +96,9 @@ class TestEPRPoolOwnership:
         assert not hasattr(epr, "embedding_key")
         assert encoder.calls == len(pool)
 
+        assert epr.encoder is None  # steer prepared a copy of the selector, not the argument
         encoder.calls = 0
-        assert len(epr.select(few_shot.pool.items, query="q1", k=2)) == 2
+        assert len(few_shot._selector.select(few_shot.pool.items, query="q1", k=2)) == 2
         assert encoder.calls == 1  # the stored pool embeddings are reused; only the query is encoded
 
 

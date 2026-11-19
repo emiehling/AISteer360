@@ -9,8 +9,8 @@ class ValueGuidanceArgs(BaseArgs):
     """Arguments for the `ValueGuidance` generic.
 
     A value assigns a per-candidate scalar; the processor shifts the selected candidates' logits by
-    `beta * normalize(value)`. Scalar knobs are top-level fields so `ControlSpec` can sweep them;
-    the `value` spec is treated as an identity (sweep over whole specs, not inside them).
+    `beta * normalize(value)`. Scalar knobs are top-level fields, so a `Template` can vary them
+    directly.
     """
 
     value: Any = field(

@@ -12,8 +12,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from steerability.algorithms.core.execution.payloads import ConstraintSource
+from steerability.algorithms.core.identity import content_id
 from steerability.algorithms.core.internals.data import ContrastivePairs
-from steerability.spipe.codec import CodeRef, DataRef, DecodeContext, EncodeContext, decode, digest_of, encode
+from steerability.spipe.codec import CodeRef, DataRef, DecodeContext, EncodeContext, decode, encode
 from steerability.spipe.errors import (
     SpipeCodeRefError,
     SpipeFormatError,
@@ -55,11 +56,11 @@ def test_nonstring_keys_roundtrip_via_map(store):
     assert "$map" in encoded
 
 
-def test_map_encoding_and_digest_are_key_order_independent():
+def test_map_encoding_and_content_id_are_key_order_independent():
     forward = encode({10: 1.0, 5: 2.0}, EncodeContext(store=None))
     backward = encode({5: 2.0, 10: 1.0}, EncodeContext(store=None))
     assert forward == backward
-    assert digest_of({10: 1.0, 5: 2.0}) == digest_of({5: 2.0, 10: 1.0})
+    assert content_id({10: 1.0, 5: 2.0}) == content_id({5: 2.0, 10: 1.0})
 
 
 def test_dataclass_roundtrip(store):
@@ -731,25 +732,38 @@ def test_directory_bundles_read_artifacts_only_inside_the_bundle(tmp_path):
         loaded.instantiate_entry(0)
 
 
-def test_digest_mode_stable_across_roundtrip(store):
+def test_content_id_stable_across_roundtrip(store):
     pairs = ContrastivePairs(positives=["a", "b"], negatives=["c", "d"])
     fit_input = {"data": pairs, "scorer": module_level_scorer, "tensor": torch.ones(2, 2, dtype=torch.bfloat16)}
-    before = digest_of(fit_input)
+    before = content_id(fit_input)
 
     ctx = EncodeContext(store=store)
     encoded = encode(fit_input, ctx)
     decoded = decode(encoded, DecodeContext(store=store, allow_code=False, code_mode="sentinel"))
-    assert before == digest_of(decoded)
+    assert before == content_id(decoded)
 
 
-def test_unhandled_object_raises_in_strict_mode(store):
+def test_identity_mode_equals_save_mode(store):
+    pairs = ContrastivePairs(positives=["a", "b"], negatives=["c", "d"])
+    value = {"data": pairs, "scorer": module_level_scorer, "tensor": torch.ones(2, 2)}
+    assert encode(value, EncodeContext(store=None)) == encode(value, EncodeContext(store=store))
+
+
+@pytest.mark.parametrize("target", ["identity", "save"])
+def test_unhandled_object_raises_in_both_modes(store, target):
     class Opaque:
         pass
 
+    ctx = EncodeContext(store=None if target == "identity" else store)
     with pytest.raises(SpipeSaveError, match="no serialized form"):
-        encode(Opaque(), EncodeContext(store=store))
-    # digest mode reduces to a type name instead
-    assert digest_of(Opaque()) == digest_of(Opaque())
+        encode(Opaque(), ctx)
+
+
+@pytest.mark.parametrize("target", ["identity", "save"])
+def test_unnamed_callables_raise_in_both_modes(store, target):
+    ctx = EncodeContext(store=None if target == "identity" else store)
+    with pytest.raises(SpipeSaveError):
+        encode(lambda x: x, ctx)
 
 
 @pytest.fixture(scope="module")

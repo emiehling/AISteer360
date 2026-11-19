@@ -137,14 +137,14 @@ class SASA(OutputControl):
         from steerability.spipe.codec import AsPath
 
         return "output_control/sasa", {
-            "beta": self.beta,
+            "beta": self.args.beta,
             "wv_path": AsPath(state["probe"]),
             "gen_wv_data": None,
-            "candidate_policy": self.candidate_policy,
-            "top_p": self.top_p,
-            "top_k": self.top_k,
-            "max_candidates": self.max_candidates,
-            "allow_model_mismatch": self.allow_model_mismatch,
+            "candidate_policy": self.args.candidate_policy,
+            "top_p": self.args.top_p,
+            "top_k": self.args.top_k,
+            "max_candidates": self.args.max_candidates,
+            "allow_model_mismatch": self.args.allow_model_mismatch,
         }
 
     def fit_identity(self):

@@ -95,6 +95,46 @@ def _split_generated_tokens(total: int | None, num_rows: int) -> list[int | None
     return [base + (1 if i < remainder else 0) for i in range(num_rows)]
 
 
+def _split_prompt_rows(
+        kind: Literal["text", "messages", "tokens"],
+        payload: Any,
+        attention_mask: torch.Tensor | None,
+) -> list[dict] | None:
+    """Split a batched prompt into one keyword mapping per row, each a batch of one.
+
+    Args:
+        kind: The prompt source.
+        payload: The prompt payload resolved by `resolve_generate_source`.
+        attention_mask: The attention mask paired with token input, or None.
+
+    Returns:
+        One mapping per row (`text=`, `messages=`, or `input_ids=` with its `attention_mask`), or
+        None for a single prompt or a batch of one row.
+    """
+    if kind == "text":
+        if isinstance(payload, str) or len(payload) < 2:
+            return None
+        return [{"text": [text]} for text in payload]
+    if kind == "messages":
+        if len(payload) < 2 or all(isinstance(element, Mapping) for element in payload):
+            return None
+        return [{"messages": [conversation]} for conversation in payload]
+    ids = payload if isinstance(payload, torch.Tensor) else None
+    if ids is None:
+        if len(payload) < 2 or not all(isinstance(row, (list, tuple)) for row in payload):
+            return None
+        if len({len(row) for row in payload}) != 1:
+            return None
+        ids = torch.as_tensor(payload, dtype=torch.long)
+    if ids.ndim != 2 or ids.size(0) < 2:
+        return None
+    mask = torch.as_tensor(attention_mask) if attention_mask is not None else None
+    return [
+        {"input_ids": ids[index:index + 1], "attention_mask": mask[index:index + 1] if mask is not None else None}
+        for index in range(ids.size(0))
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class _DriverDecode:
     """The decoding-driver inputs of one generation, assembled in its prompt phase.
@@ -1354,6 +1394,13 @@ class SteeringPipeline:
                         receive it through their `SteeredSession`. A call whose token is cancelled
                         before it completes raises `GenerationCancelled`.
 
+        When the call has more than one prompt and `supports_batching` is False, each prompt is
+        generated in its own call and the results are returned in prompt order, with the same
+        shape a batched call returns. Row-scoped runtime kwargs are sliced to each row's value.
+        Under a seed with `seed_scope="item"` (the default), row `i` is generated with the seed
+        `derive_seed(seed, "row", i)`, so a split call samples differently from a batched call
+        with the same seed. Under `seed_scope="dispatch"` every row receives the seed unchanged.
+
         Concurrent calls from several threads are supported. Each call's prompt phase (input
         controls, templating, tokenization, and the assembly of the session's items) runs under the
         pipeline's prompt lock. The dispatch then runs concurrently with other calls when
@@ -1433,6 +1480,20 @@ class SteeringPipeline:
                     "input_ids= for a [batch * n, gen_len] token return."
                 )
 
+        # a batch of prompts on a pipeline that is not batch-safe generates one prompt per call
+        if not self.supports_batching:
+            rows = _split_prompt_rows(kind, payload, attention_mask)
+            if rows is not None:
+                return self._generate_rows(
+                    kind, rows, runtime_kwargs, return_output,
+                    {
+                        **gen_kwargs,
+                        "return_full_sequence": return_full_sequence,
+                        "chat_template_kwargs": chat_template_kwargs,
+                        "cancel_token": cancel_token,
+                    },
+                )
+
         # the prompt phase runs under the prompt lock; the dispatch releases it only when the
         # pipeline supports concurrent generation
         with self._prompt_lock:
@@ -1476,6 +1537,64 @@ class SteeringPipeline:
             if prepared.driver_decode is not None or not self.supports_concurrent_generate:
                 return self._dispatch_generation(prepared)
         return self._dispatch_generation(prepared)
+
+    def _generate_rows(
+            self,
+            kind: Literal["text", "messages", "tokens"],
+            rows: list[dict],
+            runtime_kwargs: dict,
+            return_output: bool,
+            gen_kwargs: dict,
+    ) -> list[str] | torch.Tensor | list[Output]:
+        """Generate each prompt row in its own call and merge the results in row order.
+
+        Each row is passed as a batch of one, so every call returns the batched shape. Row-scoped
+        runtime kwargs whose value is a sequence of batch length are sliced to a one-element list
+        holding the row's value; other values pass through. A token return is right-padded with
+        the tokenizer's pad id to the longest row.
+
+        Args:
+            kind: The prompt source.
+            rows: One mapping of prompt keyword arguments per row (from `_split_prompt_rows`).
+            runtime_kwargs: The call's runtime kwargs.
+            return_output: Whether the return is `Output` objects.
+            gen_kwargs: The call's generation kwargs, including the reserved keys.
+
+        Returns:
+            The merged return, in the shape of a batched call with the same arguments.
+        """
+        from steerability.algorithms.core.identity import derive_seed
+
+        controls = (*self.structural_controls, *self.input_controls, *self.state_controls, *self.output_controls)
+        row_scoped = {name for name, entry in runtime_kwargs_schema(controls).items() if entry["scope"] == "row"}
+        seed = gen_kwargs.get("seed")
+        per_row_seed = seed is not None and gen_kwargs.get("seed_scope", "item") == "item"
+        call_kwargs = {key: value for key, value in gen_kwargs.items() if value is not None}
+
+        results = []
+        for index, prompt in enumerate(rows):
+            row_runtime = dict(runtime_kwargs)
+            for name in row_scoped:
+                value = runtime_kwargs.get(name)
+                if isinstance(value, (list, tuple)) and len(value) == len(rows):
+                    row_runtime[name] = [value[index]]
+            row_kwargs = dict(call_kwargs)
+            if per_row_seed:
+                row_kwargs["seed"] = derive_seed(int(seed), "row", index)
+            row_prompt = {key: value for key, value in prompt.items() if value is not None}
+            results.append(self.generate(
+                runtime_kwargs=row_runtime, return_output=return_output, **row_prompt, **row_kwargs,
+            ))
+
+        if return_output or kind != "tokens":
+            return [item for result in results for item in result]
+        pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+        width = max(result.size(1) for result in results)
+        padded = [
+            torch.nn.functional.pad(result, (0, width - result.size(1)), value=pad_token_id)
+            for result in results
+        ]
+        return torch.cat([row.to(padded[0].device) for row in padded], dim=0)
 
     @overload
     def generate_text(

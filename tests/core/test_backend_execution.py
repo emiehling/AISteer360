@@ -810,6 +810,7 @@ class _SessionProbeDriver(DecodingDriver):
     """Driver double recording the session it received and generating through it."""
 
     Args = None
+    supports_batching = True
 
     def _configure(self):
         self.seen_session = None
@@ -1039,6 +1040,7 @@ class _RowRecordingStateControl(StateControl):
     """Records the input_ids shape of every get_hooks call into a shared list."""
 
     Args = None
+    supports_batching = True
 
     def _configure(self):
         self.seen_shapes: list[tuple[int, ...]] = []

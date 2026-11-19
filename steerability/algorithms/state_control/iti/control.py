@@ -193,25 +193,28 @@ class ITI(InterventionControl):
         return getattr(core, "steering_vector", None)
 
     def export_state(self) -> dict:
-        """The bound per-head steering vector under the `"steering_vector"` key (after `steer()`)."""
+        """The bound per-head steering vector under `"steering_vector"` and the resolved head
+        selection under `"selected_heads"` as sorted `[layer, head]` pairs (after `steer()`)."""
         vector = self._steering_vector
-        return {"steering_vector": vector} if vector is not None else {}
-
-    def frozen_form(self, state: dict) -> tuple[str, dict]:
-        """A same-class frozen form: the bound per-head vector plus the resolved head selection."""
+        if vector is None:
+            return {}
         core, _ = unwrap_modifiers(self.interventions[0].transform)
         selected = sorted(
-            (int(layer_id), int(head_id))
+            [int(layer_id), int(head_id)]
             for layer_id, heads in core.active_heads.items()
             for head_id in heads
         )
+        return {"steering_vector": vector, "selected_heads": selected}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class frozen form: the bound per-head vector plus the resolved head selection."""
         return "state_control/iti", {
             "steering_vector": state["steering_vector"],
-            "selected_heads": selected,
-            "num_heads": self.num_heads,
-            "alpha": self.alpha,
-            "token_scope": self.token_scope,
-            "last_k": self.last_k,
-            "from_position": self.from_position,
-            "use_norm_preservation": self.use_norm_preservation,
+            "selected_heads": [tuple(pair) for pair in state["selected_heads"]],
+            "num_heads": self.args.num_heads,
+            "alpha": self.args.alpha,
+            "token_scope": self.args.token_scope,
+            "last_k": self.args.last_k,
+            "from_position": self.args.from_position,
+            "use_norm_preservation": self.args.use_norm_preservation,
         }

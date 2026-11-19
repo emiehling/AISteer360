@@ -216,3 +216,40 @@ class TestDirectionalAblationSignInvariance:
         proj_pos = torch.outer(c, c) / (c @ c + 1e-8)
         proj_neg = torch.outer(-c, -c) / ((-c) @ (-c) + 1e-8)
         torch.testing.assert_close(proj_pos, proj_neg)
+
+
+class TestDeterministicFit:
+    """Two fits of one configuration give bitwise-equal directions, whatever the global RNG state."""
+
+    @pytest.mark.parametrize("method", ["pca_pairwise", "pca_center"])
+    def test_two_fits_on_a_ci_model_are_bitwise_equal(self, model_and_tokenizer, method):
+        import numpy as np
+
+        model, tokenizer = model_and_tokenizer
+        spec = VectorTrainSpec(method=method, accumulate="all", prompt_format="raw")
+        np.random.seed(0)
+        first = ContrastiveDirectionEstimator().fit(model, tokenizer, data=_pairs(), spec=spec)
+        np.random.seed(1)
+        torch.manual_seed(1)
+        second = ContrastiveDirectionEstimator().fit(model, tokenizer, data=_pairs(), spec=spec)
+        assert sorted(first.directions) == sorted(second.directions)
+        for layer_id in first.directions:
+            assert torch.equal(first.directions[layer_id], second.directions[layer_id])
+
+    def test_estimator_seeds_pca(self, monkeypatch):
+        # the CI models are too narrow for sklearn's randomized solver, so record the PCA arguments
+        from steerability.algorithms.state_control.common.estimators import contrastive_direction
+
+        calls = []
+
+        class RecordingPCA(PCA):
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+                super().__init__(**kwargs)
+
+        monkeypatch.setattr(contrastive_direction, "PCA", RecordingPCA)
+        torch.manual_seed(3)
+        model = tiny_llama(num_layers=2, hidden=16, heads=2)
+        spec = VectorTrainSpec(method="pca_pairwise", accumulate="all", prompt_format="raw")
+        ContrastiveDirectionEstimator().fit(model, wordlevel_tokenizer(), data=_pairs(), spec=spec)
+        assert calls and all(call.get("random_state") == 0 for call in calls)

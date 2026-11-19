@@ -37,8 +37,14 @@ def make_token_mask(
     last_k: int | None = None,
     from_position: int | None = None,
     position_offset: int = 0,
+    pad_counts: torch.LongTensor | None = None,
 ) -> torch.BoolTensor:
     """Build a [B, T] boolean mask selecting which tokens to transform.
+
+    Absolute positions count from each row's first real token. In a left-packed batch a row with
+    `p` leading pad columns therefore has its position `0` at column `p`, which `pad_counts`
+    describes. Only the `"from_position"` scope depends on it, since `"after_prompt"` and
+    `"last_k"` are anchored at the end of the prompt, where the rows of a left-packed batch align.
 
     Args:
         scope: Which tokens to include.
@@ -60,6 +66,8 @@ def make_token_mask(
             When the model processes token N in the sequence but only passes
             a single token to the hook (seq_len=1), set position_offset=N so
             that "after_prompt" correctly identifies generated tokens.
+        pad_counts: Shape [B], the number of leading pad columns of each row, or None for
+            no padding.
 
     Returns:
         Boolean tensor of shape [B, T].
@@ -83,6 +91,8 @@ def make_token_mask(
     elif scope == "from_position":
         if from_position is None or from_position < 0:
             raise ValueError("from_position must be >= 0 when scope is 'from_position'.")
+        if pad_counts is not None:
+            absolute_positions = absolute_positions - pad_counts.to(device).unsqueeze(1)
         return absolute_positions >= from_position
     else:
         raise ValueError(f"Unknown token scope: {scope!r}")

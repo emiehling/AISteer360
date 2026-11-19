@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from steerability.algorithms.core.base_control import NotFreezableError
-from steerability.spipe.codec import EncodeContext, digest_of, encode, encoded_size
+from steerability.spipe.codec import EncodeContext, encode, encoded_size
 from steerability.spipe.errors import SpipeSaveError
 from steerability.spipe.format import ARTIFACTS_DIR, FORMAT_VERSION
 from steerability.spipe.store import ArtifactStore
@@ -95,6 +95,30 @@ def _artifact_class_of(value: Any) -> str:
     return "opaque"
 
 
+def _is_artifact_value(value: Any) -> bool:
+    """Whether an exported state value is a typed artifact, which the manifest records.
+
+    Other state values (resolved layers, head maps, bound transforms) describe the structure
+    `frozen_form` rebuilds the control from. Their encoded form may reference artifacts, which
+    are recorded under the typed values that export them.
+    """
+    import torch
+
+    from steerability.algorithms.core.execution.payloads import CheckpointArtifact, LoRAArtifact
+    from steerability.algorithms.core.internals.probes.probe import Probe
+    from steerability.algorithms.core.internals.probes.probe_set import ProbeSet
+    from steerability.algorithms.input_control.common.memory.pool import PoolMemory
+    from steerability.algorithms.input_control.common.memory.text import TextMemory
+    from steerability.algorithms.state_control.common.gating import Gate
+    from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+
+    artifact_types = (
+        torch.Tensor, SteeringVector, Probe, ProbeSet, TextMemory, PoolMemory, Gate, LoRAArtifact,
+        CheckpointArtifact, Path,
+    )
+    return isinstance(value, artifact_types) or type(value).__name__ == "CPOMemory"
+
+
 def _collect_artifact_ids(encoded: Any, found: list[str]) -> None:
     if isinstance(encoded, dict):
         for key, value in encoded.items():
@@ -114,6 +138,7 @@ def _freeze_control(control, ctx: EncodeContext, entry_path: str) -> Any:
         The `resolved` manifest value (an object, an array of objects, or None for controls
         with nothing to pin).
     """
+    from steerability.algorithms.core.identity import content_id
     from steerability.algorithms.core.registry import method_key_for
 
     state = control.export_state()
@@ -122,7 +147,7 @@ def _freeze_control(control, ctx: EncodeContext, entry_path: str) -> Any:
         return None
 
     fit_identity = control.fit_identity()
-    fit_digest = digest_of(fit_identity) if fit_identity is not None else None
+    fit_digest = content_id(fit_identity) if fit_identity is not None else None
     fit_source = fits[0][0] if fits else (type(control).__name__ if fit_digest is not None else None)
 
     # encode each exported state value with its metadata installed, giving artifact sidecars
@@ -131,6 +156,8 @@ def _freeze_control(control, ctx: EncodeContext, entry_path: str) -> Any:
     artifacts: dict[str, dict] = {}
     remaining_fits = list(fits)
     for name, value in state.items():
+        if not _is_artifact_value(value):
+            continue
         artifact_class = _artifact_class_of(value)
         source = None
         digest = None

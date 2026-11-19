@@ -93,9 +93,10 @@ class CAA(InterventionControl):
         )
 
     def export_state(self) -> dict:
-        """The bound steering vector under the `"steering_vector"` key (after `steer()`)."""
+        """The bound steering vector under `"steering_vector"` and the resolved behavior layer under
+        `"layer_id"` (after `steer()`)."""
         vector = self._steering_vector
-        return {"steering_vector": vector} if vector is not None else {}
+        return {"steering_vector": vector, "layer_id": self._layer_id} if vector is not None else {}
 
     def frozen_form(self, state: dict) -> tuple[str, dict]:
         """A same-class frozen form: the bound vector plus the resolved layer.
@@ -106,11 +107,11 @@ class CAA(InterventionControl):
         """
         return "state_control/caa", {
             "steering_vector": state["steering_vector"],
-            "layer_id": self._layer_id,
-            "multiplier": self.multiplier,
-            "token_scope": self.token_scope,
-            "last_k": self.last_k,
-            "from_position": self.from_position,
+            "layer_id": state["layer_id"],
+            "multiplier": self.args.multiplier,
+            "token_scope": self.args.token_scope,
+            "last_k": self.args.last_k,
+            "from_position": self.args.from_position,
             "normalize_vector": False,
-            "use_norm_preservation": self.use_norm_preservation,
+            "use_norm_preservation": self.args.use_norm_preservation,
         }

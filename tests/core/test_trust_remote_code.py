@@ -1,8 +1,8 @@
 """Tests that `trust_remote_code` is opt-in (default False) across the loaders that expose it.
 
 Each test mocks `from_pretrained` so no weights are fetched, then asserts the `trust_remote_code`
-kwarg passed to the loader: False by default, True when the user opts in. CPO is the documented
-exception (defaults to True for its paper-default encoder) and is covered in `tests/controls/test_cpo.py`.
+kwarg passed to the loader: False by default, True when the user opts in. CPO, which also defaults
+to False, is covered in `tests/controls/test_cpo.py`.
 """
 from __future__ import annotations
 

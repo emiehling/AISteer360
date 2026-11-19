@@ -11,10 +11,9 @@ spec is one of:
     - a str (sources only: shorthand for an auxiliary model);
     - a dict with a `"kind"` key (dispatched to a loader; see the tables below).
 
-Sweepability rule: `ControlSpec` sweeps flat constructor kwargs, so scalar knobs (`beta`, `alpha`,
-`k`, `policy`, weights, budgets) are top-level `Args` fields and dict specs are treated as
-identities; you sweep over configs by listing whole dicts in a spec's `vars`, not by reaching
-inside them.
+Sweepability rule: scalar knobs (`beta`, `alpha`, `k`, `policy`, weights, budgets) are top-level
+`Args` fields, which a `Template` varies directly. A dict spec can also be varied inside, since a
+`Template` accepts ranges inside nested mappings.
 
 `SampleSequenceScorer` is served by passing an instance (it wraps a per-row `SampleScorer`
 callable, which has no meaningful string form); no dict kind is added for it.
@@ -42,6 +41,16 @@ from steerability.algorithms.output_control.common.values.classifier import Clas
 from steerability.algorithms.output_control.common.values.reward_model import RewardModelValue
 from steerability.algorithms.output_control.common.values.subspace_margin import SubspaceMarginValue
 
+# the probe fit of a `subspace_margin` spec given `data`; the candidate layer is the model's final decoder layer
+SUBSPACE_MARGIN_FIT = {
+    "method": "fisher",
+    "pooling": "last",
+    "location": "layer_output",
+    "prompt_format": "raw",
+    "candidate_layers": "final",
+    "calibration": "midpoint",
+}
+
 
 def _require(spec: dict, key: str, kind: str):
     """Read a required key from a dict spec, raising a `ValueError` that names the offending kind."""
@@ -68,11 +77,11 @@ def resolve_value(
         - `"classifier"`: `model_id` or `fn` (required); `label_index=1`, `hf_model_kwargs`.
           Wraps a loaded classifier (or a `list[str] -> Tensor` callable) in a `ClassifierValue`.
         - `"subspace_margin"`: `probe_path` or `data` (required); `batch_size=4`,
-          `max_length=1024`, `save_path`. Loads a probe from a directory artifact (`Probe.load`)
-          or a single-file checkpoint (`.probe` JSON or legacy `{'wv', 'mu_mu'}` tensor), or fits
-          one on the base model via `fit_probe` (fisher direction over last-token features at the
-          raw final-layer boundary, midpoint calibration); `save_path` writes the fitted probe's
-          directory artifact.
+          `max_length=1024`. Loads a probe from a directory artifact (`Probe.load`) or a
+          single-file checkpoint (`.probe` JSON or legacy `{'wv', 'mu_mu'}` tensor), or fits one
+          on the base model via `fit_probe` with the settings in `SUBSPACE_MARGIN_FIT` (fisher
+          direction over last-token features at the raw final-layer boundary, midpoint
+          calibration).
         - `"callable"`: `fn` (required); `supports_batching`, `scoring_cost`. Wraps `fn` in a
           `CallableValue` with explicit flags.
 
@@ -135,14 +144,7 @@ def resolve_value(
                 else:
                     probe = load_single_file_probe(path, layer_id=final_layer)
             elif spec.get("data") is not None:
-                fit_spec = ProbeFitSpec(
-                    method="fisher",
-                    pooling="last",
-                    location="layer_output",
-                    prompt_format="raw",
-                    candidate_layers=[final_layer],
-                    calibration="midpoint",
-                )
+                fit_spec = ProbeFitSpec(**{**SUBSPACE_MARGIN_FIT, "candidate_layers": [final_layer]})
                 probe = fit_probe(
                     model,
                     tokenizer,
@@ -151,8 +153,6 @@ def resolve_value(
                     batch_size=spec.get("batch_size", 4),
                     max_length=spec.get("max_length", 1024),
                 )
-                if spec.get("save_path") is not None:
-                    probe.save(spec["save_path"])
             else:
                 raise ValueError("'subspace_margin' spec requires a 'probe_path' or 'data' key.")
             return SubspaceMarginValue(probe)

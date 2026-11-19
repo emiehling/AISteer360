@@ -20,7 +20,7 @@ from steerability.backends.vllm.rendering import (
     raise_for_spec_rejection,
     remap_spec_for_scoring,
     render_constraint_sampling_args,
-    render_guided_decoding_field,
+    render_structured_output_field,
     render_vllm_sampling_args,
 )
 from steerability.backends.vllm.session import VLLMOfflineSession, VLLMServeSession
@@ -36,7 +36,7 @@ __all__ = [
     "raise_for_spec_rejection",
     "remap_spec_for_scoring",
     "render_constraint_sampling_args",
-    "render_guided_decoding_field",
+    "render_structured_output_field",
     "render_vllm_sampling_args",
     "VLLMOfflineSession",
     "VLLMServeSession",

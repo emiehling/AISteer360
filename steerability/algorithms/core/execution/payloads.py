@@ -159,6 +159,9 @@ class CheckpointArtifact:
     path: str
     provenance: ArtifactProvenance = field(default_factory=ArtifactProvenance)
 
+    # the directory's content id, recorded by the spipe codec on first use
+    _content_id: str | None = field(default=None, init=False, repr=False, compare=False)
+
 
 @dataclass(frozen=True, slots=True)
 class LoRAArtifact:
@@ -174,6 +177,9 @@ class LoRAArtifact:
     path: str
     base_model: str
     provenance: ArtifactProvenance = field(default_factory=ArtifactProvenance)
+
+    # the directory's content id, recorded by the spipe codec on first use
+    _content_id: str | None = field(default=None, init=False, repr=False, compare=False)
 
 
 Artifact = ModelArtifact | CheckpointArtifact | LoRAArtifact

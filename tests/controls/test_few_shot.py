@@ -263,8 +263,10 @@ def test_selector_accepts_instance(model_and_tokenizer, device: torch.device):
     )
     pipeline = SteeringPipeline(controls=[fewshot], model=model, tokenizer=tokenizer)
     pipeline.steer()
-    # the resolved selector is the same instance we passed in
-    assert fewshot._selector is instance
+    # the resolved selector is a copy of the passed instance, which steer leaves unchanged
+    assert isinstance(fewshot._selector, RandomSelector)
+    assert fewshot._selector is not instance
+    assert fewshot.selector is instance
 
 
 def test_unknown_selector_name_raises(model_and_tokenizer, device: torch.device):

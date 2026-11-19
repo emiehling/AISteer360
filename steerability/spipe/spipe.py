@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
-from steerability.spipe.codec import DecodeContext, decode, digest_of
+from steerability.spipe.codec import DecodeContext, decode
 from steerability.spipe.errors import (
     SpipeCodeRefError,
     SpipeFormatError,
@@ -529,7 +529,9 @@ class SPipe:
                 f"for the staleness check ({exc}); thaw() and re-steer(), or pass "
                 "allow_stale=True."
             ) from exc
-        current = digest_of(fit_identity) if fit_identity is not None else None
+        from steerability.algorithms.core.identity import content_id
+
+        current = content_id(fit_identity) if fit_identity is not None else None
         for name, digest in recorded.items():
             if digest != current:
                 message = (

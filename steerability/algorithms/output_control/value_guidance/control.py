@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import gc
 import warnings
+from collections.abc import Mapping
+from dataclasses import fields
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -9,7 +11,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from steerability.algorithms.core.execution.access import ModelAccess
 from steerability.algorithms.output_control.base import OutputControl
 from steerability.algorithms.output_control.common.processors.value_guided import ValueGuidedProcessor
-from steerability.algorithms.output_control.common.resolve import resolve_value
+from steerability.algorithms.output_control.common.resolve import SUBSPACE_MARGIN_FIT, resolve_value
 from steerability.algorithms.output_control.value_guidance.args import ValueGuidanceArgs
 
 
@@ -56,6 +58,49 @@ class ValueGuidance(OutputControl):
         """`ModelAccess.MODULE`; the value spec resolves against the live model (probe fits,
         placement), which is retained past steer (the generate phase is in-process)."""
         return ModelAccess.MODULE
+
+    def _fits_probe(self) -> bool:
+        """Whether the value spec fits a subspace-margin probe from data at steer."""
+        value = self.args.value
+        return isinstance(value, Mapping) and value.get("kind") == "subspace_margin" \
+            and value.get("data") is not None and value.get("probe_path") is None
+
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """One `("ProbeFit", "calibrated")` fit when a `subspace_margin` value fits its probe from
+        `data`, and none otherwise."""
+        return (("ProbeFit", "calibrated"),) if self._fits_probe() else ()
+
+    def fit_identity(self) -> dict | None:
+        """The probe-fitting inputs of a `subspace_margin` value fitted from `data` (the data, the
+        batch size, the maximum length, and the fixed probe-fit settings), or None."""
+        if not self._fits_probe():
+            return None
+        value = self.args.value
+        return {
+            "data": value["data"],
+            "batch_size": value.get("batch_size", 4),
+            "max_length": value.get("max_length", 1024),
+            "probe_fit": dict(SUBSPACE_MARGIN_FIT),
+        }
+
+    def export_state(self) -> dict:
+        """The fitted probe under the `"probe"` key, when `steer()` fitted one."""
+        if not self._fits_probe() or self._value is None:
+            return {}
+        return {"probe": self._value.probe}
+
+    def frozen_form(self, state: dict) -> tuple[str, dict]:
+        """A same-class frozen form whose value loads the exported probe from its artifact path.
+
+        Only a value that fits its probe produces state. Otherwise the recipe is the frozen form.
+        """
+        if not self._fits_probe():
+            return super().frozen_form(state)
+        from steerability.spipe.codec import AsPath
+
+        kwargs = {f.name: getattr(self.args, f.name) for f in fields(self.args) if f.init}
+        kwargs["value"] = {"kind": "subspace_margin", "probe_path": AsPath(state["probe"])}
+        return "output_control/value_guidance", kwargs
 
     def steer(
         self,

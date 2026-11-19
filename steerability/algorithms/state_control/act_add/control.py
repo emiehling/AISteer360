@@ -36,7 +36,7 @@ class ActAdd(InterventionControl):
     """
 
     Args = ActAddArgs
-    supports_batching = False  # ActAdd uses positional alignment which breaks with left-padding
+    supports_batching = True
 
     def _configure(self):
         if self.steering_vector is not None:
@@ -94,9 +94,10 @@ class ActAdd(InterventionControl):
         )
 
     def export_state(self) -> dict:
-        """The bound positional steering vector under the `"steering_vector"` key (after `steer()`)."""
+        """The bound positional steering vector under `"steering_vector"` and the resolved layer
+        under `"layer_id"` (after `steer()`)."""
         vector = self._steering_vector
-        return {"steering_vector": vector} if vector is not None else {}
+        return {"steering_vector": vector, "layer_id": self._layer_id} if vector is not None else {}
 
     def frozen_form(self, state: dict) -> tuple[str, dict]:
         """A same-class frozen form: the bound positional vector plus the resolved layer.
@@ -106,9 +107,9 @@ class ActAdd(InterventionControl):
         """
         return "state_control/act_add", {
             "steering_vector": state["steering_vector"],
-            "layer_id": self._layer_id,
-            "multiplier": self.multiplier,
-            "alignment": self.alignment,
+            "layer_id": state["layer_id"],
+            "multiplier": self.args.multiplier,
+            "alignment": self.args.alignment,
             "normalize_vector": False,
-            "use_norm_preservation": self.use_norm_preservation,
+            "use_norm_preservation": self.args.use_norm_preservation,
         }

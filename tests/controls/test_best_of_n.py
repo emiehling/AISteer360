@@ -131,7 +131,7 @@ class TestBestOfNBehavior:
         assert out.shape == (2, 3)
         assert prompts_seen == ["the cat sat", "dog"]  # each row searched from its unpadded prompt
 
-    def test_batch_with_state_controls_is_refused(self):
+    def test_batch_with_state_controls_generates_one_prompt_per_call(self):
         from steerability.algorithms.state_control.caa.control import CAA
         from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 
@@ -141,12 +141,13 @@ class TestBestOfNBehavior:
         caa = CAA(steering_vector=steering_vector, layer_id=1, multiplier=1.0, token_scope="after_prompt")
         bon = BestOfN(n=2, scorer=lambda p, c, params: [0.0] * len(c))
         pipeline, model, tokenizer = _pipeline([caa, bon], model=model, tokenizer=tokenizer)
+        assert not pipeline.supports_batching
         batch = tokenizer(["the cat sat", "dog"], return_tensors="pt", padding=True)
-        with pytest.raises(ValueError, match="one prompt per call"):
-            pipeline.generate(
-                input_ids=batch.input_ids, attention_mask=batch.attention_mask, max_new_tokens=3,
-                do_sample=True, eos_token_id=None,
-            )
+        out = pipeline.generate(
+            input_ids=batch.input_ids, attention_mask=batch.attention_mask, max_new_tokens=3,
+            do_sample=False, eos_token_id=None,
+        )
+        assert out.shape == (2, 3)
         prompt = tokenizer("dog", return_tensors="pt").input_ids
         out = pipeline.generate(input_ids=prompt, max_new_tokens=3, do_sample=True, eos_token_id=None)
         assert out.shape == (1, 3)

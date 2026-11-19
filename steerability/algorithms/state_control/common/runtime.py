@@ -84,6 +84,7 @@ class TransformHookRuntime:
         # per-generation state (set/cleared by reset)
         self._prompt_lens: torch.LongTensor | None = None
         self._prompt_mask: torch.BoolTensor | None = None
+        self._pad_counts: torch.LongTensor | None = None
         self._offset: int = 0
         self._pass_offset: int = 0
         self._prefill_seen: bool = False
@@ -98,6 +99,11 @@ class TransformHookRuntime:
         prompt_mask: torch.Tensor | None = None,
     ) -> None:
         """Clear position/prefill state and store the prompt lengths/mask for this generation.
+
+        The number of leading pad columns of each row is read from `prompt_mask` as its count of
+        zero entries, since the pipeline left-packs a batch before its hooks are built. Absolute
+        token positions (the `"from_position"` scope and positional transforms) count from each
+        row's first real token.
 
         Args:
             prompt_lens: Per-row prompt lengths of shape ``[B_logical]`` (from
@@ -118,8 +124,10 @@ class TransformHookRuntime:
                     f"{prompt_lens.size(0)}; these must describe the same logical batch."
                 )
             self._prompt_mask = mask.bool()
+            self._pad_counts = (~self._prompt_mask).sum(dim=1).to(torch.long)
         else:
             self._prompt_mask = None
+            self._pad_counts = None
         self._offset = 0
         self._pass_offset = 0
         self._prefill_seen = False
@@ -487,6 +495,7 @@ class TransformHookRuntime:
             if row_mask is None:
                 return hidden
 
+        pad_counts = self._pad_counts.to(hidden.device) if self._pad_counts is not None else None
         mask = make_token_mask(
             token_scope,
             seq_len=seq_len,
@@ -494,13 +503,18 @@ class TransformHookRuntime:
             last_k=last_k,
             from_position=from_position,
             position_offset=pass_offset,
+            pad_counts=pad_counts,
         )
         mask = align_mask_to_batch(mask, hidden.size(0))  # beam search expands the batch
         if row_mask is not None:
             mask = mask & row_mask
         if not bool(mask.any()):
             return hidden
-        return transform.apply(hidden, layer_id=layer_id, token_mask=mask, position_offset=pass_offset)
+        if pad_counts is not None:
+            pad_counts = align_mask_to_batch(pad_counts.unsqueeze(1), hidden.size(0)).squeeze(1)
+        return transform.apply(
+            hidden, layer_id=layer_id, token_mask=mask, position_offset=pass_offset, pad_counts=pad_counts,
+        )
 
 
 def build_hooks(

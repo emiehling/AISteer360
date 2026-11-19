@@ -354,15 +354,19 @@ class TestStateControls:
         assert len(prefill) == 1
         assert prefill[0][0].tolist() == [False] * prompt.size(1) + [True] * (length - prompt.size(1))
 
-    def test_batch_of_prompts_with_state_controls_is_refused(self):
+    def test_batch_of_prompts_with_state_controls_generates_one_prompt_per_call(self):
         control = CAA(steering_vector=_steering_vector(), layer_id=1, multiplier=1.0, token_scope="after_prompt")
         pipeline, _ = _pipeline([control, PhasedDecoding(plan=[{"generate": {"budget": 2}}])])
         assert not pipeline.supports_batching
-        with pytest.raises(ValueError, match="one prompt per call"):
-            pipeline.generate(
-                messages=[LONG_CONVERSATION, SHORT_CONVERSATION], return_output=True, max_new_tokens=4,
-                **FIXED_LENGTH,
-            )
+        outputs = pipeline.generate(
+            messages=[LONG_CONVERSATION, SHORT_CONVERSATION], return_output=True, max_new_tokens=4,
+            **FIXED_LENGTH,
+        )
+        singles = [
+            pipeline.generate(messages=conversation, return_output=True, max_new_tokens=4, **FIXED_LENGTH)
+            for conversation in (LONG_CONVERSATION, SHORT_CONVERSATION)
+        ]
+        assert [output.output_ids.tolist() for output in outputs] == [single.output_ids.tolist() for single in singles]
         output = pipeline.generate(
             messages=SHORT_CONVERSATION, n=2, return_output=True, max_new_tokens=4, **FIXED_LENGTH,
         )

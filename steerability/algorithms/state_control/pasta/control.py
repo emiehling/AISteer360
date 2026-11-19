@@ -396,14 +396,15 @@ class PASTA(HookControl):
         return ()
 
     def export_state(self) -> dict:
-        """The resolved profile's lift grid under `"head_profile"` (after a profiled `steer()`).
+        """The resolved profile's lift grid under `"head_profile"` and its resolved head map under
+        `"head_config"` (after a profiled `steer()`).
 
         Empty for a dict or list head map, or before `steer()` resolves a `HeadProfile`. The full
         `HeadProfileResult` is not serialized here; it stays on `head_profile` and the caller
         writes it through `HeadProfileResult.save`.
         """
         if self.head_profile is not None:
-            return {"head_profile": self.head_profile.lift}
+            return {"head_profile": self.head_profile.lift, "head_config": self.head_profile.head_config}
         return {}
 
     def frozen_form(self, state: dict) -> tuple[str, dict]:
@@ -413,12 +414,12 @@ class PASTA(HookControl):
         `BaseControl` default (the recipe is the frozen form). The loaded control is a plain-dict
         PASTA whose `steer()` does no rollouts.
         """
-        if isinstance(self.head_config, HeadProfile):
+        if isinstance(self.args.head_config, HeadProfile):
             return "state_control/pasta", {
-                "substrings": self.substrings,
-                "head_config": self.head_profile.head_config,
-                "alpha": self.alpha,
-                "scale_position": self.scale_position,
+                "substrings": self.args.substrings,
+                "head_config": state["head_config"],
+                "alpha": self.args.alpha,
+                "scale_position": self.args.scale_position,
             }
         return super().frozen_form(state)
 

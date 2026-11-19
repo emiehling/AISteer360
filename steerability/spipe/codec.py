@@ -6,21 +6,25 @@ Plain JSON values pass through; everything else encodes as a single-key tagged o
 - `$dc`: pure-data dataclasses and enums, decoded by importing the class and calling it.
 - `$component`: state-control components (transforms, gates, selectors) and routing objects,
   decoded through `COMPONENT_KINDS`.
-- `$ref`: module-level callables, decoded by import only under `allow_code=True`.
+- `$ref`: module-level callables, decoded by import only under `allow_code=True`, with the
+  callable's `__steerability_version__` when it declares one.
 - `$data`: dataset references (`DataRef`), materialized at pipeline construction.
 - `$map`: mappings with non-string scalar keys, kept as `[key, value]` pairs sorted by key so
   key types are retained through the JSON round trip and the encoding is independent of
   insertion order.
 
-The codec round-trips; `identity.canonical_value` remains the separate, hash-only
-canonicalizer. Digest computation for fit identities goes through `encode` in digest mode
-(`EncodeContext(store=None)`), where tensors reduce to content ids without being written and
-unhandled objects reduce to their type name.
+`encode` has two modes, selected by `EncodeContext.store`. Save mode writes artifacts into the
+store. Identity mode (`store=None`) writes nothing and returns the same JSON that save mode
+returns for the same value, so it is the canonical form behind every content id
+(`algorithms/core/identity.py`). A value with no serialized form raises `SpipeSaveError` in both
+modes.
 """
 from __future__ import annotations
 
 import json
 import logging
+import tempfile
+import weakref
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from importlib import import_module
@@ -38,6 +42,7 @@ from steerability.spipe.store import (
     check_sidecar,
     pickle_bearing_files,
     tensors_payload,
+    tree_id_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,6 +66,10 @@ DECODABLE_DATACLASSES = frozenset({
     "steerability.algorithms.output_control.routed_decoding.actions.Generate",
     "steerability.algorithms.output_control.routed_decoding.actions.Prefix",
     "steerability.algorithms.output_control.routed_decoding.actions.Respond",
+    "steerability.algorithms.state_control.common.estimators.contrastive_direction.ContrastiveDirectionEstimator",
+    "steerability.algorithms.state_control.common.estimators.mean_difference.MeanDifferenceEstimator",
+    "steerability.algorithms.state_control.common.estimators.single_pair.SinglePairEstimator",
+    "steerability.algorithms.state_control.common.estimators.steering_plane.SteeringPlaneEstimator",
     "steerability.algorithms.state_control.common.fit_specs.ConditionSearchSpec",
     "steerability.algorithms.state_control.common.fit_specs.VectorTrainSpec",
     "steerability.algorithms.state_control.common.selectors.condition_point.ConditionPoint",
@@ -70,6 +79,10 @@ DECODABLE_DATACLASSES = frozenset({
     "steerability.algorithms.state_control.common.sources.SinglePairFit",
     "steerability.algorithms.state_control.pasta.profiling.HeadProfile",
 })
+
+_RANGE_QUALNAMES = frozenset(
+    f"steerability.algorithms.core.recipe.{name}" for name in ("Choice", "Interval", "Text")
+)
 
 # trainer state written next to trained weights by `Trainer.save_model` and trainer checkpoints
 TRAINER_STATE_PATTERNS = (
@@ -158,15 +171,18 @@ class CodeRef:
     """Placeholder for a `$ref` callable that was decoded without importing it.
 
     Decoding with `code_mode="sentinel"` returns a `CodeRef` for each `$ref` callable. The
-    staleness check, the `recipe_id` and `config_id` digests of a spipe without a lock section,
-    and `SPipe.instantiate_entry(lenient=True)` decode this way. A `CodeRef` encodes back to the
-    same `$ref`. Calling it raises `SpipeCodeRefError`.
+    staleness check, the `recipe_id` of a spipe, and `SPipe.instantiate_entry(lenient=True)`
+    decode this way. A `CodeRef` encodes back to the same `$ref`. Calling it raises
+    `SpipeCodeRefError`.
 
     Attributes:
         target: The `"<module>:<qualname>"` reference.
+        version: The callable's recorded `__steerability_version__`, or None when it declares
+            none.
     """
 
     target: str
+    version: str | None = None
 
     def __call__(self, *args, **kwargs):
         raise SpipeCodeRefError(
@@ -192,9 +208,8 @@ class EncodeContext:
     """State threaded through one encoding pass.
 
     Attributes:
-        store: Destination artifact store, or None for digest mode (tensor ids are computed
-            without writing, unhandled objects reduce to their type name, and callables never
-            raise).
+        store: Destination artifact store, or None for identity mode, which computes every
+            artifact id without writing and returns the same JSON as save mode.
         records: Artifact records produced during the pass, keyed by artifact id.
         code_refs: `$ref` targets produced during the pass (drives `code_dependent`).
         provenance: Provenance mapping stamped onto artifact records.
@@ -212,7 +227,8 @@ class EncodeContext:
     artifact_fields: dict = field(default_factory=dict)
 
     @property
-    def digest_mode(self) -> bool:
+    def identity_mode(self) -> bool:
+        """Whether the pass computes content ids without writing artifacts (`store` is None)."""
         return self.store is None
 
 
@@ -326,26 +342,120 @@ def _record_fields(ctx: EncodeContext, type_name: str, type_meta: dict | None = 
     return fields_
 
 
-def _encode_steering_vector(vector, ctx: EncodeContext, path: str) -> dict:
-    tensors = {str(layer_id): direction for layer_id, direction in vector.directions.items()}
-    type_meta = _steering_vector_type_meta(vector, ctx.default_model_type)
-    record_fields = _record_fields(ctx, "SteeringVector", type_meta)
-    if ctx.digest_mode:
-        artifact_id, _ = tensors_payload(tensors)
-        record = ArtifactRecord(id=artifact_id, encoding="tensors", **record_fields)
+# content ids computed in identity mode, so that one value used in many recipes is hashed once; a
+# value must not change in place after it has been encoded
+_TENSOR_IDS: "weakref.WeakKeyDictionary[torch.Tensor, str]" = weakref.WeakKeyDictionary()
+_CONTENT_ID_ATTRIBUTE = "_content_id"
+
+
+def _cached_id(value: Any, tensors: Mapping[str, torch.Tensor] | None = None) -> str | None:
+    """The content id identity mode recorded for `value`, or None.
+
+    A tensor's id is kept in `_TENSOR_IDS`. Any other value keeps its id in a private attribute.
+    For a value whose content is a tensor payload (`tensors`), the attribute also records the
+    payload's tensor objects, and the id is reused only while the value still holds those
+    objects, which keeps it valid across `SteeringVector.to()`.
+    """
+    if isinstance(value, torch.Tensor):
+        return _TENSOR_IDS.get(value)
+    cached = getattr(value, _CONTENT_ID_ATTRIBUTE, None)
+    if cached is None or tensors is None:
+        return cached
+    artifact_id, references = cached
+    current = [tensors[name] for name in sorted(tensors)]
+    if len(current) != len(references) or any(ref() is not tensor for ref, tensor in zip(references, current)):
+        return None
+    return artifact_id
+
+
+def _cache_id(value: Any, artifact_id: str, tensors: Mapping[str, torch.Tensor] | None = None) -> str:
+    """Record the content id of `value` for `_cached_id`."""
+    if isinstance(value, torch.Tensor):
+        _TENSOR_IDS[value] = artifact_id
+        return artifact_id
+    if tensors is not None:
+        references = tuple(weakref.ref(tensors[name]) for name in sorted(tensors))
+        object.__setattr__(value, _CONTENT_ID_ATTRIBUTE, (artifact_id, references))
     else:
-        record = ctx.store.put_tensors(tensors, record_fields)
+        object.__setattr__(value, _CONTENT_ID_ATTRIBUTE, artifact_id)
+    return artifact_id
+
+
+def _encode_tensors(owner: Any, tensors_fn, type_name: str, ctx: EncodeContext,
+                    type_meta: dict | None = None) -> ArtifactRecord:
+    """The record of a `"tensors"` artifact, written to the store in save mode.
+
+    Args:
+        owner: The value whose content the tensors are, used to cache the id in identity mode.
+        tensors_fn: Zero-argument callable returning the name-to-tensor payload.
+        type_name: The record's `type`.
+        ctx: The encoding context.
+        type_meta: Type-specific reconstruction metadata.
+
+    Returns:
+        The artifact record.
+    """
+    record_fields = _record_fields(ctx, type_name, type_meta)
+    tensors = tensors_fn()
+    if not ctx.identity_mode:
+        return ctx.store.put_tensors(tensors, record_fields)
+    owned = None if isinstance(owner, torch.Tensor) else tensors
+    artifact_id = _cached_id(owner, owned)
+    if artifact_id is None:
+        artifact_id = _cache_id(owner, tensors_payload(tensors)[0], owned)
+    return ArtifactRecord(id=artifact_id, encoding="tensors", **record_fields)
+
+
+def _encode_steering_vector(vector, ctx: EncodeContext, path: str) -> dict:
+    record = _encode_tensors(
+        vector,
+        lambda: {str(layer_id): direction for layer_id, direction in vector.directions.items()},
+        "SteeringVector", ctx, _steering_vector_type_meta(vector, ctx.default_model_type),
+    )
     return _artifact_ref(record, ctx)
 
 
 def _encode_tree_object(value, save_fn, type_name: str, ctx: EncodeContext, path: str,
-                        type_meta: dict | None = None, as_path: bool = False) -> dict:
-    if ctx.digest_mode:
-        # digest mode never writes; identify the object by a stable, value-blind form
-        return {"$data": {"kind": "opaque", "type": type_name}}
-    from steerability.spipe.store import save_object_tree
+                        type_meta: dict | None = None, as_path: bool = False,
+                        source_dir: str | Path | None = None) -> dict:
+    """Encode an object stored as a `"tree"` artifact.
 
-    record = save_object_tree(save_fn, ctx.store, _record_fields(ctx, type_name, type_meta))
+    Save mode writes the tree into the store through `save_fn`. Identity mode computes the id the
+    store would give the same tree: a directory source (`source_dir`) is hashed in place with the
+    filter `_copy_tree_contents` applies, and any other object is saved into a temporary
+    directory and hashed there.
+
+    Args:
+        value: The artifact object, which caches its id in identity mode.
+        save_fn: Callable writing the tree into a directory.
+        type_name: The record's `type`.
+        ctx: The encoding context.
+        path: The position of the value, used in error messages.
+        type_meta: Type-specific reconstruction metadata.
+        as_path: Whether the value decodes to its payload path.
+        source_dir: The directory an adapter or checkpoint artifact copies from, or None.
+
+    Returns:
+        The `$artifact` reference.
+    """
+    record_fields = _record_fields(ctx, type_name, type_meta)
+    if not ctx.identity_mode:
+        from steerability.spipe.store import save_object_tree
+
+        record = save_object_tree(save_fn, ctx.store, record_fields)
+        return _artifact_ref(record, ctx, as_path=as_path)
+    artifact_id = _cached_id(value)
+    if artifact_id is None:
+        if source_dir is not None:
+            if not Path(source_dir).is_dir():
+                raise SpipeSaveError(f"Artifact directory {source_dir} does not exist.")
+            artifact_id = tree_id_for(Path(source_dir), ignore=TRAINER_STATE_PATTERNS, follow_symlinks=True)
+        else:
+            with tempfile.TemporaryDirectory(prefix="spipe-identity-") as scratch:
+                save_fn(Path(scratch))
+                artifact_id = tree_id_for(Path(scratch))
+        _cache_id(value, artifact_id)
+    record = ArtifactRecord(id=artifact_id, encoding="tree", **record_fields)
     return _artifact_ref(record, ctx, as_path=as_path)
 
 
@@ -361,12 +471,7 @@ def _encode_artifact_object(value: Any, ctx: EncodeContext, path: str, as_path: 
     from steerability.algorithms.state_control.common.steering_vector import SteeringVector
 
     if isinstance(value, torch.Tensor):
-        record_fields = _record_fields(ctx, "Tensor")
-        if ctx.digest_mode:
-            artifact_id, _ = tensors_payload({"value": value})
-            record = ArtifactRecord(id=artifact_id, encoding="tensors", **record_fields)
-        else:
-            record = ctx.store.put_tensors({"value": value}, record_fields)
+        record = _encode_tensors(value, lambda: {"value": value}, "Tensor", ctx)
         return _artifact_ref(record, ctx, as_path=as_path)
     if isinstance(value, SteeringVector):
         return _encode_steering_vector(value, ctx, path)
@@ -399,13 +504,13 @@ def _encode_artifact_object(value: Any, ctx: EncodeContext, path: str, as_path: 
         )
     if isinstance(value, LoRAArtifact):
         return _encode_tree_object(
-            None, lambda d: _copy_tree_contents(value.path, d), "LoRAArtifact", ctx, path,
-            type_meta={"base_model": value.base_model}, as_path=True,
+            value, lambda d: _copy_tree_contents(value.path, d), "LoRAArtifact", ctx, path,
+            type_meta={"base_model": value.base_model}, as_path=True, source_dir=value.path,
         )
     if isinstance(value, CheckpointArtifact):
         return _encode_tree_object(
-            None, lambda d: _copy_tree_contents(value.path, d), "CheckpointArtifact", ctx, path,
-            as_path=True,
+            value, lambda d: _copy_tree_contents(value.path, d), "CheckpointArtifact", ctx, path,
+            as_path=True, source_dir=value.path,
         )
     return None
 
@@ -442,6 +547,11 @@ def _copy_tree_contents(source: str | Path, dest: Path) -> None:
 
 
 def _encode_dataclass(value: Any, ctx: EncodeContext, path: str) -> dict:
+    if _qualname(type(value)) in _RANGE_QUALNAMES:
+        raise SpipeSaveError(
+            f"{path}: {type(value).__name__} is a range; ranges sit only in the args of a Template, at the "
+            "top level or inside dicts, lists, and tuples."
+        )
     encoded_fields = {}
     for f in fields(value):
         if not f.init:
@@ -504,7 +614,9 @@ def encode(value: Any, ctx: EncodeContext, path: str = "$") -> Any:
         return {"$data": payload}
     if isinstance(value, CodeRef):
         ctx.code_refs.append(value.target)
-        return {"$ref": value.target}
+        if value.version is None:
+            return {"$ref": value.target}
+        return {"$ref": value.target, "version": value.version}
     if isinstance(value, torch.dtype):
         return {"$dc": "torch.dtype", "value": str(value).removeprefix("torch.")}
     if isinstance(value, Enum):
@@ -560,18 +672,15 @@ def encode(value: Any, ctx: EncodeContext, path: str = "$") -> Any:
         )
 
     if callable(value):
-        if ctx.digest_mode:
-            try:
-                target = _callable_target(value, path)
-            except SpipeSaveError:
-                target = f"callable:{getattr(value, '__qualname__', type(value).__name__)}"
-            return {"$ref": target}
         target = _callable_target(value, path)
         ctx.code_refs.append(target)
-        return {"$ref": target}
+        version = getattr(value, "__steerability_version__", None)
+        if version is None:
+            return {"$ref": target}
+        if not isinstance(version, str):
+            raise SpipeSaveError(f"{path}: __steerability_version__ of {target!r} must be a string.")
+        return {"$ref": target, "version": version}
 
-    if ctx.digest_mode:
-        return {"$type": _qualname(type(value))}
     raise SpipeSaveError(
         f"{path}: values of type {_qualname(type(value))} have no serialized form."
     )
@@ -580,26 +689,6 @@ def encode(value: Any, ctx: EncodeContext, path: str = "$") -> Any:
 def encoded_size(encoded: Any) -> int:
     """Byte length of the canonical JSON form of an encoded value."""
     return len(json.dumps(encoded, sort_keys=True).encode("utf-8"))
-
-
-def digest_of(value: Any) -> str:
-    """12-hex-character digest of a value's encoded form, in digest mode.
-
-    Tensors reduce to content-addressed ids (float32 form), callables to their qualified
-    names, and unhandled objects to their type names, which keeps the digest stable across a
-    save and load round trip.
-
-    Args:
-        value: The value to digest.
-
-    Returns:
-        The digest.
-    """
-    import hashlib
-
-    encoded = encode(value, EncodeContext(store=None))
-    serialized = json.dumps(encoded, sort_keys=True)
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
 
 
 def _resolve_target(module_name: str, qual: str, target: str, path: str) -> Any:
@@ -882,11 +971,21 @@ def decode(value: Any, ctx: DecodeContext, path: str = "$") -> Any:
         target = value["$ref"]
         if not isinstance(target, str):
             raise SpipeFormatError(f"{path}: '$ref' target must be a string; got {type(target).__name__}.")
+        version = value.get("version")
+        if version is not None and not isinstance(version, str):
+            raise SpipeFormatError(f"{path}: '$ref' version must be a string; got {type(version).__name__}.")
         if ctx.code_mode == "sentinel":
-            return CodeRef(target)
+            return CodeRef(target, version=version)
         if ctx.allow_code:
             module_name, _, qual = target.partition(":")
-            return _resolve_target(module_name, qual, target, path)
+            resolved = _resolve_target(module_name, qual, target, path)
+            current = getattr(resolved, "__steerability_version__", None)
+            if current != version:
+                raise SpipeCodeRefError(
+                    f"{path}: {target!r} was recorded at version {version!r}, but the imported callable is "
+                    f"at version {current!r}."
+                )
+            return resolved
         raise SpipeCodeRefError(
             f"{path}: this spipe references code ({target!r}); pass allow_code=True to load() "
             "to import it."
@@ -980,7 +1079,7 @@ def _encode_gate(gate, ctx: EncodeContext, path: str) -> dict:
         record_fields = _record_fields(ctx, "GateReadout")
         if not ctx.artifact_fields:
             record_fields["artifact_class"] = "calibrated"
-        if ctx.digest_mode:
+        if ctx.identity_mode:
             artifact_id, _ = tensors_payload(readout_tensors)
             record = ArtifactRecord(id=artifact_id, encoding="tensors", **record_fields)
         else:

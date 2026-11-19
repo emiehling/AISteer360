@@ -36,6 +36,10 @@ from steerability.algorithms.input_control.cpo.utils.embeddings import TextEncod
 logger = logging.getLogger(__name__)
 
 
+# the args read only by the query-time search (`adapt`, `adapt_messages`), never by `steer()`
+PER_QUERY_FIELDS = ("rounds", "candidates_per_parent", "retained_per_round", "cache_queries", "cache_key_normalizer")
+
+
 @dataclass
 class CPOMemory:
     """Custom Memory for CPO; holds the trained scorer and a query→best-prompt cache."""
@@ -169,16 +173,17 @@ class CPO(InputControl):
         return "input_control/cpo", kwargs
 
     def fit_identity(self):
-        """The optimizer-relevant args (everything except `memory` and the per-query search
-        knobs), or None when the recipe already carries a memory."""
+        """The optimizer-relevant args, or None when the recipe already carries a memory.
+
+        The identity excludes `memory` and the per-query search fields in `PER_QUERY_FIELDS`,
+        which only the query-time search in `adapt` and `adapt_messages` reads.
+        """
         from dataclasses import fields
 
         if self.args.memory is not None:
             return None
-        return {
-            f.name: getattr(self.args, f.name)
-            for f in fields(self.args) if f.init and f.name != "memory"
-        }
+        excluded = {"memory", *PER_QUERY_FIELDS}
+        return {f.name: getattr(self.args, f.name) for f in fields(self.args) if f.init and f.name not in excluded}
 
     def steer(
         self,

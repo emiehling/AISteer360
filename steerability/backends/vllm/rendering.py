@@ -212,7 +212,7 @@ def _split_item_entries(
     return specs, constraints
 
 
-def render_guided_decoding_field(source: ConstraintSource) -> tuple[str, Any]:
+def render_structured_output_field(source: ConstraintSource) -> tuple[str, Any]:
     """The vLLM structured-output parameter name and payload for a constraint source."""
     if source.kind == "json_schema":
         value = source.value if isinstance(source.value, str) else dict(source.value)

@@ -1,6 +1,7 @@
 """Contrastive direction estimator using paired PCA."""
 import logging
 import math
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal
 
 import torch
@@ -102,6 +103,7 @@ def _orient_direction(
     return direction
 
 
+@dataclass(frozen=True)
 class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
     """Learns per-layer direction vectors from contrastive text pairs via PCA.
 
@@ -219,7 +221,7 @@ class ContrastiveDirectionEstimator(BaseEstimator[SteeringVector]):
 
             samples = _prepare_pca_samples(Hp, Hn, spec.method)  # [2N, H]
 
-            pca = PCA(n_components=1)
+            pca = PCA(n_components=1, random_state=0)
             pca.fit(samples.numpy())
             direction = torch.from_numpy(pca.components_[0]).float()  # [H]
             variance = float(pca.explained_variance_ratio_[0])

@@ -42,7 +42,7 @@ from steerability.backends.vllm.rendering import (
     map_vllm_finish_reason,
     remap_spec_for_scoring,
     render_constraint_sampling_args,
-    render_guided_decoding_field,
+    render_structured_output_field,
     render_vllm_sampling_args,
 )
 
@@ -434,7 +434,7 @@ class VLLMOfflineSession(_RequestSessionBase):
             if seed is not None:
                 args["seed"] = seed
             if item_constraints[index] is not None:
-                field, value = render_guided_decoding_field(item_constraints[index])
+                field, value = render_structured_output_field(item_constraints[index])
                 args.update(render_constraint_sampling_args(field, value))
             if item_specs[index] is not None:
                 args["extra_args"] = {"intervention_spec": item_specs[index].to_wire()}
@@ -604,8 +604,8 @@ class VLLMServeSession(_RequestSessionBase):
                 if seeds[index] is not None:
                     body["seed"] = seeds[index]
                 if item_constraints[index] is not None:
-                    field, value = render_guided_decoding_field(item_constraints[index])
-                    body[f"guided_{field}"] = value
+                    field, value = render_structured_output_field(item_constraints[index])
+                    body["structured_outputs"] = {field: value}
                 if item_specs[index] is not None:
                     # vllm_xargs is scalar-only, so nested specs travel as JSON strings
                     body["vllm_xargs"] = {

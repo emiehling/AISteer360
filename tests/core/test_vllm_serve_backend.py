@@ -651,7 +651,7 @@ class TestMergeInterventionSpecs:
 
 class TestServeConstraintLowering:
 
-    def test_constraint_entry_renders_guided_field(self, fake_server):
+    def test_constraint_entry_renders_structured_outputs(self, fake_server):
         from steerability.algorithms.core.execution import ConstraintEntry, ConstraintSource
 
         backend = VLLMServeBackend(_serve_spec())
@@ -664,9 +664,9 @@ class TestServeConstraintLowering:
         with backend.open_session() as session:
             session.generate([item], GenerationParams(max_new_tokens=4))
         body = next(p for path, p in fake_server.requests if path == "/v1/completions")
-        assert body["guided_json"] == {"type": "object"}
+        assert body["structured_outputs"] == {"json": {"type": "object"}}
 
-    def test_choice_constraint_renders_guided_choice(self, fake_server):
+    def test_choice_constraint_renders_structured_outputs_choice(self, fake_server):
         from steerability.algorithms.core.execution import ConstraintEntry, ConstraintSource
 
         backend = VLLMServeBackend(_serve_spec())
@@ -679,7 +679,7 @@ class TestServeConstraintLowering:
         with backend.open_session() as session:
             session.generate([item], GenerationParams())
         body = next(p for path, p in fake_server.requests if path == "/v1/completions")
-        assert body["guided_choice"] == ["cat", "dog"]
+        assert body["structured_outputs"] == {"choice": ["cat", "dog"]}
 
     def test_scoring_with_constraint_entry_refused(self, fake_server):
         from steerability.algorithms.core.execution import ConstraintEntry, ConstraintSource
@@ -726,7 +726,7 @@ class TestServeConstraintLowering:
         text = pipeline.generate(text="the cat", max_new_tokens=4, do_sample=False)
         assert isinstance(text, str)
         body = next(p for path, p in fake_server.requests if path == "/v1/completions")
-        assert body["guided_regex"] == "cat|dog"
+        assert body["structured_outputs"] == {"regex": "cat|dog"}
 
 
 class TestStageArtifacts:
@@ -953,3 +953,35 @@ class TestOfflineSteeredCapture:
         assert SteeredSession(_Inner(), (entry,)).capture([], [0], "last_token") == "captured"
         assert SteeredSession(_Inner()).capture([], [0], "last_token") == "captured"
         assert seen == [{"state_entries": (entry,)}, {}]
+
+
+@pytest.mark.network
+def test_choice_constraint_constrains_a_live_server():
+    """A `choice` constraint sent to a running vLLM server yields one of the choices.
+
+    The test runs against the server at `STEERABILITY_VLLM_SERVE_URL` (e.g.
+    `http://localhost:8000`), serving the model named by `STEERABILITY_VLLM_SERVE_MODEL`, and is
+    skipped when either variable is unset.
+    """
+    import os
+
+    from steerability.algorithms.core.execution import ConstraintEntry, ConstraintSource
+
+    base_url = os.environ.get("STEERABILITY_VLLM_SERVE_URL")
+    model = os.environ.get("STEERABILITY_VLLM_SERVE_MODEL")
+    if not base_url or not model:
+        pytest.skip("Set STEERABILITY_VLLM_SERVE_URL and STEERABILITY_VLLM_SERVE_MODEL to run against a live server.")
+    backend = VLLMServeBackend(BackendSpec(kind="vllm-serve", model=model, options={"base_url": base_url}))
+    try:
+        tokenizer = backend.tokenizer
+        prompt_ids = tokenizer("Pick an animal:", add_special_tokens=True)["input_ids"]
+        item = GenerationItem(
+            prompt=PreparedPrompt.from_token_ids(prompt_ids),
+            output_entries=(ConstraintEntry(source=ConstraintSource(kind="choice", value=("cat", "dog"))),),
+        )
+        with backend.open_session() as session:
+            [result] = session.generate([item], GenerationParams(max_new_tokens=8, do_sample=False))
+        completion = tokenizer.decode(result.output.output_ids[0], skip_special_tokens=True).strip()
+        assert completion in ("cat", "dog")
+    finally:
+        backend.release()

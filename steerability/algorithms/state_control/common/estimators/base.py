@@ -18,6 +18,10 @@ class BaseEstimator(ABC, Generic[T]):
     capture-capable session. An estimator that reads the module tree declares
     `ModelAccess.MODULE`.
 
+    An estimator is part of the fit identity of the source that wraps it, so it must have a
+    serialized form. The built-in estimators are field-less frozen dataclasses, which encode as
+    their class. An estimator with configuration declares it as dataclass fields.
+
     Attributes:
         access: The model access a fit needs, read by the fit sources that wrap the estimator.
     """

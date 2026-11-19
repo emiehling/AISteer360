@@ -13,6 +13,7 @@ replaces it. Writes are idempotent and reads verify the content hash.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import io
 import json
@@ -24,7 +25,7 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 import torch
 
@@ -90,35 +91,58 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def tree_id_for(root: Path) -> str:
+def tree_id_for(root: Path, *, ignore: Sequence[str] = (), follow_symlinks: bool = False) -> str:
     """The content id of a directory tree.
 
     The id is `"sha256:" + sha256` over the concatenation of
-    `f"{posix_relpath}\\n{sha256_of_file_hex}\\n"` for every file, sorted by posix relative
-    path. Symlinks are rejected.
+    `f"{posix_relpath}\\n{sha256_of_file_hex}\\n"` for every file, ordered by the components of
+    the posix relative path.
+
+    With `ignore`, every file or directory whose name matches one of the glob patterns is left
+    out, at any depth, which is how `shutil.copytree` applies `shutil.ignore_patterns`. With
+    `follow_symlinks=True`, a symlinked file is hashed as the file it points to and a symlinked
+    directory is descended into, which is how `shutil.copytree(symlinks=False)` copies them. The
+    id of a source directory hashed this way therefore equals the id of its filtered copy.
 
     Args:
         root: Directory to hash.
+        ignore: Glob patterns of names to leave out.
+        follow_symlinks: Whether to follow symlinks rather than reject them.
 
     Returns:
         The `sha256:<hex>` id.
 
     Raises:
-        SpipeSaveError: If `root` is not a directory, is empty, or contains a symlink.
+        SpipeSaveError: If `root` is not a directory, contains no files after filtering, or
+            contains a symlink while `follow_symlinks` is False.
     """
     root = Path(root)
     if not root.is_dir():
         raise SpipeSaveError(f"Tree artifact source {root} is not a directory.")
-    entries: list[tuple[str, str]] = []
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink():
-            raise SpipeSaveError(f"Tree artifact source contains a symlink: {path}.")
-        if path.is_file():
-            entries.append((path.relative_to(root).as_posix(), _file_sha256(path)))
+    if root.is_symlink() and not follow_symlinks:
+        raise SpipeSaveError(f"Tree artifact source is a symlink: {root}.")
+    entries: list[tuple[tuple[str, ...], str, str]] = []
+    for directory, dir_names, file_names in os.walk(root, followlinks=follow_symlinks):
+        current = Path(directory)
+        skipped = {
+            name for name in (*dir_names, *file_names)
+            if any(fnmatch.fnmatchcase(name, pattern) for pattern in ignore)
+        }
+        dir_names[:] = [name for name in dir_names if name not in skipped]
+        for name in (*dir_names, *file_names):
+            if name not in skipped and not follow_symlinks and (current / name).is_symlink():
+                raise SpipeSaveError(f"Tree artifact source contains a symlink: {current / name}.")
+        for name in file_names:
+            if name in skipped:
+                continue
+            path = current / name
+            relative = path.relative_to(root)
+            entries.append((relative.parts, relative.as_posix(), _file_sha256(path)))
     if not entries:
         raise SpipeSaveError(f"Tree artifact source {root} contains no files.")
+    entries.sort(key=lambda entry: entry[0])
     digest = hashlib.sha256()
-    for relpath, file_hash in entries:
+    for _, relpath, file_hash in entries:
         digest.update(f"{relpath}\n{file_hash}\n".encode("utf-8"))
     return "sha256:" + digest.hexdigest()
 

@@ -1,6 +1,7 @@
 """Mean difference estimator for CAA steering vectors."""
 import logging
 import math
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 import torch
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
 class MeanDifferenceEstimator(BaseEstimator[SteeringVector]):
     """Learns per-layer steering vectors using the mean difference method.
 

@@ -408,8 +408,11 @@ class InterventionControl(StateControl):
         For intervention `i`, the core transform's artifact exports as
         `"intervention_{i}/transform"` (a `SteeringVector` view), each wrapper's own artifact
         as `"intervention_{i}/modifier_{j}"`, and the resolved gate as
-        `"intervention_{i}/gate"` when the template's gate slot held a source. Must be called
-        after `steer()`.
+        `"intervention_{i}/gate"` when the template's gate slot held a source. The bound
+        structure that `frozen_form` rebuilds the intervention from exports as
+        `"intervention_{i}/layers"` (the resolved behavior layers) and
+        `"intervention_{i}/bound_transform"` (the bound transform). Must be called after
+        `steer()`.
 
         Returns:
             Mapping from logical name to artifact value.
@@ -432,30 +435,49 @@ class InterventionControl(StateControl):
             if isinstance(intervention.gate, Gate) and template_gate is not None \
                     and not _is_concrete_gate(template_gate):
                 state[f"intervention_{i}/gate"] = intervention.gate
+            state[f"intervention_{i}/layers"] = [int(layer_id) for layer_id in intervention.layers]
+            state[f"intervention_{i}/bound_transform"] = intervention.transform
         return state
 
     def frozen_form(self, state: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         """One `activation_adapter` entry per bound intervention, in intervention order.
 
-        Each entry's args mirror the intervention: the bound transform, the resolved behavior
-        layers, the hook point, the resolved gate, the token scope, and the coverage requirement.
-        Must be called after `steer()`.
+        Each entry's args mirror the intervention: the bound transform and the resolved behavior
+        layers from `state`, the resolved gate (from `state` when the template's gate slot held a
+        source, else the template's gate), and the hook point, the token scope, and the coverage
+        requirement from the template. The result depends only on the args and `state`.
+
+        Args:
+            state: The output of `export_state()`.
 
         Returns:
             List of `("state_control/activation_adapter", kwargs)` pairs.
 
         Raises:
-            NotFreezableError: If the control is unsteered, an intervention hooks the
-                `norm_input` site (no `activation_adapter` form), or an intervention follows
-                an externally driven shared gate (an in-memory relationship that does not
-                serialize).
+            NotFreezableError: If `state` holds no bound interventions (the control was not
+                steered), an intervention hooks the `norm_input` site (no `activation_adapter`
+                form), or an intervention follows an externally driven shared gate (an in-memory
+                relationship that does not serialize).
         """
-        if not self.interventions:
+        import dataclasses
+
+        if not self._template or f"intervention_{len(self._template) - 1}/bound_transform" not in state:
             raise NotFreezableError(
                 f"{type(self).__name__} has no bound interventions; call steer() before freezing."
             )
+        bound = []
+        for i, template in enumerate(self._template):
+            gate = template.gate
+            if gate is not None and not _is_concrete_gate(gate):
+                gate = state.get(f"intervention_{i}/gate")
+            bound.append(dataclasses.replace(
+                template,
+                layers=tuple(state[f"intervention_{i}/layers"]),
+                transform=state[f"intervention_{i}/bound_transform"],
+                gate=gate,
+            ))
         entries: list[tuple[str, dict[str, Any]]] = []
-        for intervention in self.interventions:
+        for intervention in bound:
             if intervention.resolved_site() == "norm_input":
                 raise NotFreezableError(
                     f"{type(self).__name__} hooks the norm_input site, which has no "
