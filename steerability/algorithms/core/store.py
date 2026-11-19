@@ -43,6 +43,11 @@ ARTIFACTS_DIR = "artifacts"
 LOGS_DIR = "logs"
 BUSY_TIMEOUT_MS = 30000
 
+_EVIDENCE_COLUMNS = (
+    "protocol_id, resolved_id, benchmark_id, item_id, replicate, value, status, tokens, rollout_key, detail, created_at"
+)
+_ITEM_CHUNK = 500
+
 _TABLES = (
     """CREATE TABLE IF NOT EXISTS protocols (protocol_id TEXT PRIMARY KEY, identity TEXT NOT NULL, observed TEXT,
         created_at TEXT NOT NULL)""",
@@ -528,9 +533,12 @@ class Store:
              row.status, row.tokens, row.rollout_key, None if row.detail is None else _dumps(row.detail),
              row.created_at),
         )
-        return self.get_evidence(row.protocol_id, row.resolved_id, row.benchmark_id, [row.item_id], row.replicate)[
-            row.item_id
-        ]
+        stored = self._execute(
+            f"""SELECT {_EVIDENCE_COLUMNS} FROM evidence WHERE protocol_id = ? AND resolved_id = ? AND benchmark_id = ?
+                AND item_id = ? AND replicate = ?""",
+            (row.protocol_id, row.resolved_id, row.benchmark_id, row.item_id, int(row.replicate)),
+        ).fetchone()
+        return EvidenceRow(*stored[:9], _loads(stored[9]), stored[10])
 
     def get_evidence(
         self,
@@ -553,20 +561,23 @@ class Store:
         Returns:
             Mapping from item id to its row.
         """
-        sql = """SELECT protocol_id, resolved_id, benchmark_id, item_id, replicate, value, status, tokens, rollout_key,
-            detail, created_at FROM evidence WHERE protocol_id = ? AND resolved_id = ? AND benchmark_id = ?"""
+        sql = f"""SELECT {_EVIDENCE_COLUMNS} FROM evidence WHERE protocol_id = ? AND resolved_id = ?
+            AND benchmark_id = ?"""
         parameters: list[Any] = [protocol_id, resolved_id, benchmark_id]
         if replicate is not None:
             sql += " AND replicate = ?"
             parameters.append(int(replicate))
-        rows = self._execute(sql, parameters).fetchall()
-        wanted = None if item_ids is None else set(item_ids)
-        result = {}
-        for row in rows:
-            if wanted is not None and row[3] not in wanted:
-                continue
-            result[row[3]] = EvidenceRow(*row[:9], _loads(row[9]), row[10])
-        return result
+        if item_ids is None:
+            rows = self._execute(sql, parameters).fetchall()
+        else:
+            wanted = list(dict.fromkeys(str(item_id) for item_id in item_ids))
+            rows = []
+            for start in range(0, len(wanted), _ITEM_CHUNK):
+                chunk = wanted[start:start + _ITEM_CHUNK]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows.extend(self._execute(f"{sql} AND item_id IN ({placeholders})", [*parameters, *chunk]).fetchall())
+            rows.sort(key=lambda row: row[4])
+        return {row[3]: EvidenceRow(*row[:9], _loads(row[9]), row[10]) for row in rows}
 
     def evidence_rows(self, protocol_id: str, resolved_id: str, benchmark_id: str) -> list[EvidenceRow]:
         """Every stored evidence row of a resolved recipe on a benchmark, ordered by replicate and item."""

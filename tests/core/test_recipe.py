@@ -4,6 +4,7 @@ import math
 import pytest
 import torch
 
+from steerability.algorithms.core.identity import versioned
 from steerability.algorithms.core.recipe import (
     BASELINE,
     Choice,
@@ -29,6 +30,11 @@ PAIRS = {"positives": ["yes", "sure"], "negatives": ["no", "never"]}
 
 def _vector(scale: float = 1.0) -> SteeringVector:
     return SteeringVector(model_type="llama", directions={1: scale * torch.ones(1, 8)})
+
+
+@versioned("1")
+def _versioned_scorer(prompt, continuations, params):
+    return [0.0 for _ in continuations]
 
 
 class TestRecipeIdentity:
@@ -68,6 +74,15 @@ class TestRecipeIdentity:
 
         with pytest.raises(RecipeError, match=r"value_guidance\.value"):
             Recipe((entry(ValueGuidance, value=lambda context: context),)).id
+
+    def test_a_callable_typed_argument_has_a_canonical_form(self):
+        from steerability.algorithms.output_control.best_of_n.control import BestOfN
+
+        recipe = Recipe((entry(BestOfN, scorer=_versioned_scorer, n=2),))
+        assert recipe.canonical()["entries"][0]["args"]["scorer"] == {"$ref": f"{__name__}:_versioned_scorer",
+                                                                      "version": "1"}
+        template = Template((entry(BestOfN, scorer=_versioned_scorer, n=Choice((2, 4))),))
+        assert template.bind({"best_of_n.n": 2}).recipe().id == recipe.id
 
     def test_recipe_rejects_ranges(self):
         with pytest.raises(RecipeError, match=r"caa\.multiplier"):

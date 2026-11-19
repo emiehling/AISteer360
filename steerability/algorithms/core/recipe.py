@@ -442,8 +442,8 @@ def _is_float_annotation(annotation: Any) -> bool:
         return normalized in ("float", "float|None", "None|float", "Optional[float]", "typing.Optional[float]")
     if annotation is float:
         return True
-    arguments = set(typing.get_args(annotation))
-    return bool(arguments) and arguments <= {float, type(None)} and float in arguments
+    arguments = typing.get_args(annotation)
+    return float in arguments and all(argument is float or argument is type(None) for argument in arguments)
 
 
 def _float_fields(args_cls: type) -> set[str]:

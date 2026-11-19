@@ -10,7 +10,8 @@ class SystemPromptArgs(BaseArgs):
     """Arguments for the system-prompt input control."""
 
     text: str = field(
-        metadata={"help": "System-prompt text set or merged into the leading system message."},
+        metadata={"help": "System-prompt text set or merged into the leading system message. An empty text leaves "
+                          "the input unchanged."},
     )
 
     mode: str = field(
@@ -32,8 +33,6 @@ class SystemPromptArgs(BaseArgs):
     def __post_init__(self):
         if not isinstance(self.text, str):
             raise TypeError(f"text must be a str; got {type(self.text).__name__}.")
-        if not self.text:
-            raise ValueError("text must be a non-empty string.")
         if self.mode not in _MODES:
             raise ValueError(f"mode must be one of {sorted(_MODES)}; got {self.mode!r}.")
         if not isinstance(self.separator, str):

@@ -10,7 +10,8 @@ class UserPrefixArgs(BaseArgs):
     """Arguments for the user-prefix input control."""
 
     text: str = field(
-        metadata={"help": "Marker text prepended to the targeted user turn(s)."},
+        metadata={"help": "Marker text prepended to the targeted user turn(s). An empty text leaves the input "
+                          "unchanged."},
     )
 
     separator: str = field(
@@ -30,8 +31,6 @@ class UserPrefixArgs(BaseArgs):
     def __post_init__(self):
         if not isinstance(self.text, str):
             raise TypeError(f"text must be a str; got {type(self.text).__name__}.")
-        if not self.text:
-            raise ValueError("text must be a non-empty string.")
         if not isinstance(self.separator, str):
             raise TypeError(f"separator must be a str; got {type(self.separator).__name__}.")
         if self.placement not in _PLACEMENTS:

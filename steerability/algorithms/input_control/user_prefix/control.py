@@ -24,7 +24,7 @@ class UserPrefix(InputControl):
     return from `adapt_messages` skips this control's `adapt` for that call.
 
     Args:
-        text: Marker text prepended to the targeted user turn(s). Non-empty.
+        text: Marker text prepended to the targeted user turn(s). An empty text leaves the input unchanged.
         separator: String inserted between the marker and the existing user content. Empty string allowed.
         placement: Which user turn(s) receive the marker (`"last_user"` (default), `"first_user"`, or `"all_user"`).
     """
@@ -60,8 +60,7 @@ class UserPrefix(InputControl):
     ) -> list[list[dict]]:
         """Prepend the marker to the targeted user turn of each chat.
 
-        Always returns the adapted batch (never `None`), since `text` is validated non-empty and the control
-        therefore always changes chat input.
+        Always returns the adapted batch (never `None`). An empty `text` returns the chats unchanged.
 
         Args:
             messages: A batch of chats; outer list is the batch, inner list is one chat's message sequence.
@@ -70,6 +69,8 @@ class UserPrefix(InputControl):
         Returns:
             The adapted batch of chats.
         """
+        if not self.text:
+            return [list(chat) for chat in messages]
         return self._formatter.apply_to_messages(messages, self.memory)
 
     def adapt(
@@ -89,7 +90,7 @@ class UserPrefix(InputControl):
             runtime_kwargs: Unused.
 
         Returns:
-            The token ids with the encoded marker inserted.
+            The token ids with the encoded marker inserted (unchanged when `text` is empty).
 
         Raises:
             RuntimeError: If the tokenizer is not set (requires calling `steer()` first), or if a batch must be
@@ -97,6 +98,8 @@ class UserPrefix(InputControl):
         """
         if self.tokenizer is None:
             raise RuntimeError("UserPrefix needs a tokenizer; call .steer() first.")
+        if not self.text:
+            return input_ids
 
         is_tensor = isinstance(input_ids, torch.Tensor)
         original_device = input_ids.device if is_tensor else None

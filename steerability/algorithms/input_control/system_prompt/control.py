@@ -28,7 +28,8 @@ class SystemPrompt(InputControl):
     that call.
 
     Args:
-        text: System-prompt text set or merged into the leading system message. Non-empty.
+        text: System-prompt text set or merged into the leading system message. An empty text leaves the input
+            unchanged.
         mode: How the text combines with an existing leading system message (`"prepend"` (default), `"append"`,
             or `"replace"`). Ignored when no leading system message is present.
         separator: String inserted between the text and the existing content for `"prepend"` and `"append"`.
@@ -66,16 +67,17 @@ class SystemPrompt(InputControl):
     ) -> list[list[dict]]:
         """Set or merge the leading system message of each chat.
 
-        Always returns the adapted batch (never `None`), since `text` is validated non-empty and the control
-        therefore always changes chat input.
+        Always returns the adapted batch (never `None`). An empty `text` returns the chats unchanged.
 
         Args:
             messages: A batch of chats; outer list is the batch, inner list is one chat's message sequence.
             runtime_kwargs: Unused.
 
         Returns:
-            The adapted batch of chats, each with exactly one leading system message.
+            The adapted batch of chats, each with exactly one leading system message when `text` is not empty.
         """
+        if not self.text:
+            return [list(chat) for chat in messages]
         return self._formatter.apply_to_messages(messages, self.memory)
 
     def adapt(
@@ -96,7 +98,7 @@ class SystemPrompt(InputControl):
             runtime_kwargs: Unused.
 
         Returns:
-            The token ids with the system prompt applied.
+            The token ids with the system prompt applied (unchanged when `text` is empty).
 
         Raises:
             RuntimeError: If the tokenizer is not set (requires calling `steer()` first), or if a batch must be
@@ -104,6 +106,8 @@ class SystemPrompt(InputControl):
         """
         if self.tokenizer is None:
             raise RuntimeError("SystemPrompt needs a tokenizer; call .steer() first.")
+        if not self.text:
+            return input_ids
 
         is_tensor = isinstance(input_ids, torch.Tensor)
         original_device = input_ids.device if is_tensor else None

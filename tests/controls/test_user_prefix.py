@@ -20,9 +20,16 @@ PLACEMENT_GRID = {
 
 # args validation (no model)
 
-def test_args_empty_text_raises():
-    with pytest.raises(ValueError, match="non-empty"):
-        UserPrefixArgs(text="")
+def test_empty_text_leaves_the_input_unchanged():
+    from tests.utils.tiny_models import wordlevel_tokenizer
+
+    tokenizer = wordlevel_tokenizer()
+    control = UserPrefix(text="")
+    control.steer(tokenizer=tokenizer)
+    chat = [{"role": "user", "content": "q"}]
+    assert control.adapt_messages([chat]) == [chat]
+    ids = torch.tensor(tokenizer("the cat sat")["input_ids"])
+    assert torch.equal(control.adapt(ids), ids)
 
 
 def test_args_non_str_text_raises():
