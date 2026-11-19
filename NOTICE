@@ -39,9 +39,16 @@ This distribution contains code licensed under multiple open source licenses.
    License text: https://opensource.org/licenses/MIT
    Source: https://github.com/UKGovernmentBEIS/inspect_evals
 
+6. Third-Party Component: OpenEvolve
+   Version: 0.4.1 (pinned >=0.4.1,<0.5)
+   License: Apache License, Version 2.0
+   License text: https://www.apache.org/licenses/LICENSE-2.0
+   Source: https://github.com/codelion/openevolve
+
 License Summary:
 - The steerability toolkit code is licensed under Apache 2.0.
 - MergeKit (0.1.5) is licensed under LGPL-3.0-only and included as an unmodified dependency.
 - TRL (>= 1.0.0) is licensed under Apache 2.0 and included as an unmodified dependency.
 - Inspect AI (>= 0.3.262) and Inspect Evals (>= 0.18.0) are licensed under MIT and included as
   unmodified optional dependencies.
+- OpenEvolve (>= 0.4.1) is licensed under Apache 2.0 and included as an unmodified optional dependency.

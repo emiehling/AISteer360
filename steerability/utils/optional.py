@@ -15,6 +15,7 @@ OPTIONAL_MODULE_EXTRAS: dict[str, str] = {
     "vllm_hook_plugins": "vllm",
     "matplotlib": "eval",
     "seaborn": "eval",
+    "openevolve": "optimize",
 }
 
 
