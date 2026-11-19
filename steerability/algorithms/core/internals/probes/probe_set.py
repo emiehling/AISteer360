@@ -42,7 +42,7 @@ class ProbeSetFit:
     `fit(model, tokenizer)` estimates `stats` first when it is a `StatsSpec`, fits one probe
     per name, and returns a `ProbeSet`. `RoutedDecoding.steer()` calls `fit` on the model the
     pipeline provides, so pipelines whose structural controls produce the final weights fit on
-    those weights, and `ProbeFitSpec` fields stay grid-searchable through `ControlSpec`.
+    those weights, and `ProbeFitSpec` fields can be varied by a `Template`.
 
     Attributes:
         data: Mapping from probe name to the contrastive pairs it is fitted on.

@@ -9,9 +9,9 @@ resolution `HeadProfileResult` records the per-head lift, standard error, and se
 run can be inspected and rebuilt.
 
 The recipe follows the toolkit's source idiom (`ContrastiveFit`, `ConditionPointSearch`):
-it declares `access` and `artifact_class` for the steer plan, memoizes its resolution per model,
-and its resolved head map freezes into a `.spipe` as a same-class `state_control/pasta` entry
-with the fit digest on the lift grid.
+it declares `access` and `artifact_class` for the steer plan and keeps no state from a
+resolution (the fit cache serves a repeated profile), and its resolved head map freezes into a
+`.spipe` as a same-class `state_control/pasta` entry with the fit digest on the lift grid.
 
 Reference:
 
@@ -26,7 +26,6 @@ import logging
 import math
 import random
 import warnings
-import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, ClassVar, Literal, Mapping, Sequence
@@ -151,13 +150,6 @@ class HeadProfile:
     progress_callback: Callable[[dict], None] | None = None
 
     def __post_init__(self) -> None:
-        # the memo is a plain instance attribute rather than a dataclass field: identity
-        # canonicalization walks every dataclasses.fields() entry, so a fitted memo stored as a
-        # field would change a sweep's config_id after steer()
-        self._model_ref: "weakref.ref | None" = None
-        self._result: "HeadProfileResult | None" = None
-        self._result_scale_position: str | None = None
-
         if not callable(self.scorer):
             raise ValueError("HeadProfile.scorer must be callable (response, row) -> float.")
         if not (isinstance(self.alpha, (int, float)) and self.alpha > 0):
@@ -262,12 +254,11 @@ class HeadProfile:
         *,
         session: "SteeringSession",
     ) -> "HeadProfileResult":
-        """Resolve the profile against `model`, fitting once and memoizing.
+        """Resolve the profile against `model`.
 
-        Reruns the profiling loop through `session` and returns the ranked, filtered
-        `HeadProfileResult`. The result is memoized per model (a weakref slot) and the control's
-        `scale_position`, so a second control sharing this recipe on the same model reuses it and
-        a different model refits.
+        Runs the profiling loop through `session` and returns the ranked, filtered
+        `HeadProfileResult`. A profile is not stored on the recipe; under a `PipelineFactory`
+        the fit cache serves a repeated profile.
 
         Args:
             control: The steering PASTA, consulted for `scale_position` and its hook builder.
@@ -282,22 +273,7 @@ class HeadProfile:
         Raises:
             ValueError: If no candidate beats the baseline (the message names the fixes).
         """
-        scale_position = control.scale_position
-        if (
-            model is not None
-            and self._model_ref is not None
-            and self._model_ref() is model
-            and self._result is not None
-            and self._result_scale_position == scale_position
-        ):
-            return self._result
-
-        result = self._run(control, model, tokenizer, session=session)
-        if model is not None:
-            self._model_ref = weakref.ref(model)
-            self._result = result
-            self._result_scale_position = scale_position
-        return result
+        return self._run(control, model, tokenizer, session=session)
 
     def _run(
         self,

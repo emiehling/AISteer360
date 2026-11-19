@@ -4,13 +4,13 @@ This module provides the `ArtifactSource` protocol with its fit recipes (`Contra
 `SinglePairFit`) and the gate source `ConditionPointSearch`. A transform holds either a
 concrete artifact (a `SteeringVector` or a per-layer directions mapping) or a source; an
 `Intervention`'s gate slot holds either a concrete gate or a gate source. `Intervention.bind`
-resolves sources, so steer-time computations (fits, searches) have a declarative home.
-`resolve` returns a defensive clone, and the underlying fit is memoized per model.
+resolves sources through the active fit cache (`algorithms/core/fits.py`), so steer-time
+computations (fits, searches) have a declarative home and a stored fit is not repeated. A source
+keeps no state from a resolution: what a fit learns is in what `resolve` returns.
 """
 from __future__ import annotations
 
 import warnings
-import weakref
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, Mapping, Protocol, Sequence, runtime_checkable
 
@@ -41,17 +41,17 @@ if TYPE_CHECKING:
 class ArtifactSource(Protocol):
     """A recipe for obtaining a steering artifact for a specific model.
 
-    Implementations MUST return a defensive clone from `resolve` (callers may move/mutate their
-    copy) and SHOULD memoize the underlying fit per model so repeated resolves against one model
-    (e.g., a parameter sweep) fit only once. Implementations whose fitted directions are
-    positional (`[T, H]` with `T > 1`) declare it with a class-level `produces_positional =
-    True`, which transform factories read for kind planning before the fit runs.
+    Implementations return an artifact the caller owns (callers may move or mutate it) and keep
+    no state from the resolution, since the fit cache serves repeated resolves. Implementations
+    whose fitted directions are positional (`[T, H]` with `T > 1`) declare it with a class-level
+    `produces_positional = True`, which transform factories read for kind planning before the
+    fit runs.
     """
 
     def resolve(
         self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, *, session: "SteeringSession | None" = None
     ) -> SteeringVector:
-        """Return the steering artifact for this model (a fresh clone each call).
+        """Return the steering artifact for this model, owned by the caller.
 
         `session` is a `SteeringSession` a capture-backed fit may extract hidden states
         through; sources whose fit requires a live model ignore it.
@@ -71,11 +71,6 @@ class ContrastiveFit:
     The built-in estimators record the extraction boundary of the fitted artifact as
     `meta["location"]`, which `Intervention.bind` checks against the consuming intervention's
     boundary.
-
-    The fitted master vector is memoized in a single weakref slot keyed by model identity. The same
-    model resolved repeatedly fits once, a different model refits, and alternating models (A→B→A)
-    refit on each switch. Every `resolve` returns an independent clone, so a consumer may freely
-    `.to(...)` or mutate its copy without touching the master.
 
     Attributes:
         data: Contrastive pairs (or a dict coerced via `as_contrastive_pairs`).
@@ -101,9 +96,6 @@ class ContrastiveFit:
     normalize: bool = False
     estimator: BaseEstimator | None = None
     estimator_kwargs: dict | None = None
-
-    _model_ref: "weakref.ref | None" = field(default=None, init=False, repr=False, compare=False)
-    _master: SteeringVector | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def access(self) -> ModelAccess:
@@ -135,7 +127,7 @@ class ContrastiveFit:
             warnings.warn("estimator_kwargs is inert without a custom estimator.", UserWarning)
 
     def _fit(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, session=None) -> SteeringVector:
-        """Fit the master steering vector (no caching, no cloning)."""
+        """Fit the steering vector."""
         if self.estimator is not None:
             master = self.estimator.fit(
                 model, tokenizer, data=self.data, session=session, **(self.estimator_kwargs or {})
@@ -157,26 +149,18 @@ class ContrastiveFit:
     def resolve(
         self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, *, session: "SteeringSession | None" = None
     ) -> SteeringVector:
-        """Return a fresh clone of the fitted artifact for `model`, fitting once and memoizing.
+        """Fit and return the steering artifact for `model`.
 
         Args:
-            model: The model to fit against (or a memo hit for the same model), or None to
-                fit through `session` capture.
+            model: The model to fit against, or None to fit through `session` capture.
             tokenizer: Tokenizer used to encode the contrastive pairs when fitting.
             session: Optional `SteeringSession` the estimator extracts hidden states through
                 when `model` is None (capture-backed fitting).
 
         Returns:
-            An independent `SteeringVector` clone the caller owns.
+            A `SteeringVector` the caller owns.
         """
-        if model is not None and self._model_ref is not None and self._model_ref() is model \
-                and self._master is not None:
-            return self._master.clone()
-        master = self._fit(model, tokenizer, session=session)
-        if model is not None:
-            self._model_ref = weakref.ref(model)
-            self._master = master
-        return master.clone()
+        return self._fit(model, tokenizer, session=session)
 
 
 class _Precomputed:
@@ -371,8 +355,7 @@ class SinglePairFit:
 
     Produces `[T, H]` directions per layer (the ActAdd extraction), captured at the layer-input
     boundary and recorded as `meta["location"] = "layer_input"`. The shorter prompt of the pair is
-    right-padded with attended space tokens. Fitting requires a loaded model. The fitted master is
-    memoized per model; every `resolve` returns an independent clone.
+    right-padded with attended space tokens. Fitting requires a loaded model.
 
     Attributes:
         positive_prompt: The steering-direction prompt.
@@ -388,29 +371,24 @@ class SinglePairFit:
     negative_prompt: str
     normalize: bool = False
 
-    _model_ref: "weakref.ref | None" = field(default=None, init=False, repr=False, compare=False)
-    _master: SteeringVector | None = field(default=None, init=False, repr=False, compare=False)
-
     def resolve(
         self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, *, session: "SteeringSession | None" = None
     ) -> SteeringVector:
-        """Return a fresh clone of the fitted artifact for `model`, fitting once and memoizing.
+        """Fit and return the positional steering artifact for `model`.
 
         Args:
-            model: The model to fit against (or a memo hit for the same model).
+            model: The model to fit against.
             tokenizer: Tokenizer used to encode the prompt pair.
             session: Ignored; the positional fit requires a live model.
 
         Returns:
-            An independent `SteeringVector` clone the caller owns.
+            A `SteeringVector` the caller owns.
 
         Raises:
             ValueError: If `model` is None.
         """
         if model is None:
             raise ValueError("Fitting ActAdd from a prompt pair requires a live model at steer time.")
-        if self._model_ref is not None and self._model_ref() is model and self._master is not None:
-            return self._master.clone()
 
         from steerability.algorithms.state_control.common.estimators import SinglePairEstimator
 
@@ -424,9 +402,7 @@ class SinglePairFit:
             for layer_id, direction in master.directions.items():
                 norms = direction.norm(dim=-1, keepdim=True)
                 master.directions[layer_id] = direction / (norms + 1e-8)
-        self._model_ref = weakref.ref(model)
-        self._master = master
-        return master.clone()
+        return master
 
 
 @dataclass
@@ -457,13 +433,10 @@ class ConditionPointSearch:
         comparator: Gate comparator for the manual point (`"ge"` opens when score >= threshold,
             `"le"` when score <= threshold).
         comparison_mode: Runtime token aggregation for condition scoring.
-        resolved_point: The `(layer_ids, threshold, comparator)` the last resolve produced, or
-            None before resolution or for unconditional configurations.
     """
 
     wire_readouts: ClassVar[frozenset[str] | None] = frozenset({"projected_cosine"})
     wire_rules: ClassVar[frozenset[str] | None] = frozenset({"per_key_threshold"})
-    access: ClassVar[ModelAccess] = ModelAccess.MODULE
     artifact_class: ClassVar[str] = "calibrated"
 
     condition_vector: SteeringVector | None = None
@@ -476,8 +449,6 @@ class ConditionPointSearch:
     threshold: float | None = None
     comparator: Comparator = "ge"
     comparison_mode: CompMode = "mean"
-
-    resolved_point: dict | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if self.condition_data is not None and not isinstance(self.condition_data, ContrastivePairs):
@@ -497,6 +468,12 @@ class ConditionPointSearch:
                 "or condition_data with search.auto_find=True."
             )
 
+    @property
+    def access(self) -> ModelAccess:
+        """`ModelAccess.MODULE` when the gate is fitted or searched from `condition_data`, else
+        `ModelAccess.FACTS` (a precomputed condition vector with a manual point, or no condition)."""
+        return ModelAccess.MODULE if self.condition_data is not None else ModelAccess.FACTS
+
     def resolve_gate(
         self,
         model: PreTrainedModel | None,
@@ -506,6 +483,9 @@ class ConditionPointSearch:
         session: "SteeringSession | None" = None,
     ) -> "Gate | None":
         """Resolve the gate for `model`.
+
+        The gate contains the resolved condition point: its evidence holds the condition layers
+        and the comparison mode, and its rule the threshold and the comparator.
 
         Args:
             model: The model to search against; required when the search runs or the condition
@@ -574,7 +554,6 @@ class ConditionPointSearch:
                     "A condition was supplied but no condition point resolved; give layer_ids and "
                     "threshold together, or enable search.auto_find with condition_data."
                 )
-            self.resolved_point = None
             return None
 
         missing = [lid for lid in layer_set if lid not in condition_vec.directions]
@@ -585,12 +564,6 @@ class ConditionPointSearch:
             {lid: condition_vec.directions[lid] for lid in layer_set},
         )
         rule = PerKeyThreshold(threshold=threshold, comparator=comparator, aggregate="any")
-        self.resolved_point = {
-            "layer_ids": layer_set,
-            "threshold": threshold,
-            "comparator": comparator,
-            "comparison_mode": self.comparison_mode,
-        }
         return Gate(
             Evidence(tuple(layer_set), readout, pooling=self.comparison_mode),
             rule,
@@ -616,7 +589,10 @@ class LayerFilteredFit:
 
     @property
     def access(self) -> ModelAccess:
-        return getattr(self.inner, "access", ModelAccess.MODULE)
+        """The wrapped source's access under the active fit cache (`source_access`)."""
+        from steerability.algorithms.core.fits import source_access
+
+        return source_access(self.inner)
 
     @property
     def artifact_class(self) -> str | None:
@@ -629,8 +605,10 @@ class LayerFilteredFit:
     def resolve(
         self, model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, *, session: "SteeringSession | None" = None
     ) -> SteeringVector:
-        """Resolve the inner source and filter its directions to `layer_range`."""
-        resolved = self.inner.resolve(model, tokenizer, session=session)
+        """Resolve the inner source through the active fit cache and filter its directions to `layer_range`."""
+        from steerability.algorithms.core.fits import resolve_source
+
+        resolved = resolve_source(self.inner, model, tokenizer, session=session)
         if self.layer_range is None:
             return resolved
         start, end = self.layer_range

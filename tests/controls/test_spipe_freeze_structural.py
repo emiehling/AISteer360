@@ -47,9 +47,9 @@ def test_sft_lora_freezes_to_load_lora(tmp_path):
     spipe = pipeline.to_spipe()
     entry = spipe.manifest["controls"][0]
     assert entry["method"] == "structural_control/sft"
-    assert entry["resolved"]["method"] == "structural_control/load_lora"
-    assert entry["resolved"]["origin"]["method"] == "structural_control/sft"
-    record = entry["resolved"]["artifacts"]["artifact"]
+    assert entry["resolved"][0]["method"] == "structural_control/load_lora"
+    assert entry["resolved"][0]["origin"]["method"] == "structural_control/sft"
+    record = entry["resolved"][0]["artifacts"]["artifact"]
     assert record["type"] == "LoRAArtifact"
     assert record["fit_digest"]
 

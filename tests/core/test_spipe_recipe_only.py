@@ -159,10 +159,9 @@ def test_prompt_only_pipeline_freezes_without_a_model(tmp_path, model_and_tok):
     assert not pipeline._is_steered
     assert pipeline.model is None
     lock = spipe.manifest["lock"]
-    assert lock["model_fingerprint"] is None
-    assert lock["tokenizer_fingerprint"] is None
-    assert lock["torch_dtype"] is None
-    assert lock["recipe_id"] and lock["config_id"] and lock["versions"]
+    assert lock["facts"]["model_fingerprint"] is None
+    assert lock["facts"]["torch_dtype"] is None
+    assert lock["protocol_id"] and lock["protocol"]["versions"] and spipe.manifest["recipe_id"]
     assert all(entry["resolved"] is None for entry in spipe.manifest["controls"])
 
     loaded = SPipe.load(spipe.save(tmp_path / "prompt_only.spipe"))
@@ -234,7 +233,7 @@ def test_gepa_with_a_named_reflection_model_saves_and_loads(tmp_path):
 
     gepa = GEPA(reflection_lm_name_or_path=TINY_MODEL, memory=TextMemory(slots={"instruction": "Be terse."}))
     spipe, loaded = _recipe_roundtrip(gepa, tmp_path)
-    assert loaded.config_id == spipe.config_id
+    assert loaded.recipe_id == spipe.recipe_id
     (rebuilt,) = loaded.pipeline().input_controls
     assert rebuilt.reflection_lm_name_or_path == TINY_MODEL
     assert rebuilt.memory["instruction"] == "Be terse."
@@ -250,7 +249,7 @@ def test_cpo_with_a_named_prompt_model_saves_and_loads(tmp_path):
         memory=str(tmp_path / "cpo_memory"),
     )
     spipe, loaded = _recipe_roundtrip(cpo, tmp_path)
-    assert loaded.config_id == spipe.config_id
+    assert loaded.recipe_id == spipe.recipe_id
     (rebuilt,) = loaded.pipeline().input_controls
     assert rebuilt.prompt_lm_name_or_path == TINY_MODEL
     assert rebuilt.steer_access() is ModelAccess.FACTS

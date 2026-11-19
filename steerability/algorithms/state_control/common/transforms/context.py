@@ -33,7 +33,8 @@ class TransformContext:
 
     Transforms never touch the model directly: fit orchestration lives behind `resolve`, a closure
     the adapter builds over `(model, tokenizer, device, dtype)` that coerces the input, resolves the
-    source (memoized master, cloned), and moves the clone onto the model's device/dtype.
+    source through the active fit cache (`resolve_source`), and moves the result onto the model's
+    device/dtype.
 
     Attributes:
         layer_ids: The resolved behavior layer(s).
@@ -106,8 +107,10 @@ def _build_context(
         head_dim = layout.head_dim
 
     def resolve(artifact) -> SteeringVector:
+        from steerability.algorithms.core.fits import resolve_source
+
         source = _as_artifact_source(artifact)
-        return source.resolve(model, tokenizer, session=session).to(device, dtype)
+        return resolve_source(source, model, tokenizer, session=session).to(device, dtype)
 
     return TransformContext(
         layer_ids=list(layer_ids),

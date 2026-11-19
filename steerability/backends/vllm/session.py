@@ -15,12 +15,7 @@ import torch
 
 from steerability.algorithms.core.execution.cancellation import CancelToken, GenerationCancelled
 from steerability.algorithms.core.execution.contracts import CaptureKinds, UnsupportedOperationError
-from steerability.algorithms.core.execution.fanout import (
-    PartialBatchError,
-    derive_item_seed,
-    run_bounded,
-    with_transport_retries,
-)
+from steerability.algorithms.core.execution.fanout import PartialBatchError, run_bounded, with_transport_retries
 from steerability.algorithms.core.execution.params import GenerationParams
 from steerability.algorithms.core.execution.payloads import (
     CaptureResult,
@@ -32,6 +27,7 @@ from steerability.algorithms.core.execution.payloads import (
     PreparedPrompt,
     ScoringItem,
 )
+from steerability.algorithms.core.identity import derive_seed
 from steerability.algorithms.core.output import Output
 from steerability.backends.vllm.capabilities import _refuse_by_constraints, _refuse_by_engine_facts
 from steerability.backends.vllm.engine_thread import EngineClosedError
@@ -144,7 +140,7 @@ class _RequestSessionBase:
         if item.seed is not None:
             return item.seed
         if params.seed is not None:
-            return derive_item_seed(params.seed, f"generate-{self._generate_count}", index)
+            return derive_seed(params.seed, f"generate-{self._generate_count}", index)
         return None
 
     def _prepare_spec_submission(

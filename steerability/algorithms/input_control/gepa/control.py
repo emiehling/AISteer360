@@ -101,6 +101,13 @@ class GEPA(InputControl):
     tokenizer: Any = None
     _formatter: SystemPromptFormatter | None = None
 
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """One `("GEPAMemory", "direction")` fit when `steer()` optimizes a memory (no `memory=` given),
+        else none."""
+        if getattr(getattr(self, "args", None), "memory", None) is not None:
+            return ()
+        return (("GEPAMemory", "direction"),)
+
     def export_state(self) -> dict:
         """The optimized instruction memory under the `"memory"` key (after `steer()`).
 

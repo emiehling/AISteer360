@@ -1,16 +1,18 @@
 """`SPipe`: a portable serialization of a `SteeringPipeline`.
 
-One format holds both the recipe and the frozen resolution. A recipe-only spipe carries the
-model reference and the controls as constructed; loading it and calling `steer()` re-runs
-fits. A frozen spipe additionally pins what the resolution produced (fingerprints, resolved
-bindings, per-fit digests) in a lock section and stores the products content-addressed. The
-loaded controls therefore steer cheaply and model-free. The frozen form is itself a valid
-recipe, since every resolved entry is constructor-valid for its method and loading takes the
-ordinary construction and `steer()` path.
+One format holds both the recipe and the frozen resolution. A recipe-only spipe contains the
+model reference and the recipe (the recipe-entry JSON of the enabled controls, and its id);
+loading it and calling `steer()` re-runs fits. A frozen spipe additionally pins what the
+resolution produced (resolved entries with per-control fit digests) and records the protocol it
+was fitted under in a lock section, with the products stored content-addressed. The loaded
+controls therefore steer cheaply and model-free. The frozen form is itself a valid recipe, since
+every resolved entry is constructor-valid for its method and loading takes the ordinary
+construction and `steer()` path.
 """
 from __future__ import annotations
 
 import copy
+import dataclasses
 import logging
 import shutil
 import tempfile
@@ -41,6 +43,8 @@ from steerability.spipe.store import ArtifactRecord, ArtifactStore, check_sideca
 if TYPE_CHECKING:
     from steerability.algorithms.core.base_control import BaseControl
     from steerability.algorithms.core.execution.spec import BackendSpec
+    from steerability.algorithms.core.protocol import Protocol
+    from steerability.algorithms.core.recipe import Recipe
     from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 
 logger = logging.getLogger(__name__)
@@ -79,14 +83,12 @@ class SpipeEntry:
         index: The position of the entry in the manifest's `controls` list, which is the value
             `SPipe.instantiate_entry()` accepts as `index`.
         method: The recipe method key (`"<category>_control/<name>"`).
-        enabled: Whether the entry is enabled.
         args: A deep copy of the entry's recipe args in their encoded (manifest JSON) form.
         resolved: Whether the entry has a resolved (frozen) section.
     """
 
     index: int
     method: str
-    enabled: bool
     args: dict
     resolved: bool
 
@@ -99,10 +101,7 @@ def _check_policies(prefer: str, verify: str) -> None:
 
 
 def _resolved_items(entry: Mapping) -> list[Mapping]:
-    resolved = entry.get("resolved")
-    if resolved is None:
-        return []
-    return list(resolved) if isinstance(resolved, list) else [resolved]
+    return list(entry.get("resolved") or [])
 
 
 def _collect_artifact_ids(value: Any, found: set[str]) -> None:
@@ -146,11 +145,10 @@ class SPipe:
     `SPipe.load()`, which reads a saved bundle. `save()` writes the spipe to a `.spipe` file
     or a directory.
 
-    The `pipeline()` and `instantiate_entry()` methods return controls built from the manifest.
-    The staleness check and the `recipe_id` and `config_id` properties of a spipe without a
-    lock section also construct controls from the recipe args, for internal use. These
-    constructions decode each `$ref` callable to a `CodeRef` and leave `$data` references
-    unloaded.
+    The `pipeline()` and `instantiate_entry()` methods return controls built from the manifest
+    through `Recipe.from_json(...).instantiate()`. The staleness check also constructs controls
+    from the recipe args, decoding each `$ref` callable to a `CodeRef` and leaving `$data`
+    references unloaded.
     """
 
     def __init__(
@@ -192,7 +190,6 @@ class SPipe:
             SpipeEntry(
                 index=i,
                 method=entry["method"],
-                enabled=entry["enabled"],
                 args=copy.deepcopy(entry["args"]),
                 resolved=entry.get("resolved") is not None,
             )
@@ -201,36 +198,32 @@ class SPipe:
 
     @property
     def recipe_id(self) -> str:
-        """The recipe identity digest (model reference plus controls), 12 hex characters."""
-        lock = self._manifest.get("lock")
-        if lock is not None:
-            return lock["recipe_id"]
-        from steerability.algorithms.core.identity import config_digest
-
-        return config_digest({
-            "model": self._manifest["model"]["ref"],
-            "controls": self._descriptor()["controls"],
-        })
+        """The id of the recipe the bundle was built from, as recorded in the manifest."""
+        return self._manifest["recipe_id"]
 
     @property
-    def config_id(self) -> str:
-        """The configuration identity digest over the recipe entries, 12 hex characters."""
+    def recipe(self) -> "Recipe":
+        """The bundle's recipe, read from its entries.
+
+        `$ref` callables decode as `CodeRef` placeholders unless the spipe was loaded with
+        `allow_code=True`, and `$data` references stay unloaded, so the recipe's id equals
+        `recipe_id`.
+        """
+        from steerability.algorithms.core.recipe import Recipe
+
+        ctx = dataclasses.replace(self._decode_ctx(lenient=not self._allow_code, data_mode="keep"), verify_artifacts=False)
+        entries = [{"method": entry["method"], "args": entry["args"]} for entry in self._manifest["controls"]]
+        return Recipe.from_json({"schema": "recipe/1", "entries": entries}, context=ctx)
+
+    @property
+    def protocol(self) -> "Protocol | None":
+        """The protocol a frozen bundle was fitted under (from its lock), or None when not frozen."""
         lock = self._manifest.get("lock")
-        if lock is not None:
-            return lock["config_id"]
-        from steerability.algorithms.core.identity import config_digest
+        if lock is None:
+            return None
+        from steerability.algorithms.core.protocol import Protocol
 
-        return config_digest(self._descriptor())
-
-    def _descriptor(self) -> dict:
-        """The configuration descriptor recomputed from freshly instantiated recipe controls."""
-        from steerability.algorithms.core.identity import config_descriptor_from_controls
-
-        controls = [self._instantiate(entry["method"], entry["args"], self._decode_ctx(lenient=True), index=index)
-                    for index, entry in enumerate(self._manifest["controls"])]
-        for control, entry in zip(controls, self._manifest["controls"]):
-            control.enabled = entry["enabled"]
-        return config_descriptor_from_controls(controls)
+        return Protocol.from_identity(lock["protocol"])
 
     @property
     def code_dependent(self) -> bool:
@@ -250,8 +243,7 @@ class SPipe:
         """A human-readable table of entries, frozen state, and artifact sizes."""
         lines = [
             f"spipe {self._manifest['format']}  model={self._manifest['model']['ref']}",
-            f"  recipe_id={self.recipe_id}  config_id={self.config_id}  "
-            f"frozen={self.is_frozen}  code_dependent={self.code_dependent}",
+            f"  recipe_id={self.recipe_id}  frozen={self.is_frozen}  code_dependent={self.code_dependent}",
         ]
         for i, entry in enumerate(self._manifest["controls"]):
             items = _resolved_items(entry)
@@ -259,10 +251,9 @@ class SPipe:
             if items:
                 methods = ", ".join(item["method"] for item in items)
                 frozen = f"frozen -> {methods}"
-            elif self.is_frozen and entry["enabled"]:
+            elif self.is_frozen:
                 frozen = "frozen (recipe is the frozen form)"
-            enabled = "" if entry["enabled"] else "  [disabled]"
-            lines.append(f"  [{i}] {entry['method']}{enabled}  ({frozen})")
+            lines.append(f"  [{i}] {entry['method']}  ({frozen})")
             for item in items:
                 for name, record in (item.get("artifacts") or {}).items():
                     size = ""
@@ -300,13 +291,13 @@ class SPipe:
         The method does not load a model or create a backend, and it does not raise an error for
         a failed check. It runs the following checks:
 
-        1. **Format**: the manifest is validated against the `spipe/1` schema. A violation is
+        1. **Format**: the manifest is validated against the `spipe/2` schema. A violation is
            an error.
         2. **Artifacts**: the referenced artifacts that are not in the store are listed in one
            warning (a thin bundle). Each present artifact is verified against its content id,
            and its store sidecar against its manifest record. A failure is an error.
         3. **Staleness**: the fit digest of each frozen entry is recomputed from its recipe
-           args. The check stops at the first stale entry and reports it as an error. An entry
+           args (the content id of its control's fit digests). The check stops at the first stale entry and reports it as an error. An entry
            whose recipe does not decode in this process is reported as a warning. A check that
            cannot run for another reason (e.g., a missing artifact) is also reported as a
            warning.
@@ -404,38 +395,36 @@ class SPipe:
         )
 
     @staticmethod
-    def _instantiate(method_key: str, encoded_args: Mapping, ctx: DecodeContext, *, index: int):
-        """Decode the args of an entry or resolved item and construct its control.
+    def _build(items: list[Mapping], ctx: DecodeContext, *, index: int, method: str) -> list[BaseControl]:
+        """Decode recipe-entry JSON items and construct their controls through `Recipe.from_json`.
 
         Args:
-            method_key: The method key of the entry or resolved item.
-            encoded_args: The args in encoded form.
+            items: `{"method", "args"}` items of one manifest entry.
             ctx: The decoding context.
             index: The position of the entry in the manifest's `controls` list, used in error
                 messages.
+            method: The entry's method key, used in error messages.
 
         Returns:
-            The constructed control.
+            The constructed controls, in item order.
 
         Raises:
-            SpipeFormatError: If `method_key` does not match a registered method, if an encoded
+            SpipeFormatError: If a method key does not match a registered method, if an encoded
                 value is malformed, or if the control constructor rejects the decoded args with
                 an `AttributeError`, `LookupError`, `TypeError`, or `ValueError`.
             SpipeCodeRefError: If decoding requires code that `ctx` does not permit.
             SpipeIntegrityError: If a referenced artifact is unavailable or fails verification.
         """
-        from steerability.algorithms.core.registry import RegistryError, resolve_method_key
+        from steerability.algorithms.core.recipe import Recipe, RecipeError
 
+        data = {"schema": "recipe/1", "entries": [{"method": item["method"], "args": item["args"]} for item in items]}
         try:
-            method = resolve_method_key(method_key)
-        except RegistryError as exc:
-            raise SpipeFormatError(str(exc)) from exc
-        kwargs = {name: decode(value, ctx, f"args.{name}") for name, value in encoded_args.items()}
-        try:
-            return method.control_cls(**kwargs)
+            return Recipe.from_json(data, context=ctx).instantiate()
+        except RecipeError as exc:
+            raise SpipeFormatError(f"controls[{index}] ({method}): {exc}") from exc
         except (AttributeError, LookupError, TypeError, ValueError) as exc:
             raise SpipeFormatError(
-                f"controls[{index}] ({method_key}): the decoded args do not construct the control "
+                f"controls[{index}] ({method}): the decoded args do not construct the control "
                 f"({type(exc).__name__}: {exc})."
             ) from exc
 
@@ -519,8 +508,12 @@ class SPipe:
             self._stale_checked.add(index)
             return
         try:
-            control = self._instantiate(entry["method"], entry["args"], self._decode_ctx(lenient=True), index=index)
-            fit_identity = control.fit_identity()
+            ctx = dataclasses.replace(self._decode_ctx(lenient=True), verify_artifacts=False)
+            (control,) = self._build([entry], ctx, index=index, method=entry["method"])
+            from steerability.algorithms.core.fits import control_fit_digests
+            from steerability.algorithms.core.identity import content_id
+
+            digests = control_fit_digests(control)
         except (SpipeFormatError, SpipeCodeRefError, SpipeIntegrityError):
             raise
         except Exception as exc:
@@ -529,9 +522,7 @@ class SPipe:
                 f"for the staleness check ({exc}); thaw() and re-steer(), or pass "
                 "allow_stale=True."
             ) from exc
-        from steerability.algorithms.core.identity import content_id
-
-        current = content_id(fit_identity) if fit_identity is not None else None
+        current = content_id(list(digests)) if digests else None
         for name, digest in recorded.items():
             if digest != current:
                 message = (
@@ -728,8 +719,9 @@ class SPipe:
         """Instantiate the controls of one manifest entry.
 
         Under `prefer="frozen"`, an entry with a resolved section is instantiated from it, with
-        one control per resolved item. Any other entry is instantiated from its recipe args.
-        Each control's `enabled` flag is copied from the entry. `pipeline()` calls this method
+        one control per resolved item. Any other entry is instantiated from its recipe args. The
+        items are recipe-entry JSON, built with `Recipe.from_json(...).instantiate()`.
+        `pipeline()` calls this method
         for each entry. Errors are raised for the requested entry only, and an entry that cannot
         be instantiated does not affect the others. Under `prefer="frozen"`, the staleness check
         runs first for an entry that has not been checked, unless `lenient=True` or the spipe
@@ -784,19 +776,21 @@ class SPipe:
                 self._check_entry_staleness(index, raise_on_stale=True)
             ctx = self._decode_ctx(lenient=False, verify=verify, data_mode="load")
 
-        controls = []
         items = _resolved_items(entry) if prefer == "frozen" else []
+        if items:
+            built = []
+            for item in items:
+                args = dict(item["args"])
+                if verify != "strict" and item["method"] == "output_control/routed_decoding":
+                    args["allow_model_mismatch"] = True
+                if verify != "strict" and item["method"] == "structural_control/load_lora":
+                    args["allow_base_mismatch"] = True
+                built.append({"method": item["method"], "args": args})
+        else:
+            built = [entry]
+            ctx = dataclasses.replace(ctx, verify_artifacts=False)
         try:
-            if items:
-                for item in items:
-                    args = dict(item["args"])
-                    if verify != "strict" and item["method"] == "output_control/routed_decoding":
-                        args["allow_model_mismatch"] = True
-                    if verify != "strict" and item["method"] == "structural_control/load_lora":
-                        args["allow_base_mismatch"] = True
-                    controls.append(self._instantiate(item["method"], args, ctx, index=index))
-            else:
-                controls.append(self._instantiate(entry["method"], entry["args"], ctx, index=index))
+            controls = self._build(built, ctx, index=index, method=entry["method"])
         except SpipeCodeRefError as exc:
             if not (lenient and self._allow_code):
                 raise
@@ -808,7 +802,6 @@ class SPipe:
         # controls may hold paths into this spipe's extraction directory; retaining the spipe
         # on each control keeps that directory alive for the controls' lifetime
         for control in controls:
-            control.enabled = entry["enabled"]
             control._spipe_retainer = self
         return controls
 

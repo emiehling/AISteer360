@@ -113,7 +113,7 @@ import json
 import sys
 
 import steerability.algorithms.core.steering_pipeline
-import steerability.algorithms.core.specs
+import steerability.algorithms.core.recipe
 
 print(json.dumps(sorted(
     name for name in sys.modules if name.startswith("steerability.algorithms.core.internals")

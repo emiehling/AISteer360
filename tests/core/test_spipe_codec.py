@@ -797,7 +797,7 @@ def test_manifest_record_governs_verification_wrap(tmp_path, frozen_caa_spipe):
     (record,) = (
         record
         for entry in frozen_caa_spipe.manifest["controls"]
-        for record in entry["resolved"]["artifacts"].values()
+        for record in entry["resolved"][0]["artifacts"].values()
     )
     assert record["artifact_class"] == "direction"
     sidecar_path = external / record["id"].replace(":", "-", 1) / "artifact.json"
@@ -816,7 +816,7 @@ def test_relabelled_sidecar_fails_integrity_checks(tmp_path, frozen_caa_spipe):
 
     fat = frozen_caa_spipe.save(tmp_path / "fat_dir")
     loaded = SPipe.load(fat)
-    (record,) = frozen_caa_spipe.manifest["controls"][0]["resolved"]["artifacts"].values()
+    (record,) = frozen_caa_spipe.manifest["controls"][0]["resolved"][0]["artifacts"].values()
     sidecar_path = fat / "artifacts" / record["id"].replace(":", "-", 1) / "artifact.json"
     sidecar = json.loads(sidecar_path.read_text())
     sidecar["type"] = "Tensor"
@@ -867,15 +867,16 @@ def test_external_artifact_stores_are_read_as_given(tmp_path, frozen_caa_spipe):
 
 
 # per-entry instantiation
-def recipe_entry(method, args, *, enabled=True):
-    return {"method": method, "enabled": enabled, "args": args, "resolved": None}
+def recipe_entry(method, args):
+    return {"method": method, "args": args, "resolved": None}
 
 
 def recipe_spipe(controls, *, allow_code=False, store=None):
     from steerability.spipe import SPipe
 
     manifest = {
-        "format": "spipe/1",
+        "format": "spipe/2",
+        "recipe_id": "0123456789abcdef",
         "created_at": "2026-08-25T00:00:00Z",
         "toolkit_version": "0.5.2",
         "code_dependent": False,
@@ -891,13 +892,13 @@ def test_entries_enumerate_the_manifest():
 
     spipe = recipe_spipe([
         recipe_entry("input_control/system_prompt", {"text": "Be brief."}),
-        recipe_entry("input_control/external_marker", {"marker": "[m]"}, enabled=False),
+        recipe_entry("input_control/external_marker", {"marker": "[m]"}),
     ])
     entries = spipe.entries
     assert all(isinstance(entry, SpipeEntry) for entry in entries)
-    assert [(entry.index, entry.method, entry.enabled, entry.resolved) for entry in entries] == [
-        (0, "input_control/system_prompt", True, False),
-        (1, "input_control/external_marker", False, False),
+    assert [(entry.index, entry.method, entry.resolved) for entry in entries] == [
+        (0, "input_control/system_prompt", False),
+        (1, "input_control/external_marker", False),
     ]
     entries[0].args["text"] = "edited"
     assert spipe.entries[0].args == {"text": "Be brief."}
@@ -913,12 +914,11 @@ def test_instantiate_entry_isolates_an_unregistered_method():
     from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
 
     spipe = recipe_spipe([
-        recipe_entry("input_control/system_prompt", {"text": "Be brief."}, enabled=False),
+        recipe_entry("input_control/system_prompt", {"text": "Be brief."}),
         recipe_entry("input_control/external_marker", {"marker": "[m]"}),
     ])
     (control,) = spipe.instantiate_entry(0)
     assert isinstance(control, SystemPrompt)
-    assert control.enabled is False
     with pytest.raises(SpipeFormatError, match="external_marker"):
         spipe.instantiate_entry(1)
     with pytest.raises(SpipeFormatError, match="external_marker"):
@@ -982,16 +982,16 @@ def test_load_leaves_a_malformed_frozen_entry_to_instantiate_entry(tmp_path, fro
     assert SPipe.load(bundle, allow_stale=True).instantiate_entry(0)
 
 
-def test_a_failing_fit_identity_makes_a_frozen_entry_stale(tmp_path, frozen_caa_spipe, monkeypatch):
+def test_failing_fit_digests_make_a_frozen_entry_stale(tmp_path, frozen_caa_spipe, monkeypatch):
     from steerability.algorithms.state_control.caa.control import CAA
     from steerability.spipe import SPipe
 
     bundle = frozen_caa_spipe.save(tmp_path / "fat_dir")
 
-    def failing_fit_identity(self):
+    def failing_fit_digests(control):
         raise RuntimeError("fit identity unavailable")
 
-    monkeypatch.setattr(CAA, "fit_identity", failing_fit_identity)
+    monkeypatch.setattr("steerability.algorithms.core.fits.control_fit_digests", failing_fit_digests)
     with pytest.raises(SpipeStaleError, match="fit identity unavailable"):
         SPipe.load(bundle)
     assert SPipe.load(bundle, allow_stale=True).instantiate_entry(0)

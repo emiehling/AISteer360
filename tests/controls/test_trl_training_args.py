@@ -18,7 +18,7 @@ import trl
 from datasets import Dataset
 from trl import DPOConfig, GRPOConfig, SFTConfig
 
-from steerability.algorithms.core.identity import config_descriptor_from_controls, config_digest
+from steerability.algorithms.core.recipe import Recipe
 from steerability.algorithms.structural_control.wrappers.trl.apotrainer.args import APOArgs
 from steerability.algorithms.structural_control.wrappers.trl.args import TRLArgs
 from steerability.algorithms.structural_control.wrappers.trl.base_mixin import resolve_config_kwargs
@@ -142,8 +142,8 @@ class TestConfigIdentity:
         # T7: the anchored recipe is a distinct configuration from plain sigmoid, and both encode
         sigmoid = DPO(train_dataset=None, loss_type="sigmoid")
         anchored = DPO(train_dataset=None, loss_type=["sigmoid", "sft"], loss_weights=[1.0, 1.0])
-        sigmoid_digest = config_digest(config_descriptor_from_controls([sigmoid]))
-        anchored_digest = config_digest(config_descriptor_from_controls([anchored]))
+        sigmoid_digest = Recipe.from_controls([sigmoid]).id
+        anchored_digest = Recipe.from_controls([anchored]).id
         assert sigmoid_digest != anchored_digest
 
 
@@ -173,8 +173,8 @@ class TestOutputDirectory:
         assert first.output_dir is None
         assert first.training_args["output_dir"] is None
         assert "output_dir" not in resolve_config_kwargs(SFTConfig, first.training_args)
-        assert config_digest(config_descriptor_from_controls([first])) == config_digest(
-            config_descriptor_from_controls([second])
+        assert Recipe.from_controls([first]).id == (
+            Recipe.from_controls([second]).id
         )
 
     def test_training_args_output_dir_fills_the_field(self, tmp_path):

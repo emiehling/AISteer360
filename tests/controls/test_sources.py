@@ -57,35 +57,17 @@ class TestContrastiveFitResolve:
         assert set(sv.directions.keys()) == set(range(LAYERS))
         assert est.calls == 1
 
-    def test_memo_same_model_fits_once(self):
+    def test_each_resolve_fits_and_returns_its_own_vector(self):
+        # a source keeps no state from a resolution; the fit cache serves repeated resolves
         est = _CountingEstimator()
         fit = ContrastiveFit(data=_pairs(), estimator=est)
         model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
         tok = wordlevel_tokenizer()
         a = fit.resolve(model, tok)
         b = fit.resolve(model, tok)
-        assert est.calls == 1                       # one fit for two resolves
-        assert a is not b                           # distinct clones
-        assert torch.equal(a.directions[0], b.directions[0])  # equal tensors
-
-    def test_memo_different_model_refits(self):
-        est = _CountingEstimator()
-        fit = ContrastiveFit(data=_pairs(), estimator=est)
-        tok = wordlevel_tokenizer()
-        fit.resolve(tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS), tok)
-        fit.resolve(tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS), tok)
         assert est.calls == 2
-
-    def test_memo_alternating_models_refits_each_switch(self):
-        est = _CountingEstimator()
-        fit = ContrastiveFit(data=_pairs(), estimator=est)
-        tok = wordlevel_tokenizer()
-        m_a = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
-        m_b = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
-        fit.resolve(m_a, tok)
-        fit.resolve(m_b, tok)
-        fit.resolve(m_a, tok)
-        assert est.calls == 3  # A -> B -> A refits on each switch (documented)
+        assert a is not b
+        assert not {"_model_ref", "_master"} & set(vars(fit))
 
     def test_normalize_produces_unit_norm_master(self):
         est = _CountingEstimator()
@@ -102,9 +84,9 @@ class TestContrastiveFitResolve:
         tok = wordlevel_tokenizer()
         a = fit.resolve(model, tok)
         a.directions[0].add_(999.0)                 # mutate the caller's clone
-        b = fit.resolve(model, tok)                 # memo hit -> fresh clone
+        b = fit.resolve(model, tok)                 # a second resolve fits again
         assert not torch.equal(a.directions[0], b.directions[0])
-        assert float(b.directions[0].abs().max()) < 100.0  # master unpolluted
+        assert float(b.directions[0].abs().max()) < 100.0  # the source kept nothing of the first result
 
 
 class TestBuiltinDispatch:

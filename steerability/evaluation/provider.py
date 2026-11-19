@@ -84,8 +84,8 @@ _STOP_REASON_MAP: dict[str | None, str] = {"length": "max_tokens", "stop": "stop
 class ProviderOptions:
     """Options for the Inspect model provider that serves a steering pipeline.
 
-    `InspectSuite.run` (via `options`) and `SteeringEval` (via `provider_options`) accept these options
-    and pass them to the provider.
+    A `Protocol` records these options (`Protocol.provider`), and every benchmark run under the
+    protocol passes them to the provider and to direct generation.
 
     Attributes:
         runtime_kwargs: Static runtime kwargs applied to every dispatch. The value of a `"call"`-scoped
@@ -178,6 +178,235 @@ class ProviderOptions:
             raise ValueError(f"max_concurrency must be >= 1 or None; got {self.max_concurrency}.")
 
 
+def convert_input(input: list) -> list[dict[str, str]]:
+    """Convert Inspect chat messages to the `[{"role", "content"}, ...]` form the pipeline accepts.
+
+    Reasoning content parts of earlier assistant turns are dropped.
+
+    Args:
+        input: The Inspect chat messages.
+
+    Returns:
+        The messages as role and content mappings.
+
+    Raises:
+        NotImplementedError: On tool messages, assistant tool calls, or non-text content parts.
+    """
+    messages: list[dict[str, str]] = []
+    for message in input:
+        if isinstance(message, ChatMessageTool) or message.role == "tool":
+            raise NotImplementedError(
+                "The conversation carries a tool message, but steering pipelines have no tool-use "
+                "convention; agentic evaluation is unsupported. Choose a non-agentic task."
+            )
+        if message.role == "assistant" and getattr(message, "tool_calls", None):
+            raise NotImplementedError(
+                "An assistant message carries tool calls, but steering pipelines have no tool-use "
+                "convention; agentic evaluation is unsupported. Choose a non-agentic task."
+            )
+        content = message.content
+        if isinstance(content, str):
+            text = content
+        else:
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, ContentText):
+                    parts.append(part.text)
+                elif isinstance(part, ContentReasoning):
+                    logger.debug("Dropping a ContentReasoning part from the conversation history.")
+                else:
+                    raise NotImplementedError(
+                        f"The conversation carries {type(part).__name__} content, which the pipeline's "
+                        "text-only prompt surface cannot represent. Choose a text-only task."
+                    )
+            text = "".join(parts)
+        messages.append({"role": message.role, "content": text})
+    return messages
+
+
+def _unsupported_param(name: str, value: Any, options: ProviderOptions, warned: set[str]) -> None:
+    """Apply the unsupported-parameter policy for one non-None config field."""
+    message = (
+        f"GenerateConfig.{name}={value!r} has no mapping onto the steering-pipeline surface; "
+        "honoring it silently is not possible and dropping it would change decoding semantics. "
+        "Remove the parameter, or set ProviderOptions(on_unsupported_param='warn') to ignore it."
+    )
+    if options.on_unsupported_param == "raise":
+        raise ValueError(message)
+    if name not in warned:
+        warned.add(name)
+        warnings.warn(message, UserWarning)
+
+
+def map_generate_config(
+    config: GenerateConfig,
+    options: ProviderOptions,
+    *,
+    base_seed: int | None = None,
+    warned: set[str] | None = None,
+) -> tuple[dict, dict, int]:
+    """Classify and map one request's `GenerateConfig` onto pipeline generation kwargs.
+
+    `temperature=0` maps to greedy decoding and drops any seed; a positive temperature samples
+    with the config's seed, else `base_seed`, under `options.seed_scope`. An unset temperature
+    leaves the backend's default sampling posture.
+
+    Args:
+        config: The request's config.
+        options: The provider options, whose `on_unsupported_param` policy applies.
+        base_seed: The seed of a sampled request whose config sets none.
+        warned: The parameter names already warned about under the `"warn"` policy, updated in
+            place; None warns every time.
+
+    Returns:
+        Tuple of (call-scoped gen kwargs, per-sample runtime kwargs, num_choices).
+
+    Raises:
+        NotImplementedError: If a logprob parameter is set.
+        ValueError: If an unsupported parameter is set under the `"raise"` policy, or the
+            reserved `extra_body` key is not a mapping.
+    """
+    warned = set() if warned is None else warned
+    for name in REFUSED_FIELDS:
+        if getattr(config, name) is not None:
+            raise NotImplementedError(
+                f"GenerateConfig.{name} requests log probabilities, but steering pipelines are "
+                "evaluated generation-only: decoding-time controls are not representable in "
+                "teacher-forced likelihoods. Use generation-based scorers."
+            )
+    extra_body = dict(config.extra_body or {})
+    per_sample = extra_body.pop(RUNTIME_KWARGS_EXTRA_BODY_KEY, None) or {}
+    if not isinstance(per_sample, Mapping):
+        raise ValueError(
+            f"extra_body[{RUNTIME_KWARGS_EXTRA_BODY_KEY!r}] must be a mapping of per-sample runtime "
+            f"kwargs; got {type(per_sample).__name__}."
+        )
+    for name in POLICY_FIELDS:
+        if getattr(config, name) is not None:
+            _unsupported_param(name, getattr(config, name), options, warned)
+    for key, value in extra_body.items():
+        if value is not None:
+            _unsupported_param(f"extra_body[{key!r}]", value, options, warned)
+
+    gen_kwargs: dict[str, Any] = {}
+    if config.max_tokens is not None:
+        gen_kwargs["max_new_tokens"] = int(config.max_tokens)
+    if config.stop_seqs:
+        gen_kwargs["stop_strings"] = tuple(config.stop_seqs)
+
+    temperature = config.temperature
+    if temperature is None:
+        if config.top_p is not None or config.top_k is not None or config.seed is not None or base_seed is not None:
+            logger.debug(
+                "temperature is unset, so the backend's default sampling posture applies; "
+                "top_p/top_k/seed are not attached. Set temperature explicitly for a known posture."
+            )
+    elif temperature == 0:
+        gen_kwargs["do_sample"] = False
+        if config.top_p is not None or config.top_k is not None or config.seed is not None:
+            logger.debug("Greedy decoding (temperature=0) drops top_p, top_k, and any seed.")
+    else:
+        gen_kwargs["do_sample"] = True
+        gen_kwargs["temperature"] = float(temperature)
+        if config.top_p is not None:
+            gen_kwargs["top_p"] = float(config.top_p)
+        if config.top_k is not None:
+            gen_kwargs["top_k"] = int(config.top_k)
+        seed = config.seed if config.seed is not None else base_seed
+        if seed is not None:
+            gen_kwargs["seed"] = int(seed)
+            gen_kwargs["seed_scope"] = options.seed_scope
+
+    num_choices = int(config.num_choices) if config.num_choices is not None else 1
+    return gen_kwargs, dict(per_sample), num_choices
+
+
+def output_token_count(output: Output, pad_token_id: int | None) -> int:
+    """The tokens generated for an `Output`: `generated_tokens` when set (every rollout a decoding
+    driver generated), else the returned continuation's non-pad tokens."""
+    if output.generated_tokens is not None:
+        return int(output.generated_tokens)
+    return _count_non_pad(output.output_ids, pad_token_id)
+
+
+class CompletionAssembler:
+    """Turn a pipeline `Output` into the text a scorer sees, row by row.
+
+    Token ids are never modified. When reasoning tags are configured, each row is split into a
+    reasoning part and an answer part, and only the answer is stop-string truncated. The split
+    mode is resolved once against the tokenizer (`ProviderOptions.reasoning_split`):
+
+        - `"text"`: the row is decoded, truncated at the first stop-string occurrence, then
+          substring split. A stop string inside the reasoning cuts the text mid-thinking and the
+          answer is empty.
+        - `"tokens"`: the row ids are split, each segment is decoded, then the answer segment
+          (only) is truncated at the first stop-string occurrence. The reasoning segment is kept
+          verbatim.
+
+    An opened but unclosed reasoning segment yields an empty answer with everything as
+    reasoning, and one warning per output names the count of such rows.
+
+    Args:
+        tokenizer: The pipeline tokenizer.
+        options: The provider options (reasoning tags and split settings).
+    """
+
+    def __init__(self, tokenizer, options: ProviderOptions) -> None:
+        self._tokenizer = tokenizer
+        self._options = options
+        self._split_mode: Literal["text", "tokens"] | None = None
+        self._close_ids: list[int] = []
+        if options.reasoning_tags is not None:
+            if options.reasoning_split == "auto":
+                self._split_mode = resolve_split_mode(tokenizer, options.reasoning_tags)
+            else:
+                self._split_mode = options.reasoning_split
+            if self._split_mode == "tokens":
+                self._close_ids = tokenizer.encode(options.reasoning_tags[1], add_special_tokens=False)
+
+    def splits(self, output: Output, stop_strings: tuple[str, ...] = ()) -> list[ThinkingSplit]:
+        """One `ThinkingSplit` per row of `output.output_ids`; without reasoning tags the whole
+        stop-truncated text is the answer."""
+        texts = output.decode(self._tokenizer)
+        result: list[ThinkingSplit] = []
+        unclosed = 0
+        for row, text in enumerate(texts):
+            if self._options.reasoning_tags is None:
+                answer = truncate_at_stop_strings(text, stop_strings) if stop_strings else text
+                result.append(ThinkingSplit(thinking=None, answer=answer))
+                continue
+            split, closed = self._split_row(text, output.output_ids[row], stop_strings)
+            if not closed:
+                unclosed += 1
+            result.append(split)
+        if unclosed:
+            logger.warning(
+                "%d generation(s) opened a thinking segment without closing it (budget spent thinking); "
+                "their answer segment is empty.",
+                unclosed,
+            )
+        return result
+
+    def completions(self, output: Output, stop_strings: tuple[str, ...] = ()) -> list[str]:
+        """The answer text of each row, which is what a scorer sees."""
+        return [split.answer for split in self.splits(output, stop_strings)]
+
+    def _split_row(self, text: str, row_ids: torch.Tensor, stop_strings: tuple[str, ...]) -> tuple[ThinkingSplit, bool]:
+        tags = self._options.reasoning_tags
+        opened = self._options.reasoning_opened_at_start
+        open_tag, close_tag = tags
+        if self._split_mode == "tokens":
+            ids = row_ids.tolist()
+            split = split_thinking_ids(ids, self._tokenizer, tags, opened_at_start=opened)
+            closed = split.thinking is None or find_subsequence(ids, self._close_ids) != -1
+            answer = truncate_at_stop_strings(split.answer, stop_strings) if stop_strings else split.answer
+            return ThinkingSplit(thinking=split.thinking, answer=answer), closed
+        if stop_strings:
+            text = truncate_at_stop_strings(text, stop_strings)
+        closed = close_tag in text or not (open_tag in text or opened)
+        return split_thinking(text, tags, opened_at_start=opened), closed
+
+
 class SteeringPipelineModelAPI(ModelAPI):
     """Generation-only Inspect `ModelAPI` over an in-process steered `SteeringPipeline`.
 
@@ -247,17 +476,7 @@ class SteeringPipelineModelAPI(ModelAPI):
                 UserWarning,
             )
 
-        self._reasoning_split: Literal["text", "tokens"] | None = None
-        self._close_ids: list[int] = []
-        if self._options.reasoning_tags is not None:
-            if self._options.reasoning_split == "auto":
-                self._reasoning_split = resolve_split_mode(pipeline.tokenizer, self._options.reasoning_tags)
-            else:
-                self._reasoning_split = self._options.reasoning_split
-            if self._reasoning_split == "tokens":
-                self._close_ids = pipeline.tokenizer.encode(
-                    self._options.reasoning_tags[1], add_special_tokens=False
-                )
+        self._assembler = CompletionAssembler(pipeline.tokenizer, self._options)
 
         effective_max_batch = self._options.max_batch_size if pipeline.supports_batching else 1
         if effective_max_batch != self._options.max_batch_size:
@@ -334,8 +553,10 @@ class SteeringPipelineModelAPI(ModelAPI):
                 "This task supplies tools, but steering pipelines have no tool-use convention; "
                 "agentic evaluation is unsupported. Choose a non-agentic task."
             )
-        messages = self._convert_input(input)
-        gen_kwargs, per_sample_runtime_kwargs, num_choices = self._map_generate_config(config)
+        messages = convert_input(input)
+        gen_kwargs, per_sample_runtime_kwargs, num_choices = map_generate_config(
+            config, self._options, base_seed=self._base_seed, warned=self._warned_params,
+        )
         prompt: Any = messages
         if self._prompt_path == "text":
             # the construction warning announces the text path once per provider
@@ -344,181 +565,30 @@ class SteeringPipelineModelAPI(ModelAPI):
         output = await self._collator.serve(record)
         return self._assemble_model_output(output, stop_strings=gen_kwargs.get("stop_strings", ()))
 
-    def _convert_input(self, input: list) -> list[dict[str, str]]:
-        """Convert Inspect chat messages to the `[{"role", "content"}, ...]` form the pipeline accepts.
-
-        Raises:
-            NotImplementedError: On tool messages, assistant tool calls, or non-text content parts.
-        """
-        messages: list[dict[str, str]] = []
-        for message in input:
-            if isinstance(message, ChatMessageTool) or message.role == "tool":
-                raise NotImplementedError(
-                    "The conversation carries a tool message, but steering pipelines have no tool-use "
-                    "convention; agentic evaluation is unsupported. Choose a non-agentic task."
-                )
-            if message.role == "assistant" and getattr(message, "tool_calls", None):
-                raise NotImplementedError(
-                    "An assistant message carries tool calls, but steering pipelines have no tool-use "
-                    "convention; agentic evaluation is unsupported. Choose a non-agentic task."
-                )
-            content = message.content
-            if isinstance(content, str):
-                text = content
-            else:
-                parts: list[str] = []
-                for part in content:
-                    if isinstance(part, ContentText):
-                        parts.append(part.text)
-                    elif isinstance(part, ContentReasoning):
-                        logger.debug("Dropping a ContentReasoning part from the conversation history.")
-                    else:
-                        raise NotImplementedError(
-                            f"The conversation carries {type(part).__name__} content, which the pipeline's "
-                            "text-only prompt surface cannot represent. Choose a text-only task."
-                        )
-                text = "".join(parts)
-            messages.append({"role": message.role, "content": text})
-        return messages
-
-    def _unsupported_param(self, name: str, value: Any) -> None:
-        """Apply the unsupported-parameter policy for one non-None config field."""
-        message = (
-            f"GenerateConfig.{name}={value!r} has no mapping onto the steering-pipeline surface; "
-            "honoring it silently is not possible and dropping it would change decoding semantics. "
-            "Remove the parameter, or set ProviderOptions(on_unsupported_param='warn') to ignore it."
-        )
-        if self._options.on_unsupported_param == "raise":
-            raise ValueError(message)
-        if name not in self._warned_params:
-            self._warned_params.add(name)
-            warnings.warn(message, UserWarning)
-
-    def _map_generate_config(self, config: GenerateConfig) -> tuple[dict, dict, int]:
-        """Classify and map one request's `GenerateConfig` onto pipeline generation kwargs.
-
-        Returns:
-            Tuple of (call-scoped gen kwargs, per-sample runtime kwargs, num_choices).
-
-        Raises:
-            NotImplementedError: If a logprob parameter is set.
-            ValueError: If an unsupported parameter is set under the `"raise"` policy, or the
-                reserved `extra_body` key is not a mapping.
-        """
-        for name in REFUSED_FIELDS:
-            if getattr(config, name) is not None:
-                raise NotImplementedError(
-                    f"GenerateConfig.{name} requests log probabilities, but steering pipelines are "
-                    "evaluated generation-only: decoding-time controls are not representable in "
-                    "teacher-forced likelihoods. Use generation-based scorers."
-                )
-        extra_body = dict(config.extra_body or {})
-        per_sample = extra_body.pop(RUNTIME_KWARGS_EXTRA_BODY_KEY, None) or {}
-        if not isinstance(per_sample, Mapping):
-            raise ValueError(
-                f"extra_body[{RUNTIME_KWARGS_EXTRA_BODY_KEY!r}] must be a mapping of per-sample runtime "
-                f"kwargs; got {type(per_sample).__name__}."
-            )
-        for name in POLICY_FIELDS:
-            if getattr(config, name) is not None:
-                self._unsupported_param(name, getattr(config, name))
-        for key, value in extra_body.items():
-            if value is not None:
-                self._unsupported_param(f"extra_body[{key!r}]", value)
-
-        gen_kwargs: dict[str, Any] = {}
-        if config.max_tokens is not None:
-            gen_kwargs["max_new_tokens"] = int(config.max_tokens)
-        if config.stop_seqs:
-            gen_kwargs["stop_strings"] = tuple(config.stop_seqs)
-
-        temperature = config.temperature
-        if temperature is None:
-            if (
-                config.top_p is not None
-                or config.top_k is not None
-                or config.seed is not None
-                or self._base_seed is not None
-            ):
-                logger.debug(
-                    "temperature is unset, so the backend's default sampling posture applies; "
-                    "top_p/top_k/seed are not attached. Set temperature explicitly for a known posture."
-                )
-        elif temperature == 0:
-            gen_kwargs["do_sample"] = False
-            if config.top_p is not None or config.top_k is not None or config.seed is not None:
-                logger.debug("Greedy decoding (temperature=0) drops top_p, top_k, and any seed.")
-        else:
-            gen_kwargs["do_sample"] = True
-            gen_kwargs["temperature"] = float(temperature)
-            if config.top_p is not None:
-                gen_kwargs["top_p"] = float(config.top_p)
-            if config.top_k is not None:
-                gen_kwargs["top_k"] = int(config.top_k)
-            seed = config.seed if config.seed is not None else self._base_seed
-            if seed is not None:
-                gen_kwargs["seed"] = int(seed)
-                gen_kwargs["seed_scope"] = self._options.seed_scope
-
-        num_choices = int(config.num_choices) if config.num_choices is not None else 1
-        return gen_kwargs, dict(per_sample), num_choices
-
     def _assemble_model_output(self, output: Output, *, stop_strings: tuple[str, ...]) -> ModelOutput:
         """Map one pipeline `Output` (one row per candidate) onto an Inspect `ModelOutput`.
 
-        Token ids are never modified. When reasoning tags are configured, each row is split into a
-        reasoning part and an answer part, and only the answer is stop-string truncated. The split
-        runs in the mode resolved at construction:
-
-            - `"text"`: the row is decoded, truncated at the first stop-string occurrence, then
-              substring split. Stop-truncation runs before the split, so a stop string that occurs
-              inside the reasoning cuts the text mid-thinking and the answer is empty.
-            - `"tokens"`: the row ids are split, each segment is decoded, then the answer segment
-              (only) is truncated at the first stop-string occurrence. The reasoning segment is
-              preserved verbatim, including any stop text or token-boundary overrun it ends with.
-
-        The observable divergence between the modes is confined to token-boundary overrun in the
-        answer, since a stop criterion halts generation at the first occurrence. An opened-but-
-        unclosed reasoning segment yields an empty answer with everything as reasoning; one warning
-        names the count of such rows in this output.
+        Each row's reasoning and answer come from the provider's `CompletionAssembler`. Usage
+        counts the prompt's non-pad tokens as input tokens and `Output.generated_tokens` (every
+        rollout a decoding driver generated) as output tokens when set, else the returned
+        continuation's non-pad tokens.
         """
         tokenizer = self._pipeline.tokenizer
         pad_token_id = getattr(tokenizer, "pad_token_id", None)
-        texts = output.decode(tokenizer)
         reasons = output.finish_reasons
-
         choices: list[ChatCompletionChoice] = []
-        unclosed = 0
-        for row, text in enumerate(texts):
-            if self._options.reasoning_tags is None:
-                content: str | list = truncate_at_stop_strings(text, stop_strings) if stop_strings else text
+        for row, split in enumerate(self._assembler.splits(output, stop_strings)):
+            if split.thinking is not None:
+                content: str | list = [ContentReasoning(reasoning=split.thinking), ContentText(text=split.answer)]
             else:
-                split, closed = self._split_row(text, output.output_ids[row], stop_strings)
-                if not closed:
-                    unclosed += 1
-                if split.thinking is not None:
-                    content = [ContentReasoning(reasoning=split.thinking), ContentText(text=split.answer)]
-                else:
-                    content = split.answer
+                content = split.answer
             choices.append(ChatCompletionChoice(
                 message=ChatMessageAssistant(content=content, model=self.model_name, source="generate"),
                 stop_reason=_STOP_REASON_MAP.get(reasons[row], "unknown"),
             ))
-        if unclosed:
-            logger.warning(
-                "%d generation(s) opened a thinking segment without closing it (budget spent thinking); "
-                "their answer segment is empty.",
-                unclosed,
-            )
-
         input_tokens = _count_non_pad(output.adapted_input_ids, pad_token_id)
         returned_output_tokens = _count_non_pad(output.output_ids, pad_token_id)
-        # generated_tokens counts every rollout a decoding driver generated, including discarded
-        # proposals; the returned continuation count stays available for scoring and truncation
-        # analysis. The driverless path leaves generated_tokens None, so usage is unchanged there.
-        output_tokens = (
-            output.generated_tokens if output.generated_tokens is not None else returned_output_tokens
-        )
+        output_tokens = output_token_count(output, pad_token_id)
         usage = ModelUsage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -530,29 +600,6 @@ class SteeringPipelineModelAPI(ModelAPI):
             usage=usage,
             metadata={"returned_output_tokens": returned_output_tokens},
         )
-
-    def _split_row(
-        self, text: str, row_ids: torch.Tensor, stop_strings: tuple[str, ...]
-    ) -> tuple[ThinkingSplit, bool]:
-        """Split one row into reasoning and answer, per the resolved mode.
-
-        Returns:
-            The `ThinkingSplit` and whether the reasoning channel closed (used to count the
-            unclosed rows warned about once per output).
-        """
-        tags = self._options.reasoning_tags
-        opened = self._options.reasoning_opened_at_start
-        open_tag, close_tag = tags
-        if self._reasoning_split == "tokens":
-            ids = row_ids.tolist()
-            split = split_thinking_ids(ids, self._pipeline.tokenizer, tags, opened_at_start=opened)
-            closed = split.thinking is None or find_subsequence(ids, self._close_ids) != -1
-            answer = truncate_at_stop_strings(split.answer, stop_strings) if stop_strings else split.answer
-            return ThinkingSplit(thinking=split.thinking, answer=answer), closed
-        if stop_strings:
-            text = truncate_at_stop_strings(text, stop_strings)
-        closed = close_tag in text or not (open_tag in text or opened)
-        return split_thinking(text, tags, opened_at_start=opened), closed
 
     def max_tokens(self) -> int | None:
         """Default `max_tokens` filled by Inspect when a request sets none."""

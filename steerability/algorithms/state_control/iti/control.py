@@ -32,7 +32,10 @@ class _HeadSelectionBuild:
 
     @property
     def access(self) -> ModelAccess:
-        return getattr(self._source, "access", ModelAccess.MODULE)
+        """The source's access under the active fit cache (`source_access`)."""
+        from steerability.algorithms.core.fits import source_access
+
+        return source_access(self._source)
 
     @property
     def artifact_class(self) -> str | None:
@@ -40,11 +43,11 @@ class _HeadSelectionBuild:
 
     def fit_ingredients(self) -> dict:
         """The encodable fit-identity form: the source's ingredients plus the head selection."""
-        from steerability.algorithms.state_control.base import _fit_ingredients
+        from steerability.algorithms.core.fits import source_identity
 
         return {
             "kind": "head_selection",
-            "source": _fit_ingredients(self._source),
+            "source": source_identity(self._source),
             "selected_heads": self._selected_heads,
             "num_heads": self._num_heads,
         }

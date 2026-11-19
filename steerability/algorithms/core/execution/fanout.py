@@ -1,9 +1,8 @@
-"""Per-item seed derivation, bounded fan-out, transport retries, and the partial-batch error.
+"""Bounded fan-out, transport retries, and the partial-batch error.
 
 Shared machinery for request-building sessions. Everything here is backend-agnostic and runs
 without any optional dependency.
 """
-import hashlib
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -13,29 +12,6 @@ from typing import Any
 from steerability.algorithms.core.execution.payloads import ItemResult
 
 logger = logging.getLogger(__name__)
-
-_SEED_MASK = (1 << 63) - 1
-
-
-def derive_item_seed(base_seed: int, operation_id: str, item_index: int) -> int:
-    """Derive one item's sampling seed from a base seed, an operation id, and the item index.
-
-    The derivation is `SHA-256("{base_seed}:{operation_id}:{item_index}")` truncated to the
-    first eight bytes (big-endian) and masked to 63 bits, so the result is a stable non-negative
-    integer accepted by every backend sampler. Distinct item indices under one operation yield
-    distinct streams while the whole fan-out stays reproducible from `base_seed`.
-
-    Args:
-        base_seed: The caller-supplied seed.
-        operation_id: Identifier of the logical operation (stable across reruns).
-        item_index: Position of the item in the submitted sequence.
-
-    Returns:
-        The derived seed in `[0, 2**63)`.
-    """
-    digest = hashlib.sha256(f"{base_seed}:{operation_id}:{item_index}".encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big") & _SEED_MASK
-
 
 class TransportError(RuntimeError):
     """A transport-level failure (connection, timeout, or server-side 5xx) that is safe to retry.

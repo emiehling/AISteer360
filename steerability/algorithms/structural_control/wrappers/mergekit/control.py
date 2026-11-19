@@ -43,6 +43,10 @@ class MergeKit(StructuralControl):
         """The merged checkpoint directory written (or reused) by `steer()`."""
         return CheckpointArtifact(path=str(self.args.out_path))
 
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """One `("MergedWeights", "direction")` fit: `steer()` writes the merged checkpoint."""
+        return (("MergedWeights", "direction"),)
+
     def export_state(self) -> dict:
         """The merged checkpoint under the `"artifact"` key, for freezing."""
         return {"artifact": self.export_artifact()}

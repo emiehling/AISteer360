@@ -87,6 +87,13 @@ class PRewrite(InputControl):
             return ModelAccess.FACTS
         return ModelAccess.ROLLOUTS
 
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """One `("PRewriteMemory", "direction")` fit when `steer()` optimizes a memory (no `memory=` given),
+        else none."""
+        if getattr(getattr(self, "args", None), "memory", None) is not None:
+            return ()
+        return (("PRewriteMemory", "direction"),)
+
     def export_state(self) -> dict:
         """The optimized instruction memory under the `"memory"` key (after `steer()`).
 

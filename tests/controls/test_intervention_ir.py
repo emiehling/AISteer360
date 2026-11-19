@@ -379,9 +379,9 @@ class TestBind:
         assert isinstance(bound.gate, Gate)
         assert isinstance(bound.gate.rule, PerKeyThreshold)
         assert bound.gate.evidence.layer_ids == (2,)
-        assert source.resolved_point == {
-            "layer_ids": [2], "threshold": 0.05, "comparator": "ge", "comparison_mode": "mean",
-        }
+        assert bound.gate.evidence.pooling == "mean"
+        assert (bound.gate.rule.threshold, bound.gate.rule.comparator) == (0.05, "ge")
+        assert not hasattr(source, "resolved_point")
         # the projected-cosine gate declares wire kinds before and after binding
         expected = (frozenset({"projected_cosine"}), frozenset({"per_key_threshold"}))
         assert (intervention.wire_kinds().readouts, intervention.wire_kinds().rules) == expected

@@ -241,20 +241,25 @@ class Protocol:
         return cls(model=str(model), **fields)
 
     @classmethod
-    def from_pipeline(cls, pipeline: SteeringPipeline) -> Protocol:
+    def from_pipeline(cls, pipeline: SteeringPipeline, *, model: str | None = None) -> Protocol:
         """A protocol built from a pipeline's own fields, for callers that have none.
 
         The model reference is the pipeline's `model_name_or_path`, else the loaded model's
-        `name_or_path`. A `revision` in `hf_model_kwargs` becomes `model_revision`.
+        `name_or_path`, else `model`. A `revision` in `hf_model_kwargs` becomes `model_revision`.
+
+        Args:
+            pipeline: The pipeline.
+            model: The model reference to use when the pipeline has none.
 
         Raises:
-            ValueError: If the pipeline has no resolvable model reference.
+            ValueError: If no model reference resolves.
         """
         model_ref = pipeline.model_name_or_path
         if model_ref is None and pipeline.model is not None:
             model_ref = getattr(pipeline.model, "name_or_path", None) or getattr(
                 getattr(pipeline.model, "config", None), "_name_or_path", None
             )
+        model_ref = model_ref or model
         if not model_ref:
             raise ValueError("The pipeline has no resolvable model reference for a protocol.")
         kwargs = dict(pipeline.hf_model_kwargs or {})

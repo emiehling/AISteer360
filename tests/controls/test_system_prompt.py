@@ -218,13 +218,13 @@ def test_spipe_roundtrip_recipe_only(tmp_path, model_and_tokenizer):
     pipeline.steer()
 
     spipe = pipeline.to_spipe()
-    config_id_before = spipe.config_id
+    recipe_id_before = spipe.recipe_id
     assert spipe.code_dependent is False
 
     saved = spipe.save(tmp_path / "system_prompt.spipe")
     loaded = SPipe.load(saved)  # no allow_code
     assert loaded.code_dependent is False
-    assert loaded.config_id == config_id_before
+    assert loaded.recipe_id == recipe_id_before
 
     rebuilt = loaded.pipeline()
     rebuilt.model, rebuilt.tokenizer = base_model, tokenizer

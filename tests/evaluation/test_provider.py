@@ -35,12 +35,19 @@ from steerability.evaluation.provider import (
     ProviderOptions,
     SteeringPipelineModelAPI,
     as_inspect_model,
+    convert_input,
+    map_generate_config,
 )
 from tests.evaluation.conftest import CHAT_TEMPLATE, StubControl, StubSteeringPipeline, StubTokenizer, make_output
 from tests.utils.tiny_models import reasoning_tag_tokenizer
 
 TOKEN_TAGS = ("<open>", "<close>")
 
+
+
+def _mapped(api, config):
+    """Map a config with the provider's options, base seed, and warned-parameter set."""
+    return map_generate_config(config, api._options, base_seed=api._base_seed, warned=api._warned_params)
 
 def _token_pipeline(special_tags=TOKEN_TAGS, ordinary_tags=()):
     """A stub pipeline backed by a real tag tokenizer, so token-mode splitting sees real ids."""
@@ -217,7 +224,7 @@ class TestProviderOptionsValidation:
 class TestMessageConversion:
     def test_roles_and_structured_content(self):
         api = _api()
-        converted = api._convert_input([
+        converted = convert_input([
             ChatMessageSystem(content="be brief"),
             ChatMessageUser(content=[ContentText(text="hello "), ContentText(text="world")]),
             ChatMessageAssistant(content=[ContentReasoning(reasoning="hmm"), ContentText(text="hi")]),
@@ -234,19 +241,19 @@ class TestMessageConversion:
         api = _api()
         tool_message = ChatMessageTool(content="result", tool_call_id="1", function="f")
         with pytest.raises(NotImplementedError, match="tool"):
-            api._convert_input([tool_message])
+            convert_input([tool_message])
 
     def test_assistant_tool_calls_refused(self):
         api = _api()
         message = ChatMessageAssistant(content="x")
         message.tool_calls = [object()]
         with pytest.raises(NotImplementedError, match="tool"):
-            api._convert_input([message])
+            convert_input([message])
 
     def test_multimodal_content_refused_naming_type(self):
         api = _api()
         with pytest.raises(NotImplementedError, match="ContentImage"):
-            api._convert_input([ChatMessageUser(content=[ContentImage(image="x.png")])])
+            convert_input([ChatMessageUser(content=[ContentImage(image="x.png")])])
 
     def test_tools_refused_at_generate(self):
         api = _api()
@@ -272,22 +279,22 @@ class TestGenerateConfigClassification:
         api = _api(options=ProviderOptions(on_unsupported_param="warn"))
         for name in ("logprobs", "top_logprobs", "prompt_logprobs"):
             with pytest.raises(NotImplementedError, match="generation-only"):
-                api._map_generate_config(GenerateConfig(**{name: True if name == "logprobs" else 1}))
+                _mapped(api, GenerateConfig(**{name: True if name == "logprobs" else 1}))
 
     def test_policy_raise_and_warn(self):
         raising = _api()
         with pytest.raises(ValueError, match="best_of"):
-            raising._map_generate_config(GenerateConfig(best_of=4))
+            _mapped(raising, GenerateConfig(best_of=4))
         warning = _api(options=ProviderOptions(on_unsupported_param="warn"))
         with pytest.warns(UserWarning, match="best_of"):
-            warning._map_generate_config(GenerateConfig(best_of=4))
+            _mapped(warning, GenerateConfig(best_of=4))
         with warnings.catch_warnings():
             warnings.simplefilter("error")  # second occurrence does not warn again
-            warning._map_generate_config(GenerateConfig(best_of=4))
+            _mapped(warning, GenerateConfig(best_of=4))
 
     def test_upstream_fields_ignored(self):
         api = _api()
-        gen_kwargs, _, _ = api._map_generate_config(
+        gen_kwargs, _, _ = _mapped(api, 
             GenerateConfig(
                 max_retries=3, timeout=10, stream_idle_timeout=5, system_message="s", cache=True, batch=True
             )
@@ -296,7 +303,7 @@ class TestGenerateConfigClassification:
 
     def test_reserved_extra_body_key_stripped_before_policy(self):
         api = _api()
-        gen_kwargs, per_sample, _ = api._map_generate_config(
+        gen_kwargs, per_sample, _ = _mapped(api, 
             GenerateConfig(extra_body={"runtime_kwargs": {"spans": ["a"]}})
         )
         assert per_sample == {"spans": ["a"]}
@@ -305,20 +312,20 @@ class TestGenerateConfigClassification:
     def test_other_extra_body_keys_follow_policy(self):
         api = _api()
         with pytest.raises(ValueError, match="extra_body\\['custom'\\]"):
-            api._map_generate_config(GenerateConfig(extra_body={"custom": 1}))
+            _mapped(api, GenerateConfig(extra_body={"custom": 1}))
 
 
 class TestSamplingRule:
     def test_greedy_drops_sampling_knobs_and_seed(self):
         api = _api(base_seed=11)
-        gen_kwargs, _, _ = api._map_generate_config(
+        gen_kwargs, _, _ = _mapped(api, 
             GenerateConfig(temperature=0, top_p=0.9, top_k=40, seed=5)
         )
         assert gen_kwargs == {"do_sample": False}
 
     def test_sampling_forwards_knobs_and_prefers_config_seed(self):
         api = _api(base_seed=11)
-        gen_kwargs, _, _ = api._map_generate_config(
+        gen_kwargs, _, _ = _mapped(api, 
             GenerateConfig(temperature=0.7, top_p=0.9, top_k=40, seed=5)
         )
         assert gen_kwargs == {
@@ -328,40 +335,40 @@ class TestSamplingRule:
 
     def test_sampling_falls_back_to_base_seed(self):
         api = _api(base_seed=11)
-        gen_kwargs, _, _ = api._map_generate_config(GenerateConfig(temperature=0.7))
+        gen_kwargs, _, _ = _mapped(api, GenerateConfig(temperature=0.7))
         assert gen_kwargs["seed"] == 11
 
     def test_sampling_without_any_seed_attaches_none(self):
         api = _api()
-        gen_kwargs, _, _ = api._map_generate_config(GenerateConfig(temperature=0.7))
+        gen_kwargs, _, _ = _mapped(api, GenerateConfig(temperature=0.7))
         assert "seed" not in gen_kwargs
 
     def test_unset_temperature_attaches_nothing(self):
         api = _api(base_seed=11)
-        gen_kwargs, _, _ = api._map_generate_config(GenerateConfig(top_p=0.9, seed=5))
+        gen_kwargs, _, _ = _mapped(api, GenerateConfig(top_p=0.9, seed=5))
         assert gen_kwargs == {}
 
     def test_max_tokens_and_stop_seqs_map(self):
         api = _api()
-        gen_kwargs, _, _ = api._map_generate_config(GenerateConfig(max_tokens=32, stop_seqs=["END"]))
+        gen_kwargs, _, _ = _mapped(api, GenerateConfig(max_tokens=32, stop_seqs=["END"]))
         assert gen_kwargs == {"max_new_tokens": 32, "stop_strings": ("END",)}
 
     def test_seed_scope_attached_with_seed_from_options(self):
         api = _api(base_seed=11, options=ProviderOptions(seed_scope="item"))
-        gen_kwargs, _, _ = api._map_generate_config(GenerateConfig(temperature=0.7, seed=5))
+        gen_kwargs, _, _ = _mapped(api, GenerateConfig(temperature=0.7, seed=5))
         assert gen_kwargs["seed_scope"] == "item"
 
     def test_seed_scope_defaults_to_dispatch(self):
         api = _api(base_seed=11)
-        gen_kwargs, _, _ = api._map_generate_config(GenerateConfig(temperature=0.7))
+        gen_kwargs, _, _ = _mapped(api, GenerateConfig(temperature=0.7))
         assert gen_kwargs["seed_scope"] == "dispatch"
 
     def test_seed_scope_absent_on_greedy_and_unseeded(self):
         greedy = _api(base_seed=11)
-        gen_kwargs, _, _ = greedy._map_generate_config(GenerateConfig(temperature=0, seed=5))
+        gen_kwargs, _, _ = _mapped(greedy, GenerateConfig(temperature=0, seed=5))
         assert "seed_scope" not in gen_kwargs
         unseeded = _api()
-        gen_kwargs, _, _ = unseeded._map_generate_config(GenerateConfig(temperature=0.7))
+        gen_kwargs, _, _ = _mapped(unseeded, GenerateConfig(temperature=0.7))
         assert "seed_scope" not in gen_kwargs
 
 
@@ -444,19 +451,19 @@ class TestReasoningSplitModes:
     def test_auto_resolves_ordinary_tags_to_text(self):
         api = _api(_token_pipeline(special_tags=(), ordinary_tags=TOKEN_TAGS),
                    options=ProviderOptions(reasoning_tags=TOKEN_TAGS))
-        assert api._reasoning_split == "text"
+        assert api._assembler._split_mode == "text"
 
     def test_auto_resolves_special_tags_to_tokens(self):
         api = _api(_token_pipeline(), options=ProviderOptions(reasoning_tags=TOKEN_TAGS))
-        assert api._reasoning_split == "tokens"
+        assert api._assembler._split_mode == "tokens"
 
     def test_explicit_mode_overrides_auto(self):
         api = _api(_token_pipeline(), options=ProviderOptions(reasoning_tags=TOKEN_TAGS, reasoning_split="text"))
-        assert api._reasoning_split == "text"
+        assert api._assembler._split_mode == "text"
 
     def test_none_tags_leave_no_resolved_mode(self):
         api = _api(_token_pipeline(), options=ProviderOptions(reasoning_tags=None))
-        assert api._reasoning_split is None
+        assert api._assembler._split_mode is None
 
     def test_token_mode_case_i_splits_reasoning_from_answer(self):
         pipeline = _token_pipeline()

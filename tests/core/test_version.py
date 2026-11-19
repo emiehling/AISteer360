@@ -12,7 +12,8 @@ PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 def recipe_manifest(toolkit_version: str) -> dict:
     return {
-        "format": "spipe/1",
+        "format": "spipe/2",
+        "recipe_id": "0123456789abcdef",
         "created_at": "2026-08-25T00:00:00Z",
         "toolkit_version": toolkit_version,
         "code_dependent": False,

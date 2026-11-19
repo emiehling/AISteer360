@@ -4,8 +4,8 @@ condition carrier).
 Covers behavioral parity with CAA and DirectionalAblation (bound + source-carrying transforms),
 the validation surface (placement / gating / scope / follower rules + artifact-kwarg guard),
 transform binding and coverage, factory mode over `ctx.resolve`, the packaged `CosineReadout`,
-gating, native batch support, registry discovery, a `ControlSpec` sweep with shared-source
-memoization, and pipeline integration under state-control multiplicity.
+gating, native batch support, registry discovery, a `Template` sweep with shared-source
+fit caching, and pipeline integration under state-control multiplicity.
 
 Runs hub-free on a tiny randomly-initialized Llama.
 """
@@ -578,55 +578,57 @@ class TestRegistry:
         assert method.control_cls is _AA
 
 
-# ControlSpec sweep + shared-source memoization
-class TestControlSpecSweep:
+# template sweep + shared-source fit cache
+class TestTemplateSweep:
     def test_grid_over_strength_and_layer(self):
-        from steerability.algorithms.core.specs import ControlSpec
+        from steerability.algorithms.core.recipe import Choice, Template, entry, expand
 
         sv = _sv(17)
-        spec = ControlSpec(
-            control_cls=ActivationAdapter,
-            params={"token_scope": "all"},
-            vars={
-                "transform": [AdditiveTransform(sv, strength=1.0), AdditiveTransform(sv, strength=2.0)],
-                "layer_ids": [1, 2],
-            },
-        )
-        points = list(spec.iter_points({}))
+        template = Template((entry(
+            ActivationAdapter,
+            token_scope="all",
+            transform=Choice((AdditiveTransform(sv, strength=1.0), AdditiveTransform(sv, strength=2.0))),
+            layer_ids=Choice(([1], [2])),
+        ),))
+        points = list(expand(template))
         assert len(points) == 4  # 2 transforms x 2 layers
+        assert len({point.recipe.id for point in points}) == 4
 
         input_ids = torch.arange(3, 7).unsqueeze(0)
         for point in points:
-            kwargs = spec.resolve_params(point, {})
-            adapter = ActivationAdapter(**kwargs)
+            (adapter,) = point.recipe.instantiate()
             p = _pipe(adapter, tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS))
             out = p.generate(input_ids=input_ids, max_new_tokens=2, do_sample=False, eos_token_id=None)
             assert out.size(1) >= 1
 
-    def test_shared_source_fits_once_per_model(self):
-        """One ContrastiveFit across two adapter configs fits once per model; templates clean."""
+    def test_shared_source_fits_once_under_a_fit_cache(self):
+        """One ContrastiveFit across two adapter configs fits once under one fit cache; templates clean."""
+        from dataclasses import dataclass
+
+        from steerability.algorithms.core.fits import FitCache, fit_cache_scope
+        from steerability.algorithms.core.protocol import Protocol
         from steerability.algorithms.state_control.common.estimators.base import BaseEstimator
 
-        class _CountingEstimator(BaseEstimator):
-            def __init__(self):
-                self.calls = 0
+        calls = []
 
+        @dataclass(frozen=True)
+        class _CountingEstimator(BaseEstimator):
             def fit(self, model, tokenizer, *, data, **kwargs):
-                self.calls += 1
+                calls.append(1)
                 return _sv(19)
 
-        est = _CountingEstimator()
-        source = ContrastiveFit(data={"positives": ["a"], "negatives": ["b"]}, estimator=est)
+        source = ContrastiveFit(data={"positives": ["a"], "negatives": ["b"]}, estimator=_CountingEstimator())
         model = tiny_llama(num_layers=LAYERS, hidden=HIDDEN, heads=HEADS)
 
         t1 = AdditiveTransform(source, strength=1.0)
         t2 = ProjectionTransform(source, alpha=1.0)
         a1 = ActivationAdapter(transform=t1, layer_ids=[1], token_scope="all")
         a2 = ActivationAdapter(transform=t2, layer_ids=[1], token_scope="all")
-        a1.steer(model, wordlevel_tokenizer())
-        a2.steer(model, wordlevel_tokenizer())
+        with fit_cache_scope(FitCache(Protocol.create("tiny"), "base", None)):
+            a1.steer(model, wordlevel_tokenizer())
+            a2.steer(model, wordlevel_tokenizer())
 
-        assert est.calls == 1  # single-slot memo: one fit for the whole sweep on one model
+        assert len(calls) == 1  # the second adapter's fit is a cache hit
         assert t1.is_bound is False and t2.is_bound is False  # templates unpolluted
 
 

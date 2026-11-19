@@ -44,18 +44,6 @@ if TYPE_CHECKING:
     from steerability.algorithms.core.execution.payloads import InterventionSpec
 
 
-def _fit_ingredients(source) -> Any:
-    """The encodable fit-identity form of one fit source.
-
-    Sources exposing `fit_ingredients()` return that; dataclass sources pass through
-    unchanged.
-    """
-    ingredients = getattr(source, "fit_ingredients", None)
-    if callable(ingredients):
-        return ingredients()
-    return source
-
-
 def _core_artifact_view(core):
     """A `SteeringVector` view of a bound core transform's artifact, or None.
 
@@ -369,38 +357,54 @@ class InterventionControl(StateControl):
 
         A fully bound template requires `ModelAccess.FACTS`, since pure layer selectors
         resolve from structural facts available on any session. Otherwise the strongest
-        declared source access wins; a source or factory slot without an `access` declaration
-        builds against the live model, so it counts as `ModelAccess.MODULE`.
+        source access wins, read through `source_access`, so a source whose fit the active fit
+        cache holds counts as `ModelAccess.FACTS`. A source or factory slot without an `access`
+        declaration builds against the live model, so it counts as `ModelAccess.MODULE`.
         """
+        from steerability.algorithms.core.fits import source_access
+
         access = ModelAccess.FACTS
         for source in self._unbound_sources():
-            access = max(access, getattr(source, "access", ModelAccess.MODULE))
+            access = max(access, source_access(source))
         return access
 
+    def declared_fit_sources(self) -> tuple:
+        """The template's fit sources, independent of any fit cache: the unbound sources carrying an
+        `artifact_class` whose declared `access` is above `ModelAccess.FACTS`, in template order."""
+        from steerability.algorithms.core.fits import fit_cache_scope
+
+        with fit_cache_scope(None):
+            return tuple(
+                source for source in self._unbound_sources()
+                if getattr(source, "artifact_class", None) is not None
+                and getattr(source, "access", ModelAccess.MODULE) != ModelAccess.FACTS
+            )
+
     def _fit_sources(self):
-        """Yield the template's fit sources: unbound sources carrying an `artifact_class`
-        whose resolution does model-side work (`access` above `ModelAccess.FACTS`)."""
-        for source in self._unbound_sources():
-            if getattr(source, "artifact_class", None) is None:
-                continue
-            if getattr(source, "access", ModelAccess.MODULE) == ModelAccess.FACTS:
-                continue
-            yield source
+        """Yield the fit sources the steer step still fits: the declared fit sources whose fit the
+        active fit cache does not hold."""
+        from steerability.algorithms.core.fits import source_access
+
+        for source in self.declared_fit_sources():
+            if source_access(source) != ModelAccess.FACTS:
+                yield source
 
     def steer_fits(self) -> tuple[tuple[str, str], ...]:
-        """The template's fit artifacts, i.e. every unbound source carrying an
-        `artifact_class`, as `(artifact, artifact_class)` pairs in template order."""
+        """The fit artifacts the steer step will produce, as `(artifact, artifact_class)` pairs in
+        template order; a source whose fit the active fit cache holds produces none."""
         return tuple(
             (type(source).__name__, source.artifact_class) for source in self._fit_sources()
         )
 
     def fit_identity(self) -> Any | None:
-        """The template's fit sources in template order, each in its encodable form, or None
-        when the template declares no fits."""
-        sources = list(self._fit_sources())
+        """The fit identities (`source_identity`) of the template's declared fit sources in
+        template order, or None when the template declares no fits."""
+        from steerability.algorithms.core.fits import source_identity
+
+        sources = self.declared_fit_sources()
         if not sources:
             return None
-        return tuple(_fit_ingredients(source) for source in sources)
+        return tuple(source_identity(source) for source in sources)
 
     def export_state(self) -> dict[str, Any]:
         """Bound steering artifacts, keyed by intervention position.

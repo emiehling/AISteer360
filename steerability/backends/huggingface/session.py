@@ -9,7 +9,6 @@ from transformers import LogitsProcessorList, PreTrainedModel, PreTrainedTokeniz
 
 from steerability.algorithms.core.execution.cancellation import CancelToken
 from steerability.algorithms.core.execution.contracts import UnsupportedOperationError
-from steerability.algorithms.core.execution.fanout import derive_item_seed
 from steerability.algorithms.core.execution.params import GenerationParams
 from steerability.algorithms.core.execution.payloads import (
     CaptureResult,
@@ -21,6 +20,7 @@ from steerability.algorithms.core.execution.payloads import (
     ScoringItem,
     StackEntry,
 )
+from steerability.algorithms.core.identity import derive_seed
 from steerability.algorithms.core.internals.facts import model_facts
 from steerability.algorithms.core.output import Output, infer_finish_reasons
 from steerability.algorithms.core.utils.generate_call import generate_call
@@ -289,13 +289,13 @@ class ExclusiveSession:
             and params.seed_scope == "dispatch"
             and all(item.seed is None for item in items)
         ):
-            return [derive_item_seed(params.seed, operation_id, 0)] * len(items)
+            return [derive_seed(params.seed, operation_id, 0)] * len(items)
         seeds: list[int | None] = []
         for index, item in enumerate(items):
             if item.seed is not None:
                 seeds.append(item.seed)
             elif params.seed is not None:
-                seeds.append(derive_item_seed(params.seed, operation_id, index))
+                seeds.append(derive_seed(params.seed, operation_id, index))
             else:
                 seeds.append(None)
         return seeds

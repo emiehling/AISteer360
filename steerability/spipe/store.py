@@ -256,7 +256,8 @@ class ArtifactRecord:
         type: Name of the producing class (e.g. `"SteeringVector"`, `"Probe"`).
         artifact_class: `"direction"`, `"calibrated"`, or `"opaque"`.
         source: Fit-source class name, or None for recipe-supplied artifacts.
-        fit_digest: 12-hex-character digest of the producing fit identity, or None.
+        fit_digest: The producing control's fit digest (the content id of the digests of its
+            fits, in order), or None.
         provenance: Producing-side identity (`backend_spec_hash`, `model_fingerprint`,
             `model_ref`, `tokenizer_fingerprint`), each possibly None.
         type_meta: Type-specific reconstruction metadata (sidecar only, excluded from the

@@ -1,779 +1,479 @@
-"""Sweep runner: configurations x trials x suites over one base model.
+"""`SteeringEval`: recipes x trials x benchmarks under one protocol, measured item by item.
 
-`SteeringEval` owns what Inspect cannot: pipeline lifecycle and GPU discipline. Inspect treats
-models as cheap concurrent handles to endpoints; a steered pipeline is a GPU-resident object that
-must be built, steered, evaluated, and released sequentially, so the runner evaluates one pipeline
-at a time and never passes more than one pipeline-backed model to one `eval` or `eval_set` call.
+A run expands the pipelines mapping into points (`algorithms/core/sweeps.py`), checks backend
+support for every point before any model work, fits what the points need once (`PipelineFactory.
+prepare`), and then measures every point on every benchmark and trial with `evaluate_items`. The
+store keeps fits and per-item evidence, so a second run on the same store generates only what has
+no evidence row, and a run with a larger selection generates only the new items.
 
-There is no results checkpoint: the `.eval` logs under `save_dir/inspect_logs/` are the store, and
-`eval_set` resumes each (configuration, trial, suite) cell from them at sample granularity. `eval_set`
-matches task identity only (task, task args, model name). The runner therefore records the rest of the
-protocol (toolkit version, provider options and their `seed_scope`, generate defaults, `hf_model_kwargs`,
-seed, fit, and backend) in `save_dir/protocol.json` on the first run of a directory, and refuses to run into
-a directory whose recorded protocol differs, or whose logs have no recorded protocol. Each result row's
-`provenance` entry records what actually ran.
-
-Three frames reshape a completed run: `results()` gives the tidy one-row-per-metric frame,
-`runs_frame` pivots it to one row per (pipeline, trial) with one column per metric and per swept
-argument, and `samples_frame` reads the `.eval` logs to give one row per (pipeline, trial, sample)
-with per-sample scores joined to sample metadata. `summarize_runs` aggregates the per-trial frame
-into the summary form the plotting layer consumes.
+`save_dir` records the run: `protocol.json` (the protocol's id, identity, and observed facts),
+`points.json` (each point's pipeline, recipe id, resolved id, and assignment, the selections, and
+the trial count), and the store under `store/` unless the run is given one. `samples_frame` and
+`runs_frame` read a finished run from its `save_dir`, and `summarize_runs` aggregates the
+per-trial frame into the summary form the plotting layer consumes.
 """
-import datetime
-import importlib.metadata
+from __future__ import annotations
+
 import json
 import logging
 import tempfile
-import time
-import warnings
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Literal
 
 import pandas
-from tqdm.auto import tqdm
 
-import steerability
-from steerability.algorithms.core.execution.spec import BackendSpec
-from steerability.algorithms.core.identity import canonical_value, derive_trial_seed
-from steerability.algorithms.core.sweeps import PipelineFactory, expand_configurations, preflight
-from steerability.algorithms.core.utils.controls import runtime_kwargs_schema
-from steerability.utils.rendering import has_chat_template
+from steerability.algorithms.core.identity import canonical_json
+from steerability.algorithms.core.protocol import Protocol, ProtocolFacts, ProtocolMismatchError
+from steerability.algorithms.core.store import Store
+from steerability.algorithms.core.sweeps import PipelineFactory, Pipelines, expand_configurations, preflight
 
 if TYPE_CHECKING:
-    from steerability.evaluation.provider import ProviderOptions
-    from steerability.evaluation.suite import InspectSuite
+    from steerability.evaluation.items import Benchmark
 
 logger = logging.getLogger(__name__)
 
 PROTOCOL_FILE = "protocol.json"
+POINTS_FILE = "points.json"
+STORE_DIR = "store"
 
-_RESULTS_COLUMNS = (
-    "config", "config_id", "trial", "seed", "suite", "task", "scorer", "metric", "value", "n", "log",
-)
+_LETTER_GRADES = frozenset({"C", "I", "P", "N"})
 
 
-def _package_version(name: str) -> str | None:
-    """Installed version of a package, or None when it is not installed."""
-    try:
-        return importlib.metadata.version(name)
-    except importlib.metadata.PackageNotFoundError:
-        return None
+def _write_json(path: Path, data: Any) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _check_save_dir(save_dir: Path, protocol: Protocol, store: Store) -> None:
+    """Refuse a `save_dir` written under another protocol, and carry its recorded facts into the store.
+
+    Raises:
+        ValueError: If `save_dir/protocol.json` records a different protocol id.
+        ProtocolMismatchError: If its observed facts conflict with the store's.
+    """
+    path = save_dir / PROTOCOL_FILE
+    if not path.exists():
+        return
+    recorded = json.loads(path.read_text(encoding="utf-8"))
+    if recorded.get("id") != protocol.id:
+        raise ValueError(
+            f"{save_dir} was written under protocol {recorded.get('id')}, not {protocol.id}; start a new save_dir "
+            "for this protocol."
+        )
+    if recorded.get("observed"):
+        store.put_protocol(protocol, ProtocolFacts.from_dict(recorded["observed"]))
 
 
 class SteeringEval:
-    """Evaluate steering pipeline configurations on Inspect suites, over trials, sequentially.
+    """Evaluate recipes on benchmarks under one protocol, over trials.
 
-    Configurations expand from `pipelines` (fixed controls, `ControlSpec` sweeps, and the empty
-    baseline arm); a pre-flight support check runs over every configuration before any model or
-    engine work. Each configuration is built and steered once, then every trial runs every suite
-    against it before the pipeline is released; each suite run builds and discards its own
-    provider, named by the configuration's `config_id`. Repetition is trial-based: with `seed`
-    set, each (configuration, trial) derives one seed, attached to sampling dispatches whose
-    config carries no seed of its own. Inspect epochs are not used.
-
-    Attributes:
-        pipelines: Mapping from pipeline name to `[]` (the unsteered baseline arm),
-            `[Control, ...]`, or `[ControlSpec, ...]`.
-        base_model_name_or_path: Hugging Face model ID or local path of the base model.
-        suites: The `InspectSuite`s every configuration and trial runs.
-        backend: Backend forwarded to the pipelines (a `BackendSpec` or a known kind name).
-        fit: Fit venue policy forwarded to the pipelines.
-        hf_model_kwargs: Load-time kwargs for in-process model loads.
-        device_map: Device placement for in-process model loads.
-        trust_remote_code: Trust remote code when loading tokenizers.
-        num_trials: Trials per configuration; a completion target, not part of run identity.
-        seed: Base seed deriving one seed per (configuration, trial), or None.
-        provider_options: `ProviderOptions` forwarded to every suite run (static runtime kwargs,
-            batching ceiling, reasoning split).
-        generate_defaults: `GenerateConfig` defaults applied under each suite's overrides.
+    Args:
+        protocol: The protocol every point runs under.
+        pipelines: Mapping from pipeline name to recipes and templates (`BASELINE` for the
+            unsteered baseline).
+        benchmarks: The benchmarks; their names must be distinct.
+        items: Mapping from benchmark name to the item ids to evaluate. A benchmark without an
+            entry evaluates the first `limit` items, or all of them.
+        limit: The number of items of a benchmark without an `items` entry, or None for all.
+        num_trials: Trials per point; trial `t` is replicate `t` of every item.
         on_unsupported: `"raise"` (default) fails the run with one aggregate error on any
-            unsupported configuration; `"skip"` runs the supported ones with a warning.
-        save_dir: Directory holding the `.eval` logs and `protocol.json`; when None, logs go to
-            a fresh temporary directory and the run cannot be resumed. A directory is resumed only
-            under the protocol it records.
-        progress: Draw a `tqdm` bar over the (configuration, trial, suite) cells. The same
-            information is logged at INFO regardless, so script users see it without the bar.
-        display: Inspect's per-sample `display` mode, forwarded to every suite run (`"none"` by
-            default, `"plain"` recommended in a sweep). Presentation only; not part of run
-            identity.
+            unsupported point before any model work; `"skip"` runs the supported points.
+        device_map: Device placement for in-process loads.
+        trust_remote_code: Trust remote code when loading tokenizers.
+        progress: Draw a progress bar over the (point, trial, benchmark) cells.
+
+    Raises:
+        ValueError: If `num_trials` is below 1, `on_unsupported` is unknown, there are no
+            benchmarks, or two benchmarks share a name.
     """
 
     def __init__(
         self,
-        pipelines: dict[str, list],
-        base_model_name_or_path: str | Path,
-        suites: "Sequence[InspectSuite]",
+        protocol: Protocol,
+        pipelines: Pipelines,
+        benchmarks: Sequence[Benchmark],
         *,
-        backend: BackendSpec | str | None = None,
-        fit: Literal["auto", "in_process"] = "auto",
-        hf_model_kwargs: dict | None = None,
+        items: Mapping[str, Sequence[str]] | None = None,
+        limit: int | None = None,
+        num_trials: int = 1,
+        on_unsupported: Literal["raise", "skip"] = "raise",
         device_map: str | dict | None = "auto",
         trust_remote_code: bool = False,
-        num_trials: int = 1,
-        seed: int | None = None,
-        provider_options: "ProviderOptions | None" = None,
-        generate_defaults: Mapping[str, Any] | None = None,
-        on_unsupported: Literal["raise", "skip"] = "raise",
-        save_dir: str | Path | None = None,
         progress: bool = True,
-        display: str = "none",
     ) -> None:
-        if not isinstance(pipelines, dict):
-            raise TypeError(f"pipelines must be a dict; got {type(pipelines).__name__}.")
         if int(num_trials) < 1:
             raise ValueError(f"num_trials must be >= 1; got {num_trials}.")
         if on_unsupported not in ("raise", "skip"):
             raise ValueError(f"on_unsupported must be 'raise' or 'skip'; got {on_unsupported!r}.")
-        suites = list(suites)
-        if not suites:
-            raise ValueError("suites must be non-empty.")
-        suite_names = [suite.name for suite in suites]
-        duplicates = sorted({name for name in suite_names if suite_names.count(name) > 1})
+        benchmarks = list(benchmarks)
+        if not benchmarks:
+            raise ValueError("benchmarks must be non-empty.")
+        names = [benchmark.name for benchmark in benchmarks]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:
-            raise ValueError(f"Suite names must be distinct; duplicated: {duplicates}.")
-
+            raise ValueError(f"Benchmark names must be distinct; duplicated: {duplicates}.")
+        unknown = sorted(set(items or {}) - set(names))
+        if unknown:
+            raise ValueError(f"items names unknown benchmark(s) {unknown}.")
+        if limit is not None and int(limit) < 1:
+            raise ValueError(f"limit must be >= 1; got {limit}.")
+        self.protocol = protocol
         self.pipelines = pipelines
-        self.base_model_name_or_path = base_model_name_or_path
-        self.suites = suites
-        self.backend = backend
-        self.fit = fit
-        self.hf_model_kwargs = hf_model_kwargs or {}
+        self.benchmarks = benchmarks
+        self.items = {name: [str(item) for item in selection] for name, selection in (items or {}).items()}
+        self.limit = limit
+        self.num_trials = int(num_trials)
+        self.on_unsupported = on_unsupported
         self.device_map = device_map
         self.trust_remote_code = trust_remote_code
-        self.num_trials = int(num_trials)
-        self.seed = seed
-        self.provider_options = provider_options
-        self.generate_defaults = dict(generate_defaults) if generate_defaults is not None else None
-        self.on_unsupported = on_unsupported
-        self.save_dir = Path(save_dir) if save_dir is not None else None
         self.progress = bool(progress)
-        self.display = display
-        self._results: dict[str, list[dict]] | None = None
-        self._log_root: Path | None = None
+        self.factory: PipelineFactory | None = None
+        self._save_dir: Path | None = None
+        self._scratch: tempfile.TemporaryDirectory | None = None
 
-    def run(self) -> dict[str, list[dict]]:
-        """Run every configuration x trial x suite cell, sequentially, resuming from the logs.
+    def _selection(self, benchmark: Benchmark) -> list[str]:
+        if benchmark.name in self.items:
+            return list(self.items[benchmark.name])
+        item_ids = list(benchmark.item_ids())
+        return item_ids[: self.limit] if self.limit is not None else item_ids
 
-        Returns:
-            A mapping from pipeline name to a list of run dictionaries. Each run dictionary has
-            keys:
+    def run(self, save_dir: str | Path | None = None, *, store: Store | None = None) -> None:
+        """Run every point x trial x benchmark cell, generating only what has no evidence.
 
-                - `"trial_id"`: Integer trial index.
-                - `"seed"`: The trial's derived seed, or None when no base seed was set.
-                - `"config_id"`: The configuration's canonical identifier.
-                - `"params"`: Mapping from spec name to resolved constructor kwargs, or an empty
-                    dict for fixed and baseline configurations.
-                - `"suites"`: Mapping from suite name to that suite's flattened results, with log
-                    paths relative to `save_dir`.
-                - `"provenance"`: Versions, backend kind, `prompt_path`, `dispatch_mode`
-                    (`"batched"` or `"per_request"`), the shared-base fingerprint when one exists,
-                    and a timestamp.
+        The store is `store` when given, so that sweeps and other callers share fits and evidence,
+        else `save_dir/store`. With neither, the run's directory is temporary and is removed when
+        this object is discarded.
+
+        Args:
+            save_dir: The run directory, or None.
+            store: The store, or None.
 
         Raises:
-            RuntimeError: If any configuration is unsupported and `on_unsupported="raise"` (one
-                aggregate error before any model or engine work), or a suite's `eval_set` fails
-                after its retries.
-            ValueError: If `save_dir` records a protocol that differs from this run's, or
-                contains `.eval` logs but no `protocol.json` (both before any model or engine
-                work).
-
-        Warns:
-            UserWarning: If a static runtime kwarg in `provider_options` is declared by no
-                configuration in the evaluation, or `seed` is set while no `temperature` is
-                configured in `generate_defaults` or any suite's `generate_overrides` (trial
-                seeds are attached to sampling dispatches only).
+            RuntimeError: If a point is unsupported and `on_unsupported="raise"`.
+            ValueError: If `save_dir` was written under another protocol.
+            ProtocolMismatchError: If the loaded model conflicts with the facts recorded for the
+                protocol.
         """
-        points = list(expand_configurations(
-            self.pipelines, base_model_name_or_path=self.base_model_name_or_path,
-        ))
+        from tqdm.auto import tqdm
 
+        from steerability.evaluation.items import evaluate_items
+
+        if save_dir is None:
+            self._scratch = tempfile.TemporaryDirectory(prefix="steering-eval-")
+            save_dir = Path(self._scratch.name)
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        if store is None:
+            store = Store.open(save_dir / STORE_DIR)
+        _check_save_dir(save_dir, self.protocol, store)
+        store.put_protocol(self.protocol)
+        self._save_dir = save_dir
+
+        points = list(expand_configurations(self.pipelines))
         failures: list[str] = []
-        skipped: set[tuple[str, str]] = set()
-        for point in points:
-            messages = preflight(
-                [point], base_model_name_or_path=self.base_model_name_or_path,
-                backend=self.backend, fit=self.fit,
-            )
+        supported = []
+        for name, point in points:
+            messages = preflight([(name, point)], self.protocol)
             if messages:
                 failures.extend(messages)
-                skipped.add((point.pipeline_name, point.config_id))
+            else:
+                supported.append((name, point))
         if failures:
             if self.on_unsupported == "raise":
-                raise RuntimeError(
-                    "Unsupported pipeline configuration(s):\n" + "\n".join(failures)
-                )
+                raise RuntimeError("Unsupported pipeline configuration(s):\n" + "\n".join(failures))
             for line in failures:
                 logger.warning("Skipping unsupported configuration: %s", line)
 
-        if self.seed is not None:
-            configured = set(self.generate_defaults or {})
-            for suite in self.suites:
-                configured.update(suite.generate_overrides)
-            if "temperature" not in configured:
-                warnings.warn(
-                    "seed is set but no temperature is configured in generate_defaults or any suite's "
-                    "generate_overrides; trial seeds are attached to sampling dispatches only, so the derived "
-                    "seeds will not be attached. Pass generate_defaults={'temperature': 0} for greedy decoding "
-                    "or an explicit sampling temperature.",
-                    UserWarning,
-                )
+        for benchmark in self.benchmarks:
+            benchmark.prepare(store)
+        selections = {benchmark.name: self._selection(benchmark) for benchmark in self.benchmarks}
+        records: list[dict[str, Any]] = []
 
-        if self.save_dir is not None:
-            save_dir = self.save_dir
-            save_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            save_dir = Path(tempfile.mkdtemp(prefix="steering-eval-"))
-            logger.info("No save_dir was given; logs go to %s and the run cannot be resumed.", save_dir)
-        self._check_protocol(save_dir)
-        self._log_root = save_dir
-
-        versions = {
-            "toolkit_version": getattr(steerability, "__version__", "unknown"),
-            "inspect_ai_version": _package_version("inspect-ai"),
-            "inspect_evals_version": _package_version("inspect-evals"),
-        }
         factory = PipelineFactory(
-            self.base_model_name_or_path,
-            backend=self.backend,
-            fit=self.fit,
-            hf_model_kwargs=self.hf_model_kwargs,
-            device_map=self.device_map,
-            trust_remote_code=self.trust_remote_code,
+            self.protocol, store=store, device_map=self.device_map, trust_remote_code=self.trust_remote_code,
         )
-        results: dict[str, list[dict]] = {name: [] for name in self.pipelines}
-        active = [point for point in points if (point.pipeline_name, point.config_id) not in skipped]
-
-        static_keys = set(self.provider_options.runtime_kwargs) if self.provider_options is not None else set()
-        if static_keys:
-            declared: set[str] = set()
-            for point in active:
-                declared.update(runtime_kwargs_schema(point.controls_factory()))
-            undeclared = sorted(static_keys - declared)
-            if undeclared:
-                warnings.warn(
-                    f"Static runtime kwarg(s) {undeclared} are declared by no configuration in this evaluation and "
-                    "will be inert on every arm.",
-                    UserWarning,
-                )
-
-        total_cells = len(active) * self.num_trials * len(self.suites)
-        logger.info(
-            "Evaluating %d configuration(s) x %d trial(s) x %d suite(s) = %d cell(s); logs under %s.",
-            len(active), self.num_trials, len(self.suites), total_cells, save_dir,
-        )
-        bar = tqdm(
-            total=total_cells, disable=not self.progress, desc="steering eval", unit="cell",
-            dynamic_ncols=True,
-        )
-        cell_index = 0
+        self.factory = factory
+        total = len(supported) * self.num_trials * len(self.benchmarks)
+        bar = tqdm(total=total, disable=not self.progress, desc="steering eval", unit="cell", dynamic_ncols=True)
         try:
-            for point in active:
-                label = f"{point.pipeline_name}/{point.config_id}"
-                bar.set_postfix_str(f"steering {label}")
-                steer_started = time.monotonic()
-                with factory.steered(point.controls_factory()) as pipeline:
-                    logger.info("Steered %s in %.0fs.", label, time.monotonic() - steer_started)
-                    prompt_path = "messages" if has_chat_template(pipeline.tokenizer) else "text"
-                    # the provider dispatches per request when max_concurrency is set and the
-                    # pipeline supports concurrent generation
-                    per_request = (
-                        getattr(self.provider_options, "max_concurrency", None) is not None
-                        and pipeline.supports_concurrent_generate
-                    )
-                    dispatch_mode = "per_request" if per_request else "batched"
-                    for trial_id in range(self.num_trials):
-                        trial_seed = (
-                            derive_trial_seed(self.seed, point.config_id, trial_id)
-                            if self.seed is not None else None
-                        )
-                        suite_results: dict[str, dict] = {}
-                        for suite in self.suites:
-                            cell_index += 1
-                            bar.set_postfix_str(f"{label} trial {trial_id} {suite.name}")
-                            log_dir = (
-                                save_dir / "inspect_logs" / point.config_id
-                                / f"trial_{trial_id}" / suite.name
-                            )
-                            started = time.monotonic()
-                            flattened = suite.run(
-                                pipeline,
-                                log_dir=log_dir,
-                                options=self.provider_options,
-                                base_seed=trial_seed,
-                                model_name=point.config_id,
-                                generate_defaults=self.generate_defaults,
-                                display=self.display,
-                            )
-                            completed = sum(int(result["n"]) for result in flattened.values())
-                            logger.info(
-                                "Cell %d/%d %s trial=%d suite=%s: %d sample(s) in %.0fs.",
-                                cell_index, total_cells, label, trial_id, suite.name, completed,
-                                time.monotonic() - started,
-                            )
-                            bar.update(1)
-                            cell = log_dir.relative_to(save_dir)
-                            for task_result in flattened.values():
-                                if not Path(task_result["log"]).is_absolute():
-                                    task_result["log"] = str(cell / task_result["log"])
-                            suite_results[suite.name] = flattened
-                        results[point.pipeline_name].append({
-                            "trial_id": trial_id,
-                            "seed": trial_seed,
-                            "config_id": point.config_id,
-                            "params": {
-                                name: dict(kwargs) for name, kwargs in (point.params or {}).items()
-                            },
-                            "suites": suite_results,
-                            "provenance": {
-                                **versions,
-                                "backend": factory.backend_kind,
-                                "prompt_path": prompt_path,
-                                "dispatch_mode": dispatch_mode,
-                                "shared_base_fingerprint": factory.shared_base_fingerprint,
-                                "recorded_utc": datetime.datetime.now(
-                                    datetime.timezone.utc
-                                ).isoformat(),
-                            },
-                        })
+            pending = [(name, point) for name, point in supported if not self._complete(point, store, selections)]
+            factory.prepare(dict.fromkeys(point.recipe for _, point in pending))
+            for name, point in supported:
+                resolved = store.get_resolution(self.protocol.id, point.recipe.id)
+                if (name, point) in pending or resolved is None:
+                    with factory.steered(point.recipe) as steered:
+                        resolved = steered.resolved_id
+                        for trial in range(self.num_trials):
+                            for benchmark in self.benchmarks:
+                                bar.set_postfix_str(f"{name} trial {trial} {benchmark.name}")
+                                evaluate_items(
+                                    steered, benchmark, selections[benchmark.name], store=store, replicate=trial,
+                                )
+                                bar.update(1)
+                else:
+                    bar.update(self.num_trials * len(self.benchmarks))
+                records.append({
+                    "pipeline": name, "recipe_id": point.recipe.id, "resolved_id": resolved,
+                    "assignment": json.loads(canonical_json(dict(point.assignment))),
+                })
         finally:
             bar.close()
             factory.release()
-        self._results = results
-        return results
 
-    def _protocol(self) -> dict[str, Any]:
-        """The run protocol recorded in `protocol.json`, in canonical JSON form.
+        stored = store.get_protocol(self.protocol.id)
+        _write_json(save_dir / PROTOCOL_FILE, {
+            "schema": "protocol/1", "id": self.protocol.id, "identity": self.protocol.identity(),
+            "observed": stored.observed if stored is not None else None,
+        })
+        _write_json(save_dir / POINTS_FILE, {
+            "schema": "points/1",
+            "protocol_id": self.protocol.id,
+            "store": str(store.root.resolve()),
+            "num_trials": self.num_trials,
+            "benchmarks": [
+                {"name": benchmark.name, "id": benchmark.id, "items": selections[benchmark.name]}
+                for benchmark in self.benchmarks
+            ],
+            "points": records,
+        })
 
-        Returns:
-            A mapping with the toolkit version, the provider options (None when unset) and their
-            `seed_scope`, the generate defaults, `hf_model_kwargs`, the seed, the fit policy, and the
-            backend.
-        """
-        protocol = {
-            "toolkit_version": getattr(steerability, "__version__", "unknown"),
-            "provider_options": canonical_value(self.provider_options),
-            "seed_scope": getattr(self.provider_options, "seed_scope", None),
-            "generate_defaults": canonical_value(self.generate_defaults),
-            "hf_model_kwargs": canonical_value(self.hf_model_kwargs),
-            "seed": self.seed,
-            "fit": self.fit,
-            "backend": canonical_value(self.backend),
-        }
-        return json.loads(json.dumps(protocol, sort_keys=True))
+    def _complete(self, point, store: Store, selections: Mapping[str, list[str]]) -> bool:
+        """Whether every cell of a point already has evidence for every selected item."""
+        resolved = store.get_resolution(self.protocol.id, point.recipe.id)
+        if resolved is None:
+            return False
+        for benchmark in self.benchmarks:
+            for trial in range(self.num_trials):
+                rows = store.get_evidence(self.protocol.id, resolved, benchmark.id, selections[benchmark.name], trial)
+                if len(rows) < len(selections[benchmark.name]):
+                    return False
+        return True
 
-    def _check_protocol(self, save_dir: Path) -> None:
-        """Record this run's protocol in `save_dir`, or verify the one the directory records.
-
-        Args:
-            save_dir: The directory the run writes its logs under.
-
-        Raises:
-            ValueError: If `save_dir/protocol.json` records a different protocol, or the directory
-                contains `.eval` logs but no `protocol.json`.
-        """
-        protocol = self._protocol()
-        path = save_dir / PROTOCOL_FILE
-        if path.exists():
-            recorded = json.loads(path.read_text())
-            if recorded != protocol:
-                differing = sorted(key for key in {*recorded, *protocol} if recorded.get(key) != protocol.get(key))
-                raise ValueError(
-                    f"{save_dir} was written under a different protocol ({', '.join(differing)} differ from "
-                    f"{PROTOCOL_FILE}); start a new save_dir for this protocol."
-                )
-            return
-        if any((save_dir / "inspect_logs").rglob("*.eval")):
-            raise ValueError(
-                f"{save_dir} contains .eval logs but no {PROTOCOL_FILE}, so the protocol they were written under "
-                "is unknown; start a new save_dir."
-            )
-        path.write_text(json.dumps(protocol, indent=2, sort_keys=True) + "\n")
-
-    def results(self) -> pandas.DataFrame:
-        """The last `run()`'s results as one row per (config, trial, suite, task, scorer/metric).
-
-        `runs_frame` (module-level, or the `runs_frame` method for swept-parameter columns)
-        pivots this frame to one row per (pipeline, trial), and `summarize_runs` aggregates
-        trials into the `{metric}_mean` / `{metric}_std` / `{metric}_sem` summary rows the
-        plotting layer (`steerability.evaluation.plotting`) consumes. `samples_frame` (module-level,
-        or the `samples_frame` method) reads the `.eval` logs for per-sample scores and paired
-        per-sample deltas.
-
-        Returns:
-            A `pandas.DataFrame` with columns `config`, `config_id`, `trial`, `seed`, `suite`,
-            `task`, `scorer`, `metric`, `value`, `n`, and `log`.
-
-        Raises:
-            RuntimeError: If `run()` has not been called.
-        """
-        if self._results is None:
-            raise RuntimeError("results() requires a completed run(); call run() first.")
-        rows: list[dict[str, Any]] = []
-        for config_name, runs in self._results.items():
-            for run in runs:
-                for suite_name, tasks in run["suites"].items():
-                    for task_name, task_result in tasks.items():
-                        for key, value in task_result["metrics"].items():
-                            scorer_name, _, metric_name = key.partition("/")
-                            rows.append({
-                                "config": config_name,
-                                "config_id": run["config_id"],
-                                "trial": run["trial_id"],
-                                "seed": run["seed"],
-                                "suite": suite_name,
-                                "task": task_name,
-                                "scorer": scorer_name,
-                                "metric": metric_name,
-                                "value": value,
-                                "n": task_result["n"],
-                                "log": task_result["log"],
-                            })
-        return pandas.DataFrame(rows, columns=list(_RESULTS_COLUMNS))
-
-    def runs_frame(
-        self,
-        metrics: Mapping[str, str],
-        *,
-        params: Mapping[str, tuple[str, str]] | None = None,
-        suite: str | None = None,
-        task: str | None = None,
-    ) -> pandas.DataFrame:
-        """The last `run()`'s per-trial metric values, one row per (pipeline, trial).
-
-        Pivots `results()` through the module-level `runs_frame` and, when `params` names
-        swept constructor arguments as `column -> (spec name, argument name)`, attaches each
-        as a column keyed on `config_id`, read from the run records' resolved parameters.
-        Rows of configurations that do not sweep the argument (the baseline arm, fixed
-        pipelines) receive NaN. A column whose values are all numeric is returned with a
-        numeric dtype; non-numeric values (strings, lists) are kept raw.
-
-        Args:
-            metrics: Mapping from output column name to a metric key, either
-                `"scorer/metric"` (e.g. `"choice/accuracy"`) or a bare metric name when
-                unambiguous. Must be non-empty.
-            params: Optional mapping from output column name to `(spec name, argument name)`.
-            suite: Suite to select; required when the results span several.
-            task: Task to select; required when the results span several.
-
-        Returns:
-            The wide frame with columns `pipeline`, `config_id`, `trial_id`, `seed`, one
-            column per `metrics` entry, and one column per `params` entry.
-
-        Raises:
-            RuntimeError: If `run()` has not been called.
-            ValueError: If `metrics` is empty, or the suite/task selection is empty or
-                ambiguous.
-            KeyError: If a metric key matches nothing, or a bare metric name is ambiguous.
-        """
-        # the bare name resolves to the module-level runs_frame (name lookup skips class attributes)
-        frame = runs_frame(self.results(), metrics, suite=suite, task=task)
-        for column, (spec_name, argument) in (params or {}).items():
-            mapped = frame["config_id"].map(self._sweep_param_map(spec_name, argument))
-            converted = pandas.to_numeric(mapped, errors="coerce")
-            # keep raw values for non-numeric arguments; otherwise take the numeric dtype
-            frame[column] = mapped if (converted.isna() & mapped.notna()).any() else converted
-        return frame
+    def _require_run(self) -> Path:
+        if self._save_dir is None:
+            raise RuntimeError("The frames require a completed run(); call run() first.")
+        return self._save_dir
 
     def samples_frame(
         self,
-        scores: Mapping[str, str],
+        scores: Mapping[str, str] | None = None,
         *,
+        benchmark: str | None = None,
         metadata_keys: Sequence[str] = (),
-        params: Mapping[str, tuple[str, str]] | None = None,
-        suite: str | None = None,
-        task: str | None = None,
         include_text: bool = False,
     ) -> pandas.DataFrame:
-        """The last `run()`'s per-sample scores, one row per (pipeline, trial, sample).
-
-        Reads the `.eval` logs written under the run's log directory (the `save_dir`, or the
-        temporary directory when none was given) through the module-level `samples_frame`, and,
-        when `params` names swept constructor arguments as `column -> (spec name, argument name)`,
-        attaches each as a column keyed on `config_id`, exactly as `runs_frame` does. Rows of
-        configurations that do not sweep the argument (the baseline arm, fixed pipelines) receive
-        NaN. A column whose values are all numeric is returned with a numeric dtype; non-numeric
-        values are kept raw.
-
-        Args:
-            scores: Mapping from output column name to a score key, either `"scorer"` for a
-                scalar-valued score or `"scorer/key"` for one key of a dict-valued score. Must
-                be non-empty.
-            metadata_keys: Sample metadata entries to carry as columns.
-            params: Optional mapping from output column name to `(spec name, argument name)`.
-            suite: Suite to select; required when the results span several.
-            task: Task to select; required when the results span several.
-            include_text: Add the sample input and the model completion as `input` and
-                `completion` columns.
-
-        Returns:
-            The frame with columns `pipeline`, `config_id`, `trial_id`, `seed`, `suite`, `task`,
-            `sample_id`, the metadata columns, the score columns, optionally `input` and
-            `completion`, and one column per `params` entry.
-
-        Raises:
-            RuntimeError: If `run()` has not been called.
-            ValueError: If `scores` is empty, the selection is empty, or the results span several
-                suites or tasks without a selector.
-            KeyError: If a score key names a scorer or dict key absent from a sample.
-        """
-        if self._results is None or self._log_root is None:
-            raise RuntimeError("samples_frame() requires a completed run(); call run() first.")
-        frame = samples_frame(
-            self._results, self._log_root, scores=scores, metadata_keys=metadata_keys,
-            suite=suite, task=task, include_text=include_text,
+        """The last run's per-item frame; see the module-level `samples_frame`."""
+        return samples_frame(
+            self._require_run(), scores, benchmark=benchmark, metadata_keys=metadata_keys, include_text=include_text,
         )
-        for column, (spec_name, argument) in (params or {}).items():
-            mapped = frame["config_id"].map(self._sweep_param_map(spec_name, argument))
-            converted = pandas.to_numeric(mapped, errors="coerce")
-            # keep raw values for non-numeric arguments; otherwise take the numeric dtype
-            frame[column] = mapped if (converted.isna() & mapped.notna()).any() else converted
-        return frame
 
-    def _sweep_param_map(self, spec_name: str, argument: str) -> dict[str, Any]:
-        """`config_id -> value` for one swept constructor argument, from the run records."""
-        mapping: dict[str, Any] = {}
-        for runs in (self._results or {}).values():
-            for run in runs:
-                spec_params = (run.get("params") or {}).get(spec_name)
-                if spec_params is not None and argument in spec_params:
-                    mapping[run["config_id"]] = spec_params[argument]
-        return mapping
+    def runs_frame(self, metrics: Mapping[str, str] | None = None, *, benchmark: str | None = None) -> pandas.DataFrame:
+        """The last run's per-trial frame; see the module-level `runs_frame`."""
+        return runs_frame(self._require_run(), metrics, benchmark=benchmark)
 
 
-def runs_frame(
-    results: pandas.DataFrame,
-    metrics: Mapping[str, str],
-    *,
-    suite: str | None = None,
-    task: str | None = None,
-) -> pandas.DataFrame:
-    """One row per (pipeline, trial) with one column per requested metric.
-
-    Pivots the tidy `SteeringEval.results()` frame into the wide per-trial form that
-    `summarize_runs` and the plotting layer (`steerability.evaluation.plotting`) consume. The
-    `config` column is renamed `pipeline` and `trial` is renamed `trial_id`.
-
-    Args:
-        results: The frame returned by `SteeringEval.results()`.
-        metrics: Mapping from output column name to a metric key, either `"scorer/metric"`
-            (e.g. `"choice/accuracy"`) or a bare metric name when unambiguous. Must be
-            non-empty.
-        suite: Suite to select; required when the frame holds several.
-        task: Task to select; required when the frame holds several.
-
-    Returns:
-        The wide frame with columns `pipeline`, `config_id`, `trial_id`, `seed`, and one
-        column per `metrics` entry, sorted by (pipeline, config_id, trial_id).
-
-    Raises:
-        ValueError: If `metrics` is empty, the selection is empty, the frame spans several
-            suites or tasks without a selector, or a metric key selects duplicate
-            (config, trial) rows.
-        KeyError: If a metric key matches nothing, or a bare metric name is ambiguous.
-    """
-    if not metrics:
-        raise ValueError("metrics must name at least one output column.")
-    frame = results
-    if suite is not None:
-        frame = frame[frame["suite"] == suite]
-    if task is not None:
-        frame = frame[frame["task"] == task]
-    if frame.empty:
-        raise ValueError("No rows match the requested suite/task selection.")
-    if suite is None and frame["suite"].nunique() > 1:
-        raise ValueError(f"Results span several suites {sorted(frame['suite'].unique())}; pass suite=.")
-    if task is None and frame["task"].nunique() > 1:
-        raise ValueError(f"Results span several tasks {sorted(frame['task'].unique())}; pass task=.")
-
-    frame = frame.assign(_key=frame["scorer"].astype(str) + "/" + frame["metric"].astype(str))
-    index_cols = ["config", "config_id", "trial", "seed"]
-    wide: pandas.DataFrame | None = None
-    for column, key in metrics.items():
-        selected = frame[frame["_key"] == key] if "/" in key else frame[frame["metric"] == key]
-        if selected.empty:
-            available = sorted(frame["_key"].unique())
-            raise KeyError(f"Metric {key!r} not found in results; available: {available}.")
-        if "/" not in key and selected["_key"].nunique() > 1:
-            raise KeyError(
-                f"Metric name {key!r} is ambiguous ({sorted(selected['_key'].unique())}); "
-                "use the 'scorer/metric' form."
-            )
-        if selected.duplicated(subset=index_cols).any():
-            raise ValueError(f"Metric {key!r} has duplicate (config, trial) rows; narrow the selection.")
-        series = selected.set_index(index_cols)["value"].rename(column)
-        wide = series.to_frame() if wide is None else wide.join(series, how="outer")
-
-    return (
-        wide.reset_index()
-        .rename(columns={"config": "pipeline", "trial": "trial_id"})
-        .sort_values(["pipeline", "config_id", "trial_id"], ignore_index=True)
-    )
-
-
-_LETTER_GRADES = frozenset({"C", "I", "P", "N"})
-
-_SAMPLES_COLUMNS = ("pipeline", "config_id", "trial_id", "seed", "suite", "task", "sample_id")
-
-
-def _read_eval_log(path: str | Path):
-    """Read one `.eval` log, resolving samples. Imported lazily so `runner` stays Inspect-free.
-
-    Args:
-        path: Filesystem path to the `.eval` log.
-
-    Returns:
-        The `EvalLog`, with `samples` populated.
-    """
-    from steerability.utils.optional import require
-
-    require("inspect_ai")
-    from inspect_ai.log import read_eval_log
-
-    return read_eval_log(str(path))
-
-
-def _score_to_column(value: Any, converter) -> Any:
-    """Convert a scalar/letter score value through `converter`, keeping any other value raw.
-
-    Numbers, booleans, and the `C`/`I`/`P`/`N` letter grades are scalar and pass through the
-    `value_to_float` converter; dicts, lists, other strings, and None are returned unchanged.
-    """
-    if isinstance(value, bool) or isinstance(value, (int, float)):
-        return converter(value)
-    if isinstance(value, str) and value in _LETTER_GRADES:
-        return converter(value)
-    return value
-
-
-def samples_frame(
-    results: Mapping[str, list[dict]],
-    log_root: str | Path,
-    *,
-    scores: Mapping[str, str],
-    metadata_keys: Sequence[str] = (),
-    suite: str | None = None,
-    task: str | None = None,
-    include_text: bool = False,
-) -> pandas.DataFrame:
-    """Build a frame of per-sample scores read from the eval logs, one row per (pipeline, trial, sample).
-
-    The function reads the task log of each run record and adds one row per sample in the log. Scalar
-    score values (numbers, booleans, and the `C`/`I`/`P`/`N` letter grades) are converted with
-    `inspect_ai.scorer.value_to_float()`. Other score values are kept unchanged.
-
-    Args:
-        results: The mapping from pipeline name to run records returned by `SteeringEval.run()`.
-        log_root: The directory the run wrote its logs under (the runner's `save_dir`, or the
-            temporary directory it used when none was given). A relative log path in a record is
-            resolved against it.
-        scores: Mapping from output column name to a score key, either `"scorer"` for a scalar-valued
-            score or `"scorer/key"` for one key of a dict-valued score. Must be non-empty.
-        metadata_keys: Sample metadata entries to add as columns. A sample without an entry gets None.
-        suite: Suite to select. Required when the results span several suites.
-        task: Task to select. Required when the results span several tasks.
-        include_text: Add the sample input and the model completion as `input` and `completion`
-            columns.
-
-    Returns:
-        A `pandas.DataFrame` with columns `pipeline`, `config_id`, `trial_id`, `seed`, `suite`,
-        `task`, `sample_id`, the metadata columns, the score columns, and optionally `input` and
-        `completion`, sorted by (pipeline, config_id, trial_id, sample_id).
-
-    Raises:
-        ValueError: If `scores` is empty, the selection is empty, or the results span several
-            suites or tasks without a selector.
-        KeyError: If a score key refers to a scorer or dict key that is absent from a sample.
-        ModuleNotFoundError: If `inspect_ai` (from the `eval` extra) is not installed.
-    """
-    if not scores:
-        raise ValueError("scores must name at least one output column.")
+def _converter():
     from steerability.utils.optional import require
 
     require("inspect_ai")
     from inspect_ai.scorer import value_to_float
 
-    converter = value_to_float()
-    log_root = Path(log_root)
+    return value_to_float()
 
-    cells: list[tuple[str, dict, str, dict]] = []
-    for pipeline_name, runs in results.items():
-        for run in runs:
-            for suite_name, tasks in run["suites"].items():
-                if suite is not None and suite_name != suite:
-                    continue
-                for task_name, task_result in tasks.items():
-                    if task is not None and task_name != task:
-                        continue
-                    cells.append((pipeline_name, run, suite_name, task_name))
 
-    suites_present = sorted({suite_name for _, _, suite_name, _ in cells})
-    tasks_present = sorted({task_name for _, _, _, task_name in cells})
-    if not cells:
-        raise ValueError("No rows match the requested suite/task selection.")
-    if suite is None and len(suites_present) > 1:
-        raise ValueError(f"Results span several suites {suites_present}; pass suite=.")
-    if task is None and len(tasks_present) > 1:
-        raise ValueError(f"Results span several tasks {tasks_present}; pass task=.")
+def _score_value(scores: Mapping[str, Any], key: str, converter) -> Any:
+    """The value of a score key (`"<scorer>"` or `"<scorer>/<key>"`) in an item's scores.
 
+    Scalar values (numbers, booleans, and the `C`/`I`/`P`/`N` letter grades) are converted with
+    Inspect's `value_to_float`; other values are returned unchanged.
+
+    Raises:
+        KeyError: If the scorer or dict key is absent.
+    """
+    name, _, sub_key = key.partition("/")
+    if name not in scores:
+        raise KeyError(f"Score key {key!r} names scorer {name!r}, absent from an item; present: {sorted(scores)}.")
+    value = scores[name]
+    if sub_key:
+        if not isinstance(value, Mapping) or sub_key not in value:
+            available = sorted(value) if isinstance(value, Mapping) else value
+            raise KeyError(f"Score key {key!r} names dict key {sub_key!r}, absent from scorer {name!r}; present: {available}.")
+        value = value[sub_key]
+    if isinstance(value, bool) or isinstance(value, (int, float)) or (isinstance(value, str) and value in _LETTER_GRADES):
+        return converter(value)
+    return value
+
+
+def _read_run(save_dir: str | Path) -> tuple[dict, Store]:
+    save_dir = Path(save_dir)
+    points_path = save_dir / POINTS_FILE
+    if not points_path.exists():
+        raise FileNotFoundError(f"{save_dir} holds no {POINTS_FILE}; it is not a finished SteeringEval run.")
+    points = json.loads(points_path.read_text(encoding="utf-8"))
+    return points, Store.open(points["store"])
+
+
+def _select_benchmarks(points: dict, benchmark: str | None, required: bool) -> list[dict]:
+    benchmarks = points["benchmarks"]
+    if benchmark is not None:
+        selected = [entry for entry in benchmarks if entry["name"] == benchmark]
+        if not selected:
+            raise ValueError(f"The run has no benchmark {benchmark!r}; benchmarks are {[b['name'] for b in benchmarks]}.")
+        return selected
+    if required and len(benchmarks) > 1:
+        raise ValueError(f"The run spans several benchmarks {[b['name'] for b in benchmarks]}; pass benchmark=.")
+    return benchmarks
+
+
+def _assignment_columns(points: dict) -> list[str]:
+    columns: list[str] = []
+    for record in points["points"]:
+        for path in record["assignment"]:
+            if path not in columns:
+                columns.append(path)
+    return columns
+
+
+def samples_frame(
+    save_dir: str | Path,
+    scores: Mapping[str, str] | None = None,
+    *,
+    benchmark: str | None = None,
+    metadata_keys: Sequence[str] = (),
+    include_text: bool = False,
+) -> pandas.DataFrame:
+    """One row per pipeline, recipe, trial, benchmark, and item of a finished run.
+
+    Args:
+        save_dir: The run's directory.
+        scores: Mapping from output column to score key (`"<scorer>"` for a scalar score or
+            `"<scorer>/<key>"` for one key of a dict-valued score), or None for a single `value`
+            column holding each item's value.
+        benchmark: The benchmark to select by name; required when the run has several and
+            `scores` is given.
+        metadata_keys: Item metadata entries to add as columns (None when absent).
+        include_text: Add the item's `input` and `target` and the `completion` as columns.
+
+    Returns:
+        A frame with columns `pipeline`, `recipe_id`, `trial_id`, `benchmark`, `item_id`, `status`,
+        `tokens`, the score columns, the metadata columns, the text columns, and one column per
+        assignment path, sorted by (pipeline, recipe_id, trial_id, benchmark, item order).
+
+    Raises:
+        FileNotFoundError: If `save_dir` is not a finished run.
+        ValueError: If the benchmark selection is unknown or ambiguous.
+        KeyError: If a score key is absent from an `ok` item.
+    """
+    points, store = _read_run(save_dir)
+    benchmarks = _select_benchmarks(points, benchmark, required=scores is not None)
+    converter = _converter() if scores else None
+    assignment_columns = _assignment_columns(points)
     rows: list[dict[str, Any]] = []
-    for pipeline_name, run, suite_name, task_name in cells:
-        log_path = run["suites"][suite_name][task_name]["log"]
-        log_path = Path(log_path)
-        if not log_path.is_absolute():
-            log_path = log_root / log_path
-        log = _read_eval_log(log_path)
-        for sample in log.samples or []:
-            sample_scores = sample.scores or {}
-            metadata = sample.metadata or {}
-            row: dict[str, Any] = {
-                "pipeline": pipeline_name,
-                "config_id": run["config_id"],
-                "trial_id": run["trial_id"],
-                "seed": run["seed"],
-                "suite": suite_name,
-                "task": task_name,
-                "sample_id": sample.id,
-            }
-            for key in metadata_keys:
-                row[key] = metadata.get(key)
-            for column, score_key in scores.items():
-                scorer_name, _, sub_key = score_key.partition("/")
-                if scorer_name not in sample_scores:
-                    raise KeyError(
-                        f"Score key {score_key!r} names scorer {scorer_name!r}, absent from sample "
-                        f"{sample.id!r}; present: {sorted(sample_scores)}."
-                    )
-                value = sample_scores[scorer_name].value
-                if sub_key:
-                    if not isinstance(value, Mapping) or sub_key not in value:
-                        available = sorted(value) if isinstance(value, Mapping) else value
-                        raise KeyError(
-                            f"Score key {score_key!r} names dict key {sub_key!r}, absent from "
-                            f"scorer {scorer_name!r} on sample {sample.id!r}; present: {available}."
-                        )
-                    value = value[sub_key]
-                row[column] = _score_to_column(value, converter)
-            if include_text:
-                row["input"] = sample.input
-                row["completion"] = sample.output.completion
-            rows.append(row)
-
+    for entry in benchmarks:
+        items = {row.item_id: row for row in store.get_items(entry["id"])}
+        order = {item_id: index for index, item_id in enumerate(entry["items"])}
+        for record in points["points"]:
+            evidence = store.evidence_rows(points["protocol_id"], record["resolved_id"], entry["id"])
+            for row in evidence:
+                if row.item_id not in order or row.replicate >= points["num_trials"]:
+                    continue
+                detail = row.detail or {}
+                out: dict[str, Any] = {
+                    "pipeline": record["pipeline"], "recipe_id": record["recipe_id"], "trial_id": row.replicate,
+                    "benchmark": entry["name"], "item_id": row.item_id, "status": row.status, "tokens": row.tokens,
+                    "_order": order[row.item_id],
+                }
+                if scores is None:
+                    out["value"] = row.value
+                else:
+                    for column, key in scores.items():
+                        out[column] = _score_value(detail.get("scores", {}), key, converter) \
+                            if row.status == "ok" else None
+                payload = items[row.item_id].payload if row.item_id in items else {}
+                metadata = payload.get("metadata") or {}
+                for key in metadata_keys:
+                    out[key] = metadata.get(key)
+                if include_text:
+                    out["input"] = payload.get("input")
+                    out["target"] = payload.get("target")
+                    completion = detail.get("completion")
+                    if completion is None and row.rollout_key is not None:
+                        rollout = store.get_rollout(row.rollout_key)
+                        completion = rollout.completion if rollout is not None else None
+                    out["completion"] = completion
+                for path in assignment_columns:
+                    out[path] = record["assignment"].get(path)
+                rows.append(out)
+    score_columns = ["value"] if scores is None else list(scores)
     columns = (
-        list(_SAMPLES_COLUMNS)
-        + list(metadata_keys)
-        + list(scores)
-        + (["input", "completion"] if include_text else [])
+        ["pipeline", "recipe_id", "trial_id", "benchmark", "item_id", "status", "tokens"] + score_columns
+        + list(metadata_keys) + (["input", "target", "completion"] if include_text else []) + assignment_columns
     )
-    frame = pandas.DataFrame(rows, columns=columns)
-    return frame.sort_values(
-        ["pipeline", "config_id", "trial_id", "sample_id"], ignore_index=True,
-    )
+    frame = pandas.DataFrame(rows, columns=columns + ["_order"])
+    frame = frame.sort_values(["pipeline", "recipe_id", "trial_id", "benchmark", "_order"], ignore_index=True)
+    return frame.drop(columns="_order")
+
+
+def runs_frame(
+    save_dir: str | Path,
+    metrics: Mapping[str, str] | None = None,
+    *,
+    benchmark: str | None = None,
+) -> pandas.DataFrame:
+    """One row per pipeline, recipe, and trial of one benchmark of a finished run.
+
+    Each metric column is the mean of its score key over the trial's `ok` items, the input
+    `summarize_runs` and `evaluation/plotting.py` consume. A metric that is not a mean over items
+    is computed from `samples_frame` and merged on `["pipeline", "recipe_id", "trial_id"]`.
+
+    Args:
+        save_dir: The run's directory.
+        metrics: Mapping from output column to score key, or None for a single `value` column
+            holding the mean item value.
+        benchmark: The benchmark to select by name; required when the run has several.
+
+    Returns:
+        A frame with columns `pipeline`, `recipe_id`, `trial_id`, `n`, `errors`, the metric
+        columns, and one column per assignment path, sorted by (pipeline, recipe_id, trial_id).
+
+    Raises:
+        FileNotFoundError: If `save_dir` is not a finished run.
+        ValueError: If the benchmark selection is unknown or ambiguous.
+        KeyError: If a score key is absent from an `ok` item.
+    """
+    points, _ = _read_run(save_dir)
+    selected = _select_benchmarks(points, benchmark, required=True)
+    samples = samples_frame(save_dir, metrics, benchmark=selected[0]["name"])
+    metric_columns = ["value"] if metrics is None else list(metrics)
+    assignment_columns = _assignment_columns(points)
+    keys = ["pipeline", "recipe_id", "trial_id"]
+    rows: list[dict[str, Any]] = []
+    for (pipeline, recipe_id, trial_id), group in samples.groupby(keys, sort=True):
+        ok = group[group["status"] == "ok"]
+        row: dict[str, Any] = {
+            "pipeline": pipeline, "recipe_id": recipe_id, "trial_id": int(trial_id), "n": int(len(group)),
+            "errors": int((group["status"] == "error").sum()),
+        }
+        for column in metric_columns:
+            values = pandas.to_numeric(ok[column], errors="coerce")
+            row[column] = float(values.mean()) if values.notna().any() else float("nan")
+        for path in assignment_columns:
+            row[path] = group[path].iloc[0]
+        rows.append(row)
+    frame = pandas.DataFrame(rows, columns=keys + ["n", "errors"] + metric_columns + assignment_columns)
+    for path in assignment_columns:
+        converted = pandas.to_numeric(frame[path], errors="coerce")
+        if not (converted.isna() & frame[path].notna()).any():
+            frame[path] = converted
+    return frame.sort_values(keys, ignore_index=True)
 
 
 def summarize_runs(
     runs: pandas.DataFrame,
     metric_cols: Sequence[str],
-    group_cols: Sequence[str] = ("pipeline", "config_id"),
+    group_cols: Sequence[str] = ("pipeline", "recipe_id"),
     param_cols: Sequence[str] = (),
 ) -> pandas.DataFrame:
     """Aggregate per-trial rows into `{metric}_mean` / `{metric}_std` / `{metric}_sem` rows.
@@ -814,3 +514,6 @@ def summarize_runs(
     spread_cols = [f"{metric_col}_{stat}" for metric_col in metric_cols for stat in ("std", "sem")]
     summary[spread_cols] = summary[spread_cols].fillna(0.0)
     return summary
+
+
+__all__ = ["SteeringEval", "runs_frame", "samples_frame", "summarize_runs"]

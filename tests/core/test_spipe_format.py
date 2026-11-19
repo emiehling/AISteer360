@@ -1,4 +1,4 @@
-"""Manifest schema validation, archive packing, and directory save and verify behavior for `spipe/1`."""
+"""Manifest schema validation, archive packing, and directory save and verify behavior for `spipe/2`."""
 import json
 import shutil
 import warnings
@@ -12,7 +12,6 @@ from steerability.algorithms.state_control.caa.control import CAA
 from steerability.spipe import SPipe
 from steerability.spipe.errors import SpipeFormatError, SpipeSaveError
 from steerability.spipe.format import pack_zip, unpack_zip, validate_manifest
-from steerability.spipe.freeze import _package_versions
 
 TINY_MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 KIND = {"positives": ["kind a", "kind b"], "negatives": ["mean a", "mean b"]}
@@ -21,7 +20,8 @@ CALM = {"positives": ["calm a", "calm b"], "negatives": ["angry a", "angry b"]}
 
 def minimal_manifest(**overrides):
     manifest = {
-        "format": "spipe/1",
+        "format": "spipe/2",
+        "recipe_id": "0123456789abcdef",
         "created_at": "2026-08-25T00:00:00Z",
         "toolkit_version": "0.5.0",
         "code_dependent": False,
@@ -37,26 +37,26 @@ def test_minimal_manifest_validates():
     validate_manifest(minimal_manifest())
 
 
-def test_lock_versions_records_the_toolkit_under_its_package_name():
-    versions = _package_versions()
-    assert "steerability" in versions
+def test_a_frozen_lock_records_the_protocol():
+    from steerability.algorithms.core.protocol import Protocol, ProtocolFacts
+
+    protocol = Protocol.create("org/model")
     lock = {
-        "config_id": "cfg",
-        "recipe_id": "rec",
-        "model_fingerprint": None,
-        "tokenizer_fingerprint": None,
-        "torch_dtype": None,
-        "steer_backend_spec_hash": None,
-        "fit": "auto",
-        "seed": None,
-        "versions": versions,
+        "protocol_id": protocol.id,
+        "protocol": protocol.identity(),
+        "facts": ProtocolFacts().to_dict(),
+        "certificate": {"schema": "certificate/1"},
     }
     validate_manifest(minimal_manifest(lock=lock))
+    with pytest.raises(SpipeFormatError, match="certificate"):
+        validate_manifest(minimal_manifest(lock={**lock, "certificate": {"schema": "other"}}))
+    with pytest.raises(SpipeFormatError, match="unknown key"):
+        validate_manifest(minimal_manifest(lock={**lock, "config_id": "x"}))
 
 
 def test_version_refusal_names_versions():
-    with pytest.raises(SpipeFormatError, match=r"'spipe/2'.*'spipe/1'"):
-        validate_manifest(minimal_manifest(format="spipe/2"))
+    with pytest.raises(SpipeFormatError, match=r"'spipe/1'.*'spipe/2'"):
+        validate_manifest(minimal_manifest(format="spipe/1"))
 
 
 def test_unknown_top_level_key_rejected():
@@ -65,19 +65,19 @@ def test_unknown_top_level_key_rejected():
 
 
 def test_unknown_entry_key_rejected():
-    entry = {"method": "state_control/caa", "enabled": True, "args": {}, "resolved": None, "extra": 1}
+    entry = {"method": "state_control/caa", "args": {}, "resolved": None, "extra": 1}
     with pytest.raises(SpipeFormatError, match=r"controls\[0\].*unknown key"):
         validate_manifest(minimal_manifest(controls=[entry]))
 
 
-def test_resolved_object_and_array_forms():
+def test_resolved_is_null_or_a_non_empty_array():
     resolved = {"method": "state_control/caa", "args": {}, "artifacts": {}, "origin": None}
-    entry = {"method": "state_control/caa", "enabled": True, "args": {}, "resolved": resolved}
+    entry = {"method": "state_control/caa", "args": {}, "resolved": [resolved, dict(resolved)]}
     validate_manifest(minimal_manifest(controls=[entry]))
-    entry_list = dict(entry, resolved=[resolved, dict(resolved)])
-    validate_manifest(minimal_manifest(controls=[entry_list]))
-    with pytest.raises(SpipeFormatError, match="non-empty"):
-        validate_manifest(minimal_manifest(controls=[dict(entry, resolved=[])]))
+    validate_manifest(minimal_manifest(controls=[dict(entry, resolved=None)]))
+    for invalid in ([], resolved):
+        with pytest.raises(SpipeFormatError, match="non-empty array"):
+            validate_manifest(minimal_manifest(controls=[dict(entry, resolved=invalid)]))
 
 
 @pytest.mark.parametrize("artifact_id", ["notahash", "sha256:x/../../outside", "sha256:" + "A" * 64])
@@ -85,7 +85,7 @@ def test_artifact_record_validation(artifact_id):
     record = {"id": artifact_id, "encoding": "tensors", "type": "SteeringVector",
               "artifact_class": "direction", "source": None, "fit_digest": None, "provenance": {}}
     resolved = {"method": "state_control/caa", "args": {}, "artifacts": {"v": record}, "origin": None}
-    entry = {"method": "state_control/caa", "enabled": True, "args": {}, "resolved": resolved}
+    entry = {"method": "state_control/caa", "args": {}, "resolved": [resolved]}
     with pytest.raises(SpipeFormatError, match="sha256"):
         validate_manifest(minimal_manifest(controls=[entry]))
 
@@ -101,7 +101,7 @@ def test_artifact_record_field_types(change, field):
     record = {"id": "sha256:" + "a" * 64, "encoding": "tensors", "type": "SteeringVector",
               "artifact_class": "direction", "source": None, "fit_digest": None, "provenance": {}, **change}
     resolved = {"method": "state_control/caa", "args": {}, "artifacts": {"v": record}, "origin": None}
-    entry = {"method": "state_control/caa", "enabled": True, "args": {}, "resolved": resolved}
+    entry = {"method": "state_control/caa", "args": {}, "resolved": [resolved]}
     with pytest.raises(SpipeFormatError, match=rf"\.{field}"):
         validate_manifest(minimal_manifest(controls=[entry]))
 

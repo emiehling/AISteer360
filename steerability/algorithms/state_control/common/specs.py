@@ -274,7 +274,9 @@ class Intervention:
 
         gate = self.gate
         if gate is not None and not isinstance(gate, Gate):
-            gate = gate.resolve_gate(model, tokenizer, layout=layout, session=session)
+            from steerability.algorithms.core.fits import resolve_source
+
+            gate = resolve_source(gate, model, tokenizer, layout=layout, session=session)
         if gate is not None:
             if not isinstance(gate, Gate):
                 raise ValueError(

@@ -71,8 +71,8 @@ def test_gepa_freeze_roundtrip_and_code_gating(tmp_path, model_and_tok):
     spipe = pipeline.to_spipe()
     assert spipe.code_dependent
     entry = spipe.manifest["controls"][0]
-    assert entry["resolved"]["method"] == "input_control/gepa"
-    assert entry["resolved"]["artifacts"]["memory"]["type"] == "TextMemory"
+    assert entry["resolved"][0]["method"] == "input_control/gepa"
+    assert entry["resolved"][0]["artifacts"]["memory"]["type"] == "TextMemory"
 
     saved = spipe.save(tmp_path / "gepa.spipe")
     with pytest.raises(SpipeCodeRefError, match="allow_code"):

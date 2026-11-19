@@ -18,7 +18,6 @@ from steerability.algorithms.input_control.base import InputControl
 from steerability.algorithms.state_control.pasta.control import PASTA
 from steerability.evaluation.provider import ProviderOptions, as_inspect_model
 from steerability.evaluation.solvers import runtime_kwargs_solver
-from steerability.evaluation.suite import InspectSuite
 from tests.evaluation.conftest import CHAT_TEMPLATE
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
@@ -120,25 +119,6 @@ class TestMessagesPathIntegration:
         for received in pasta.received_substrings:
             assert isinstance(received, list)
             assert all(isinstance(group, list) for group in received)
-
-    def test_suite_run_over_eval_set(self, tmp_path):
-        pipeline = _chat_pipeline()
-        suite = InspectSuite(
-            name="target",
-            tasks=(Task(
-                dataset=MemoryDataset([Sample(input="the cat", target="the") for _ in range(3)]),
-                solver=[generate()],
-                scorer=includes(),
-                name="tiny_includes",
-            ),),
-            generate_overrides={"temperature": 0, "max_tokens": 4},
-        )
-        results = suite.run(pipeline, log_dir=tmp_path / "logs", model_name="cfg-a")
-        (task_result,) = results.values()
-        assert "includes/accuracy" in task_result["metrics"]
-        assert "includes/stderr" in task_result["metrics"]
-        assert task_result["n"] == 3
-        assert (tmp_path / "logs" / task_result["log"]).exists()
 
 
 class TestTextPathIntegration:

@@ -78,6 +78,8 @@ from steerability.algorithms.structural_control.base import StructuralControl
 from steerability.utils.tokenization import ensure_pad_token, to_left_pad
 
 if TYPE_CHECKING:
+    from steerability.algorithms.core.protocol import Protocol
+    from steerability.algorithms.core.sweeps import BackendPool
     from steerability.spipe.spipe import SPipe
 
 logger = logging.getLogger(__name__)
@@ -239,6 +241,11 @@ class SteeringPipeline:
             `device` is set from it at construction.
         tokenizer (PreTrainedTokenizerBase, optional): Preloaded tokenizer, normalized with
             `ensure_pad_token` and injected into controls at construction.
+        backend_pool (BackendPool, optional): A pool that keeps engine backends across pipelines
+            (`PipelineFactory` passes its own). The pipeline takes its engine backends from the
+            pool, keyed by spec and structural artifacts, and `release_backends()` leaves them
+            running; the pool releases them. The in-process Hugging Face backend, which adopts
+            this pipeline's own model, is never pooled.
 
     Raises:
         RuntimeError: If `generate()` is called before `steer()`
@@ -296,6 +303,7 @@ class SteeringPipeline:
     fit: Literal["auto", "in_process"] = "auto"
     model: PreTrainedModel | None = field(default=None, repr=False)
     tokenizer: PreTrainedTokenizerBase | None = field(default=None, repr=False)
+    backend_pool: "BackendPool | None" = field(default=None, repr=False)
 
     # steer-filled fields
     _support_report: SupportReport | None = field(init=False, default=None, repr=False)
@@ -582,6 +590,11 @@ class SteeringPipeline:
         the spec and receive the pipeline's structural artifacts to serve.
         """
         backend = self._backends.get(spec)
+        if backend is None and spec.kind != "huggingface" and self.backend_pool is not None:
+            artifacts = self._structural_artifacts
+            return self.backend_pool.get(
+                spec, artifacts, lambda: resolve_backend_class(spec)(spec, artifacts=artifacts),
+            )
         if backend is None:
             backend_cls = resolve_backend_class(spec)
             if spec.kind == "huggingface":
@@ -593,6 +606,8 @@ class SteeringPipeline:
 
     def release_backends(self) -> None:
         """Release every backend this pipeline constructed and empty the cache.
+
+        Backends the pipeline took from its `backend_pool` are not released; the pool owns them.
 
         Subsequent operations construct fresh backends against the same specs. Lowered
         intervention entries and staged artifacts persist, so a released pipeline remains usable
@@ -918,21 +933,33 @@ class SteeringPipeline:
         # return steered pipeline
         self._is_steered = True
 
-    def to_spipe(self, *, freeze: bool | None = None, model_ref: str | None = None) -> "SPipe":
+    def to_spipe(
+        self,
+        *,
+        freeze: bool | None = None,
+        model_ref: str | None = None,
+        protocol: "Protocol | None" = None,
+        certificate: Mapping | None = None,
+    ) -> "SPipe":
         """Serialize this pipeline as an `SPipe`.
 
         A steered pipeline freezes by default: each enabled control's steer-time products are
         exported into a content-addressed artifact store and its resolved constructor form is
-        recorded alongside the recipe, so the loaded pipeline steers cheaply and model-free.
-        An unsteered pipeline yields a recipe-only spipe; `freeze=False` forces recipe-only
-        from a steered pipeline. An unsteered pipeline freezes when every enabled control is
-        recipe-frozen (FACTS access, no fits, no exported state), which needs no model; the lock
-        then records no model or tokenizer fingerprint. Otherwise `freeze=True` raises.
+        recorded alongside the recipe, so the loaded pipeline steers cheaply and model-free. The
+        lock of a frozen bundle records the protocol it was fitted under (`Protocol.from_pipeline`
+        of this pipeline unless `protocol` is given) and the facts observed on the loaded model.
+        An unsteered pipeline yields a recipe-only spipe; `freeze=False` forces recipe-only from a
+        steered pipeline. An unsteered pipeline freezes when every enabled control is
+        recipe-frozen (FACTS access, no fits, no exported state), which needs no model. Otherwise
+        `freeze=True` raises. Disabled controls are not written.
 
         Args:
             freeze: Freeze the resolution. Defaults to the pipeline's steered state.
             model_ref: Explicit model reference recorded in the spipe, overriding
                 `model_name_or_path` and the loaded model's `name_or_path`.
+            protocol: The protocol recorded in a frozen bundle's lock.
+            certificate: A mapping with `"schema": "certificate/1"` recorded in a frozen bundle's
+                lock; requires freezing.
 
         Returns:
             The built `SPipe` (call its `save()` to write a `.spipe` file or directory).
@@ -940,11 +967,36 @@ class SteeringPipeline:
         Raises:
             SpipeSaveError: If no model reference is resolvable, a control is unregistered or
                 cannot serialize, `freeze=True` is requested on an unsteered pipeline whose
-                controls are not all recipe-frozen, or a control cannot freeze.
+                controls are not all recipe-frozen, a control cannot freeze, or a certificate is
+                given without freezing or is malformed.
         """
         from steerability.spipe.freeze import build_spipe
 
-        return build_spipe(self, freeze=freeze, model_ref=model_ref)
+        return build_spipe(self, freeze=freeze, model_ref=model_ref, protocol=protocol, certificate=certificate)
+
+    def fit_staged(self) -> None:
+        """Run `check()` and only the steer steps whose venue is `"stage"`.
+
+        The stage loads a temporary in-process model, steers the stage-venued controls on it, and
+        frees it (see `steer()`). No engine backend is built and nothing is lowered, and the
+        pipeline is not steered afterwards. `PipelineFactory.prepare` calls this so that fits that
+        need the stage run before an engine boots and land in the active fit cache. On the Hugging
+        Face backend no step stages, so the call only runs the check.
+
+        Raises:
+            UnsupportedPipelineError: If any enabled control is unsupported at the generate phase.
+        """
+        with self._prompt_lock:
+            report = self.check()
+            report.raise_for("generate")
+            spec = self._resolve_backend_spec(self.backend)
+            if spec.kind == "huggingface" or not report.plan.stages:
+                return
+            self._resolve_client_tokenizer(spec)
+            controls = self._enabled_controls()
+            steps = {id(control): step for control, step in zip(controls, report.plan.steps)}
+            stage_controls = [control for control in controls if steps[id(control)].venue == "stage"]
+            self._run_stage(spec, stage_controls, steps, {})
 
     def _enabled_controls(self) -> list:
         """Enabled controls in global steer order (structural, input, state, output)."""
@@ -1019,8 +1071,8 @@ class SteeringPipeline:
         the engine starts. Without stage-venued steps, the structural artifacts the controls
         configure (e.g., an artifact loader's checkpoint or adapter) are collected before the
         engine starts. The session-venued steps then run through the engine session. When the
-        plan runs any fit on the engine session, one single-prompt capture smoke test runs before
-        the session-venued steps. The test fails when the engine's negotiated capabilities lack
+        plan runs any capture-access fit on the engine session, one single-prompt capture smoke
+        test runs before the session-venued steps. The test fails when the engine's negotiated capabilities lack
         `Capability.HIDDEN_CAPTURE` or when the capture raises. If the test fails, the engine is
         released, and the controls with those fits run on a new stage instead. The stage model
         and the engine are never loaded at the same time. The new stage loads the model that the
@@ -1053,7 +1105,10 @@ class SteeringPipeline:
 
         backend = self._backend_for(spec)
         session_fitters = {planned.control for planned in plan.fits if planned.venue == "session"}
-        fit_controls = [c for c in session_controls if type(c).__name__ in session_fitters]
+        fit_controls = [
+            c for c in session_controls
+            if type(c).__name__ in session_fitters and steps[id(c)].access == ModelAccess.CAPTURE
+        ]
 
         session = backend.open_session()
         try:
@@ -1070,7 +1125,10 @@ class SteeringPipeline:
                         UserWarning,
                     )
                     session.close()
-                    self.release_backends()
+                    if self.backend_pool is not None:
+                        self.backend_pool.release_all(for_fits=True)
+                    else:
+                        self.release_backends()
                     self._run_stage(
                         spec, fit_controls, steps, steer_kwargs, artifacts=self._structural_artifacts,
                     )

@@ -60,7 +60,7 @@ running batch. A request therefore returns as soon as its own generation finishe
 no poison isolation, since every dispatch is one request and its error is that request's own.
 
 In per-request mode a request's seed is a function of the base seed and the request. The dispatcher replaces a
-seeded request's `seed` with `derive_item_seed(seed, f"request:{digest}", 0)`, where `digest` is the SHA-256 of the
+seeded request's `seed` with `derive_seed(seed, f"request:{digest}", 0)`, where `digest` is the SHA-256 of the
 canonical JSON of the request's prompt and its retained per-sample runtime kwargs. A seeded request therefore
 reproduces independently of concurrency and arrival order, distinct prompts sample distinct streams, and two
 requests with identical prompts and per-sample kwargs sample the same stream. `seed_scope` has no effect in
@@ -73,9 +73,8 @@ offline vLLM session aborts the request on the engine). In batching mode one dis
 cancelled record does not cancel its dispatch.
 """
 import hashlib
-import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from steerability.utils.optional import require
@@ -85,8 +84,7 @@ import anyio
 import anyio.to_thread
 
 from steerability.algorithms.core.execution.cancellation import CancelToken
-from steerability.algorithms.core.execution.fanout import derive_item_seed
-from steerability.algorithms.core.identity import canonical_value
+from steerability.algorithms.core.identity import canonical_json, derive_seed
 from steerability.algorithms.core.output import Output
 
 if TYPE_CHECKING:
@@ -107,7 +105,8 @@ class BatchRequest:
             declared `"row"`-scoped.
         num_choices: Number of candidates requested; values above 1 dispatch as a singleton.
         batch_key: Digest governing which records may share a dispatch.
-        done: Event set by the leader once the record holds its result.
+        done: Event set by the leader once the record holds its result; created when the record is
+            served, so a record can be built outside an event loop.
         output: The record's `Output` on success, else None.
         error: The record's exception on failure, else None.
         cancel_token: The request's cancellation token in per-request mode, else None.
@@ -118,15 +117,18 @@ class BatchRequest:
     per_sample_runtime_kwargs: dict[str, Any]
     num_choices: int
     batch_key: str
-    done: anyio.Event = field(default_factory=anyio.Event)
+    done: anyio.Event | None = None
     output: Output | None = None
     error: BaseException | None = None
     cancel_token: CancelToken | None = None
 
 
-class _RequestAdmission:
-    """Request admission shared by the dispatchers: validation, runtime-kwarg partitioning by declared
-    scope, and inert-kwarg accounting.
+class RequestAdmission:
+    """Request admission shared by the dispatchers and direct generation: validation, runtime-kwarg
+    partitioning by declared scope, inert-kwarg accounting, the batch key, and the batched call.
+
+    `admit` and `run_batch` are synchronous, so direct generation (`evaluation/items.py`) uses them
+    without the async collator.
 
     Args:
         pipeline: The steered pipeline.
@@ -246,27 +248,25 @@ class _RequestAdmission:
             gen_kwargs=dict(gen_kwargs),
             per_sample_runtime_kwargs=retained,
             num_choices=max(1, int(num_choices)),
-            batch_key=self._batch_key(gen_kwargs, retained, num_choices),
+            batch_key=self.batch_key(gen_kwargs, retained, num_choices),
         )
 
     @staticmethod
-    def _batch_key(
+    def batch_key(
         gen_kwargs: Mapping[str, Any],
         per_sample_runtime_kwargs: Mapping[str, Any],
         num_choices: int,
     ) -> str:
-        """Digest of the record's dispatch-compatibility identity."""
-        payload = json.dumps(
-            {
-                "gen_kwargs": canonical_value(dict(gen_kwargs)),
-                "per_sample_keys": sorted(per_sample_runtime_kwargs),
-                "single_candidate": num_choices <= 1,
-            },
-            sort_keys=True,
-        )
+        """Digest of a record's dispatch-compatibility identity: its generation kwargs, the keys of
+        its per-sample runtime kwargs, and whether it requests one candidate."""
+        payload = canonical_json({
+            "gen_kwargs": dict(gen_kwargs),
+            "per_sample_keys": sorted(per_sample_runtime_kwargs),
+            "single_candidate": num_choices <= 1,
+        })
         return hashlib.sha256(payload.encode()).hexdigest()
 
-    def _run_batch(self, batch: list[BatchRequest]) -> list[Output]:
+    def run_batch(self, batch: list[BatchRequest]) -> list[Output]:
         """Issue one `pipeline.generate` call for `batch`, returning one `Output` per record.
 
         Raises:
@@ -305,7 +305,7 @@ class _RequestAdmission:
         return outputs
 
 
-class LockLeaderCollator(_RequestAdmission):
+class LockLeaderCollator(RequestAdmission):
     """Collate concurrent async requests into batched `pipeline.generate()` calls.
 
     See the module docstring for the protocol, the batch-key semantics, poison isolation, and the
@@ -360,6 +360,7 @@ class LockLeaderCollator(_RequestAdmission):
         Raises:
             Exception: The record's own dispatch exception, re-raised on the requesting task.
         """
+        record.done = anyio.Event()
         self._queue.append(record)
         try:
             async with self._lock:
@@ -404,14 +405,14 @@ class LockLeaderCollator(_RequestAdmission):
         the serial poison-isolation pass.
         """
         try:
-            outputs = self._run_batch(batch)
+            outputs = self.run_batch(batch)
         except Exception as error:
             if len(batch) == 1:
                 batch[0].error = error
                 return
             for member in batch:
                 try:
-                    member.output = self._run_batch([member])[0]
+                    member.output = self.run_batch([member])[0]
                 except Exception as member_error:
                     member.error = member_error
             if all(member.error is None for member in batch):
@@ -438,17 +439,15 @@ def request_seed(seed: int, prompt: Any, per_sample_runtime_kwargs: Mapping[str,
         per_sample_runtime_kwargs: The request's retained per-sample runtime kwargs.
 
     Returns:
-        `derive_item_seed(seed, f"request:{digest}", 0)`, where `digest` is the SHA-256 of the
-        canonical JSON of the prompt and the per-sample runtime kwargs.
+        `derive_seed(seed, f"request:{digest}", 0)`, where `digest` is the SHA-256 of the canonical
+        JSON of the prompt and the per-sample runtime kwargs.
     """
-    payload = json.dumps(
-        canonical_value({"prompt": prompt, "per_sample": dict(per_sample_runtime_kwargs)}), sort_keys=True,
-    )
+    payload = canonical_json({"prompt": prompt, "per_sample": dict(per_sample_runtime_kwargs)})
     digest = hashlib.sha256(payload.encode()).hexdigest()
-    return derive_item_seed(seed, f"request:{digest}", 0)
+    return derive_seed(seed, f"request:{digest}", 0)
 
 
-class PerRequestDispatcher(_RequestAdmission):
+class PerRequestDispatcher(RequestAdmission):
     """Dispatch each admitted request at once in its own worker thread, at most `max_concurrency` in flight.
 
     Each request becomes one single-prompt (or, for multiple candidates, one bare-conversation)
@@ -528,6 +527,6 @@ class PerRequestDispatcher(_RequestAdmission):
                 record.gen_kwargs["seed"] = request_seed(
                     int(record.gen_kwargs["seed"]), record.prompt, record.per_sample_runtime_kwargs,
                 )
-            record.output = self._run_batch([record])[0]
+            record.output = self.run_batch([record])[0]
         except Exception as error:
             record.error = error

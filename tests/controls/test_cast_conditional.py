@@ -154,7 +154,6 @@ class TestConfigMatrix:
 
         source = ConditionPointSearch()
         assert source.resolve_gate(None, wordlevel_tokenizer()) is None
-        assert source.resolved_point is None
 
     def test_valid_manual_point(self):
         args = CASTArgs(**self._base(
@@ -286,7 +285,7 @@ class TestConditionMaskThreading:
 
     def _steered_control(self):
         control = _build_cast(condition_threshold=0.0)
-        _steer_pipeline(control)  # attaches tokenizer + resolves the condition config
+        _, self._model, _ = _steer_pipeline(control)  # attaches tokenizer + resolves the condition config
         return control
 
     def _built_prompt_mask(self, control, ids, attention_mask, monkeypatch):
@@ -300,7 +299,7 @@ class TestConditionMaskThreading:
             return original(interventions, layout, prompt_lens, prompt_mask, model=model)
 
         monkeypatch.setattr(runtime_module, "build_hooks", capture)
-        control.get_hooks(ids, runtime_kwargs=None, attention_mask=attention_mask)
+        control.get_hooks(ids, runtime_kwargs=None, attention_mask=attention_mask, model=self._model)
         return captured["prompt_mask"]
 
     def test_supplied_attention_mask_used_verbatim(self, monkeypatch):

@@ -259,6 +259,9 @@ class DecodeContext:
             `artifact_class` and `provenance` then determine whether and how a decoded
             `SteeringVector` is verified at `steer()`. The sidecar supplies the reconstruction
             metadata.
+        verify_artifacts: Whether a `"direction"` or `"calibrated"` `SteeringVector` decodes to a
+            `VerifiedPrecomputed` source that checks its provenance at `steer()`. Frozen entries
+            decode with it; recipe args decode their vectors as plain `SteeringVector`s.
     """
 
     store: ArtifactStore | None = None
@@ -267,6 +270,7 @@ class DecodeContext:
     verify: str = "strict"
     data_mode: str = "load"
     manifest_records: Mapping[str, ArtifactRecord] = field(default_factory=dict)
+    verify_artifacts: bool = True
 
 
 def _qualname(obj_type: type) -> str:
@@ -808,7 +812,7 @@ def _decode_artifact(ref: Mapping, ctx: DecodeContext, path: str) -> Any:
             return tensors["value"]
         if record.type == "SteeringVector":
             vector = _rebuild_steering_vector(tensors, record, ctx)
-            if manifest_record.artifact_class in ("direction", "calibrated"):
+            if ctx.verify_artifacts and manifest_record.artifact_class in ("direction", "calibrated"):
                 from steerability.algorithms.state_control.common.sources import VerifiedPrecomputed
 
                 return VerifiedPrecomputed(

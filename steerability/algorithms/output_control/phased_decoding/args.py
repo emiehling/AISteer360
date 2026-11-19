@@ -17,8 +17,8 @@ class PhasedDecodingArgs(BaseArgs):
           unbounded (bounded by the call's own kwargs/criteria). `until_token_ids` is the
           backend-portable form for a delimiter that tokenizes to a special token.
 
-    Plans whose `fixed` values are all strings are fully JSON-serializable (sweepable through
-    `ControlSpec` and log-friendly). Grammar validation happens in the control's `_configure()`.
+    Plans whose `fixed` values are all strings are fully JSON-serializable (variable in a
+    `Template` and log-friendly). Grammar validation happens in the control's `_configure()`.
 
     Under a chat template that opens the reasoning block in its generation prompt (the case
     `ProviderOptions.reasoning_opened_at_start` describes), a plan whose first phase is `fixed`

@@ -341,7 +341,7 @@ class TestHeadProfileResolution:
             result = profile.resolve(pasta, model, tokenizer, session=session)
         assert sorted(result.selected) == [(0, 0), (1, 1)]
 
-    def test_head_profile_memoizes_per_model(self):
+    def test_head_profile_keeps_no_state_from_a_resolution(self):
         pasta, model, tokenizer = _steered_dict_pasta(num_layers=2, heads=3)
         calls = {"n": 0}
 
@@ -354,23 +354,17 @@ class TestHeadProfileResolution:
             rows=self._rows(4), scorer=counting_scorer, alpha=100.0, num_heads=2, min_lift=-1.0,
             gen_kwargs={"max_new_tokens": 4, "do_sample": False},
         )
-        # two controls sharing one recipe on one model: the second reuses the memoized result.
-        # differing only in the control's own alpha does not change the fit.
+        # the recipe stores nothing, so a second control profiles again; the fit cache serves repeats
         pasta_a = PASTA(head_config=profile, alpha=25.0, scale_position="include")
         pasta_a.steer(model, tokenizer, session=session)
         after_first = calls["n"]
         pasta_b = PASTA(head_config=profile, alpha=200.0, scale_position="include")
         pasta_b.steer(model, tokenizer, session=session)
-        assert calls["n"] == after_first  # no additional scorer calls on the memo hit
-        assert pasta_a.head_profile is pasta_b.head_profile
-
-        # a different model instance refits
-        other = tiny_llama(num_layers=2, hidden=12, heads=3)
-        session_other = _FakeSession(tokenizer, lift_map={(0, 0): 0.5})
-        profile.scorer = lambda r, row: session_other.current_score
-        pasta_c = PASTA(head_config=profile, alpha=100.0, scale_position="include")
-        pasta_c.steer(other, tokenizer, session=session_other)
-        assert pasta_c.head_profile is not pasta_a.head_profile
+        assert calls["n"] == 2 * after_first
+        assert pasta_a.head_profile is not pasta_b.head_profile
+        assert pasta_a.head_profile.head_config == pasta_b.head_profile.head_config
+        assert pasta_a.fit_identity() == pasta_b.fit_identity()
+        assert not {"_model_ref", "_result"} & set(vars(profile))
 
 
 class TestHeadProfileResultRoundTrip:

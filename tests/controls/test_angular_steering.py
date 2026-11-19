@@ -247,7 +247,7 @@ def test_angular_precomputed_vector(model_and_tokenizer, device: torch.device, c
 
 
 def test_steer_does_not_mutate_caller_vector(model_and_tokenizer, device: torch.device):
-    """steer() must not mutate or narrow a caller-supplied plane (safe for ControlSpec sweeps)."""
+    """steer() must not mutate or narrow a caller-supplied plane (safe across template points)."""
     base_model, tokenizer = model_and_tokenizer
     model = base_model.to(device)
 

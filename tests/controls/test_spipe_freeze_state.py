@@ -87,9 +87,9 @@ def test_cast_lowers_to_activation_adapter(tmp_path, llama):
     spipe = pipeline.to_spipe()
     entry = spipe.manifest["controls"][0]
     assert entry["method"] == "state_control/cast"
-    assert entry["resolved"]["method"] == "state_control/activation_adapter"
-    assert entry["resolved"]["origin"]["method"] == "state_control/cast"
-    artifacts = entry["resolved"]["artifacts"]
+    assert entry["resolved"][0]["method"] == "state_control/activation_adapter"
+    assert entry["resolved"][0]["origin"]["method"] == "state_control/cast"
+    artifacts = entry["resolved"][0]["artifacts"]
     assert artifacts["intervention_0/transform"]["artifact_class"] == "direction"
     assert artifacts["intervention_0/gate"]["artifact_class"] == "calibrated"
     assert artifacts["intervention_0/gate"]["source"] == "ConditionPointSearch"
@@ -113,7 +113,7 @@ def test_cast_with_partial_behavior_coverage_reloads(tmp_path, llama):
     reference = pipeline.generate(text="Hello there", max_new_tokens=6, do_sample=False)
 
     spipe = pipeline.to_spipe()
-    resolved_args = spipe.manifest["controls"][0]["resolved"]["args"]
+    resolved_args = spipe.manifest["controls"][0]["resolved"][0]["args"]
     assert resolved_args["layer_ids"] == [0, 1]
     assert resolved_args["require_coverage"] is False
 
@@ -284,7 +284,7 @@ def test_precomputed_recipe_refreezes(tmp_path, llama):
 
     spipe = pipeline.to_spipe()
     entry = spipe.manifest["controls"][0]
-    record = entry["resolved"]["artifacts"]["steering_vector"]
+    record = entry["resolved"][0]["artifacts"]["steering_vector"]
     assert record["artifact_class"] == "direction"
     assert record["fit_digest"] is None  # no fit produced the vector
 
@@ -324,18 +324,17 @@ def test_recipe_artifact_of_another_control_does_not_shadow_fit_record(tmp_path,
     steer_quietly(pipeline)
     vector = caa.export_state()["steering_vector"]
 
-    # a disabled control is not frozen but its recipe args are still encoded, and the vector it
-    # carries has the same content id as the one the second CAA's fit exports
+    # the adapter's recipe args are encoded after the freeze walk, and the vector it carries has
+    # the same content id as the one the CAA's fit exports
     adapter = ActivationAdapter(transform=AdditiveTransform(vector), layer_ids=[1])
-    adapter.enabled = False
     refit = CAA(data=pairs, train_spec=train_spec, layer_id=1)
     pipeline = SteeringPipeline(
-        model=model, tokenizer=tokenizer, controls=[adapter, refit], model_name_or_path=LLAMA,
+        model=model, tokenizer=tokenizer, controls=[refit, adapter], model_name_or_path=LLAMA,
     )
     steer_quietly(pipeline)
     spipe = pipeline.to_spipe()
 
-    record = spipe.manifest["controls"][1]["resolved"]["artifacts"]["steering_vector"]
+    record = spipe.manifest["controls"][0]["resolved"][0]["artifacts"]["steering_vector"]
     assert record["artifact_class"] == "direction"
     assert record["source"] == "ContrastiveFit"
     assert record["fit_digest"] is not None
@@ -343,7 +342,7 @@ def test_recipe_artifact_of_another_control_does_not_shadow_fit_record(tmp_path,
     saved = spipe.save(tmp_path / "shadowed")
     manifest_path = saved / "spipe.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest["controls"][1]["args"]["data"]["fields"]["positives"] = ["edited a", "edited b"]
+    manifest["controls"][0]["args"]["data"]["fields"]["positives"] = ["edited a", "edited b"]
     manifest_path.write_text(json.dumps(manifest))
-    with pytest.raises(SpipeStaleError, match=r"controls\[1\]"):
+    with pytest.raises(SpipeStaleError, match=r"controls\[0\]"):
         SPipe.load(saved)

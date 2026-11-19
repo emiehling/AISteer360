@@ -35,7 +35,6 @@ from steerability.algorithms.core.execution.contracts import (
 from steerability.algorithms.core.execution.fanout import (
     PartialBatchError,
     TransportError,
-    derive_item_seed,
     run_bounded,
     with_transport_retries,
 )
@@ -116,7 +115,6 @@ __all__ = [
     "TransportError",
     "any_of",
     "capabilities_for_spec",
-    "derive_item_seed",
     "evaluate_support",
     "merge_lowered_params",
     "needs",

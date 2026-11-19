@@ -1,306 +1,297 @@
-"""Configuration sweeps over one base model: expansion, pre-flight support checks, and pipeline lifecycle.
+"""Sweeps over recipes under one protocol: expansion, support checks, and shared execution.
 
-One configuration is one concrete list of control instances. `expand_configurations` enumerates the
-configurations of a pipelines mapping (fixed controls, `ControlSpec` sweeps, and the empty baseline)
-as `ConfigPoint`s carrying canonical identity; `preflight` evaluates backend support per point before
-any model or engine work; `PipelineFactory` builds, steers, and releases one pipeline per point with a
-shared preloaded base model on the Hugging Face backend and a fingerprint tripwire over it.
+`expand_configurations` enumerates the points of a pipelines mapping (recipes and templates by
+name), and `preflight` checks backend support for every point before any model or engine work.
+`PipelineFactory` builds and steers one pipeline per recipe. It serves fits from the fit cache,
+shares one preloaded base model on the Hugging Face backend, and keeps engine backends in a
+`BackendPool` across recipes, so one engine serves every recipe whose fits are stored.
 """
+from __future__ import annotations
+
 import gc
-import itertools
 import logging
+import time
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
+from steerability.algorithms.core.execution.contracts import Capability
+from steerability.algorithms.core.execution.payloads import Artifact
 from steerability.algorithms.core.execution.spec import BackendSpec
-from steerability.algorithms.core.identity import (
-    config_descriptor_from_controls,
-    config_descriptor_from_specs,
-    config_digest,
+from steerability.algorithms.core.fits import (
+    FitCache,
+    apply_control_hits,
+    fit_cache_scope,
+    record_control_fits,
+    resolved_id,
+    weights_context,
 )
 from steerability.algorithms.core.internals.fingerprint import model_fingerprint
-from steerability.algorithms.core.specs import ControlSpec
+from steerability.algorithms.core.protocol import Protocol, ProtocolFacts
+from steerability.algorithms.core.recipe import Point, Recipe, Template, expand
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 from steerability.algorithms.structural_control.base import StructuralControl
 from steerability.utils.tokenization import ensure_pad_token
 
+if TYPE_CHECKING:
+    from steerability.algorithms.core.execution.backend import Backend
+    from steerability.algorithms.core.store import Store
+
 logger = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True, slots=True)
-class ConfigPoint:
-    """One concrete configuration of one named pipeline.
-
-    Attributes:
-        pipeline_name: Name of the pipeline the point belongs to.
-        config_id: Canonical configuration identifier; `"baseline"` for the empty pipeline, else
-            the digest of `descriptor`.
-        descriptor: JSON-serializable canonical descriptor of the configuration (control classes
-            and their full constructor parameters).
-        specs: The `ControlSpec` list for spec-defined pipelines, else None.
-        params: Mapping from resolved spec name to that spec's resolved constructor kwargs, else
-            None for fixed and baseline pipelines.
-        controls_factory: Zero-argument callable building the configuration's control instances.
-            Fixed pipelines return the user-supplied instances on every call; spec pipelines
-            instantiate fresh controls per call, so pre-flight instances are discarded and
-            execution re-instantiates.
-    """
-
-    pipeline_name: str
-    config_id: str
-    descriptor: Mapping[str, Any]
-    specs: tuple | None
-    params: Mapping[str, Mapping[str, Any]] | None
-    controls_factory: Callable[[], list]
+Pipelines = Mapping[str, Recipe | Template | Sequence[Recipe | Template]]
 
 
-def expand_configurations(
-    pipelines: Mapping[str, Sequence],
-    *,
-    base_model_name_or_path: str | Path,
-) -> Iterator[ConfigPoint]:
-    """Enumerate the concrete configurations of a pipelines mapping, in execution order.
+def expand_configurations(pipelines: Pipelines) -> Iterator[tuple[str, Point]]:
+    """Enumerate the points of a pipelines mapping, in order.
 
-    Each pipeline value is an empty sequence (the unsteered baseline), a list of instantiated
-    controls (one fixed configuration), or a list of `ControlSpec`s (one configuration per point
-    of the cartesian product of the specs' search spaces). Spec search spaces receive a context
-    dict with `"pipeline_name"`, `"base_model_name_or_path"`, and, at resolution time,
-    `"combo_id"`.
+    Each value is a recipe, a template (expanded as a grid), or a sequence of them, flattened in
+    order. The unsteered baseline is `BASELINE` (the empty recipe).
 
     Args:
-        pipelines: Mapping from pipeline name to `[]`, `[Control, ...]`, or `[ControlSpec, ...]`
-            (None is treated as the baseline).
-        base_model_name_or_path: The base model reference, forwarded into spec contexts.
+        pipelines: Mapping from pipeline name to recipes and templates.
 
     Yields:
-        One `ConfigPoint` per concrete configuration.
+        `(pipeline name, point)` pairs.
 
     Raises:
-        TypeError: If a pipeline mixes `ControlSpec` and fixed controls.
-        ValueError: If two `ControlSpec`s in one pipeline resolve to the same name.
+        ValueError: If a pipeline has no recipe, or two of its points have the same recipe id.
+        RecipeError: If a template does not expand as a grid.
     """
-    for pipeline_name, pipeline in pipelines.items():
-        pipeline = list(pipeline or [])
-        has_specs = any(isinstance(control, ControlSpec) for control in pipeline)
-        if has_specs and not all(isinstance(control, ControlSpec) for control in pipeline):
-            raise TypeError(
-                f"Pipeline '{pipeline_name}' mixes ControlSpec and fixed controls. Either use only fixed controls "
-                "or only ControlSpecs. Wrap fixed configs in ControlSpec(vars=None) if needed."
-            )
-        if not pipeline:
-            yield ConfigPoint(
-                pipeline_name=pipeline_name,
-                config_id="baseline",
-                descriptor={"controls": []},
-                specs=None,
-                params=None,
-                controls_factory=lambda: [],
-            )
-            continue
-        if not has_specs:
-            fixed = list(pipeline)
-            descriptor = config_descriptor_from_controls(fixed)
-            yield ConfigPoint(
-                pipeline_name=pipeline_name,
-                config_id=config_digest(descriptor),
-                descriptor=descriptor,
-                specs=None,
-                params=None,
-                controls_factory=lambda fixed=fixed: fixed,
-            )
-            continue
-
-        resolved_names = [spec.name or spec.control_cls.__name__ for spec in pipeline]
-        duplicates = sorted({name for name in resolved_names if resolved_names.count(name) > 1})
-        if duplicates:
-            raise ValueError(
-                f"Pipeline '{pipeline_name}' has multiple ControlSpecs resolving to the same name(s): "
-                f"{duplicates}. Give each spec a distinct `name=` so their parameters are tracked separately."
-            )
-
-        base_context = {
-            "pipeline_name": pipeline_name,
-            "base_model_name_or_path": base_model_name_or_path,
-        }
-        spec_points = []
-        for spec in pipeline:
-            points = list(spec.iter_points(base_context)) or [{}]
-            spec_points.append((spec, points))
-        spec_list, points_lists = zip(*spec_points)
-
-        for combo_id, combo in enumerate(itertools.product(*points_lists)):
-            context = {**base_context, "combo_id": combo_id}
-            params = {
-                (spec.name or spec.control_cls.__name__): spec.resolve_params(chosen=point, context=context)
-                for spec, point in zip(spec_list, combo)
-            }
-
-            def controls_factory(params=params, spec_list=spec_list):
-                return [
-                    spec.control_cls(**params[spec.name or spec.control_cls.__name__])
-                    for spec in spec_list
-                ]
-
-            descriptor = config_descriptor_from_specs(spec_list, params)
-            yield ConfigPoint(
-                pipeline_name=pipeline_name,
-                config_id=config_digest(descriptor),
-                descriptor=descriptor,
-                specs=tuple(spec_list),
-                params=params,
-                controls_factory=controls_factory,
-            )
+    for name, value in pipelines.items():
+        sources = [value] if isinstance(value, (Recipe, Template)) else list(value)
+        if not sources:
+            raise ValueError(f"Pipeline {name!r} has no recipe; use BASELINE for the unsteered baseline.")
+        seen: set[str] = set()
+        for source in sources:
+            if not isinstance(source, (Recipe, Template)):
+                raise TypeError(f"Pipeline {name!r} holds a {type(source).__name__}; expected Recipe or Template.")
+            for point in expand(source, strategy="grid"):
+                if point.recipe.id in seen:
+                    raise ValueError(f"Pipeline {name!r} has two points with recipe id {point.recipe.id}.")
+                seen.add(point.recipe.id)
+                yield name, point
 
 
-def preflight(
-    points: Iterable[ConfigPoint],
-    *,
-    base_model_name_or_path: str | Path,
-    backend: BackendSpec | str | None,
-    fit: Literal["auto", "in_process"],
-) -> list[str]:
-    """Evaluate backend support for every point before any model or engine work.
+def preflight(points: Iterable[tuple[str, Point]], protocol: Protocol) -> list[str]:
+    """Check backend support for every point before any model or engine work.
 
-    Constructs one probe `SteeringPipeline` per point (construction performs no I/O), evaluates
-    `check()`, and discards the probe. The empty baseline is trivially supported and produces no
-    probe. Callers choose whether to raise on failures or skip the failing points.
+    Each point's controls are checked by an unsteered pipeline on the protocol's backend
+    (construction performs no I/O). The empty recipe is always supported.
 
     Args:
-        points: The configuration points to check.
-        base_model_name_or_path: The base model reference for the probe pipelines.
-        backend: Backend forwarded to the probe pipelines.
-        fit: Fit venue policy forwarded to the probe pipelines.
+        points: `(pipeline name, point)` pairs.
+        protocol: The protocol.
 
     Returns:
-        One message per unsupported (point, control, phase), each naming the pipeline and its
-        `config_id` and ending in core's stable verdict text. Empty when every point is supported.
-
-    Raises:
-        ModuleNotFoundError: If a configured backend kind requires an optional dependency that is
-            not installed.
+        One message per unsupported (point, control, phase), each naming the pipeline and the
+        recipe id. Empty when every point is supported.
     """
     messages: list[str] = []
-    for point in points:
-        controls = point.controls_factory()
+    for name, point in points:
+        controls = point.recipe.instantiate()
         if not controls:
             continue
         probe = SteeringPipeline(
-            model_name_or_path=base_model_name_or_path, controls=controls,
-            backend=backend, fit=fit,
+            model_name_or_path=protocol.model, controls=controls, backend=protocol.backend, fit=protocol.fit,
         )
         report = probe.check()
-        if report.ok:
-            continue
         for failure in report.failures:
-            messages.append(
-                f"{point.pipeline_name} [{point.config_id}] {failure.control} ({failure.phase}): "
-                f"{failure.message}"
-            )
+            messages.append(f"{name} [{point.recipe.id}] {failure.control} ({failure.phase}): {failure.message}")
     return messages
 
 
+@dataclass
+class FactoryStats:
+    """Counters of a `PipelineFactory`.
+
+    Attributes:
+        pipelines: Pipelines steered.
+        fits_run: Fits that ran and were stored.
+        fits_reused: Fits served from the cache.
+        engine_boots: Engine backends the pool built.
+        engine_releases_for_fits: Times the pool released its engines so a fit could run on a
+            staged in-process model.
+        setup_seconds: Total time spent building and steering pipelines.
+    """
+
+    pipelines: int = 0
+    fits_run: int = 0
+    fits_reused: int = 0
+    engine_boots: int = 0
+    engine_releases_for_fits: int = 0
+    setup_seconds: float = 0.0
+
+
+def _artifact_key(artifacts: Sequence[Artifact]) -> tuple:
+    return tuple((type(artifact).__name__, str(artifact.path), getattr(artifact, "base_model", None))
+                 for artifact in artifacts)
+
+
+class BackendPool:
+    """Engine backends shared across the pipelines of one factory.
+
+    One backend is kept per spec, keyed by the spec and the structural artifacts it serves; a
+    request for the same spec with other artifacts releases the kept backend first, so two
+    engines of one spec are never up at once.
+
+    Args:
+        stats: The factory counters the pool updates (`engine_boots`,
+            `engine_releases_for_fits`), or None.
+    """
+
+    def __init__(self, stats: FactoryStats | None = None) -> None:
+        self.stats = stats
+        self._backends: dict[BackendSpec, tuple[tuple, Backend]] = {}
+
+    def get(self, spec: BackendSpec, artifacts: Sequence[Artifact], build: Callable[[], Backend]) -> Backend:
+        """The pooled backend for `spec` serving `artifacts`, built with `build` on first use."""
+        key = _artifact_key(artifacts)
+        kept = self._backends.get(spec)
+        if kept is not None and kept[0] == key:
+            return kept[1]
+        if kept is not None:
+            self._release(spec)
+        backend = build()
+        self._backends[spec] = (key, backend)
+        if self.stats is not None:
+            self.stats.engine_boots += 1
+        return backend
+
+    def has_engine(self) -> bool:
+        """Whether a pooled backend lacks `Capability.IN_PROCESS_TORCH` (an engine is up)."""
+        return any(
+            Capability.IN_PROCESS_TORCH not in backend.negotiated_capabilities().atoms
+            for _, backend in self._backends.values()
+        )
+
+    def _release(self, spec: BackendSpec) -> None:
+        _, backend = self._backends.pop(spec)
+        try:
+            backend.release()
+        except Exception:
+            logger.warning("Backend release failed", exc_info=True)
+
+    def release_all(self, *, for_fits: bool = False) -> None:
+        """Release every pooled backend.
+
+        Args:
+            for_fits: Whether the release makes room for a fit on a staged model, counted in
+                `engine_releases_for_fits`.
+        """
+        if for_fits and self.stats is not None and self._backends:
+            self.stats.engine_releases_for_fits += 1
+        for spec in list(self._backends):
+            self._release(spec)
+        gc.collect()
+
+
+@dataclass(frozen=True)
+class Steered:
+    """A steered pipeline with the identity of what it runs.
+
+    Attributes:
+        pipeline: The steered pipeline.
+        recipe: The recipe it was built from.
+        resolved_id: The recipe's id resolved with the fits it used, the key of its rollouts
+            and evidence.
+        protocol: The protocol it runs under.
+    """
+
+    pipeline: SteeringPipeline
+    recipe: Recipe
+    resolved_id: str
+    protocol: Protocol
+
+
 def _has_structural_control(controls: Sequence[Any]) -> bool:
-    """Return True if any of the controls is an enabled `StructuralControl`."""
-    return any(
-        isinstance(control, StructuralControl) and getattr(control, "enabled", True)
-        for control in controls
-    )
+    return any(isinstance(control, StructuralControl) and getattr(control, "enabled", True) for control in controls)
 
 
 class PipelineFactory:
-    """Build, steer, and release one `SteeringPipeline` per configuration against one base model.
+    """Build and steer one pipeline per recipe under one protocol, sharing fits, models, and engines.
 
-    On the Hugging Face backend, configurations without an enabled structural control share one
-    preloaded base model and tokenizer, loaded lazily on first use. Configurations with an enabled
-    structural control, and every configuration on an engine backend, construct from
-    `base_model_name_or_path` with the placement knobs; before such a configuration the factory
-    drops any resident shared base, so one full model is resident at a time, and the next
-    shared-base configuration reloads it.
-
-    The shared base is expected not to be mutated by a non-structural configuration. After each
-    shared-base configuration a fingerprint tripwire checks the shared model for change and, on
-    detecting one, warns naming the configuration's controls and drops the shared model so the next
-    configuration reloads a clean base. The fingerprint samples a bounded subset of parameters, so
-    the tripwire makes the no-mutation invariant observable rather than proven.
+    Each `steered` call instantiates the recipe, replaces controls whose fits are stored by their
+    frozen forms, and steers inside the recipe's fit cache, so stored fits are not repeated. On the
+    Hugging Face backend, recipes without an enabled structural control share one preloaded base
+    model, checked by a fingerprint after each recipe. Engine backends are kept in a `BackendPool`
+    until `release()`, so a recipe whose fits are stored costs control construction, `check()`,
+    binding, and lowering. One steered pipeline generates at a time on the Hugging Face backend,
+    while several may generate concurrently on a pooled engine.
 
     Args:
-        base_model_name_or_path: Hugging Face model ID or local path of the base model.
-        backend: Backend forwarded to each pipeline (a `BackendSpec` or a known kind name); None
-            uses the in-process Hugging Face backend.
-        fit: Fit venue policy forwarded to each pipeline.
-        hf_model_kwargs: Extra kwargs forwarded to `AutoModelForCausalLM.from_pretrained` on
-            in-process loads (the shared base and each engine arm's staged steer model). A
-            `revision` key also pins the shared-base tokenizer, which loads from
-            `base_model_name_or_path`.
-        device_map: Device placement strategy for in-process loads.
-        trust_remote_code: Trust remote code when loading tokenizers; forwarded to each pipeline.
+        protocol: The protocol.
+        store: The store fits, recipes, resolutions, and observed facts are written to, or None
+            for an in-memory cache per recipe.
+        device_map: Device placement for in-process loads.
+        trust_remote_code: Trust remote code when loading tokenizers.
+
+    Attributes:
+        stats: The factory's counters.
     """
 
     def __init__(
         self,
-        base_model_name_or_path: str | Path,
+        protocol: Protocol,
         *,
-        backend: BackendSpec | str | None = None,
-        fit: Literal["auto", "in_process"] = "auto",
-        hf_model_kwargs: dict | None = None,
+        store: Store | None = None,
         device_map: str | dict | None = "auto",
         trust_remote_code: bool = False,
     ) -> None:
-        self.base_model_name_or_path = base_model_name_or_path
-        self.backend = backend
-        self.fit = fit
-        self.hf_model_kwargs = hf_model_kwargs or {}
+        self.protocol = protocol
+        self.store = store
         self.device_map = device_map
         self.trust_remote_code = trust_remote_code
-
+        self.stats = FactoryStats()
+        self.pool = BackendPool(self.stats)
         self._base_model: PreTrainedModel | None = None
         self._base_tokenizer: PreTrainedTokenizerBase | None = None
         self._base_fingerprint: str | None = None
+        self._facts_recorded = False
 
     @property
     def backend_kind(self) -> str:
-        """The configured backend kind (`"huggingface"`, `"vllm"`, or `"vllm-serve"`)."""
-        if isinstance(self.backend, BackendSpec):
-            return self.backend.kind
-        return self.backend or "huggingface"
+        """The protocol's backend kind (`"huggingface"`, `"vllm"`, or `"vllm-serve"`)."""
+        return self.protocol.backend.kind if self.protocol.backend is not None else "huggingface"
 
     @property
     def shared_base_fingerprint(self) -> str | None:
         """Fingerprint of the resident shared base model, or None when none is resident."""
         return self._base_fingerprint
 
+    def _tokenizer_source(self) -> tuple[str, str | None]:
+        if self.protocol.tokenizer is not None:
+            return self.protocol.tokenizer, None
+        return self.protocol.model, self.protocol.model_revision
+
     def _ensure_base_model(self) -> None:
-        """Load the shared base model and tokenizer once (for reuse across configurations)."""
         if self._base_model is not None and self._base_tokenizer is not None:
             return
         self._base_model = AutoModelForCausalLM.from_pretrained(
-            self.base_model_name_or_path,
-            device_map=self.device_map,
-            **self.hf_model_kwargs,
+            self.protocol.model, device_map=self.device_map, **self.protocol.load_kwargs,
         )
+        source, revision = self._tokenizer_source()
         self._base_tokenizer = ensure_pad_token(AutoTokenizer.from_pretrained(
-            self.base_model_name_or_path, revision=self.hf_model_kwargs.get("revision"),
-            trust_remote_code=self.trust_remote_code,
+            source, revision=revision, trust_remote_code=self.trust_remote_code,
         ))
-        self._base_fingerprint = self._fingerprint_or_none(self._base_model)
-
-    def _fingerprint_or_none(self, model) -> str | None:
-        """Digest of the shared base model, or None (guard disabled) when fingerprinting fails."""
-        if model is None:
-            return None
         try:
-            return model_fingerprint(model)
+            self._base_fingerprint = model_fingerprint(self._base_model)
         except Exception:
             logger.debug("Model fingerprint unavailable; shared-model guard disabled.", exc_info=True)
-            return None
+            self._base_fingerprint = None
+        self._record_facts(self._base_model, self._base_tokenizer)
+
+    def _record_facts(self, model, tokenizer) -> None:
+        if self.store is None or self._facts_recorded:
+            return
+        self.store.put_protocol(self.protocol, ProtocolFacts.observe(model, tokenizer))
+        self._facts_recorded = True
 
     def _drop_shared_base(self) -> None:
-        """Release the shared base model and tokenizer references and reclaim memory."""
         if self._base_model is None and self._base_tokenizer is None:
             return
         self._base_model = None
@@ -310,86 +301,155 @@ class PipelineFactory:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def _verify_shared_base_model(self, controls: Sequence[Any]) -> None:
-        """Tripwire: detect shared-base mutation after a configuration, then quarantine.
-
-        The fingerprint samples up to 8 parameters times 64 elements, so this makes the no-mutation
-        invariant observable, not proven. Warn-and-quarantine (not raise) is deliberate, since
-        aborting a long sweep for one misbehaving control is worse than reloading and flagging.
-
-        Args:
-            controls: The configuration's controls, named in the warning (or "baseline" when empty).
-        """
+    def _verify_shared_base_model(self, recipe: Recipe) -> None:
         if self._base_model is None or self._base_fingerprint is None:
             return
-        current = self._fingerprint_or_none(self._base_model)
+        try:
+            current = model_fingerprint(self._base_model)
+        except Exception:
+            return
         if current == self._base_fingerprint:
             return
-        names = ", ".join(type(control).__name__ for control in controls) or "baseline"
         logger.warning(
-            "Shared base model changed during configuration [%s] (fingerprint %s -> %s); its recorded "
-            "results reflect the mutated weights. Dropping the shared model so the next configuration "
-            "reloads a clean base.",
-            names, self._base_fingerprint, current,
+            "Shared base model changed while steering recipe %s (fingerprint %s -> %s); its results reflect the "
+            "mutated weights. Dropping the shared model so the next recipe reloads a clean base.",
+            recipe.id, self._base_fingerprint, current,
         )
         self._drop_shared_base()
 
-    @contextmanager
-    def steered(self, controls: Sequence) -> Iterator[SteeringPipeline]:
-        """Build and steer a pipeline for one configuration, releasing it on exit.
+    def _pipeline(self, controls: list) -> tuple[SteeringPipeline, bool]:
+        """A pipeline for `controls` and whether it uses the shared base model."""
+        shared = self.backend_kind == "huggingface" and not _has_structural_control(controls)
+        common: dict[str, Any] = {
+            "controls": controls, "backend": self.protocol.backend, "fit": self.protocol.fit,
+            "backend_pool": self.pool,
+        }
+        if shared:
+            self._ensure_base_model()
+            return SteeringPipeline(model=self._base_model, tokenizer=self._base_tokenizer, **common), True
+        if self.backend_kind == "huggingface":
+            self._drop_shared_base()
+        return SteeringPipeline(
+            model_name_or_path=self.protocol.model,
+            tokenizer_name_or_path=self.protocol.tokenizer,
+            device_map=self.device_map,
+            hf_model_kwargs=self.protocol.load_kwargs,
+            trust_remote_code=self.trust_remote_code,
+            **common,
+        ), False
 
-        Everything the caller does inside the `with` block runs inside the protected region: on
-        exit (including on error) every control's `cleanup()` runs best effort, the pipeline's
-        backends are released, the shared-base fingerprint tripwire runs for shared-base
-        configurations, and memory is reclaimed.
+    def _cache(self, recipe: Recipe) -> FitCache:
+        return FitCache(self.protocol, weights_context(recipe), self.store)
+
+    @contextmanager
+    def steered(self, recipe: Recipe) -> Iterator[Steered]:
+        """Build and steer the pipeline of one recipe, releasing it on exit.
+
+        On exit (also on error) every control's `cleanup()` runs, the pipeline's own backends are
+        released, and the shared-base fingerprint check runs. Pooled backends stay up until
+        `release()`.
 
         Args:
-            controls: Instantiated controls for this configuration (empty for the baseline).
+            recipe: The recipe.
 
         Yields:
-            The steered `SteeringPipeline`.
+            The `Steered` pipeline.
         """
-        controls = list(controls)
-        uses_shared_base = (
-            self.backend_kind == "huggingface" and not _has_structural_control(controls)
-        )
-        common: dict[str, Any] = {"controls": controls, "backend": self.backend, "fit": self.fit}
+        started = time.monotonic()
+        cache = self._cache(recipe)
+        controls, pending = apply_control_hits(recipe.instantiate(), cache)
         pipeline: SteeringPipeline | None = None
+        shared = False
         try:
-            if uses_shared_base:
-                self._ensure_base_model()
-                pipeline = SteeringPipeline(
-                    model=self._base_model, tokenizer=self._base_tokenizer, **common,
-                )
-            else:
-                self._drop_shared_base()
-                pipeline = SteeringPipeline(
-                    model_name_or_path=self.base_model_name_or_path,
-                    device_map=self.device_map,
-                    hf_model_kwargs=self.hf_model_kwargs,
-                    trust_remote_code=self.trust_remote_code,
-                    **common,
-                )
-            pipeline.steer()
-            yield pipeline
+            pipeline, shared = self._pipeline(controls)
+            with fit_cache_scope(cache):
+                report = pipeline.check()
+                if report.plan.stages and self.pool.has_engine():
+                    self.pool.release_all(for_fits=True)
+                pipeline.steer()
+            record_control_fits(pending, cache)
+            identity = resolved_id(recipe, cache.used())
+            if not shared and not _has_structural_control(controls):
+                self._record_facts(None, pipeline.tokenizer)
+            if self.store is not None:
+                self.store.put_recipe(recipe)
+                if not cache.has_local():
+                    self.store.put_resolution(self.protocol.id, recipe.id, identity)
+            self.stats.pipelines += 1
+            self.stats.fits_run += cache.stored_count
+            self.stats.fits_reused += cache.hit_count
+            self.stats.setup_seconds += time.monotonic() - started
+            yield Steered(pipeline, recipe, identity, self.protocol)
         finally:
             if pipeline is not None:
                 for control in (*pipeline.structural_controls, *pipeline.input_controls,
                                 *pipeline.state_controls, *pipeline.output_controls):
-                    cleanup_fn = getattr(control, "cleanup", None)
-                    if callable(cleanup_fn):
-                        try:
-                            cleanup_fn()
-                        except Exception:
-                            logger.warning("Control cleanup failed", exc_info=True)
+                    try:
+                        control.cleanup()
+                    except Exception:
+                        logger.warning("Control cleanup failed", exc_info=True)
                 pipeline.release_backends()
                 del pipeline
-            if uses_shared_base:
-                self._verify_shared_base_model(controls)
+            if shared:
+                self._verify_shared_base_model(recipe)
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+    def prepare(self, recipes: Iterable[Recipe]) -> None:
+        """Run the fits a batch of recipes needs, so that later `steered` calls only bind.
+
+        Recipes whose steer plan has no fit under the cache are skipped. When a plan has a step on
+        a staged in-process model, the pool's engines are released once and every such recipe
+        fits its staged steps (`SteeringPipeline.fit_staged`). Every recipe that still has a fit
+        is then steered once through `steered`, with its staged fits now served from the cache,
+        so an engine boots once and stays up. Call this once per batch, before generation.
+
+        Args:
+            recipes: The recipes.
+        """
+        planned: list[tuple[Recipe, Any]] = []
+        for recipe in dict.fromkeys(recipes):
+            cache = self._cache(recipe)
+            controls, _ = apply_control_hits(recipe.instantiate(), cache)
+            probe = SteeringPipeline(
+                model_name_or_path=self.protocol.model, controls=controls, backend=self.protocol.backend,
+                fit=self.protocol.fit,
+            )
+            with fit_cache_scope(cache):
+                plan = probe.check().plan
+            if plan.fits:
+                planned.append((recipe, plan))
+        staged = [recipe for recipe, plan in planned if plan.stages]
+        if staged:
+            self.pool.release_all(for_fits=self.pool.has_engine())
+            for recipe in staged:
+                cache = self._cache(recipe)
+                controls, pending = apply_control_hits(recipe.instantiate(), cache)
+                pipeline, _ = self._pipeline(controls)
+                try:
+                    with fit_cache_scope(cache):
+                        pipeline.fit_staged()
+                    staged_pending = [control for control in pending if control in pipeline._enabled_controls()]
+                    record_control_fits(staged_pending, cache)
+                finally:
+                    pipeline.release_backends()
+        for recipe, _ in planned:
+            with self.steered(recipe):
+                pass
+
     def release(self) -> None:
-        """Drop the shared base model; the factory remains usable and reloads it on next use."""
+        """Release the pooled backends and drop the shared base model; the factory stays usable."""
+        self.pool.release_all()
         self._drop_shared_base()
+
+
+__all__ = [
+    "BackendPool",
+    "FactoryStats",
+    "PipelineFactory",
+    "Pipelines",
+    "Steered",
+    "expand_configurations",
+    "preflight",
+]

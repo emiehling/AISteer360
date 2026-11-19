@@ -9,7 +9,7 @@ class ContrastiveGuidanceArgs(BaseArgs):
 
     Mixes the base log-probs with weighted auxiliary log-prob sources as
     `w0 * log p_base + sum_i w_i * log p_source_i`. `sources` and `weights` are parallel top-level
-    lists precisely so `ControlSpec` can sweep them (e.g. `vars={"weights": [[1,-1], [2,-2]]}`).
+    lists, so a `Template` can vary them (e.g. `weights=Choice(([1, -1], [2, -2]))`).
     """
 
     sources: list = field(

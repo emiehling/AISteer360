@@ -1,289 +1,195 @@
-"""Tests for canonical configuration identity and trial-seed derivation.
+"""Tests for content identity and seeds (`algorithms/core/identity.py`) and the encoder they rest on.
 
-Covers `canonical_value` over primitives, paths, numpy, tensors (content-addressed, device- and
-grad-independent, bfloat16), dataclasses (`init=True` fields only), mappings/sequences/sets,
-callables (partials and bound methods included), and unhandled objects; the descriptor builders for
-fixed controls and specs; the stability of a control's identity across `steer()`; the purity of
-`config_digest`; and the purity and distinctness of `derive_trial_seed`.
+Covers the canonical form of recipes (key order, defaults, names, disabled entries, cross-category
+order, int and float), content-addressed artifacts, fail-closed encoding, the equality of identity
+and save mode for every artifact type, versioned callables, and `derive_seed`.
 """
 import functools
-import warnings
-from dataclasses import dataclass, field
-from pathlib import Path
 
-import numpy as np
+import pytest
 import torch
 
-from steerability.algorithms.core.base_args import BaseArgs
-from steerability.algorithms.core.identity import (
-    canonical_value,
-    config_descriptor_from_controls,
-    config_descriptor_from_specs,
-    config_digest,
-    derive_trial_seed,
-    qualname,
-)
-from steerability.algorithms.core.internals.data import ContrastivePairs
-from steerability.algorithms.input_control.base import InputControl
+from steerability.algorithms.core.execution.payloads import CheckpointArtifact, LoRAArtifact
+from steerability.algorithms.core.identity import canonical_json, content_id, derive_seed, json_id, versioned
+from steerability.algorithms.core.internals.probes.probe import Probe
+from steerability.algorithms.core.internals.probes.probe_set import ProbeSet
+from steerability.algorithms.core.recipe import Recipe, RecipeError, entry
+from steerability.algorithms.input_control.common.memory.pool import PoolMemory
+from steerability.algorithms.input_control.common.memory.text import TextMemory
+from steerability.algorithms.input_control.gepa.control import GEPA
+from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
+from steerability.algorithms.input_control.user_prefix.control import UserPrefix
+from steerability.algorithms.state_control.activation_adapter.control import ActivationAdapter
+from steerability.algorithms.state_control.caa.control import CAA
+from steerability.algorithms.state_control.common.steering_vector import SteeringVector
+from steerability.algorithms.state_control.common.transforms import AdditiveTransform
+from steerability.spipe.codec import CodeRef, DecodeContext, EncodeContext, decode, encode
+from steerability.spipe.errors import SpipeCodeRefError, SpipeSaveError
+from steerability.spipe.store import ArtifactStore
+
+PAIRS = {"positives": ["yes"], "negatives": ["no"]}
 
 
-@dataclass
-class _IdentityArgs(BaseArgs):
-    """Arguments for the local identity-test control."""
-    alpha: float = 1.0
-    label: str = "x"
+@versioned("1")
+def scored(response, row):
+    return 1.0
 
 
-class _ArgControl(InputControl):
-    """Input control carrying a real `Args` dataclass, for descriptor tests."""
-    Args = _IdentityArgs
-
-    def adapt(self, input_ids, runtime_kwargs=None):
-        return input_ids
+def plain(response, row):
+    return 0.0
 
 
-class _ArgFreeControl(InputControl):
-    """Arg-free input control (`Args = None`), contributing empty params."""
-    Args = None
-
-    def adapt(self, input_ids, runtime_kwargs=None):
-        return input_ids
+class _Unknown:
+    pass
 
 
-class _Spec:
-    """Duck-typed stand-in for a `ControlSpec` (only `control_cls` and `name` are read)."""
-
-    def __init__(self, control_cls, name=None):
-        self.control_cls = control_cls
-        self.name = name
+def _vector(scale: float = 1.0) -> SteeringVector:
+    return SteeringVector(model_type="llama", directions={1: scale * torch.ones(1, 4)})
 
 
-class TestCanonicalValue:
-    """Tests for `canonical_value`."""
-
-    def test_primitives_pass_through(self):
-        assert canonical_value(None) is None
-        assert canonical_value("s") == "s"
-        assert canonical_value(3) == 3
-        assert canonical_value(3.5) == 3.5
-        assert canonical_value(True) is True
-
-    def test_path_becomes_string(self):
-        assert canonical_value(Path("/a/b")) == "/a/b"
-
-    def test_numpy_scalar_and_array(self):
-        assert canonical_value(np.float64(2.5)) == 2.5
-        assert canonical_value(np.array([1, 2, 3])) == [1, 2, 3]
-        assert canonical_value(np.array([[1.5, 2.0], [3.0, 4.0]])) == [[1.5, 2.0], [3.0, 4.0]]
-
-    def test_object_array_elements_follow_element_rules(self):
-        arr = np.array([Path("models/base"), {"layers": {2, 1}}, np.int64(3)], dtype=object)
-        form = canonical_value(arr)
-        assert form == ["models/base", {"layers": [1, 2]}, 3]
-        assert form == canonical_value([Path("models/base"), {"layers": {1, 2}}, 3])
-        assert len(config_digest({"params": form})) == 12
-
-    def test_nested_arrays_recurse(self):
-        outer = np.empty(2, dtype=object)
-        outer[0] = np.array([1, 2])
-        outer[1] = np.array([Path("a")], dtype=object)
-        assert canonical_value(outer) == [[1, 2], ["a"]]
-
-    def test_mapping_key_order_irrelevant(self):
-        assert canonical_value({"a": 1, "b": 2}) == canonical_value({"b": 2, "a": 1})
-
-    def test_sequence_order_matters(self):
-        assert canonical_value([1, 2, 3]) != canonical_value([3, 2, 1])
-        assert canonical_value((1, 2)) == canonical_value([1, 2])
-
-    def test_set_order_irrelevant(self):
-        assert canonical_value({1, 2, 3}) == canonical_value({3, 1, 2})
-        assert canonical_value(frozenset({1, 2})) == canonical_value({2, 1})
-
-    def test_equal_tensors_equal_digest_one_change_differs(self):
-        a = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-        b = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-        c = torch.tensor([[1.0, 2.0], [3.0, 4.5]])
-        assert canonical_value(a) == canonical_value(b)
-        assert canonical_value(a) != canonical_value(c)
-
-    def test_tensor_device_and_grad_do_not_participate(self):
-        plain = torch.tensor([1.0, 2.0, 3.0])
-        with_grad = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)
-        assert canonical_value(plain) == canonical_value(with_grad)
-
-    def test_bfloat16_tensor_canonicalizes(self):
-        tensor = torch.tensor([1.0, 2.0, 3.0], dtype=torch.bfloat16)
-        form = canonical_value(tensor)
-        assert "__tensor__" in form
-        assert form["__tensor__"]["dtype"] == "torch.bfloat16"
-
-    def test_dataclass_traversal(self):
-        pairs = ContrastivePairs(positives=["p1"], negatives=["n1"])
-        form = canonical_value(pairs)
-        assert form["__dataclass__"] == qualname(ContrastivePairs)
-        assert set(form["fields"]) == {"positives", "negatives", "prompts"}
-        assert form["fields"]["positives"] == ["p1"]
-
-    def test_callable_qualname_form(self):
-        assert canonical_value(len).startswith("callable:")
-
-    def test_dataclass_fields_set_after_construction_do_not_participate(self):
-        @dataclass
-        class _Source:
-            label: str
-            cache: list = field(default_factory=list, init=False)
-
-        source = _Source("a")
-        before = canonical_value(source)
-        source.cache.append(torch.ones(2))
-        assert canonical_value(source) == before
-        assert set(before["fields"]) == {"label"}
-
-    def test_partials_with_different_bound_values_differ(self):
-        def scale(value, factor=1.0):
-            return value * factor
-
-        assert canonical_value(functools.partial(scale, factor=2.0)) != canonical_value(
-            functools.partial(scale, factor=3.0)
-        )
-        assert canonical_value(functools.partial(scale, 2.0)) != canonical_value(functools.partial(scale, 3.0))
-        assert canonical_value(functools.partial(scale, factor=2.0)) == canonical_value(
-            functools.partial(scale, factor=2.0)
-        )
-
-    def test_bound_method_includes_the_bound_type(self):
-        class _Base:
-            def score(self, text):
-                return 0.0
-
-            @classmethod
-            def build(cls):
-                return cls()
-
-        class _Derived(_Base):
-            pass
-
-        assert canonical_value(_Base().score) != canonical_value(_Derived().score)
-        assert canonical_value(_Base().score) == canonical_value(_Base().score)
-        assert canonical_value(_Base.build) != canonical_value(_Derived.build)
-
-    def test_unknown_object_yields_type_token(self):
-        class _Weird:
-            pass
-
-        assert canonical_value(_Weird()) == {"__type__": qualname(_Weird)}
-
-
-class TestConfigDescriptors:
-    """Tests for the descriptor builders."""
-
-    def test_fixed_controls_distinguish_configuration(self):
-        first = config_descriptor_from_controls([_ArgControl(alpha=1.0)])
-        second = config_descriptor_from_controls([_ArgControl(alpha=2.0)])
-        assert first != second
-        assert config_digest(first) != config_digest(second)
-
-    def test_arg_free_control_contributes_empty_params(self):
-        descriptor = config_descriptor_from_controls([_ArgFreeControl()])
-        entry = descriptor["controls"][0]
-        assert entry["params"] == {}
-        assert entry["control"] == qualname(_ArgFreeControl)
-        assert entry["enabled"] is True
-
-    def test_specs_keyed_by_name_in_list_order(self):
-        specs = [_Spec(_ArgControl, name="first"), _Spec(_ArgFreeControl, name="second")]
-        params = {"first": {"alpha": 3.0}, "second": {}}
-        descriptor = config_descriptor_from_specs(specs, params)
-        controls = descriptor["controls"]
-        assert [entry["control"] for entry in controls] == [
-            qualname(_ArgControl), qualname(_ArgFreeControl),
+class TestRecipeIdentity:
+    def test_key_order_defaults_names_disabled_entries_and_order_do_not_change_the_id(self):
+        base = Recipe((entry(SystemPrompt, text="a"), entry(CAA, data=PAIRS, layer_id=1)))
+        same = [
+            Recipe((entry(SystemPrompt, text="a", mode="prepend"), entry(CAA, layer_id=1, data=PAIRS))),
+            Recipe((entry(SystemPrompt, name="prompt", text="a"), entry(CAA, data=PAIRS, layer_id=1))),
+            Recipe((entry(UserPrefix, text="x", enabled=False), entry(SystemPrompt, text="a"),
+                    entry(CAA, data=PAIRS, layer_id=1))),
+            Recipe((entry(CAA, data=PAIRS, layer_id=1), entry(SystemPrompt, text="a"))),
         ]
-        assert controls[0]["params"] == {"alpha": 3.0}
+        assert {recipe.id for recipe in same} == {base.id}
+
+    def test_one_and_one_point_zero_give_one_id(self):
+        assert Recipe((entry(CAA, data=PAIRS, multiplier=1),)).id == Recipe((entry(CAA, data=PAIRS, multiplier=1.0),)).id
+
+    def test_a_transform_strength_changes_the_id(self):
+        def adapter(strength):
+            return Recipe((entry(ActivationAdapter, transform=AdditiveTransform(_vector(), strength=strength),
+                                 layer_ids=[1]),))
+
+        assert adapter(1.0).id != adapter(2.0).id
+
+    def test_the_text_of_a_text_memory_changes_the_id(self):
+        def gepa(text):
+            return Recipe((entry(GEPA, memory=TextMemory(slots={"instruction": text})),))
+
+        assert gepa("be brief").id != gepa("be kind").id
+
+    @pytest.mark.parametrize("value", [
+        lambda response, row: 1.0,
+        functools.partial(plain),
+        _Unknown().__init__,
+        _Unknown(),
+    ], ids=["lambda", "partial", "bound_method", "unknown_object"])
+    def test_unnamed_callables_and_unknown_objects_raise(self, value):
+        with pytest.raises(SpipeSaveError):
+            canonical_json(value)
+
+    def test_a_closure_raises(self):
+        def make():
+            def inner(response, row):
+                return 1.0
+            return inner
+
+        with pytest.raises(SpipeSaveError):
+            content_id(make())
+
+    def test_a_recipe_with_an_unencodable_value_raises(self):
+        with pytest.raises(RecipeError):
+            Recipe((entry(CAA, steering_vector=_Unknown(), layer_id=1),)).id
 
 
-class TestIdentityAcrossSteer:
-    """A control's identity is the same before and after `steer()`."""
-
-    def test_caa_descriptor_is_stable_and_the_bundle_loads_without_allow_stale(self, tmp_path):
-        from steerability.algorithms.core.steering_pipeline import SteeringPipeline
-        from steerability.algorithms.state_control.caa.control import CAA
-        from steerability.spipe import SPipe
-        from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
-
-        caa = CAA(
-            data={"positives": ["the cat", "the dog"], "negatives": ["the mat", "the fast"]},
-            train_spec={"method": "mean_diff", "accumulate": "last_token", "prompt_format": "raw"},
-            layer_id=1,
-        )
-        before = config_descriptor_from_controls([caa])
-        pipeline = SteeringPipeline(controls=[caa], model=tiny_llama(num_layers=2, hidden=16, heads=2),
-                                    tokenizer=wordlevel_tokenizer())
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            pipeline.steer()
-        assert config_descriptor_from_controls([caa]) == before
-
-        saved = pipeline.to_spipe(model_ref="tiny").save(tmp_path / "caa.spipe")
-        rebuilt = SPipe.load(saved).pipeline()
-        assert type(rebuilt.state_controls[0]).__name__ == "CAA"
-
-    def test_condition_point_search_gate_keeps_its_config_id(self):
-        from steerability.algorithms.core.steering_pipeline import SteeringPipeline
-        from steerability.algorithms.state_control.activation_adapter import ActivationAdapter
-        from steerability.algorithms.state_control.common.sources import ConditionPointSearch
-        from steerability.algorithms.state_control.common.steering_vector import SteeringVector
-        from steerability.algorithms.state_control.common.transforms import AdditiveTransform
-        from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
-
-        generator = torch.Generator().manual_seed(0)
-        adapter = ActivationAdapter(
-            transform=AdditiveTransform(
-                SteeringVector(model_type="llama", directions={1: torch.randn(1, 16, generator=generator)}),
-            ),
-            layer_ids=[1],
-            hook_point="layer_input",
-            gate=ConditionPointSearch(
-                condition_vector=SteeringVector(
-                    model_type="llama", directions={0: torch.randn(1, 16, generator=generator)},
-                ),
-                layer_ids=[0],
-                threshold=0.0,
-            ),
-        )
-        before = config_digest(config_descriptor_from_controls([adapter]))
-        pipeline = SteeringPipeline(controls=[adapter], model=tiny_llama(num_layers=2, hidden=16, heads=2),
-                                    tokenizer=wordlevel_tokenizer())
-        pipeline.steer()
-        assert adapter.args.gate.resolved_point is not None
-        assert config_digest(config_descriptor_from_controls([adapter])) == before
+def _probe() -> Probe:
+    torch.manual_seed(0)
+    return Probe(
+        model_type="llama", location="layer_output", pooling="last", layer_ids=[1], weights={1: torch.randn(4)},
+        bias=0.1,
+    )
 
 
-class TestConfigDigest:
-    """Tests for `config_digest`."""
+def _artifacts(tmp_path) -> dict:
+    lora = tmp_path / "lora"
+    lora.mkdir()
+    (lora / "adapter_model.safetensors").write_bytes(b"weights")
+    (lora / "adapter_config.json").write_text("{}")
+    (lora / "training_args.bin").write_bytes(b"trainer state")
+    checkpoint = tmp_path / "checkpoint"
+    (checkpoint / "sub").mkdir(parents=True)
+    (checkpoint / "sub" / "model.safetensors").write_bytes(b"model")
+    (checkpoint / "optimizer.pt").write_bytes(b"optimizer state")
+    pool = PoolMemory[dict]()
+    pool.add({"prompt": "a"}, polarity="pos")
+    return {
+        "tensor": torch.arange(6, dtype=torch.float32).reshape(2, 3),
+        "steering_vector": _vector(),
+        "probe": _probe(),
+        "probe_set": ProbeSet({"p": _probe()}),
+        "text_memory": TextMemory(slots={"instruction": "be brief"}),
+        "pool_memory": pool,
+        "lora": LoRAArtifact(path=str(lora), base_model="m"),
+        "checkpoint": CheckpointArtifact(path=str(checkpoint)),
+    }
 
-    def test_pure_function(self):
-        left = config_descriptor_from_controls([_ArgControl(alpha=1.0, label="y")])
-        right = config_descriptor_from_controls([_ArgControl(alpha=1.0, label="y")])
-        assert config_digest(left) == config_digest(right)
-        assert len(config_digest(left)) == 12
 
-    def test_object_array_param_digests_like_its_list_form(self):
-        specs = [_Spec(_ArgControl, name="ctl")]
-        as_array = config_descriptor_from_specs(
-            specs, {"ctl": {"alpha": 1.0, "paths": np.array([Path("a"), Path("b")], dtype=object)}}
-        )
-        as_list = config_descriptor_from_specs(specs, {"ctl": {"alpha": 1.0, "paths": [Path("a"), Path("b")]}})
-        assert config_digest(as_array) == config_digest(as_list)
+def test_identity_mode_equals_save_mode_for_every_artifact_type(tmp_path):
+    store = ArtifactStore(tmp_path / "store")
+    for name, value in _artifacts(tmp_path).items():
+        identity = encode(value, EncodeContext(store=None))
+        saved = encode(value, EncodeContext(store=store))
+        assert identity == saved, name
+        assert "$artifact" in identity, name
 
 
-class TestDeriveTrialSeed:
-    """Tests for `derive_trial_seed`."""
+def test_identity_mode_rehashes_a_vector_after_to():
+    vector = _vector()
+    before = content_id(vector)
+    vector.to("cpu", torch.float64)
+    vector.directions[1] = vector.directions[1] * 2
+    assert content_id(vector) != before
 
-    def test_pure(self):
-        assert derive_trial_seed(7, "cfg", 0) == derive_trial_seed(7, "cfg", 0)
 
-    def test_distinct_across_trial_and_config(self):
-        assert derive_trial_seed(7, "cfg", 0) != derive_trial_seed(7, "cfg", 1)
-        assert derive_trial_seed(7, "cfg-a", 0) != derive_trial_seed(7, "cfg-b", 0)
-        assert derive_trial_seed(1, "cfg", 0) != derive_trial_seed(2, "cfg", 0)
+class TestVersionedCallables:
+    def test_the_version_enters_the_encoding_and_the_id(self, monkeypatch):
+        encoded = encode(scored, EncodeContext(store=None))
+        assert encoded == {"$ref": f"{__name__}:scored", "version": "1"}
+        first = content_id(scored)
+        monkeypatch.setattr(scored, "__steerability_version__", "2")
+        assert content_id(scored) != first
+
+    def test_decoding_a_different_version_raises(self):
+        encoded = {"$ref": f"{__name__}:scored", "version": "0"}
+        with pytest.raises(SpipeCodeRefError, match="version"):
+            decode(encoded, DecodeContext(allow_code=True))
+        assert decode({"$ref": f"{__name__}:scored", "version": "1"}, DecodeContext(allow_code=True)) is scored
+
+    def test_a_code_ref_keeps_its_version(self):
+        ref = decode({"$ref": f"{__name__}:scored", "version": "1"}, DecodeContext(code_mode="sentinel"))
+        assert ref == CodeRef(f"{__name__}:scored", version="1")
+        assert content_id(ref) == content_id(scored)
+
+    def test_versioned_rejects_an_empty_version(self):
+        with pytest.raises(TypeError):
+            versioned("")
+
+
+class TestContentId:
+    def test_json_id_matches_content_id(self):
+        value = {"a": [1, 2.0], "b": _vector()}
+        assert json_id(encode(value, EncodeContext(store=None))) == content_id(value)
+
+    def test_length_and_nan(self):
+        assert len(content_id({"a": 1})) == 16
+        assert len(content_id({"a": 1}, length=64)) == 64
+        with pytest.raises(ValueError):
+            canonical_json({"a": float("nan")})
+
+
+class TestDeriveSeed:
+    def test_matches_the_0_5_8_item_seed(self):
+        # derive_item_seed(7, "op", 3) in 0.5.8
+        assert derive_seed(7, "op", 3) == 763721040572809648
+
+    def test_range_and_distinctness(self):
+        seeds = {derive_seed(1, "op", index) for index in range(64)}
+        assert len(seeds) == 64
+        assert all(0 <= seed < 2**63 for seed in seeds)

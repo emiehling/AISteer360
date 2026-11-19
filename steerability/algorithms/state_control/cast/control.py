@@ -128,7 +128,10 @@ class _BehaviorBuild:
 
     @property
     def access(self) -> ModelAccess:
-        return getattr(self._source, "access", ModelAccess.MODULE)
+        """The source's access under the active fit cache (`source_access`)."""
+        from steerability.algorithms.core.fits import source_access
+
+        return source_access(self._source)
 
     @property
     def artifact_class(self) -> str | None:
@@ -137,11 +140,11 @@ class _BehaviorBuild:
     def fit_ingredients(self) -> dict:
         """The encodable fit-identity form: the source's ingredients plus the fit-relevant
         scaling switch."""
-        from steerability.algorithms.state_control.base import _fit_ingredients
+        from steerability.algorithms.core.fits import source_identity
 
         return {
             "kind": "behavior_build",
-            "source": _fit_ingredients(self._source),
+            "source": source_identity(self._source),
             "use_explained_variance": self._use_explained_variance,
         }
 
@@ -286,11 +289,15 @@ class CAST(InterventionControl):
 
     @property
     def _cond_config(self) -> ConditionPointConfig | None:
-        """The resolved condition point, or None before `steer()`."""
+        """The resolved condition point, read from the bound gate, or None before `steer()`.
+
+        The gate's evidence holds the condition layers and the comparison mode, and its rule the
+        threshold and the comparator. A bound gate of None is the unconditional configuration.
+        """
         if not self.interventions:
             return None
-        point = self._condition_source.resolved_point
-        if point is None:
+        gate = self._gate
+        if gate is None:
             return ConditionPointConfig(
                 layer_ids=frozenset(),
                 threshold=None,
@@ -298,11 +305,12 @@ class CAST(InterventionControl):
                 comparison_mode=self.condition_threshold_comparison_mode,
                 enabled=False,
             )
+        rule = gate.rule
         return ConditionPointConfig(
-            layer_ids=frozenset(point["layer_ids"]),
-            threshold=point["threshold"],
-            comparator=point["comparator"],
-            comparison_mode=point["comparison_mode"],
+            layer_ids=frozenset(int(layer_id) for layer_id in gate.evidence.layer_ids),
+            threshold=getattr(rule, "threshold", None),
+            comparator=getattr(rule, "comparator", self.condition_comparator_threshold_is),
+            comparison_mode=gate.evidence.pooling,
             enabled=True,
         )
 

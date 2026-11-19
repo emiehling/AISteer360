@@ -210,6 +210,13 @@ class TRLMixin:
         path = self.merged_output_dir if (is_lora and self.merge_lora_after_train) else self._resolved_output_dir()
         return CheckpointArtifact(path=str(path))
 
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """One `("TrainedWeights", "direction")` fit when the configuration trains (`train_dataset`
+        is set), else none."""
+        if getattr(self, "train_dataset", None) is None:
+            return ()
+        return (("TrainedWeights", "direction"),)
+
     def export_state(self) -> dict[str, Any]:
         """The trained on-disk product under the `"artifact"` key, for freezing.
 

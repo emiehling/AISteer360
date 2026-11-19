@@ -98,7 +98,7 @@ class BaseTransform(ABC):
         Contract:
 
             - MUST NOT mutate `self`; instances and sources are shared across adapters and
-              `ControlSpec` grid points, whose params objects are reused per point.
+              across the points of a `Template`, which reuse one argument object per point.
             - Returns `self` when already bound (idempotent).
             - When source-carrying, returns a NEW instance of the same class constructed with
               `ctx.resolve(self._source)` and all hyperparameters copied, built by fresh

@@ -1,29 +1,29 @@
-"""Building an `SPipe` from a live `SteeringPipeline` (`to_spipe` orchestration).
+"""Building an `SPipe` from a `SteeringPipeline` (`to_spipe` orchestration).
 
-The recipe section is the codec encoding of each control's constructor args, in pipeline
-order. Freezing additionally walks each enabled control's `export_state()` and
-`frozen_form()`, writes the exported artifacts into the bundle's store with provenance and
-fit digests, and assembles the lock. The freeze walk over every enabled control runs before
-any recipe encoding, so a recipe value with the same content as an exported artifact reuses
-the artifact's record.
+The manifest's entries are the recipe-entry JSON of the pipeline's enabled controls
+(`Recipe.from_controls(...).to_json(store)`), and its `recipe_id` is that recipe's id. Freezing
+additionally walks each enabled control's `export_state()` and `frozen_form()`, writes the exported
+artifacts into the bundle's store with provenance and the control's fit digest, adds each entry's
+`resolved` list, and records the protocol in the lock. The freeze walk runs before the recipe is
+encoded, so a recipe value with the same content as an exported artifact reuses the artifact's
+record.
 """
 from __future__ import annotations
 
 import logging
 import tempfile
-from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
 from steerability.algorithms.core.base_control import NotFreezableError
-from steerability.algorithms.core.protocol import package_versions
 from steerability.spipe.codec import EncodeContext, encode, encoded_size
 from steerability.spipe.errors import SpipeSaveError
 from steerability.spipe.format import ARTIFACTS_DIR, FORMAT_VERSION
 from steerability.spipe.store import ArtifactStore
 
 if TYPE_CHECKING:
+    from steerability.algorithms.core.protocol import Protocol
     from steerability.algorithms.core.steering_pipeline import SteeringPipeline
     from steerability.spipe.spipe import SPipe
 
@@ -54,18 +54,6 @@ def _resolve_model_ref(pipeline, model_ref: str | None) -> str:
     raise SpipeSaveError(
         "The pipeline has no resolvable model reference; pass model_ref= to to_spipe()."
     )
-
-
-def _recipe_args_encoded(control, ctx: EncodeContext, path: str) -> dict:
-    args = getattr(control, "args", None)
-    if args is None:
-        return {}
-    encoded = {}
-    for f in dataclass_fields(args):
-        if not f.init:
-            continue
-        encoded[f.name] = encode(getattr(args, f.name), ctx, f"{path}.{f.name}")
-    return encoded
 
 
 def _artifact_class_of(value: Any) -> str:
@@ -119,13 +107,17 @@ def _collect_artifact_ids(encoded: Any, found: list[str]) -> None:
             _collect_artifact_ids(item, found)
 
 
-def _freeze_control(control, ctx: EncodeContext, entry_path: str) -> Any:
+def _freeze_control(control, ctx: EncodeContext, entry_path: str) -> list[dict] | None:
     """Freeze one enabled control: encode its exported state and frozen form.
 
+    Each exported artifact records the control's fit digest, the content id of the digests of
+    the fits the control declares (`control_fit_digests`), in order.
+
     Returns:
-        The `resolved` manifest value (an object, an array of objects, or None for controls
-        with nothing to pin).
+        The `resolved` manifest value (a list of frozen items), or None for a control with
+        nothing to pin.
     """
+    from steerability.algorithms.core.fits import control_fit_digests
     from steerability.algorithms.core.identity import content_id
     from steerability.algorithms.core.registry import method_key_for
 
@@ -134,13 +126,13 @@ def _freeze_control(control, ctx: EncodeContext, entry_path: str) -> Any:
     if not state and not fits:
         return None
 
-    fit_identity = control.fit_identity()
-    fit_digest = content_id(fit_identity) if fit_identity is not None else None
-    fit_source = fits[0][0] if fits else (type(control).__name__ if fit_digest is not None else None)
+    digests = control_fit_digests(control)
+    fit_digest = content_id(list(digests)) if digests else None
 
-    # encode each exported state value with its metadata installed, giving artifact sidecars
-    # and manifest records the fit provenance; content-equal values re-encoded later inside
-    # the frozen args reuse these records (first write wins)
+    # encode each exported artifact with its metadata installed, giving artifact sidecars and
+    # manifest records the fit provenance; content-equal values re-encoded later inside the
+    # frozen args reuse these records (first write wins). The source names the declared fit of
+    # the artifact's class, else the control's first fit
     artifacts: dict[str, dict] = {}
     remaining_fits = list(fits)
     for name, value in state.items():
@@ -148,17 +140,15 @@ def _freeze_control(control, ctx: EncodeContext, entry_path: str) -> Any:
             continue
         artifact_class = _artifact_class_of(value)
         source = None
-        digest = None
-        matched = next((fit for fit in remaining_fits if fit[1] == artifact_class), None)
-        if matched is not None:
-            remaining_fits.remove(matched)
-            source, digest = matched[0], fit_digest
-        elif fit_digest is not None and not fits:
-            source, digest = fit_source, fit_digest
+        if fit_digest is not None:
+            matched = next((fit for fit in remaining_fits if fit[1] == artifact_class), None)
+            if matched is not None:
+                remaining_fits.remove(matched)
+            source = (matched or (fits[0] if fits else (type(control).__name__,)))[0]
         ctx.artifact_fields = {
             "artifact_class": artifact_class,
             "source": source,
-            "fit_digest": digest,
+            "fit_digest": fit_digest,
         }
         encoded_value = encode(value, ctx, f"{entry_path}.state[{name!r}]")
         ctx.artifact_fields = {}
@@ -188,7 +178,7 @@ def _freeze_control(control, ctx: EncodeContext, entry_path: str) -> Any:
             "origin": origin,
         })
 
-    return resolved_entries[0] if len(resolved_entries) == 1 else resolved_entries
+    return resolved_entries
 
 
 def _recipe_frozen_blockers(controls: list) -> list[str]:
@@ -231,17 +221,36 @@ def _recipe_frozen_blockers(controls: list) -> list[str]:
     return blockers
 
 
-def build_spipe(pipeline: SteeringPipeline, *, freeze: bool | None = None, model_ref: str | None = None) -> "SPipe":
+def _has_code_refs(encoded: Any) -> bool:
+    if isinstance(encoded, dict):
+        return "$ref" in encoded or any(_has_code_refs(value) for value in encoded.values())
+    if isinstance(encoded, list):
+        return any(_has_code_refs(item) for item in encoded)
+    return False
+
+
+def build_spipe(
+    pipeline: SteeringPipeline,
+    *,
+    freeze: bool | None = None,
+    model_ref: str | None = None,
+    protocol: Protocol | None = None,
+    certificate: Mapping | None = None,
+) -> "SPipe":
     """Build an `SPipe` from a pipeline.
 
     An unsteered pipeline freezes when every enabled control is recipe-frozen (FACTS access, no
-    fits, no exported state); otherwise `freeze=True` raises.
+    fits, no exported state); otherwise `freeze=True` raises. Disabled controls are not written.
 
     Args:
         pipeline: The `SteeringPipeline` to serialize.
         freeze: Freeze the resolution (default: the pipeline's steered state). `False` forces
             a recipe-only spipe from a steered pipeline.
         model_ref: Explicit model reference, overriding the pipeline's.
+        protocol: The protocol a frozen bundle records in its lock; defaults to
+            `Protocol.from_pipeline(pipeline)`.
+        certificate: A mapping with `"schema": "certificate/1"` recorded in a frozen bundle's
+            lock, or None.
 
     Returns:
         The built `SPipe` (backed by a temporary store directory until saved).
@@ -249,21 +258,31 @@ def build_spipe(pipeline: SteeringPipeline, *, freeze: bool | None = None, model
     Raises:
         SpipeSaveError: If the model reference is unresolvable, a control is unregistered or
             cannot serialize, freezing is requested on an unsteered pipeline whose controls are
-            not all recipe-frozen, or a control cannot freeze.
+            not all recipe-frozen, a control cannot freeze, or a certificate is given without
+            freezing or is malformed.
     """
-    from steerability.algorithms.core.identity import config_descriptor_from_controls, config_digest
-    from steerability.algorithms.core.registry import method_key_for
+    from steerability.algorithms.core.protocol import Protocol, ProtocolFacts
+    from steerability.algorithms.core.recipe import Recipe, RecipeError
+    from steerability.algorithms.core.registry import RegistryError
+    from steerability.spipe.format import CERTIFICATE_SCHEMA
     from steerability.spipe.spipe import SPipe
 
     if freeze is None:
         freeze = bool(pipeline._is_steered)
+    if certificate is not None:
+        if not freeze:
+            raise SpipeSaveError("A certificate is recorded only in a frozen bundle; pass freeze=True.")
+        if not isinstance(certificate, Mapping) or certificate.get("schema") != CERTIFICATE_SCHEMA:
+            raise SpipeSaveError(f"A certificate must be a mapping with 'schema': {CERTIFICATE_SCHEMA!r}.")
 
     ref = _resolve_model_ref(pipeline, model_ref)
     revision = pipeline.hf_model_kwargs.get("revision") if pipeline.hf_model_kwargs else None
 
     controls = [
-        *pipeline.structural_controls, *pipeline.input_controls,
-        *pipeline.state_controls, *pipeline.output_controls,
+        control for control in (
+            *pipeline.structural_controls, *pipeline.input_controls,
+            *pipeline.state_controls, *pipeline.output_controls,
+        ) if control.enabled
     ]
 
     if freeze and not pipeline._is_steered:
@@ -295,10 +314,9 @@ def build_spipe(pipeline: SteeringPipeline, *, freeze: bool | None = None, model
 
     ctx = EncodeContext(store=store, provenance=provenance, default_model_type=default_model_type)
 
-    # the freeze walk over every enabled control runs before any recipe encoding: exported
-    # artifacts land in the store with their fit provenance first, and a content-equal recipe
-    # value of any control reuses the metadata-rich record
-    resolved_by_index: dict[int, Any] = {}
+    # the freeze walk runs before the recipe is encoded: exported artifacts land in the store
+    # with their fit provenance first, and a content-equal recipe value reuses the record
+    resolved_by_index: dict[int, list[dict] | None] = {}
     for i, control in enumerate(controls):
         entry_path = f"controls[{i}]"
         if getattr(control, "gate_driven_externally", False):
@@ -307,7 +325,7 @@ def build_spipe(pipeline: SteeringPipeline, *, freeze: bool | None = None, model
                 "gate, an in-memory relationship that does not serialize; save the driving "
                 "pipeline without the follower, or gate the control directly."
             )
-        if freeze and control.enabled:
+        if freeze:
             try:
                 resolved_by_index[i] = _freeze_control(control, ctx, entry_path)
             except NotFreezableError as exc:
@@ -315,20 +333,20 @@ def build_spipe(pipeline: SteeringPipeline, *, freeze: bool | None = None, model
                     f"{entry_path}: {exc} The pipeline can still be saved with freeze=False."
                 ) from exc
 
-    entries = []
-    for i, control in enumerate(controls):
+    try:
+        recipe = Recipe.from_controls(controls)
+        entries = recipe.to_json(store)["entries"]
+        recipe_id = recipe.id
+    except (RecipeError, RegistryError) as exc:
+        raise SpipeSaveError(str(exc)) from exc
+
+    for i, entry in enumerate(entries):
         entry_path = f"controls[{i}]"
         resolved = resolved_by_index.get(i)
-        entry: dict[str, Any] = {
-            "method": method_key_for(type(control)),
-            "enabled": bool(control.enabled),
-            "args": _recipe_args_encoded(control, ctx, f"{entry_path}.args"),
-            "resolved": resolved,
-        }
-        if resolved is not None:
-            for item in (resolved if isinstance(resolved, list) else [resolved]):
-                if item.get("origin") is not None:
-                    item["origin"]["args"] = entry["args"]
+        entry["resolved"] = resolved
+        for item in resolved or []:
+            if item.get("origin") is not None:
+                item["origin"]["args"] = entry["args"]
         size = encoded_size(entry)
         if size > INLINE_LIMIT_BYTES:
             raise SpipeSaveError(
@@ -336,32 +354,24 @@ def build_spipe(pipeline: SteeringPipeline, *, freeze: bool | None = None, model
                 f"{INLINE_LIMIT_BYTES}-byte limit; convert large dataset fields to a $data "
                 "reference (DataRef), or save the fitted pipeline frozen and share that."
             )
-        entries.append(entry)
-
-    descriptor = config_descriptor_from_controls(controls)
-    config_id = config_digest(descriptor)
-    recipe_id = config_digest({"model": ref, "controls": descriptor["controls"]})
 
     lock = None
     if freeze:
+        protocol = protocol if protocol is not None else Protocol.from_pipeline(pipeline, model=ref)
         lock = {
-            "config_id": config_id,
-            "recipe_id": recipe_id,
-            "model_fingerprint": provenance.get("model_fingerprint"),
-            "tokenizer_fingerprint": provenance.get("tokenizer_fingerprint"),
-            "torch_dtype": str(model.dtype).removeprefix("torch.") if model is not None else None,
-            "steer_backend_spec_hash": spec.spec_hash,
-            "fit": pipeline.fit,
-            "seed": None,
-            "versions": package_versions(),
+            "protocol_id": protocol.id,
+            "protocol": protocol.identity(),
+            "facts": ProtocolFacts.observe(model, pipeline.tokenizer).to_dict(),
+            "certificate": dict(certificate) if certificate is not None else None,
         }
 
     manifest = {
         "format": FORMAT_VERSION,
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "toolkit_version": _toolkit_version(),
-        "code_dependent": bool(ctx.code_refs),
+        "code_dependent": bool(ctx.code_refs) or _has_code_refs(entries),
         "model": {"ref": ref, "revision": revision},
+        "recipe_id": recipe_id,
         "controls": entries,
         "lock": lock,
     }

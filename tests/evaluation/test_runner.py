@@ -1,356 +1,186 @@
-"""Tests for `SteeringEval` over stub suites: run shape, results frame, log-dir layout, resume,
-sequential execution, pre-flight policy, and factory discipline under a raising suite.
-
-The runner itself imports no Inspect symbols at runtime, so these tests run against duck-typed
-stub suites and the tiny hub-free models.
-"""
-import warnings
-from dataclasses import dataclass, field
-from typing import Any, Mapping
+"""Tests for `SteeringEval` and its frames (`evaluation/runner.py`) on the tiny CI model."""
+import json
+import textwrap
 
 import pytest
 
-from steerability.algorithms.core.execution.contracts import Capability, Requirements, needs
-from steerability.algorithms.core.specs import ControlSpec
+pytest.importorskip("inspect_ai")
+
+from steerability.algorithms.core.execution.spec import BackendSpec
+from steerability.algorithms.core.identity import versioned
+from steerability.algorithms.core.protocol import Protocol
+from steerability.algorithms.core.recipe import BASELINE, Choice, Recipe, Template, entry
+from steerability.algorithms.core.store import Store
 from steerability.algorithms.core.sweeps import PipelineFactory
-from steerability.evaluation.runner import SteeringEval
-from tests.conftest import MockInputControl, MockStateControl
-
-SUITE_CALLS: list[dict] = []
-
-
-@dataclass(frozen=True, slots=True)
-class _StubSuite:
-    """Duck-typed suite recording every `run()` call into the module-level `SUITE_CALLS`."""
-
-    name: str = "capability"
-    tasks: tuple[str, ...] = ("stub/task",)
-    generate_overrides: Mapping[str, Any] = field(default_factory=dict)
-    fail: bool = field(default=False)
-
-    def run(self, pipeline, *, log_dir, options=None, base_seed=None,
-            model_name="steering-pipeline", generate_defaults=None, display="none") -> dict:
-        SUITE_CALLS.append({
-            "suite": self.name,
-            "pipeline": pipeline,
-            "log_dir": str(log_dir),
-            "options": options,
-            "base_seed": base_seed,
-            "model_name": model_name,
-            "generate_defaults": generate_defaults,
-            "display": display,
-        })
-        if self.fail:
-            raise RuntimeError("suite exploded")
-        return {
-            "stub/task": {
-                "metrics": {"match/accuracy": 0.5, "match/stderr": 0.1},
-                "n": 4,
-                "log": "one.eval",
-            }
-        }
-
-
-class _RaisingStateControl(MockStateControl):
-    def requirements(self) -> Requirements:
-        return Requirements(generate=needs(Capability.INTERVENTION_SPECS))
-
-
-class _CleanupControl(MockInputControl):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.cleanup_calls = 0
-
-    def cleanup(self):
-        self.cleanup_calls += 1
-
-
-@pytest.fixture(autouse=True)
-def reset_suite_calls():
-    SUITE_CALLS.clear()
-
-
-@pytest.fixture
-def tiny_base(monkeypatch):
-    """Serve the shared base from tiny hub-free models."""
-    from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
-
-    def fake_ensure(self):
-        if self._base_model is None:
-            self._base_model = tiny_llama()
-            tokenizer = wordlevel_tokenizer()
-            tokenizer.chat_template = "{% for message in messages %}{{ message['content'] }} {% endfor %}"
-            self._base_tokenizer = tokenizer
-
-    monkeypatch.setattr(PipelineFactory, "_ensure_base_model", fake_ensure)
-
-
-def _runner(pipelines, suites=None, **kwargs) -> SteeringEval:
-    kwargs.setdefault("progress", False)
-    return SteeringEval(
-        pipelines, "test-model", suites if suites is not None else [_StubSuite()], **kwargs,
-    )
-
-
-class TestRunShapeAndResults:
-    def test_run_shape_and_results_frame(self, tiny_base, tmp_path):
-        runner = _runner(
-            {"baseline": [], "steered": [MockInputControl()]},
-            num_trials=2, seed=7, save_dir=tmp_path,
-        )
-        results = runner.run()
-
-        assert set(results) == {"baseline", "steered"}
-        assert [run["trial_id"] for run in results["baseline"]] == [0, 1]
-        baseline_run = results["baseline"][0]
-        assert baseline_run["config_id"] == "baseline"
-        assert baseline_run["seed"] is not None
-        assert baseline_run["params"] == {}
-        assert baseline_run["suites"]["capability"]["stub/task"]["metrics"]["match/accuracy"] == 0.5
-        assert baseline_run["provenance"]["backend"] == "huggingface"
-        assert baseline_run["provenance"]["prompt_path"] == "messages"
-        assert baseline_run["provenance"]["dispatch_mode"] == "batched"
-
-        frame = runner.results()
-        assert list(frame.columns) == [
-            "config", "config_id", "trial", "seed", "suite", "task", "scorer", "metric",
-            "value", "n", "log",
-        ]
-        assert len(frame) == 2 * 2 * 2  # configs x trials x metrics
-        assert set(frame["metric"]) == {"accuracy", "stderr"}
-        assert set(frame["scorer"]) == {"match"}
-
-    def test_results_before_run_raises(self):
-        with pytest.raises(RuntimeError, match="run\\(\\)"):
-            _runner({"baseline": []}).results()
-
-    def test_log_dir_layout_and_relative_log_paths(self, tiny_base, tmp_path):
-        runner = _runner({"baseline": []}, num_trials=1, save_dir=tmp_path)
-        results = runner.run()
-        (call,) = SUITE_CALLS
-        assert call["log_dir"] == str(tmp_path / "inspect_logs" / "baseline" / "trial_0" / "capability")
-        assert results["baseline"][0]["suites"]["capability"]["stub/task"]["log"] == str(
-            "inspect_logs/baseline/trial_0/capability/one.eval"
-        )
-
-    def test_one_provider_name_per_config_and_trial_seeds(self, tiny_base, tmp_path):
-        spec = ControlSpec(control_cls=MockInputControl, vars={"num_examples": [1, 2]})
-        runner = _runner({"sweep": [spec]}, num_trials=2, seed=3, save_dir=tmp_path)
-        results = runner.run()
-        config_ids = [run["config_id"] for run in results["sweep"]]
-        assert len(SUITE_CALLS) == 4
-        assert [call["model_name"] for call in SUITE_CALLS] == config_ids
-        seeds = {(call["model_name"], call["base_seed"]) for call in SUITE_CALLS}
-        assert len(seeds) == 4  # distinct per (config, trial)
-
-    def test_sequential_execution_one_pipeline_at_a_time(self, tiny_base, tmp_path):
-        spec = ControlSpec(control_cls=MockInputControl, vars={"num_examples": [1, 2]})
-        runner = _runner({"sweep": [spec]}, save_dir=tmp_path)
-        runner.run()
-        first, second = SUITE_CALLS
-        assert first["pipeline"] is not second["pipeline"]
-        # the first configuration's pipeline was released before the second ran
-        assert first["pipeline"] != second["pipeline"]
-
-    def test_temp_dir_when_no_save_dir(self, tiny_base):
-        runner = _runner({"baseline": []})
-        results = runner.run()
-        assert "inspect_logs" in SUITE_CALLS[0]["log_dir"]
-        assert results["baseline"][0]["suites"]["capability"]["stub/task"]["n"] == 4
-
-
-class TestProgressAndDisplay:
-    def test_display_forwarded_to_suites(self, tiny_base, tmp_path):
-        _runner({"baseline": []}, save_dir=tmp_path, display="plain").run()
-        assert all(call["display"] == "plain" for call in SUITE_CALLS)
-
-    def test_display_defaults_to_none(self, tiny_base, tmp_path):
-        _runner({"baseline": []}, save_dir=tmp_path).run()
-        assert all(call["display"] == "none" for call in SUITE_CALLS)
-
-    def test_progress_summary_and_cell_lines_logged(self, tiny_base, tmp_path, caplog):
-        with caplog.at_level("INFO", logger="steerability.evaluation.runner"):
-            _runner(
-                {"baseline": [], "steered": [MockInputControl()]},
-                num_trials=2, save_dir=tmp_path,
-            ).run()
-        messages = [record.message for record in caplog.records]
-        assert any("= 4 cell(s)" in message for message in messages)  # 2 configs x 2 trials x 1 suite
-        assert any("Cell 1/4" in message for message in messages)
-
-
-class TestResume:
-    def test_same_identity_resumes(self, tiny_base, tmp_path):
-        _runner({"baseline": []}, save_dir=tmp_path).run()
-        _runner({"baseline": []}, save_dir=tmp_path).run()  # no refusal
-
-    def test_first_run_records_the_protocol(self, tiny_base, tmp_path):
-        import json
-
-        _runner({"baseline": []}, seed=7, save_dir=tmp_path, generate_defaults={"temperature": 0}).run()
-        protocol = json.loads((tmp_path / "protocol.json").read_text())
-        assert protocol["seed"] == 7
-        assert protocol["generate_defaults"] == {"temperature": 0}
-        assert set(protocol) == {
-            "toolkit_version", "provider_options", "seed_scope", "generate_defaults", "hf_model_kwargs", "seed",
-            "fit", "backend",
-        }
-
-    def test_changed_protocol_is_refused(self, tiny_base, tmp_path):
-        import torch
-
-        _runner({"baseline": []}, save_dir=tmp_path, hf_model_kwargs={"torch_dtype": torch.float16}).run()
-        second = _runner({"baseline": []}, save_dir=tmp_path, hf_model_kwargs={"torch_dtype": torch.bfloat16})
-        with pytest.raises(ValueError, match=r"different protocol \(hf_model_kwargs differ"):
-            second.run()
-
-    def test_changed_max_concurrency_is_a_changed_protocol(self, tiny_base, tmp_path):
-        import json
-
-        from steerability.evaluation.provider import ProviderOptions
-
-        _runner({"baseline": []}, save_dir=tmp_path, provider_options=ProviderOptions()).run()
-        recorded = json.loads((tmp_path / "protocol.json").read_text())["provider_options"]
-        assert recorded["fields"]["max_concurrency"] is None
-        second = _runner({"baseline": []}, save_dir=tmp_path, provider_options=ProviderOptions(max_concurrency=16))
-        with pytest.raises(ValueError, match=r"different protocol \(provider_options differ"):
-            second.run()
-
-    def test_recorded_provider_options_contain_max_concurrency(self, tiny_base, tmp_path):
-        import json
-
-        from steerability.evaluation.provider import ProviderOptions
-
-        _runner({"baseline": []}, save_dir=tmp_path, provider_options=ProviderOptions(max_concurrency=16)).run()
-        protocol = json.loads((tmp_path / "protocol.json").read_text())
-        assert protocol["provider_options"]["fields"]["max_concurrency"] == 16
-
-    def test_logs_without_a_protocol_are_refused(self, tiny_base, tmp_path):
-        log_dir = tmp_path / "inspect_logs" / "baseline" / "trial_0" / "capability"
-        log_dir.mkdir(parents=True)
-        (log_dir / "one.eval").write_bytes(b"")
-        with pytest.raises(ValueError, match="no protocol.json"):
-            _runner({"baseline": []}, save_dir=tmp_path).run()
-        assert SUITE_CALLS == []
-
-    def test_raised_num_trials_resumes(self, tiny_base, tmp_path):
-        _runner({"baseline": []}, num_trials=1, save_dir=tmp_path).run()
-        _runner({"baseline": []}, num_trials=2, save_dir=tmp_path).run()  # completes only the missing trial
-
-    def test_missing_save_dir_is_created(self, tiny_base, tmp_path):
-        # the runner creates save_dir; eval_set (stubbed out here) creates the inspect_logs subtree
-        save_dir = tmp_path / "fresh"
-        assert not save_dir.exists()
-        _runner({"baseline": []}, save_dir=save_dir).run()
-        assert save_dir.is_dir()
-
-
-class TestPreflightPolicy:
-    def test_raise_aggregates_before_any_work(self, tiny_base, tmp_path):
-        spec = ControlSpec(control_cls=_RaisingStateControl, vars={"scale_factor": [0.5, 1.0]})
-        runner = _runner({"sweep": [spec]}, save_dir=tmp_path)
-        with pytest.raises(RuntimeError, match="_RaisingStateControl"):
-            runner.run()
-        assert SUITE_CALLS == []
-
-    def test_skip_runs_supported_points_only(self, tiny_base, tmp_path, caplog):
-        runner = _runner(
-            {"good": [MockInputControl()], "gated": [_RaisingStateControl()]},
-            on_unsupported="skip", save_dir=tmp_path,
-        )
-        with caplog.at_level("WARNING", logger="steerability.evaluation.runner"):
-            results = runner.run()
-        assert len(results["good"]) == 1
-        assert results["gated"] == []
-        assert any("Skipping unsupported configuration" in r.getMessage() for r in caplog.records)
-
-
-class TestFactoryDiscipline:
-    def test_cleanup_runs_when_a_suite_raises(self, tiny_base, tmp_path):
-        control = _CleanupControl()
-        runner = _runner({"arm": [control]}, suites=[_StubSuite(fail=True)], save_dir=tmp_path)
-        with pytest.raises(RuntimeError, match="suite exploded"):
-            runner.run()
-        assert control.cleanup_calls == 1
-
-
-class TestSuiteFailure:
-    def test_eval_set_failure_propagates_and_records_no_cell(self, tiny_base, tmp_path, monkeypatch):
-        pytest.importorskip("inspect_ai")
-        import steerability.evaluation.suite as suite_module
-        from steerability.evaluation.suite import InspectSuite
-
-        monkeypatch.setattr(suite_module, "eval_set", lambda tasks, **kwargs: (False, []))
-        suite = InspectSuite(name="capability", tasks=("stub/task",))
-        runner = _runner({"baseline": []}, suites=[suite], save_dir=tmp_path)
-        with pytest.raises(RuntimeError, match="eval_set failed"):
-            runner.run()
-        with pytest.raises(RuntimeError, match="run\\(\\)"):
-            runner.results()
-
-
-class TestSeedWithoutTemperature:
-    def test_seed_without_temperature_warns(self, tiny_base, tmp_path):
-        runner = _runner({"baseline": []}, seed=7, save_dir=tmp_path)
-        with pytest.warns(UserWarning, match="temperature"):
-            runner.run()
-
-    def test_seed_with_greedy_default_does_not_warn(self, tiny_base, tmp_path):
-        runner = _runner({"baseline": []}, seed=7, save_dir=tmp_path, generate_defaults={"temperature": 0})
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            runner.run()
-        assert not any("temperature" in str(w.message) for w in caught)
-
-    def test_seed_with_suite_override_does_not_warn(self, tiny_base, tmp_path):
-        suite = _StubSuite(generate_overrides={"temperature": 0.7})
-        runner = _runner({"baseline": []}, suites=[suite], seed=7, save_dir=tmp_path)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            runner.run()
-        assert not any("temperature" in str(w.message) for w in caught)
-
-
-class TestStaticRuntimeKwargAudit:
-    def test_static_runtime_kwarg_declared_by_no_configuration_warns(self, tiny_base, tmp_path):
-        pytest.importorskip("inspect_ai")
-        from steerability.evaluation.provider import ProviderOptions
-
-        runner = _runner(
-            {"baseline": [], "steered": [MockInputControl()]},
-            save_dir=tmp_path,
-            provider_options=ProviderOptions(runtime_kwargs={"substrings": ["x"]}),
-        )
-        with pytest.warns(UserWarning, match="inert on every arm"):
-            runner.run()
-
-    def test_static_runtime_kwarg_declared_by_one_configuration_does_not_warn(self, tiny_base, tmp_path):
-        pytest.importorskip("inspect_ai")
-        from steerability.evaluation.provider import ProviderOptions
-
-        class _RowConsumer(MockInputControl):
-            RUNTIME_KWARGS_SCHEMA = [{"name": "substrings", "type": "list[str]", "scope": "row"}]
-
-        runner = _runner(
-            {"baseline": [], "steered": [_RowConsumer()]},
-            save_dir=tmp_path,
-            provider_options=ProviderOptions(runtime_kwargs={"substrings": ["x"]}),
-        )
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            runner.run()
-        assert not any("inert on every arm" in str(w.message) for w in caught)
-
-
-class TestConstructorValidation:
-    def test_bad_arguments_raise(self):
-        with pytest.raises(TypeError, match="pipelines"):
-            SteeringEval([], "m", [_StubSuite()])
-        with pytest.raises(ValueError, match="num_trials"):
-            _runner({"baseline": []}, num_trials=0)
-        with pytest.raises(ValueError, match="suites"):
-            _runner({"baseline": []}, suites=[])
-        with pytest.raises(ValueError, match="distinct"):
-            _runner({"baseline": []}, suites=[_StubSuite(), _StubSuite()])
-        with pytest.raises(ValueError, match="on_unsupported"):
-            _runner({"baseline": []}, on_unsupported="ignore")
+from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
+from steerability.evaluation import batching
+from steerability.evaluation.items import InspectBenchmark, PromptBenchmark
+from steerability.evaluation.runner import SteeringEval, runs_frame, samples_frame, summarize_runs
+
+MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+PROMPTS = {"a": "the cat", "b": "the cat sat on", "c": "the dog sat", "d": "a cat"}
+
+
+@versioned("1")
+def length_score(response, row):
+    return float(len(response))
+
+
+def _protocol(model: str = MODEL) -> Protocol:
+    return Protocol.create(model, generate_defaults={"temperature": 0, "max_tokens": 3})
+
+
+def _benchmark() -> PromptBenchmark:
+    return PromptBenchmark("lengths", PROMPTS, length_score)
+
+
+def _pipelines() -> dict:
+    return {
+        "baseline": BASELINE,
+        "prompted": Template((entry(SystemPrompt, text=Choice(("be brief", "be kind"))),)),
+    }
+
+
+@pytest.fixture()
+def generations(monkeypatch):
+    """Count the prompts that direct generation sends to a pipeline."""
+    prompts = []
+    original = batching.RequestAdmission.run_batch
+
+    def counting(self, batch):
+        for member in batch:
+            prompt = member.prompt
+            prompts.append(prompt if isinstance(prompt, str) else prompt[-1]["content"])
+        return original(self, batch)
+
+    monkeypatch.setattr(batching.RequestAdmission, "run_batch", counting)
+    return prompts
+
+
+class TestRun:
+    def test_template_sweep_frames(self, tmp_path):
+        evaluation = SteeringEval(_protocol(), _pipelines(), [_benchmark()], num_trials=2, device_map=None,
+                                  progress=False)
+        evaluation.run(tmp_path / "run")
+        samples = evaluation.samples_frame(include_text=True)
+        assert len(samples) == 3 * 2 * len(PROMPTS)
+        assert {"pipeline", "recipe_id", "trial_id", "benchmark", "item_id", "status", "tokens", "value",
+                "input", "target", "completion", "system_prompt.text"} <= set(samples.columns)
+        assert set(samples["system_prompt.text"].dropna()) == {"be brief", "be kind"}
+        runs = evaluation.runs_frame({"length": "length_score"})
+        assert list(runs.columns[:6]) == ["pipeline", "recipe_id", "trial_id", "n", "errors", "length"]
+        assert len(runs) == 3 * 2
+        assert (runs["n"] == len(PROMPTS)).all() and (runs["errors"] == 0).all()
+        summary = summarize_runs(runs, ["length"])
+        assert len(summary) == 3 and (summary["n_trials"] == 2).all()
+        assert runs_frame(tmp_path / "run", {"length": "length_score"}).equals(runs)
+
+        points = json.loads((tmp_path / "run" / "points.json").read_text())
+        assert [record["pipeline"] for record in points["points"]] == ["baseline", "prompted", "prompted"]
+        protocol = json.loads((tmp_path / "run" / "protocol.json").read_text())
+        assert protocol["id"] == _protocol().id and protocol["observed"]["model_fingerprint"]
+
+    def test_a_run_builds_one_factory_and_prepares_once(self, tmp_path, monkeypatch):
+        calls = []
+        original = PipelineFactory.prepare
+
+        def counting(self, recipes):
+            calls.append(list(recipes))
+            return original(self, recipes)
+
+        monkeypatch.setattr(PipelineFactory, "prepare", counting)
+        evaluation = SteeringEval(_protocol(), _pipelines(), [_benchmark()], device_map=None, progress=False)
+        evaluation.run(tmp_path / "run")
+        assert len(calls) == 1
+        assert evaluation.factory.stats.pipelines == 3
+
+    def test_resume_generates_nothing_and_a_larger_selection_only_the_new_items(self, tmp_path, generations):
+        pipelines = {"baseline": BASELINE}
+        SteeringEval(_protocol(), pipelines, [_benchmark()], items={"lengths": ["a", "b"]}, device_map=None,
+                     progress=False).run(tmp_path / "run")
+        assert sorted(generations) == ["the cat", "the cat sat on"]
+        generations.clear()
+        SteeringEval(_protocol(), pipelines, [_benchmark()], items={"lengths": ["a", "b"]}, device_map=None,
+                     progress=False).run(tmp_path / "run")
+        assert generations == []
+        larger = SteeringEval(_protocol(), pipelines, [_benchmark()], items={"lengths": ["a", "b", "c"]},
+                              device_map=None, progress=False)
+        larger.run(tmp_path / "run")
+        assert generations == ["the dog sat"]
+        assert len(larger.samples_frame()) == 3
+
+    def test_a_save_dir_of_another_base_model_is_refused(self, tmp_path):
+        SteeringEval(_protocol(), {"baseline": BASELINE}, [_benchmark()], items={"lengths": ["a"]}, device_map=None,
+                     progress=False).run(tmp_path / "run")
+        other = SteeringEval(_protocol("other/model"), {"baseline": BASELINE}, [_benchmark()], device_map=None,
+                             progress=False)
+        with pytest.raises(ValueError, match="another protocol|written under protocol"):
+            other.run(tmp_path / "run")
+
+    def test_a_shared_store(self, tmp_path, generations):
+        store = Store.open(tmp_path / "shared")
+        for save_dir in ("one", "two"):
+            SteeringEval(_protocol(), {"baseline": BASELINE}, [_benchmark()], items={"lengths": ["a"]},
+                         device_map=None, progress=False).run(tmp_path / save_dir, store=store)
+        assert generations == ["the cat"]
+        assert not (tmp_path / "one" / "store").exists()
+
+    def test_frames_require_a_run(self):
+        with pytest.raises(RuntimeError, match="run"):
+            SteeringEval(_protocol(), {"baseline": BASELINE}, [_benchmark()]).runs_frame()
+
+    def test_unsupported_points_raise_before_any_model_work(self, tmp_path, monkeypatch):
+        spec = BackendSpec(kind="vllm-serve", model=MODEL, options={"base_url": "http://x:8000", "api_key": "secret"})
+        protocol = Protocol.create(MODEL, backend=spec)
+        recipe = Recipe((entry(SystemPrompt, text="x"),))
+        evaluation = SteeringEval(protocol, {"p": recipe}, [_benchmark()], progress=False)
+        monkeypatch.setattr(PipelineFactory, "prepare", lambda self, recipes: pytest.fail("model work ran"))
+        monkeypatch.setattr("steerability.evaluation.runner.preflight", lambda points, protocol: ["p [x] C (generate): no"])
+        with pytest.raises(RuntimeError, match="Unsupported"):
+            evaluation.run(tmp_path / "run")
+        assert "secret" not in json.dumps(protocol.identity())
+
+
+DICT_TASK = '''
+from inspect_ai import Task, task
+from inspect_ai.dataset import MemoryDataset, Sample
+from inspect_ai.scorer import Score, mean, scorer
+from inspect_ai.solver import generate
+
+
+@scorer(metrics={"*": [mean()]})
+def shape():
+    async def score(state, target):
+        text = state.output.completion
+        return Score(value={"length": float(len(text)), "has_target": float(target.text in text)})
+    return score
+
+
+@task
+def tiny():
+    samples = [Sample(id=i, input=f"the cat {i}", target="the", metadata={"question_id": i // 2}) for i in range(4)]
+    return Task(dataset=MemoryDataset(samples), solver=[generate()], scorer=shape())
+'''
+
+
+def test_samples_frame_reads_dict_scores_metadata_and_text(tmp_path):
+    path = tmp_path / "dict_task.py"
+    path.write_text(textwrap.dedent(DICT_TASK))
+    benchmark = InspectBenchmark(str(path), scorer="shape/length", group_key="question_id",
+                                 generate={"max_tokens": 3, "temperature": 0})
+    evaluation = SteeringEval(_protocol(), {"baseline": BASELINE}, [benchmark], device_map=None, progress=False)
+    evaluation.run(tmp_path / "run")
+    samples = samples_frame(tmp_path / "run", {"length": "shape/length", "hit": "shape/has_target"},
+                            metadata_keys=["question_id"], include_text=True)
+    assert list(samples["item_id"]) == ["0", "1", "2", "3"]
+    assert list(samples["question_id"]) == [0, 0, 1, 1]
+    assert samples["length"].notna().all() and set(samples["hit"]) <= {0.0, 1.0}
+    assert samples["completion"].notna().all() and samples["input"].notna().all()
+    runs = runs_frame(tmp_path / "run", {"length": "shape/length"})
+    summary = summarize_runs(runs, ["length"])
+
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    from steerability.evaluation import plotting
+
+    plotting.plot_comparison_bars(summary, metric_cols=["length_mean"], group_col="pipeline")

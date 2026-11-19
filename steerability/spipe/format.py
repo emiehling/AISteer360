@@ -1,4 +1,4 @@
-"""The `spipe/1` manifest schema and archive packing.
+"""The `spipe/2` manifest schema and archive packing.
 
 The canonical form of a `.spipe` is a directory holding `spipe.json` and an optional
 `artifacts/` store; a `.spipe` file is a zip of that directory. Zips are written
@@ -20,21 +20,21 @@ from steerability.spipe.store import is_artifact_id
 
 logger = logging.getLogger(__name__)
 
-FORMAT_VERSION = "spipe/1"
+FORMAT_VERSION = "spipe/2"
 MANIFEST_NAME = "spipe.json"
 ARTIFACTS_DIR = "artifacts"
 
 SIZE_CAP_BYTES = 20 * 1024**3
 
-_TOP_LEVEL_KEYS = {"format", "created_at", "toolkit_version", "code_dependent", "model", "controls", "lock"}
+_TOP_LEVEL_KEYS = {
+    "format", "created_at", "toolkit_version", "code_dependent", "model", "recipe_id", "controls", "lock",
+}
 _MODEL_KEYS = {"ref", "revision"}
-_ENTRY_KEYS = {"method", "enabled", "args", "resolved"}
+_ENTRY_KEYS = {"method", "args", "resolved"}
 _RESOLVED_KEYS = {"method", "args", "artifacts", "origin"}
 _ARTIFACT_RECORD_KEYS = {"id", "encoding", "type", "artifact_class", "source", "fit_digest", "provenance"}
-_LOCK_KEYS = {
-    "config_id", "recipe_id", "model_fingerprint", "tokenizer_fingerprint", "torch_dtype",
-    "steer_backend_spec_hash", "fit", "seed", "versions",
-}
+_LOCK_KEYS = {"protocol_id", "protocol", "facts", "certificate"}
+CERTIFICATE_SCHEMA = "certificate/1"
 
 
 def _require(condition: bool, message: str) -> None:
@@ -44,7 +44,7 @@ def _require(condition: bool, message: str) -> None:
 
 def _check_keys(mapping: Mapping, allowed: set[str], where: str) -> None:
     unknown = sorted(set(mapping) - allowed)
-    _require(not unknown, f"{where}: unknown key(s) {unknown}; the spipe/1 schema rejects them.")
+    _require(not unknown, f"{where}: unknown key(s) {unknown}; the {FORMAT_VERSION} schema rejects them.")
 
 
 def _validate_resolved_entry(resolved: Mapping, where: str) -> None:
@@ -79,7 +79,13 @@ def _validate_resolved_entry(resolved: Mapping, where: str) -> None:
 
 
 def validate_manifest(manifest: Any) -> None:
-    """Validate a parsed `spipe.json` against the `spipe/1` schema.
+    """Validate a parsed `spipe.json` against the `spipe/2` schema.
+
+    A manifest records the model reference, the recipe id, one entry per enabled control (its
+    recipe-entry JSON, `method` and `args`, plus a `resolved` list of frozen items or null), and a
+    lock. The lock is null for a bundle that is not frozen. A frozen bundle's lock records the
+    protocol it was fitted or measured under (`protocol_id`, `protocol`), the facts observed on its
+    model (`facts`), and an optional `certificate`, a mapping whose `schema` is `"certificate/1"`.
 
     Args:
         manifest: The parsed manifest.
@@ -100,6 +106,9 @@ def validate_manifest(manifest: Any) -> None:
         _require(isinstance(manifest.get(key), str), f"spipe.json.{key}: required string.")
     _require(isinstance(manifest.get("code_dependent"), bool), "spipe.json.code_dependent: required boolean.")
 
+    _require(isinstance(manifest.get("recipe_id"), str) and manifest["recipe_id"],
+             "spipe.json.recipe_id: required non-empty string.")
+
     model = manifest.get("model")
     _require(isinstance(model, Mapping), "spipe.json.model: required object.")
     _check_keys(model, _MODEL_KEYS, "spipe.json.model")
@@ -115,26 +124,29 @@ def validate_manifest(manifest: Any) -> None:
         _check_keys(entry, _ENTRY_KEYS, where)
         _require(isinstance(entry.get("method"), str) and "/" in entry.get("method", ""),
                  f"{where}.method: required '<category>_control/<name>' string.")
-        _require(isinstance(entry.get("enabled"), bool), f"{where}.enabled: required boolean.")
         _require(isinstance(entry.get("args"), Mapping), f"{where}.args: required object.")
         resolved = entry.get("resolved")
         if resolved is None:
             continue
-        if isinstance(resolved, list):
-            _require(bool(resolved), f"{where}.resolved: an array of frozen entries must be non-empty.")
-            for j, item in enumerate(resolved):
-                _validate_resolved_entry(item, f"{where}.resolved[{j}]")
-        else:
-            _validate_resolved_entry(resolved, f"{where}.resolved")
+        _require(isinstance(resolved, list) and bool(resolved),
+                 f"{where}.resolved: must be null or a non-empty array of frozen entries.")
+        for j, item in enumerate(resolved):
+            _validate_resolved_entry(item, f"{where}.resolved[{j}]")
 
     lock = manifest.get("lock")
     if lock is not None:
         _require(isinstance(lock, Mapping), "spipe.json.lock: must be an object or null.")
         _check_keys(lock, _LOCK_KEYS, "spipe.json.lock")
-        for key in ("config_id", "recipe_id"):
-            _require(isinstance(lock.get(key), str) and lock[key], f"spipe.json.lock.{key}: required string.")
-        _require(lock.get("fit") in ("auto", "in_process"), "spipe.json.lock.fit: must be 'auto' or 'in_process'.")
-        _require(isinstance(lock.get("versions"), Mapping), "spipe.json.lock.versions: required object.")
+        _require(isinstance(lock.get("protocol_id"), str) and lock["protocol_id"],
+                 "spipe.json.lock.protocol_id: required string.")
+        protocol = lock.get("protocol")
+        _require(isinstance(protocol, Mapping) and protocol.get("schema") == "protocol/1",
+                 "spipe.json.lock.protocol: required 'protocol/1' identity object.")
+        _require(isinstance(lock.get("facts"), Mapping), "spipe.json.lock.facts: required object.")
+        certificate = lock.get("certificate")
+        _require(certificate is None or (isinstance(certificate, Mapping)
+                                         and certificate.get("schema") == CERTIFICATE_SCHEMA),
+                 f"spipe.json.lock.certificate: must be null or an object with schema {CERTIFICATE_SCHEMA!r}.")
 
 
 def write_manifest(manifest: Mapping, directory: str | Path) -> None:

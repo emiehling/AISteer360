@@ -540,7 +540,7 @@ class TestSpipeRoundTrip:
         assert control.args == original.args
         (inspected,) = loaded.instantiate_entry(0, lenient=True)
         assert inspected.source == original.source
-        assert loaded.config_id == spipe.config_id
+        assert loaded.recipe_id == spipe.recipe_id
 
     def test_a_source_that_disagrees_with_the_convenience_field_raises(self, tmp_path):
         from steerability.spipe import SPipe

@@ -153,6 +153,13 @@ class CPO(InputControl):
             return ModelAccess.FACTS if has_memory else ModelAccess.ROLLOUTS
         return ModelAccess.MODULE
 
+    def steer_fits(self) -> tuple[tuple[str, str], ...]:
+        """One `("CPOMemory", "direction")` fit when `steer()` optimizes a memory (no `memory=` given),
+        else none."""
+        if getattr(getattr(self, "args", None), "memory", None) is not None:
+            return ()
+        return (("CPOMemory", "direction"),)
+
     def export_state(self) -> dict:
         """The trained scorer memory under the `"memory"` key (after `steer()`).
 

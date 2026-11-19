@@ -22,6 +22,7 @@ from steerability.algorithms.core.identity import json_id
 
 if TYPE_CHECKING:
     from steerability.algorithms.core.base_control import BaseControl
+    from steerability.spipe.codec import DecodeContext
     from steerability.spipe.store import ArtifactStore
 
 RECIPE_SCHEMA = "recipe/1"
@@ -671,7 +672,7 @@ class Recipe(_Described):
         *,
         store: ArtifactStore | None = None,
         allow_code: bool = False,
-        lenient: bool = False,
+        context: DecodeContext | None = None,
     ) -> Recipe:
         """Read a recipe from its JSON form.
 
@@ -680,15 +681,16 @@ class Recipe(_Described):
             store: The artifact store that `$artifact` references are read from.
             allow_code: Whether decoding may import `$ref` callables and construct dataclasses
                 outside the data-only set.
-            lenient: Decode without importing or running code: `$ref` callables become `CodeRef`
-                placeholders and `$data` references stay unloaded.
+            context: A decoding context to use in place of `store` and `allow_code`, e.g. a
+                lenient one (`code_mode="sentinel"`, `data_mode="keep"`) that imports and runs no
+                code.
 
         Returns:
             The recipe.
 
         Raises:
             RecipeError: If the schema differs or an entry is malformed.
-            SpipeCodeRefError: If decoding needs code that `allow_code` does not permit.
+            SpipeCodeRefError: If decoding needs code that the context does not permit.
             SpipeFormatError: If an encoded value is malformed.
         """
         from steerability.spipe.codec import DecodeContext, decode
@@ -696,15 +698,12 @@ class Recipe(_Described):
         if not isinstance(data, Mapping) or data.get("schema") != RECIPE_SCHEMA:
             found = data.get("schema") if isinstance(data, Mapping) else type(data).__name__
             raise RecipeError(f"Expected a {RECIPE_SCHEMA!r} recipe; got schema {found!r}.")
-        ctx = DecodeContext(
-            store=store, allow_code=False if lenient else allow_code,
-            code_mode="sentinel" if lenient else "strict", data_mode="keep" if lenient else "load",
-        )
+        ctx = context if context is not None else DecodeContext(store=store, allow_code=allow_code)
         entries = []
         for index, item in enumerate(data.get("entries") or []):
             if not isinstance(item, Mapping) or not isinstance(item.get("args"), Mapping):
                 raise RecipeError(f"entries[{index}]: expected an object with 'method' and 'args'.")
-            args = {key: decode(value, ctx, f"entries[{index}].{key}") for key, value in item["args"].items()}
+            args = {key: decode(value, ctx, f"entries[{index}].args.{key}") for key, value in item["args"].items()}
             entries.append(Entry(method=item["method"], args=args))
         return cls(tuple(entries))
 

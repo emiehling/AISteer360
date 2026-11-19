@@ -17,7 +17,7 @@ class SpipeError(Exception):
 
 
 class SpipeFormatError(SpipeError):
-    """The manifest, archive, or artifact layout does not conform to the `spipe/1` format.
+    """The manifest, archive, or artifact layout does not conform to the `spipe/2` format.
 
     Raised for the following conditions:
 

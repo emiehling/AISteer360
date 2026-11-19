@@ -7,8 +7,8 @@ per configuration with `{metric}_mean` and `{metric}_std` columns, plus any swee
 metric columns given by `metric_cols`.
 
 Summary frames are built with the functions in `steerability.evaluation.runner`. `SteeringEval.runs_frame`
-(or the module function `runs_frame`) pivots `results()` into one row per (pipeline, trial), and
-`summarize_runs` aggregates the trials into a summary frame. The reference pipelines passed as
+(or the module function `runs_frame`) gives one row per (pipeline, recipe, trial), and `summarize_runs`
+aggregates the trials into a summary frame. The reference pipelines passed as
 `compare_to_pipelines` are summary frames with one configuration, e.g., the rows of the baseline pipeline.
 
 Requires the `eval` extra (matplotlib, and seaborn for `plot_metric_heatmap`).
@@ -272,19 +272,19 @@ def _build_refs_list(
         List of `(label, DataFrame)` tuples ready for rendering.
 
     Raises:
-        ValueError: If any entry contains multiple distinct `config_id` values.
+        ValueError: If any entry contains multiple distinct `recipe_id` values.
     """
     all_refs: list[tuple[str, pd.DataFrame]] = []
 
     if compare_to_pipelines:
         for label, ref_df in compare_to_pipelines:
-            if ref_df is not None and not ref_df.empty and "config_id" in ref_df.columns:
-                n_configs = ref_df["config_id"].nunique()
+            if ref_df is not None and not ref_df.empty and "recipe_id" in ref_df.columns:
+                n_configs = ref_df["recipe_id"].nunique()
                 if n_configs > 1:
                     raise ValueError(
                         f"compare_to_pipelines entry '{label}' contains {n_configs} "
                         f"configurations. Only fixed (non-swept) pipelines are supported; "
-                        f"plot ControlSpec sweeps with multiple configurations as a "
+                        f"plot template sweeps with multiple configurations as a "
                         f"separate swept series."
                     )
             all_refs.append((label, ref_df))
@@ -452,7 +452,7 @@ def _overlay_pareto_frontier(
 def plot_metric_by_config(
     summary: pd.DataFrame,
     metric: str,
-    x_col: str = "config_id",
+    x_col: str = "recipe_id",
     baseline_value: float | None = None,
     baseline_std: float | None = None,
     ax: plt.Axes | None = None,

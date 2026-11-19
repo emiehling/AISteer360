@@ -74,7 +74,6 @@ class _HashEncoder:
 
 class TestEPRPoolOwnership:
     def test_steer_leaves_the_pool_and_the_identity_unchanged(self, monkeypatch):
-        from steerability.algorithms.core.identity import config_descriptor_from_controls
         from steerability.algorithms.input_control.few_shot.selectors.epr import selector as epr_selector
         from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
@@ -85,14 +84,13 @@ class TestEPRPoolOwnership:
         snapshot = copy.deepcopy(pool)
         epr = EPRSelector(scoring_lm=None, scoring_tokenizer=None, candidate_set_size=2)
         few_shot = FewShot(positive_example_pool=pool, k_positive=1, selector=epr)
-        before = config_descriptor_from_controls([few_shot])
 
         pipeline = SteeringPipeline(
             controls=[few_shot], model=tiny_llama(num_layers=2, hidden=16, heads=2), tokenizer=wordlevel_tokenizer(),
         )
         pipeline.steer()
         assert pool == snapshot
-        assert config_descriptor_from_controls([few_shot]) == before
+        assert few_shot.selector is epr
         assert not hasattr(epr, "embedding_key")
         assert encoder.calls == len(pool)
 

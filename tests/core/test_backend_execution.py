@@ -16,13 +16,13 @@ from steerability.algorithms.core.execution import (
     PreparedPrompt,
     StackEntry,
     TransportError,
-    derive_item_seed,
     merge_lowered_params,
     run_bounded,
     with_transport_retries,
 )
 from steerability.algorithms.core.execution.access import ModelAccess
 from steerability.algorithms.core.execution.session_utils import session_generate
+from steerability.algorithms.core.identity import derive_seed
 from steerability.algorithms.core.output import Output, infer_finish_reasons, truncate_at_stop_strings
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 from steerability.algorithms.core.utils.generate_call import current_generate_call
@@ -266,13 +266,13 @@ class TestExtractRefLogprobs:
 class TestFanout:
 
     def test_seed_derivation_vectors(self):
-        assert derive_item_seed(42, "generate-0", 0) == 9171175973360618330
-        assert derive_item_seed(42, "generate-0", 1) == 7488875411253355286
-        assert derive_item_seed(42, "generate-1", 0) == 1372555530269073761
-        assert derive_item_seed(0, "op", 0) == 6517267240548121353
+        assert derive_seed(42, "generate-0", 0) == 9171175973360618330
+        assert derive_seed(42, "generate-0", 1) == 7488875411253355286
+        assert derive_seed(42, "generate-1", 0) == 1372555530269073761
+        assert derive_seed(0, "op", 0) == 6517267240548121353
 
     def test_seed_derivation_range_and_distinctness(self):
-        seeds = {derive_item_seed(1, "op", index) for index in range(64)}
+        seeds = {derive_seed(1, "op", index) for index in range(64)}
         assert len(seeds) == 64
         assert all(0 <= seed < 2 ** 63 for seed in seeds)
 
@@ -501,7 +501,7 @@ class TestSessionBatchedFastPath:
             seeds = session._item_seeds(items, params)
         # the explicit seed is honored, the absent one derives per index (not the dispatch seed)
         assert seeds[0] == 100
-        assert seeds[1] == derive_item_seed(42, "generate-0", 1)
+        assert seeds[1] == derive_seed(42, "generate-0", 1)
 
     def test_serial_fallback_logged_once_per_reason(self, backend, tokenizer, caplog):
         encoded = tokenizer(["the cat", "the cat"], return_tensors="pt", padding=True)

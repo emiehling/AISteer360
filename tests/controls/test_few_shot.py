@@ -802,12 +802,12 @@ def test_system_mode_changes_config_identity():
     tiny_model = "hf-internal-testing/tiny-random-LlamaForCausalLM"
     kwargs = dict(directive="follow examples", positive_example_pool=POS_POOL, k_positive=1)
 
-    def config_id(system_mode: str) -> str:
+    def recipe_id(system_mode: str) -> str:
         control = FewShot(system_mode=system_mode, **kwargs)
         pipeline = SteeringPipeline(model_name_or_path=tiny_model, controls=[control])
-        return pipeline.to_spipe(freeze=False).config_id
+        return pipeline.to_spipe(freeze=False).recipe_id
 
-    assert config_id("append") != config_id("insert")
+    assert recipe_id("append") != recipe_id("insert")
 
 
 def test_no_template_adapt_inserts_after_leading_pads_and_bos():

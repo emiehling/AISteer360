@@ -17,7 +17,7 @@ def _summary() -> pandas.DataFrame:
     """A small swept summary frame: three few-shot configurations with mean/std/sem columns."""
     return pandas.DataFrame({
         "pipeline": ["few_shot_sweep"] * 3,
-        "config_id": ["cfg_k1", "cfg_k5", "cfg_k10"],
+        "recipe_id": ["cfg_k1", "cfg_k5", "cfg_k10"],
         "k_positive": [1, 5, 10],
         "accuracy_mean": [0.55, 0.62, 0.68],
         "accuracy_std": [0.03, 0.02, 0.04],
@@ -32,7 +32,7 @@ def _baseline() -> pandas.DataFrame:
     """A one-configuration reference summary frame."""
     return pandas.DataFrame({
         "pipeline": ["baseline"],
-        "config_id": ["baseline"],
+        "recipe_id": ["baseline"],
         "accuracy_mean": [0.45],
         "accuracy_std": [0.02],
         "accuracy_sem": [0.010],
@@ -46,7 +46,7 @@ def _per_trial() -> pandas.DataFrame:
     """Per-trial rows aligned with the swept summary, for the scatter overlays."""
     return pandas.DataFrame({
         "pipeline": ["few_shot_sweep"] * 6,
-        "config_id": ["cfg_k1", "cfg_k1", "cfg_k5", "cfg_k5", "cfg_k10", "cfg_k10"],
+        "recipe_id": ["cfg_k1", "cfg_k1", "cfg_k5", "cfg_k5", "cfg_k10", "cfg_k10"],
         "k_positive": [1, 1, 5, 5, 10, 10],
         "accuracy": [0.53, 0.57, 0.60, 0.64, 0.66, 0.70],
         "positional_bias": [0.19, 0.21, 0.14, 0.16, 0.11, 0.13],
@@ -78,7 +78,7 @@ class TestSmokeAllPublicFunctions:
                 save_path=tmp_path / "tradeoff_scatter.png",
             )
             plotting.plot_comparison_bars(
-                summary.assign(label=summary["config_id"]),
+                summary.assign(label=summary["recipe_id"]),
                 metric_cols=["accuracy_mean", "positional_bias_mean"], group_col="label",
                 save_path=tmp_path / "comparison_bars.png",
             )
@@ -118,7 +118,7 @@ class TestReferenceGuard:
     def test_multi_config_reference_raises(self):
         multi = pandas.DataFrame({
             "pipeline": ["arm", "arm"],
-            "config_id": ["a", "b"],
+            "recipe_id": ["a", "b"],
             "accuracy_mean": [0.5, 0.6],
             "accuracy_std": [0.01, 0.01],
             "positional_bias_mean": [0.1, 0.1],

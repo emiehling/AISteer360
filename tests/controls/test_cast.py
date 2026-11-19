@@ -353,7 +353,7 @@ def test_condition_point_recipe_reloads_without_allow_code(tmp_path, condition_p
     assert control.condition_point == original.condition_point
     (inspected,) = loaded.instantiate_entry(0, lenient=True)
     assert _expanded_condition(inspected) == _expanded_condition(original)
-    assert loaded.config_id == recipe.config_id
+    assert loaded.recipe_id == recipe.recipe_id
 
     manifest = recipe.manifest
     manifest["controls"][0]["args"]["condition_vector_threshold"] = 0.5
