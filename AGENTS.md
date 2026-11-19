@@ -8,8 +8,9 @@ and the code disagree, the code is authoritative: verify against the source befo
 
 Steerability is a toolkit for steering large language models (Hugging Face causal LMs). It provides steering methods
 ("controls") across four model control surfaces, a `SteeringPipeline` that composes controls from any of the categories
-into one operation on a model, and an Inspect AI evaluation stack (a registered model provider, task suites, and a sweep
-runner) for comparing steering pipelines.
+into one operation on a model, and an evaluation stack (recipes and templates, a measurement protocol, a store of fits
+and per-item evidence, benchmarks over Inspect AI tasks or prompts, and a sweep runner) for comparing steering
+pipelines.
 
 Pipelines execute on one configurable backend: the in-process Hugging Face backend (default), the offline vLLM
 engine (`kind="vllm"`), or a vLLM server (`kind="vllm-serve"`). For the generate and score phases, each control
@@ -42,9 +43,10 @@ Vocabulary used throughout the codebase:
 ```
 steerability/
 ├── algorithms/
-│   ├── core/                    # SteeringPipeline, registry, ControlSpec (specs.py), BaseArgs, BaseControl,
-│   │   │                        # Output; identity.py (config identity, trial seeds), sweeps.py
-│   │   │                        # (configuration sweeps, PipelineFactory), scoring.py (SampleScorer)
+│   ├── core/                    # SteeringPipeline, registry, BaseArgs, BaseControl, Output; recipe.py
+│   │   │                        # (Recipe, Template, ranges, expand); identity.py (content_id, derive_seed);
+│   │   │                        # protocol.py (Protocol); store.py (Store); fits.py (fit cache);
+│   │   │                        # sweeps.py (expansion, PipelineFactory, BackendPool); scoring.py (SampleScorer)
 │   │   ├── execution/           # backend interface: spec, contracts, payloads, backend (sessions, Backend, backend
 │   │   │                        # registry), params, fanout; access (ModelAccess, SteerPlan); session_utils (scoped
 │   │   │                        # sessions, session_generate, session_generate_items); staging (stage freeing,
@@ -73,8 +75,8 @@ steerability/
 │   ├── batching.py              # lock-leader collator (batched dispatch over concurrent requests)
 │   ├── solvers.py               # runtime_kwargs_solver (per-sample runtime kwargs)
 │   ├── scorers.py               # sample_scorer_from_inspect (Inspect scorers as SampleScorer rewards)
-│   ├── suite.py                 # InspectSuite (task sets over eval_set)
-│   ├── runner.py                # SteeringEval (configs x trials x suites, results frame, runs_frame)
+│   ├── items.py                 # benchmarks (PromptBenchmark, InspectBenchmark), evaluate_items, direct generation
+│   ├── runner.py                # SteeringEval (points x trials x benchmarks), samples_frame, runs_frame
 │   └── plotting.py              # summary-frame plots over runs_frame output (optional `eval` extra)
 └── utils/                       # tokenization, rendering, thinking, optional-dependency guard, verbosity
                                  # (opt-in package logging)
@@ -347,7 +349,8 @@ pipeline = SteeringPipeline(
   `with` block over the pipeline) rather than relying on garbage collection, which is not prompt at
   freeing the engine. A failed `steer()` frees any staged in-process model (clearing the local variables of the
   stage frames in the error's traceback) and releases the backends it constructed before re-raising, and a
-  retried steer therefore re-boots. `PipelineFactory` (and so `SteeringEval`) releases per configuration.
+  retried steer therefore re-boots. `PipelineFactory` (and so `SteeringEval`) keeps engine backends in a
+  `BackendPool` across recipes and releases them at `factory.release()`.
 - Spec options the vLLM backends read: `hook_plugin`, `artifact_dir`, `engine_kwargs` (offline engine);
   `base_url`, `api_key`, `max_concurrency`, `request_timeout`, `max_retries`, `retry_backoff` (server);
   and `tokenizer_name_or_path` / `trust_remote_code` for the client-side tokenizer. Options must be plain
@@ -433,7 +436,10 @@ pipeline.generate(
 
 `pipeline.to_spipe()` serializes a pipeline as an `SPipe`: the model reference plus the controls as constructed
 (the recipe), and, once the pipeline is steered, the frozen resolution (fitted vectors, probes, adapters, optimized
-prompts) in a content-addressed artifact store with a lock section (fingerprints, per-fit digests).
+prompts) in a content-addressed artifact store, with per-control fit digests and a lock section recording the
+`Protocol` the bundle was fitted under, the facts observed on its model, and an optional certificate. The manifest
+(`spipe/2`) writes one recipe entry per enabled control and the recipe's id (`recipe_id`, independent of the model
+reference and of entry order); `spipe.recipe` and `spipe.protocol` read them back.
 
 `spipe.save(path)` writes a zip when `path` ends in `.spipe` and a directory otherwise; `artifacts="thin"` writes the
 manifest only, with artifact ids resolved at load through `artifact_store=`. `SPipe.load(path)` reads either form.
@@ -448,19 +454,20 @@ checkpoint trees with pickled weights). Toolkit enums always decode, and `$dc` c
 Freezing leaves TRL trainer state (`training_args.bin`, optimizer, scheduler, scaler, and RNG state) out of adapter and
 checkpoint trees. `allow_code` governs decoding only; recipe args such as `trust_remote_code` take effect at `steer()`.
 
-`spipe.entries` lists the manifest's entries as `SpipeEntry` records (`index`, `method`, `enabled`, `args`, `resolved`)
+`spipe.entries` lists the manifest's entries as `SpipeEntry` records (`index`, `method`, `args`, `resolved`)
 without decoding them, and `spipe.instantiate_entry(index, prefer=, verify=, lenient=)` returns one entry's control(s);
 `pipeline()` is built from it. Errors are raised per entry, with `SpipeFormatError` for an unregistered method key, a
 malformed value, or args the constructor rejects, and `SpipeCodeRefError` when the entry needs code. A bundle whose
 method key is unregistered in this process therefore loads, and instantiating that entry raises `SpipeFormatError`, as
-do `recipe_id`, the `config_id` of an unfrozen bundle, and `describe()`, which instantiate every entry. For inspecting
+does reading `spipe.recipe`. For inspecting
 an entry's `steer_access()` and `requirements()`, `lenient=True` never imports or runs bundle code (`$ref` values become
 inert markers, `$data` stays a `DataRef`, no dataset loads); an entry that needs other code (a `$dc` class outside
 `DECODABLE_DATACLASSES` or a pickle-bearing artifact) raises `SpipeCodeRefError` there even under `allow_code=True`.
 
 An unsteered pipeline freezes without loading the model when every enabled control is recipe-frozen (`FACTS` steer
-access, no fits, no exported state, as for a prompt-only pipeline), and the lock then records no model or tokenizer
-fingerprint and no dtype; otherwise `freeze=True` raises naming each blocking control.
+access, no fits, no exported state, as for a prompt-only pipeline), and the lock's observed facts then contain no
+model fingerprint and no dtype; otherwise `freeze=True` raises naming each blocking control. Disabled controls are not
+written.
 
 Loading a stale bundle (fit-relevant recipe fields edited after freezing) raises unless `allow_stale=True`. Trained
 structural controls freeze as `load_checkpoint` / `load_lora` entries; intervention controls freeze as
@@ -477,75 +484,88 @@ loaded.steer()
 
 ### Evaluation
 
-Evaluation runs steered pipelines on [Inspect AI](https://inspect.aisi.org.uk/) tasks (optional `eval` extra).
-`as_inspect_model(pipeline)` wraps a steered pipeline as a generation-only Inspect model; an `InspectSuite` names a
-set of tasks; `SteeringEval` runs configurations (fixed controls, `ControlSpec` sweeps, and the empty-list baseline
-arm) x trials x suites, sequentially, one GPU-resident pipeline at a time:
+Evaluation measures recipes item by item under one measurement protocol (optional `eval` extra for Inspect). A
+`Protocol` (`algorithms/core/protocol.py`) fixes the base model and revision, tokenizer, load arguments, backend, fit
+policy, provider options, generate defaults, seed, and package versions; its `id` scopes every stored rollout and
+evidence row, and its `fit_context_id` (no provider, decoding, or seed) scopes every cached fit. Pipelines are
+`Recipe`s or `Template`s (`algorithms/core/recipe.py`): a template's args may contain `Choice`, `Interval`, or `Text`
+ranges, ranges naming one `axis` move together, and `expand` enumerates (grid) or samples (random) points. `BASELINE`
+is the empty recipe. A recipe's `id` comes from each method's `Args` dataclass, so key order, explicit defaults,
+entry names, disabled entries, and cross-category order do not change it.
 
 ```python
+from steerability.algorithms.core.protocol import Protocol
+from steerability.algorithms.core.recipe import BASELINE, Choice, Template, entry
+from steerability.evaluation.items import InspectBenchmark
 from steerability.evaluation.provider import ProviderOptions
-from steerability.evaluation.runner import SteeringEval
-from steerability.evaluation.suite import InspectSuite
+from steerability.evaluation.runner import SteeringEval, summarize_runs
 
-runner = SteeringEval(
-    pipelines={"baseline": [], "few_shot": [few_shot], "caa_sweep": [ControlSpec(control_cls=CAA, ...)]},
-    base_model_name_or_path="meta-llama/Llama-3.1-8B-Instruct",
-    suites=[InspectSuite(name="capability", tasks=("inspect_evals/gsm8k",), limit=200)],
-    num_trials=3,
-    seed=7,  # derives one seed per (config, trial), attached to sampling dispatches
+protocol = Protocol.create(
+    "meta-llama/Llama-3.1-8B-Instruct",
+    provider=ProviderOptions(max_batch_size=8),
     generate_defaults={"temperature": 0},  # greedy is the recommended posture
-    provider_options=ProviderOptions(max_batch_size=8),
-    save_dir="runs/exp1",
-    display="plain",  # stream Inspect's per-sample progress inside each cell (progress=True draws a cell bar)
+    seed=7,
 )
-results = runner.run()       # {config_name: [{trial_id, seed, config_id, params, suites, provenance}, ...]}
-frame = runner.results()     # one row per (config, trial, suite, task, scorer/metric)
-runs = runner.runs_frame(metrics={"accuracy": "choice/accuracy"})  # one row per (pipeline, trial)
+pipelines = {"baseline": BASELINE, "caa": Template((entry(CAA, data=pairs, multiplier=Choice((1.0, 2.0))),))}
+evaluation = SteeringEval(protocol, pipelines, [InspectBenchmark("inspect_evals/gsm8k", scorer="match")],
+                          limit=200, num_trials=3)
+evaluation.run("runs/exp1")
+runs = evaluation.runs_frame({"accuracy": "match"})  # one row per (pipeline, recipe, trial)
+samples = evaluation.samples_frame({"correct": "match"})  # one row per item
+summary = summarize_runs(runs, ["accuracy"], param_cols=["caa.multiplier"])
 ```
 
-`summarize_runs` (in `evaluation/runner.py`) aggregates the per-trial frame into one row per configuration with
-`{metric}_mean` / `{metric}_std` / `{metric}_sem` columns. The functions in `evaluation/plotting.py` consume the
-`_mean` and `_std` columns (`eval` extra).
+A benchmark (`evaluation/items.py`) defines items and their scoring: `InspectBenchmark` runs one Inspect task through
+`inspect_ai.eval` (its id covers the task, a local task file's SHA-256, task args, scorer key, generate args, model
+roles, group key, and the Inspect versions), and `PromptBenchmark` generates prompts directly and scores them with a
+versioned `SampleScorer` (`@versioned("1")` from `algorithms/core/identity.py`). `evaluate_items` stores one evidence
+row per (protocol, resolved recipe, benchmark, item, replicate), retries items a benchmark omits, and writes error
+rows for the rest; evidence is the resume mechanism, so a second run generates only what has no evidence row and
+selections may grow freely. Direct generation stores each rollout under a key known before generation, so a changed
+scorer re-scores stored completions without generating. An `InspectBenchmark` whose task calls the model once per
+sample (captured at `prepare` on `mockllm/model`) is generated directly under a protocol once a greedy parity probe on
+up to 16 items agrees with Inspect on every completion and score; the mode is recorded per (benchmark, protocol) in the
+store's `benchmark_modes` table (`benchmark.mode(protocol)`). Under a sampling protocol a pipeline without
+`supports_concurrent_generate` runs through Inspect, since direct generation samples one request per call.
+
+The store (`algorithms/core/store.py`, `save_dir/store` unless `run(store=...)` shares one) is write-once SQLite plus
+the artifact store. It caches fits per fit source (`algorithms/core/fits.py`): intervention controls resolve sources
+through `resolve_source`, other fitting controls are replaced by their frozen form on a hit, and a recipe's resolved
+id (the key of its rollouts and evidence) combines its id with the stored fits it used. `PipelineFactory(protocol,
+store=...)` steers recipes in their fit cache, shares the base model, pools engine backends, and runs a batch's fits up
+front (`prepare`). `check()` runs over every point before any model or engine work (`on_unsupported="raise"` or
+`"skip"`). `save_dir/protocol.json` records the protocol and observed facts (a directory written under another protocol
+is refused), and `save_dir/points.json` the points, selections, and trials; the module-level `samples_frame` and
+`runs_frame` read a finished run from it. A metric that is not a mean over items is computed from `samples_frame`.
 
 Every generation flows through `pipeline.generate()`. Prompts enter as `messages=` when the tokenizer has a chat
-template (so `adapt_messages` input controls fire exactly as in deployment) and as rendered `text=` otherwise, with
-the path recorded as `prompt_path` in provenance. Scoring is generation-based only; logprob parameters, tools, and
-multimodal content are refused with actionable messages.
+template (so `adapt_messages` input controls fire exactly as in deployment) and as rendered `text=` otherwise. Scoring
+is generation-based only; logprob parameters, tools, and multimodal content are refused with actionable messages.
 
 Concurrent Inspect requests collate into batched pipeline calls when `pipeline.supports_batching` is `True`. A seeded
-dispatch carries `seed_scope` from `ProviderOptions` (default `"dispatch"`), so a seeded batch decodes in one pass on
+dispatch uses `seed_scope` from `ProviderOptions` (default `"dispatch"`), so a seeded batch decodes in one pass on
 the Hugging Face backend, and bitwise reproducibility of stochastic sampling is not preserved under concurrency (see
-the `steerability/evaluation/batching.py` module docstring for the full contract).
+the `steerability/evaluation/batching.py` module docstring for the full contract). Direct generation batches greedy
+requests in a fixed order (by prompt length at replicate 0, shuffled by a derived seed at later replicates).
 
 `ProviderOptions(max_concurrency=N)` selects per-request mode on a pipeline whose `supports_concurrent_generate` is
 `True`. Each Inspect request is then dispatched at once as its own single-prompt `pipeline.generate()` call in a
 worker thread, with at most `N` in flight, and `max_connections()` returns `N`. A seeded request samples under
-`derive_item_seed(seed, f"request:{digest}", 0)`, where `digest` hashes the request's prompt and per-sample runtime
-kwargs. The request therefore reproduces regardless of concurrency and arrival order. A cancelled Inspect request cancels its
-`CancelToken`, which aborts its engine request. On any other pipeline the provider logs at info level and stays in
-batching mode. The mode is recorded as `dispatch_mode` in each result row's provenance, and `max_concurrency` is part
-of the recorded protocol.
+`derive_seed(seed, f"request:{digest}", 0)`, where `digest` hashes the request's prompt and per-sample runtime kwargs,
+the same seed direct generation gives the request. The request therefore reproduces regardless of concurrency and
+arrival order. A cancelled Inspect request cancels its `CancelToken`, which aborts its engine request. On any other
+pipeline the provider logs at info level and stays in batching mode. `max_concurrency` changes throughput and not
+results, so it is not part of a protocol's identity.
 
-There is no results checkpoint: the `.eval` logs under `save_dir/inspect_logs/` are the store, and `eval_set`
-resumes each (config, trial, suite) cell from them at sample granularity. Because `eval_set` matches task identity
-only, the runner records the rest of the protocol (toolkit version, provider options and `seed_scope`, generate
-defaults, `hf_model_kwargs`, seed, fit, backend) in `save_dir/protocol.json` on a directory's first run, and refuses
-a directory whose recorded protocol differs or whose `.eval` logs have no `protocol.json`; a changed protocol needs a
-new `save_dir`. `check()` runs over every sweep point before any model or engine work
-(`on_unsupported="raise"` or `"skip"`).
-
-Per-sample steering inputs travel on `Sample.metadata` and are delivered by the shipped `runtime_kwargs_solver` (used
-in place of a bare `generate()` in the task's solver chain). Static per-arm kwargs go in
+Per-sample steering inputs are given in `Sample.metadata` and are delivered by the included `runtime_kwargs_solver`
+(used in place of a bare `generate()` in the task's solver chain). Static per-arm kwargs go in
 `ProviderOptions.runtime_kwargs`: a static value of a `"row"`-scoped kwarg is one row's value in the control's per-row
-form, broadcast to every row, and a static name no configuration declares warns at pre-flight. Controls that consume
-a per-row reward take a `SampleScorer` (`(response, row) -> float`, from `algorithms/core/scoring.py`);
-`sample_scorer_from_inspect` adapts any Inspect scorer into that shape. See
-`docs/tutorials/evaluate_steering_pipelines.md` for the full guide, including task authoring and grader-model
+form, broadcast to every row. Controls that consume a per-row reward take a `SampleScorer` (`(response, row) ->
+float`, from `algorithms/core/scoring.py`); `sample_scorer_from_inspect` adapts any Inspect scorer into that shape.
+See `docs/tutorials/evaluate_steering_pipelines.md` for the full guide, including task authoring and grader-model
 guidance.
 
-The core sweep layer (`algorithms/core/sweeps.py`: `expand_configurations`, `preflight`, `PipelineFactory`;
-`algorithms/core/identity.py`: canonical config identity and trial seeds) has no Inspect dependency. A planned
-`steerability/optimization/` package (not yet in the tree) is to compose the same pieces with a suite as its objective.
+The core layers (`recipe.py`, `protocol.py`, `store.py`, `fits.py`, `sweeps.py`) have no Inspect dependency.
 
 ## Developer guide
 
@@ -884,8 +904,10 @@ Rules that hold regardless of task:
 15. A control's freezable state is exactly `export_state()`; the frozen form returned by `frozen_form()` is
     constructor-valid for its declared method; and the recipe is never discarded (a frozen `.spipe` entry keeps the
     original args for provenance and `thaw()`).
-16. Configuration identity reads a dataclass's `init=True` fields only, so state that a control or source sets
-    during `steer()` never changes a `config_id` or a `.spipe` fit digest.
+16. Identity is the codec's encoding (`content_id`), which reads a dataclass's `init=True` fields only and fails
+    closed on values without a serialized form. Steering leaves nothing on a constructor argument or a fit source that
+    anything reads later, and a control's `frozen_form(state)` depends only on its args and `state`, so a recipe's id
+    and its fit digests are the same before and after `steer()`.
 17. `Output.finish_reasons` has one entry per row of `output_ids`, enforced at construction together with the
     `[batch, seq]` shape of `output_ids`.
 18. Concurrent `generate()` calls serialize their prompt phase under the pipeline's prompt lock and dispatch

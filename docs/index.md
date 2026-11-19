@@ -49,7 +49,8 @@ To facilitate a principled comparison, the toolkit evaluates steering pipelines 
 [`inspect_evals`](https://github.com/UKGovernmentBEIS/inspect_evals). Since a steered pipeline runs as an Inspect
 model, the same evaluation framework measures both the target behavior of a pipeline and its general-capability side
 effects on community-standard tasks, with results available down to the per-sample generation. The `SteeringEval` runner
-compares pipelines (fixed configurations, hyperparameter sweeps, and an unsteered baseline) on shared task suites,
+compares recipes (fixed configurations, template sweeps, and an unsteered baseline) on shared benchmarks under one
+measurement protocol, storing fits and per-item evidence so that runs resume and share work,
 addressing the current fragmentation in the field where steering algorithms are typically developed and evaluated
 within isolated, task-specific environments.[@liang2024controllable]
 

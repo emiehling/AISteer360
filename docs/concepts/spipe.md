@@ -5,13 +5,15 @@ portable bundle that can be saved, version-controlled, and handed to another per
 
 One format contains two layers of information:
 
-- **The recipe**: the model reference plus the controls exactly as constructed. Every `.spipe` contains the recipe.
-  Loading a recipe-only bundle and calling `steer()` re-runs any fits and training. Results may differ across
-  machines because of GPU nondeterminism.
+- **The recipe**: the model reference plus the pipeline's `Recipe`, i.e., one entry per enabled control with its
+  method key and constructor arguments, and the recipe's id. Every `.spipe` contains the recipe. Loading a recipe-only
+  bundle and calling `steer()` re-runs any fits and training. Results may differ across machines because of GPU
+  nondeterminism.
 - **The frozen resolution**: what the steer step actually produced, i.e., fitted steering vectors, probes, LoRA
-  adapters, and optimized prompts, stored content-addressed alongside the recipe. A lock section pins fingerprints of
-  the producing model and per-fit digests of the recipe fields each artifact came from. Loading a frozen bundle
-  yields controls in precomputed form, where `steer()` still runs but is cheap and model-free.
+  adapters, and optimized prompts, stored content-addressed alongside the recipe. Each artifact records the fit digest
+  of the control that produced it, and a lock section records the protocol the bundle was fitted under and the facts
+  observed on its model. Loading a frozen bundle yields controls in precomputed form, where `steer()` still runs but
+  is cheap and model-free.
 
 Freezing is a rewrite of the recipe rather than a second format. A frozen entry is an ordinary control constructed
 with precomputed arguments: a CAA fitted from data freezes as a CAA constructed with the fitted vector, and a
@@ -50,17 +52,18 @@ declares no fits, and exports no state. A prompt-only pipeline (`SystemPrompt`, 
 pools, or a `PRewrite`, `GEPA`, or `CPO` constructed with `memory=`) qualifies, since its recipe already is its frozen
 form. A control that blocks the freeze is named in the error, with the reason.
 
-The lock section of such a bundle records no model or tokenizer fingerprint and no dtype, since no model was present
-to fingerprint. Everything else (both digests, the backend spec hash, the `fit` posture, package versions) is filled as
-usual. A consumer that treats the lock as the guarantee that nothing fits at load time therefore gets that guarantee
-without either side loading weights, and the bundle steers cheaply on load.
+The lock of such a bundle records the protocol as usual, and its observed facts contain no model fingerprint and no
+dtype, since no model was present. A consumer that treats the lock as the guarantee that nothing fits at load time
+therefore gets that guarantee without either side loading weights, and the bundle steers cheaply on load.
 
 ## Staleness
 
-The lock records, per frozen artifact, a digest of the recipe fields a re-fit would consume. Editing an inert
+Each frozen artifact records the fit digest of its control: the content id of the digests of the fits the control
+declares, in order. These are the digests the fit cache keys fits by (see `fit_digests` in
+`steerability.algorithms.core.fits`), so they cover the inputs a re-fit would consume and nothing else. Editing an inert
 application parameter in the manifest (say, a CAA multiplier) leaves the pinned vector valid. Editing the training
-data does not, and loading then fails with a staleness error that identifies the control and the fix (`thaw()` and re-steer,
-or `allow_stale=True`).
+data does not, and loading then fails with a staleness error that identifies the control and the fix (`thaw()` and
+re-steer, or `allow_stale=True`).
 
 ## Verification
 
@@ -104,24 +107,21 @@ lowercase hex digits). A store sidecar whose type or encoding disagrees with the
 Note that `allow_code` governs decoding only. Recipe args such as `trust_remote_code` take effect when the pipeline is
 steered, which means that an untrusted bundle should be steered in a sandbox.
 
-LoRA and checkpoint bundles that version 0.5.2 froze from the TRL wrappers contain `training_args.bin` and therefore
-need `allow_code=True`. Re-freezing such a bundle with version 0.5.3 or later leaves the trainer state out, and the
-re-frozen bundle loads without `allow_code` when its weights are stored as safetensors.
-
 Frozen prompt-optimization bundles keep their search-only arguments (scorers, budgets) for provenance. A bundle whose
 optimizer used a custom scorer is therefore code-dependent even though the frozen memory never calls it.
 
 A bundle can also name a method defined outside the toolkit tree, registered with `register_method` (see
 [adding your own steering method](../tutorials/add_new_steering_method.md#controls-outside-the-toolkit-tree)). Since
 registration happens at import time, the defining package must be imported before the bundle's controls are
-instantiated. Without it the bundle still loads, and instantiating that entry fails with an error that points at
-`register_method`. Note that `recipe_id`, the `config_id` of an unfrozen bundle, and `describe()` instantiate every
-entry, and they fail the same way.
+instantiated. Without it the bundle still loads, and instantiating that entry (or reading `spipe.recipe`) fails with
+an error that points at `register_method`.
 
 ## Inspecting entries
 
-The `entries` property lists the manifest's control entries as `SpipeEntry` records (`index`, `method`, `enabled`,
-the encoded `args`, and whether a `resolved` section exists) without decoding them. The
+The `entries` property lists the manifest's control entries as `SpipeEntry` records (`index`, `method`, the encoded
+`args`, and whether a `resolved` section exists) without decoding them. Disabled controls are not written, so every
+entry is enabled. Each entry and each resolved item is recipe-entry JSON (`method` and `args`), and instantiating it
+goes through `Recipe.from_json(...).instantiate()`. The
 `instantiate_entry(index, prefer=, verify=, lenient=)` method returns the control(s) of one entry through the same
 decoding path that `pipeline()` uses. Errors are raised per entry. An unregistered method key, a malformed value, or
 args the constructor rejects raise `SpipeFormatError`, and an entry that needs code raises `SpipeCodeRefError`.
@@ -147,12 +147,16 @@ artifact) raises `SpipeCodeRefError` under `lenient=True`, even when the bundle 
 
 ## Identity
 
-A bundle is identified by two digests. `config_id` is the same configuration identity that `SteeringEval` records,
-which ties a `.spipe` to evaluation results. `recipe_id` additionally includes the model reference, since a steering
-artifact is meaningless without its model.
+A bundle's `recipe_id` is the id of the recipe the pipeline was built from (`Recipe.from_controls(...).id`), the same
+id that `SteeringEval` records for a point and the store keys fits, rollouts, and evidence under. It is computed from
+each method's `Args` dataclass, so it does not depend on key order, explicit defaults, or the order of entries across
+categories, and it does not include the model reference. `spipe.recipe` reads the entries back as a `Recipe` whose id
+equals `recipe_id`.
 
-A frozen bundle records both digests in its lock. An unfrozen (recipe-only) bundle records neither, and `config_id`
-and `recipe_id` are recomputed from the decoded recipe controls. A recipe value whose decoded form canonicalizes
-differently from the original value (e.g., a `$ref` callable, a `$data` reference, or a tensor artifact) can then give
-an identity that differs from the one the saved pipeline had. The next manifest format revision (`spipe/2`) records
-both digests in every manifest, and loading a `spipe/1` manifest then raises `SpipeFormatError`.
+The model reference and the lock answer two different questions. `model.ref` says where a loader builds the model
+from, and `to_spipe(model_ref=...)` overrides it. The lock's `protocol` (read back as a `Protocol` through
+`spipe.protocol`) says what the bundle was fitted or measured on: the model and its revision, the tokenizer, load
+arguments, backend, fit policy, decoding defaults, and package versions, with credentials left out. The two differ
+only when `model_ref` was passed. The lock also records the facts observed on the loaded model (`facts`: model and
+tokenizer fingerprints, chat-template digest, dtype, resolved commit) and an optional `certificate`, a mapping whose
+`schema` is `"certificate/1"`. A bundle that is not frozen has a null lock, and its `protocol` is None.

@@ -134,6 +134,6 @@ nav:
         - Batching: reference/evaluation/batching.md
         - Solvers: reference/evaluation/solvers.md
         - Scorers: reference/evaluation/scorers.md
-        - Suite: reference/evaluation/suite.md
+        - Benchmarks: reference/evaluation/items.md
         - Runner: reference/evaluation/runner.md
         - Plotting: reference/evaluation/plotting.md

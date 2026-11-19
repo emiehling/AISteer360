@@ -1,6 +1,6 @@
-# Suite
+# Benchmarks
 
-::: steerability.evaluation.suite
+::: steerability.evaluation.items
     handler: python
     options:
         show_if_no_docstring: true

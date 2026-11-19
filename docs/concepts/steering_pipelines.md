@@ -143,8 +143,9 @@ by `check()` states where each step will run.
 Backends are constructed lazily per pipeline and cached by spec. `SteeringPipeline.release_backends()`, or using the
 pipeline as a context manager, releases every backend the pipeline constructed and shuts engine-owning backends down
 deterministically rather than waiting for garbage collection. A released pipeline stays usable, since the next
-operation reconstructs the backends against the same specs. The `SteeringEval` runner releases each configuration's
-backends automatically after its trials. Because the offline engine's release is process-global with respect to vLLM
+operation reconstructs the backends against the same specs. A `PipelineFactory` (which the `SteeringEval` runner uses)
+instead keeps engine backends in a pool across the recipes it steers, so one engine serves every recipe whose fits are
+stored, and releases them when the run ends. Because the offline engine's release is process-global with respect to vLLM
 distributed state, it assumes no other running vLLM engine in the process.
 
 ```python
@@ -178,10 +179,10 @@ response = pipeline.generate(text="...", max_new_tokens=64, cancel_token=token)
 
 ### Evaluation
 
-The `SteeringEval` runner forwards its `backend` and `fit` arguments to the pipelines it builds and checks support over
-every sweep point (via `SteeringPipeline.check()`) before any model or engine work. A sweep point that is unsupported
-on the configured backend either fails the whole run (`on_unsupported="raise"`, the default) or is skipped with a
-warning (`on_unsupported="skip"`).
+The `SteeringEval` runner takes the backend and the fit policy from its `Protocol` and forwards them to the pipelines
+it builds. It checks support over every sweep point (via `SteeringPipeline.check()`) before any model or engine work. A
+sweep point that is unsupported on the configured backend either fails the whole run (`on_unsupported="raise"`, the
+default) or is skipped with a warning (`on_unsupported="skip"`).
 
 ### Running a server
 

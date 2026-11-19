@@ -48,8 +48,7 @@ tokenizer, prompts are dispatched as `messages=` and every input control partici
 deployment. Base models without a chat template (a common subject of capability measurements) are
 evaluated through a text path instead, i.e., each conversation is rendered to plain text and dispatched
 as `text=`. On the text path `adapt_messages` never runs (token-level `adapt` still does). Since the same
-controls behave differently on the two paths, the provider warns once at construction and records the
-path as `prompt_path` in the run provenance.
+controls behave differently on the two paths, the provider warns once at construction.
 
 ### Scope
 
@@ -80,7 +79,7 @@ draws) is left-packed on the Hugging Face backend, and each row's continuation i
 own last real token rather than from a trailing pad.
 
 We recommend greedy decoding (`temperature=0`) as the default since it is the norm for capability
-benchmarks and avoids seed sensitivity. Which samples are evaluated is fixed by the suite, independent
+benchmarks and avoids seed sensitivity. Which samples are evaluated is fixed by the selection, independent
 of batch composition. Under sampling, `seed_scope` in `ProviderOptions` sets how seeds are applied. The
 default `"dispatch"` scope seeds each batch as a whole and decodes it in one pass, and the `"item"`
 scope derives a seed per row and decodes one row at a time. Note that every `pipeline.generate()` call
@@ -100,7 +99,8 @@ request at once as its own pipeline call, with at most `max_concurrency` calls i
 request into its running batch as soon as there is room. This means that a short generation returns without
 waiting for the longest generation of a batch. Per-request mode applies when the pipeline's `supports_concurrent_generate` is
 `True`, i.e., on a vLLM backend without an enabled decoding driver. For other pipelines the provider logs at info
-level and keeps batching. The mode in effect is recorded as `dispatch_mode` in the run provenance.
+level and keeps batching. The provider's `dispatch_mode` property reports the mode in effect. Since
+`max_concurrency` changes throughput and not results, it is not part of a protocol's identity.
 
 ```python
 options = ProviderOptions(max_concurrency=64)
@@ -119,102 +119,120 @@ regardless of concurrency and arrival order, and two requests with the same prom
 same stream. The `seed_scope` setting has no effect in this mode, since every dispatch is one request. A request
 that Inspect cancels also aborts its generation on the engine.
 
-## Suites and the runner
+## Benchmarks and the runner
 
-An `InspectSuite` specifies a set of tasks evaluated together. `SteeringEval` runs each configuration
-(fixed controls, `ControlSpec` sweeps, and the empty baseline arm) over every trial and suite,
-building and releasing one GPU-resident pipeline at a time:
+An evaluation has four parts. A `Protocol` fixes the measurement context: the base model and its revision, the
+tokenizer, load arguments, the backend, the fit policy, the provider options, the decoding defaults, the seed, and the
+package versions. Pipelines are described as recipes (`Recipe`) or as templates (`Template`), whose arguments may be
+ranges. A benchmark defines items and their scoring: `InspectBenchmark` runs one Inspect task, and `PromptBenchmark`
+scores a mapping of prompts with a `SampleScorer`. `SteeringEval` then measures every point of every pipeline on every
+benchmark, over trials:
 
 ```python
+from steerability.algorithms.core.protocol import Protocol
+from steerability.algorithms.core.recipe import BASELINE, Choice, Template, entry
+from steerability.algorithms.state_control.pasta.control import PASTA
+from steerability.evaluation.items import InspectBenchmark
+from steerability.evaluation.provider import ProviderOptions
 from steerability.evaluation.runner import SteeringEval
-from steerability.evaluation.suite import InspectSuite
 
-capability = InspectSuite(name="capability", tasks=("inspect_evals/gsm8k",), limit=200)
-target = InspectSuite(name="target", tasks=("target_task.py",))
-
-runner = SteeringEval(
-    pipelines={"baseline": [], "pasta": [pasta]},
-    base_model_name_or_path="meta-llama/Llama-3.1-8B-Instruct",
-    suites=[capability, target],
-    num_trials=3,
+protocol = Protocol.create(
+    "meta-llama/Llama-3.1-8B-Instruct",
+    provider=ProviderOptions(max_batch_size=8),
+    generate_defaults={"temperature": 0, "max_tokens": 512},
     seed=7,
-    generate_defaults={"temperature": 0},
-    save_dir="runs/exp1",
-    display="plain",
 )
-results = runner.run()
-frame = runner.results()
+pipelines = {
+    "baseline": BASELINE,
+    "pasta": Template((entry(PASTA, head_config=head_map, alpha=Choice((10.0, 100.0))),)),
+}
+benchmarks = [
+    InspectBenchmark("inspect_evals/gsm8k", scorer="match"),
+    InspectBenchmark(f"{TASK_FILE}@target_qa", scorer="includes"),
+]
+evaluation = SteeringEval(protocol, pipelines, benchmarks, limit=200, num_trials=3)
+evaluation.run("runs/exp1")
 ```
 
-File-referenced tasks resolve relative to the working directory. The study notebooks keep a
-`task.py` beside the notebook and reference it by an absolute path built from the notebook
-directory (`f"{TASK_FILE}@instruction_following"`).
+A `Template` describes a sweep in its arguments. A `Choice` lists values, an `Interval` spans a numeric range (with
+`log=True` for geometric spacing), and a `Text` admits strings of bounded length. Each range is an axis of its own,
+and ranges that name the same `axis` move together, e.g., `alpha=Interval(5, 20, axis="strength")` and
+`num_heads=Choice((16, 32, 48, 64), ordered=True, axis="strength")` give four points rather than sixteen. The runner
+expands every template as a grid, and `expand(template, strategy="random", samples=..., seed=...)` samples points
+instead. Note that a recipe's id does not depend on key order, explicit defaults, entry names, or the order of entries
+across categories, so two descriptions of one pipeline are one point.
 
-Each suite run goes through `inspect_ai.eval_set`, which provides task retry and log-based resume. The
-`.eval` logs under `save_dir/inspect_logs/` are the record of the run, and a re-run completes only the
-missing samples of each (configuration, trial, suite) cell. Since `eval_set` matches on task identity
-only, the runner records the rest of the protocol in `save_dir/protocol.json` on the first run of a
-directory. The record contains the toolkit version, the provider options (with their `seed_scope`), the
-generate defaults, `hf_model_kwargs`, the seed, the fit policy, and the backend. A re-run into a
-directory whose recorded protocol differs is refused, which means that a changed protocol needs a new
-`save_dir`. Repetition is trial-based rather than epoch-based, and with `seed` set, each (configuration,
-trial) pair derives one seed.
+The run keeps everything it measures in a store (`save_dir/store`, or the `store=` argument to share one store across
+runs). The store records fits per fit source, so a sweep that only changes an application argument (a multiplier, a
+layer, a threshold) fits once, and a change of decoding settings refits nothing. It also records one evidence row per
+(protocol, resolved recipe, benchmark, item, trial). A second `run` on the same store therefore generates only what has
+no evidence row, and a larger selection generates only the new items. Before any model work the runner checks backend
+support for every point (`on_unsupported="raise"` or `"skip"`), and it runs the fits every point needs once
+(`PipelineFactory.prepare`), so an engine backend boots once and serves every recipe.
 
-Note that a `save_dir` that contains `.eval` logs but no `protocol.json` (one written by version 0.5.3
-or earlier) is refused as well, since the protocol its logs were produced under is unknown.
+The runner writes `save_dir/protocol.json` with the protocol's id, identity, and the facts observed on the loaded
+model, and `save_dir/points.json` with each point's pipeline, recipe id, resolved id, and assignment. A `save_dir`
+written under another protocol is refused, which means that a changed protocol needs a new `save_dir`. Credentials in
+backend options never enter either file.
 
-The runner draws a `tqdm` bar over the (configuration, trial, suite) cells (`progress=True` by
-default) and logs a summary line and one line per cell at INFO. `display="plain"` streams Inspect's
-per-sample progress inside the currently running cell, which is the recommended setting in a notebook.
-Note that `inspect_evals` tasks download their datasets from the Hugging Face Hub (some are gated) and
-`.eval` logs can be large. Per-sample runtime kwargs are recorded with each model event and should
-be kept small.
+Every point and every trial scores the identical items. The selection is `items={benchmark name: [item ids]}` when
+given, else the first `limit` items in dataset order, else every item. Taking the first `N` items is deterministic
+across points, which paired comparison requires, but it is a biased estimate of the full-benchmark score. Trial `t` is
+replicate `t` of every item. Under sampling a replicate selects a different seed, and under greedy decoding a
+`PromptBenchmark` repeats each generation in a different batch order, so two replicates differ only by the numerical
+noise of batching.
 
-Every arm and every trial scores the identical sample set per task, either through explicit
-`sample_ids` or through `limit=N` over the task's native dataset order. Taking the first `N`
-samples is deterministic across arms, which paired comparison requires, but it is a biased
-estimate of the full-benchmark score. This means that absolute scores are not directly comparable
-to numbers published under other harnesses or logprob-scored protocols. The intended use is a
-paired comparison against the baseline arm on identical samples, which is a single pivot on the
-results frame:
+### Frames
+
+`samples_frame` gives one row per (pipeline, recipe, trial, benchmark, item), with the item's `status` and `tokens`,
+one column per requested score key (`"<scorer>"` or `"<scorer>/<key>"` for one key of a dict-valued score), the
+requested metadata columns, optionally the `input`, `target`, and `completion` text, and one column per template path:
 
 ```python
-pivot = frame.pivot_table(index=["suite", "task", "metric"], columns="config", values="value")
-deltas = pivot.sub(pivot["baseline"], axis=0)
+samples = evaluation.samples_frame(
+    {"correct": "choice"}, benchmark=f"{TASK_FILE}@target_qa", metadata_keys=["question_id"], include_text=True,
+)
 ```
 
-For per-trial analysis, `runner.runs_frame(metrics=...)` pivots the results of one task (selected with
-`suite=` and `task=`) into one row per (pipeline, trial) with one column per metric. Its `params`
-argument attaches a swept constructor argument as a column, given as a (spec name, argument name)
-pair, where the spec name is the `ControlSpec`'s `name` (the control class name by default). The
-`summarize_runs` function (in `steerability.evaluation.runner`) then aggregates the trials of each
-configuration into `{metric}_mean`, `{metric}_std`, and `{metric}_sem` columns and keeps the columns
-listed in `param_cols`. For instance, for a `pasta` arm defined as a `ControlSpec` that sweeps the
-`alpha` argument of `PASTA`:
+`runs_frame` gives one row per (pipeline, recipe, trial) of one benchmark with the mean of each score key over the
+trial's `ok` items, the counts `n` and `errors`, and the assignment columns. The `summarize_runs` function (in
+`steerability.evaluation.runner`) then aggregates the trials of each recipe into `{metric}_mean`, `{metric}_std`, and
+`{metric}_sem` columns and keeps the columns listed in `param_cols`:
 
 ```python
 from steerability.evaluation.runner import summarize_runs
 
-runs = runner.runs_frame(
-    metrics={"accuracy": "accuracy"},
-    params={"alpha": ("PASTA", "alpha")},
-    suite="capability",
-)
-summary = summarize_runs(runs, metric_cols=["accuracy"], param_cols=["alpha"])
+runs = evaluation.runs_frame({"accuracy": "match"}, benchmark="inspect_evals/gsm8k")
+summary = summarize_runs(runs, metric_cols=["accuracy"], param_cols=["pasta.alpha"])
 ```
 
-The plotting functions in `steerability.evaluation.plotting` (part of the `eval` extra) take the rows
-of the swept configurations from this summary frame and read the swept argument from the column given
-by `sweep_col`, e.g., `plot_sensitivity` for a metric against the swept argument and `plot_tradeoff`
-for two metrics against each other. Fixed arms such as the baseline are passed through
-`compare_to_pipelines` and drawn as references.
+A metric that is not a mean over items (e.g., a positional bias over shuffled variants of one question) is computed
+from `samples_frame` and merged into the runs frame on `["pipeline", "recipe_id", "trial_id"]`. The module-level
+functions `samples_frame(save_dir, ...)` and `runs_frame(save_dir, ...)` read a finished run from its directory.
 
-The raw `.eval` logs contain per-sample generations, grades, and finish behavior, which is enough to
-trace a drop in score to its cause (e.g., unparseable output rather than a wrong answer).
-`SteeringEval.samples_frame` reads these logs into one row per (pipeline, trial, sample) with
-per-sample scores joined to the sample metadata, which supports per-instruction-type breakdowns and
-paired per-example comparisons. Inspect's log viewer and the `inspect_ai.analysis` dataframes
-(`evals_df`, `samples_df`, `events_df`) support sample-level analysis directly.
+The plotting functions in `steerability.evaluation.plotting` (part of the `eval` extra) take the rows of the swept
+configurations from this summary frame and read the swept argument from the column given by `sweep_col`, e.g.,
+`plot_sensitivity` for a metric against the swept argument and `plot_tradeoff` for two metrics against each other.
+Fixed arms such as the baseline are passed through `compare_to_pipelines` and drawn as references.
+
+An `InspectBenchmark` writes the Inspect logs of its runs under the store's `logs/` directory. These contain the
+per-sample transcripts, which Inspect's log viewer and the `inspect_ai.analysis` dataframes read directly, but the
+evidence rows are the record of the run. A `PromptBenchmark` generates its items directly through the pipeline and
+stores each rollout by a key known before generation, so a new scorer version re-scores the stored completions and
+generates nothing. Its scorer must be a module-level callable marked with `versioned("<version>")` (from
+`steerability.algorithms.core.identity`), since the scorer's version is part of the benchmark's identity.
+
+An `InspectBenchmark` can also generate its items directly. When it is prepared, it runs the task once on Inspect's
+`mockllm/model` to record each sample's model request. A task without a sandbox whose samples each call the model once
+(without tools) is capturable. On the first run of a capturable benchmark under a protocol, a parity probe evaluates up
+to 16 items both through Inspect and directly under greedy decoding. If every completion and score agrees, the
+benchmark is generated directly under that protocol, with stored rollouts and batches in a fixed order. Otherwise it
+runs through Inspect, and `benchmark.mode_detail(protocol)` gives the first difference. Note that direct scoring runs
+the task's scorers on a state with one user turn and one assistant turn. This means that a solver that changes the
+output after generation (such as `multiple_choice()`) or a scorer that reads the solver's state makes the benchmark run
+through Inspect. Direct generation also samples each request on its own. Under a sampling protocol, a pipeline
+without concurrent generation (e.g., on the Hugging Face backend) therefore runs through Inspect, which batches
+concurrent requests.
 
 Tasks with model-graded scorers need a grader model supplied through the task's own arguments
 (`task_args`). The grader must be a separate model (an API model or a second local model) and
