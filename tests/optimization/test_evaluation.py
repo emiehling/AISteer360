@@ -1,8 +1,10 @@
 """Evaluating candidates on a synthetic store: stages, calibration, confirmation, and reports.
 
-Differences against the baseline are exact in the synthetic world, so with a margin of 0.05, 2,000 sealed items, and
-the default power settings, a ladder position is kept when its loss is at most 0.0448 and a point is confirmed when
-its loss is at most 0.0358 (second look) or 0.0383 (third look).
+Differences against the baseline are exact in the synthetic world. With a margin of 0.05, 2,000 sealed items, the
+two-level capability baseline (design variance close to 0.09), and the default power settings, the looks are
+(32, 128, 400), a ladder position is kept when its loss is at most 0.0420, and a point is confirmed when its loss is
+at most 0.0253 (second look) or 0.0319 (third look). The quadratic truth puts the refined position 2.5 at a loss of
+0.03125 and the position 3 at 0.045.
 """
 import pytest
 
@@ -23,7 +25,7 @@ def _quadratic(recipe, item_id):
     value = multiplier(recipe)
     if value is None:
         return Truth(gain=0.1)
-    return Truth(loss=0.0055 * value * value, gain=0.05 * value)
+    return Truth(loss=0.005 * value * value, gain=0.05 * value)
 
 
 def _by_position(losses, gains, tokens=None):
@@ -183,7 +185,7 @@ class TestReporting:
             items = point_items(study, store, latest.operating.resolved_id, benchmark, session.rounds, 0)
             assert not set(items) & set(session.rounds[0][benchmark.id].ladder)
             assert table.n == len(items)
-        assert latest.operating.capability["capability"].n > 192
+        assert latest.operating.capability["capability"].n > session.looks(capability)[2]
         assert latest.operating.behavior.n > SMALL.behavior_items
 
     def test_rescore_falls_to_the_next_ranked_position(self, store):

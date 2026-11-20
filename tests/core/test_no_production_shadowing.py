@@ -52,6 +52,7 @@ PRODUCTION_FUNCTIONS = {
     "runtime_kwargs_schema", "expand_configurations", "preflight",
     "as_inspect_model", "sample_scorer_from_inspect", "runtime_kwargs_solver",
     "steerability_provider", "run_study", "certify", "split_items", "make_plan", "ensure_baseline", "run_openevolve",
+    "design_variance", "feasibility",
 }
 
 

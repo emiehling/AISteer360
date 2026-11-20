@@ -26,7 +26,6 @@ from steerability.algorithms.core.identity import content_id
 from steerability.algorithms.core.protocol import Protocol
 from steerability.algorithms.core.recipe import Axis, Recipe, RecipeError, Template
 from steerability.optimization.measurement.pools import PoolSplit, check_pools
-from steerability.optimization.measurement.stats import confirm_looks, guard_band
 
 if TYPE_CHECKING:
     from steerability.algorithms.core.store import Store
@@ -58,12 +57,11 @@ TABLES = (
 )
 
 _FLOAT_SETTINGS = (
-    "alpha", "power", "design_change_rate", "ladder_power", "min_gain", "fitness_alpha", "max_cost_ratio",
-    "max_degenerate_increase",
+    "alpha", "power", "ladder_power", "min_gain", "fitness_alpha", "max_cost_ratio", "max_degenerate_increase",
 )
 _INT_SETTINGS = (
-    "round_candidates", "ladder_points", "ladder_items", "ladder_refinements", "behavior_ladder_items",
-    "behavior_items", "quick_behavior_items", "rescore_top", "finalists",
+    "round_candidates", "ladder_points", "ladder_refinements", "behavior_ladder_items", "behavior_items",
+    "quick_behavior_items", "rescore_top", "finalists",
 )
 
 
@@ -72,7 +70,7 @@ class StudyError(RuntimeError):
 
 
 class StudyInfeasibleError(StudyError):
-    """A study's pools are too small for its margins and settings."""
+    """A study's pools are too small for its margins and settings at the variance it is sized for."""
 
 
 def now() -> str:
@@ -112,13 +110,14 @@ class Constraint:
 class Settings:
     """The statistical and budget settings of a study.
 
+    The capability block sizes are not settings. They follow from each constraint's margin and the variance of its
+    baseline (`evidence.block_sizes`).
+
     Attributes:
         alpha: The one-sided error rate of certification.
         power: The design probability that one confirmed point passes certification.
-        design_change_rate: The assumed share of items whose score changes, used before one is measured.
         round_candidates: The number of new candidates per round.
         ladder_points: The number of positions of a continuous solved axis.
-        ladder_items: The capability items per ladder position.
         ladder_power: The power of the provisional check on the ladder.
         ladder_refinements: The number of positions calibration may insert on a monotone continuous axis.
         behavior_ladder_items: The behavior items per ladder position.
@@ -135,10 +134,8 @@ class Settings:
 
     alpha: float = 0.05
     power: float = 0.80
-    design_change_rate: float = 0.10
     round_candidates: int = 16
     ladder_points: int = 6
-    ladder_items: int = 256
     ladder_power: float = 0.50
     ladder_refinements: int = 1
     behavior_ladder_items: int = 128
@@ -165,8 +162,7 @@ class Settings:
         for name in ("alpha", "power", "ladder_power", "fitness_alpha"):
             if not 0 < getattr(self, name) < 1:
                 raise ValueError(f"Settings.{name} must be in (0, 1); got {getattr(self, name)}.")
-        for name in ("round_candidates", "ladder_points", "ladder_items", "behavior_ladder_items", "behavior_items",
-                     "finalists"):
+        for name in ("round_candidates", "ladder_points", "behavior_ladder_items", "behavior_items", "finalists"):
             if getattr(self, name) < 1:
                 raise ValueError(f"Settings.{name} must be at least 1; got {getattr(self, name)}.")
 
@@ -417,37 +413,49 @@ class Study:
                 values.update(axis.at_index(0))
         return Candidate(structure, values)
 
-    def validate(self, store: Store, *, allow_infeasible: bool = False) -> None:
+    def validate(self, store: Store) -> None:
         """Check the study before any model work.
 
         The checks, in order, are:
 
-        1. No template has an entry in the structural category.
-        2. Every callable reachable from a template or a benchmark is versioned (`versioned`). Callables of the
-           toolkit itself are versioned by the toolkit version in the protocol.
-        3. The pools pass `check_pools` (the benchmarks are prepared on `store` first).
-        4. Each template has at most one solved axis, a discrete solved axis has at most `2 * settings.ladder_points`
+        1. The protocol has its `versions` (`Protocol.create` fills them). Callables of the toolkit are versioned by
+           the toolkit version in the protocol id, which is part of the id only when `versions` is filled.
+        2. For every benchmark, the generation arguments merged from `protocol.generate_defaults` and the benchmark's
+           `generate` set `temperature`, since the decoding mode decides which baseline rules apply.
+        3. No template has an entry in the structural category.
+        4. Every callable reachable from a template or a benchmark is versioned (`versioned`).
+        5. The pools pass `check_pools` (the benchmarks are prepared on `store` first).
+        6. Each template has at most one solved axis, a discrete solved axis has at most `2 * settings.ladder_points`
            positions, every key in `searched` and `monotone` gives an axis of some template, and every key in
            `monotone` gives a solved axis.
-        5. The objective and the constraints have distinct benchmark names.
-        6. `make_plan` succeeds for the seed candidate of every structure.
+        7. The objective and the constraints have distinct benchmark names.
+        8. `make_plan` succeeds for the seed candidate of every structure.
 
         A warning is logged for a template with a solved axis that contains a control whose fit has no identity,
-        since such a control refits at every position. Feasibility is then checked with the search and sealed pool
-        sizes and the design change rate (or twice the noise floor measured in `store`, if larger). Each constraint
-        needs `ladder_items + confirm_looks(margin)[2]` items in half of its search pool, and its guard band at the
-        last look must be at most 60% of its margin. The objective needs `behavior_ladder_items + behavior_items`
-        search items.
+        since such a control refits at every position. Whether the pools are large enough is checked by
+        `StudySession.start` (`evidence.feasibility`), before and after the baseline is measured.
 
         Args:
             store: The store the benchmarks are prepared on.
-            allow_infeasible: Whether to accept a study that fails the feasibility check.
 
         Raises:
             ValueError: If a check fails (`RecipeError` for a template that cannot be bound or planned).
-            StudyInfeasibleError: If the study is infeasible and `allow_infeasible` is False.
         """
         from steerability.optimization.evaluation.plan import make_plan
+
+        if not self.protocol.versions:
+            raise ValueError(
+                "The study's protocol has no versions; build it with Protocol.create, which fills them. Callables of "
+                "the toolkit are versioned by the toolkit version in the protocol."
+            )
+        unset = [benchmark.name for benchmark in self.benchmarks
+                 if "temperature" not in {**self.protocol.generate_defaults,
+                                          **(getattr(benchmark, "generate", None) or {})}]
+        if unset:
+            raise ValueError(
+                f"Benchmarks {unset} have no temperature in protocol.generate_defaults or their own generate "
+                "arguments; set it (0 for greedy decoding), since the decoding mode decides which baseline rules apply."
+            )
 
         for structure, template in self.space.items():
             structural = [item.method for item in template.entries
@@ -510,62 +518,6 @@ class Study:
                         "every position of the axis.", structure, type(control).__name__,
                     )
 
-        problems = self.feasibility(store)
-        if problems:
-            message = "The study is infeasible: " + "; ".join(problems) + "."
-            if not allow_infeasible:
-                raise StudyInfeasibleError(message)
-            logger.warning("%s It proceeds under allow_infeasible=True.", message)
-
-    def feasibility(self, store: Store | None = None) -> list[str]:
-        """The feasibility problems of the study, as messages with the numbers; empty when it is feasible.
-
-        Args:
-            store: A store with the study's measured noise floors, or None to use the design change rate only.
-
-        Returns:
-            One message per problem.
-        """
-        problems = []
-        settings = self.settings
-        benchmarks = len(self.constraints)
-        for constraint in self.constraints:
-            benchmark = constraint.benchmark
-            split = self.pools.get(benchmark.id)
-            if split is None:
-                continue
-            n_search, n_sealed = len(split.search), len(split.sealed)
-            last = confirm_looks(constraint.margin)[2]
-            change_rate = settings.design_change_rate
-            measured = _measured_noise_floor(store, self, benchmark) if store is not None else None
-            if measured is not None:
-                change_rate = max(change_rate, 2 * measured)
-            blocks = settings.ladder_items + last
-            if blocks > n_search / 2:
-                problems.append(
-                    f"{benchmark.name}: blocks of {blocks:,} items need {2 * blocks:,} search items, and the pool has "
-                    f"{n_search:,}"
-                )
-            if n_sealed == 0:
-                problems.append(f"{benchmark.name}: the sealed pool is empty")
-                continue
-            band = guard_band(math.sqrt(change_rate / last), math.sqrt(change_rate / n_sealed), alpha=settings.alpha,
-                              power=settings.power, benchmarks=benchmarks)
-            if band > 0.6 * constraint.margin:
-                problems.append(
-                    f"{benchmark.name}: the guard band of {100 * band:.2f} points exceeds 60% of the "
-                    f"{100 * constraint.margin:.2f}-point margin ({len(split.sealed):,} sealed items, change rate "
-                    f"{change_rate:.3f})"
-                )
-        split = self.pools.get(self.objective.id)
-        if split is not None:
-            needed = settings.behavior_ladder_items + settings.behavior_items
-            if needed > len(split.search):
-                problems.append(
-                    f"{self.objective.name}: blocks of {needed:,} items exceed the {len(split.search):,} search items"
-                )
-        return problems
-
 
 def record_study(store: Store, study: Study) -> None:
     """Record a study's definition in the `studies` table (once)."""
@@ -581,14 +533,6 @@ def load_definition(store: Store, study_id: str) -> dict | None:
     ensure_tables(store)
     row = store.execute("SELECT definition FROM studies WHERE study_id = ?", (study_id,)).fetchone()
     return None if row is None else json.loads(row[0])
-
-
-def _measured_noise_floor(store: Store, study: Study, benchmark: Benchmark) -> float | None:
-    ensure_tables(store)
-    row = store.execute(
-        "SELECT noise_floor FROM baselines WHERE study_id = ? AND benchmark_id = ?", (study.id, benchmark.id),
-    ).fetchone()
-    return None if row is None else float(row[0])
 
 
 def _toolkit_target(target: str) -> bool:

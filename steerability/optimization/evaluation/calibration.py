@@ -25,7 +25,7 @@ from steerability.algorithms.core.recipe import Recipe
 from steerability.optimization.evaluation.evaluator import Partial, Rejection, confirm, margins, measure, summary_of
 from steerability.optimization.evaluation.result import LadderPoint, OperatingPoint, level_of, summarize
 from steerability.optimization.measurement.evidence import cost_ratio, degenerate_increase, paired
-from steerability.optimization.measurement.stats import Paired, confirm_looks, provisional_positions, rank_positions
+from steerability.optimization.measurement.stats import Paired, provisional_positions, rank_positions
 
 if TYPE_CHECKING:
     from steerability.optimization.evaluation.session import StudySession
@@ -74,9 +74,8 @@ def _rank(session: StudySession, rungs: list[_Rung], monotone: bool) -> list[int
         benchmark = constraint.benchmark
         tables = [rung.capability[benchmark.name] for rung in rungs]
         kept &= set(provisional_positions(
-            tables, constraint.margin, n_target=confirm_looks(constraint.margin)[2],
-            n_sealed=session.n_sealed(benchmark), sd_floor=session.sd_floor(benchmark), monotone=monotone,
-            alpha=settings.alpha, power=settings.ladder_power, benchmarks=len(study.constraints),
+            tables, constraint.margin, n_target=session.looks(benchmark)[2], n_sealed=session.n_sealed(benchmark),
+            monotone=monotone, alpha=settings.alpha, power=settings.ladder_power, benchmarks=len(study.constraints),
             guard=settings.guard_band,
         ))
     within = [

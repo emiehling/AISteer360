@@ -7,6 +7,8 @@ pytest.importorskip("inspect_ai")
 
 from steerability.algorithms.core.store import Store
 from steerability.optimization.evaluation.session import StudySession
+from steerability.optimization.measurement.evidence import noise_floor, paired, usable
+from steerability.optimization.measurement.stats import floor_variance
 from steerability.optimization.release.certify import certify
 from steerability.optimization.study import Candidate, StudyError
 from tests.optimization.helpers import SMALL, StubFactory, Truth, argument, benchmarks, build_study, prompt_template
@@ -155,3 +157,25 @@ def test_a_failing_finalist_stops_the_sequence(store, tmp_path):
     assert not any(resolved == edge and set(items) & sealed for resolved, items, _ in capability.calls)
     outcome = store.execute("SELECT outcome FROM certifications WHERE study_id = ?", (study.id,)).fetchone()[0]
     assert outcome is not None
+
+
+def test_the_sealed_call_receives_the_whole_sealed_pool_in_pool_order(store, tmp_path):
+    probe = build_study(Store.open(tmp_path / "probe"), _truth, space={"prompt": prompt_template(tuple(TRUTHS))})
+    dropped = probe.pools[probe.constraints[0].benchmark.id].sealed[3]
+    capability, behavior = benchmarks(_truth, capability_omit={dropped})
+    session = _session(store, capability=capability, behavior=behavior)
+    study = session.study
+    split = study.pools[capability.id]
+    assert dropped not in usable(study, store, capability, "sealed")
+    certification = certify(session, bundle_dir=tmp_path / "bundles")
+    for resolved in certification.certified:
+        sealed_calls = [items for called, items, _ in capability.calls
+                        if called == resolved and set(items) & set(split.sealed)]
+        assert sealed_calls[0] == split.sealed
+        certificate = certification.certificates[resolved]
+        entry = certificate["constraints"]["capability"]
+        assert entry["n"] == len(split.sealed) - 1
+        table = paired(study, store, resolved, capability, usable(study, store, capability, "sealed"))
+        assert entry["lower_bound"] == pytest.approx(table.lower(SMALL.alpha, floor=floor_variance(0.05)))
+        assert entry["noise_floor"] == noise_floor(study, store, capability) == 0.0
+        assert certificate["behavior"]["noise_floor"] == noise_floor(study, store, behavior)

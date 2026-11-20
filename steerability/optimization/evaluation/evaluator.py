@@ -30,7 +30,7 @@ from steerability.algorithms.core.sweeps import preflight
 from steerability.optimization.evaluation.plan import EvaluationPlan, make_plan
 from steerability.optimization.evaluation.result import OperatingPoint, Result, summarize
 from steerability.optimization.measurement.evidence import cost_ratio, degenerate_increase, paired, point_items
-from steerability.optimization.measurement.stats import Paired, clearly_over, confirm_looks, confirm_step, feasible
+from steerability.optimization.measurement.stats import Paired, clearly_over, confirm_step, feasible
 from steerability.optimization.study import Candidate
 
 if TYPE_CHECKING:
@@ -266,7 +266,7 @@ def _screen_stages(session: StudySession, partial: Partial, progress: _Progress,
         over = False
         for constraint in study.constraints:
             benchmark = constraint.benchmark
-            items = batches[benchmark.id].ladder[:confirm_looks(constraint.margin)[0]]
+            items = batches[benchmark.id].ladder[:session.looks(benchmark)[0]]
             resolved = measure(session, partial, plan.recipes[index], benchmark, items, deadline)
             table = paired(study, session.store, resolved, benchmark, items)
             tables[index][benchmark.name] = table
@@ -306,9 +306,8 @@ def judge(session: StudySession, resolved_id: str, calibration_round: int) -> Co
         items_by_benchmark[benchmark.id] = items
         table = paired(study, store, resolved_id, benchmark, items)
         outcome.capability[benchmark.name] = table
-        if not feasible(table, constraint.margin, n_sealed=session.n_sealed(benchmark),
-                        sd_floor=session.sd_floor(benchmark), alpha=settings.alpha, power=settings.power,
-                        benchmarks=len(study.constraints), guard=settings.guard_band):
+        if not feasible(table, constraint.margin, n_sealed=session.n_sealed(benchmark), alpha=settings.alpha,
+                        power=settings.power, benchmarks=len(study.constraints), guard=settings.guard_band):
             outcome.reason = "not_confirmed"
             return outcome
     return _behavior_and_limits(session, outcome, items_by_benchmark, calibration_round)
@@ -337,10 +336,11 @@ def confirm(session: StudySession, partial: Partial, recipe: Recipe, *, calibrat
     """Confirm a point: sequential looks on each constraint's fresh block, then the objective's fresh block.
 
     For each constraint the recipe is measured on the fresh block of `fresh_round` up to each size of
-    `confirm_looks(margin)` in turn, and after each look `confirm_step` judges the point's table (built from
-    fresh-block items only). `"accept"` settles the constraint, and `"reject"` (or `"continue"` after the last look)
-    fails the point with `not_confirmed`. The recipe is then measured on the objective's fresh block, and a point over
-    the cost or degeneracy limit fails with `over_cost` or `degenerate`.
+    `session.looks(benchmark)` in turn (a look larger than the block uses the whole block), and after each look
+    `confirm_step` judges the point's table (built from fresh-block items only). `"accept"` settles the constraint,
+    and `"reject"` (or `"continue"` after the last look) fails the point with `not_confirmed`. The recipe is then
+    measured on the objective's fresh block, and a point over the cost or degeneracy limit fails with `over_cost` or
+    `degenerate`.
 
     Args:
         session: The session.
@@ -367,15 +367,14 @@ def confirm(session: StudySession, partial: Partial, recipe: Recipe, *, calibrat
         fresh = rounds[fresh_round][benchmark.id].fresh
         decision = "continue"
         table = Paired(0, 0.0, 0.0, 0)
-        for look, size in enumerate(confirm_looks(constraint.margin)):
+        for look, size in enumerate(session.looks(benchmark)):
             resolved = measure(session, partial, recipe, benchmark, fresh[:size], deadline)
             items = point_items(study, store, resolved, benchmark, rounds, calibration_round)
             items_by_benchmark[benchmark.id] = items
             table = paired(study, store, resolved, benchmark, items)
             decision = confirm_step(
-                table, look, constraint.margin, n_sealed=session.n_sealed(benchmark),
-                sd_floor=session.sd_floor(benchmark), alpha=settings.alpha, power=settings.power,
-                benchmarks=len(study.constraints), guard=settings.guard_band,
+                table, look, constraint.margin, n_sealed=session.n_sealed(benchmark), alpha=settings.alpha,
+                power=settings.power, benchmarks=len(study.constraints), guard=settings.guard_band,
             )
             if decision != "continue":
                 break

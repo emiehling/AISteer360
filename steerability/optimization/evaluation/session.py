@@ -6,9 +6,10 @@ round counter, the limits, and the re-scoring. Every front-end therefore advance
 from __future__ import annotations
 
 import logging
+import math
 import random
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -24,8 +25,8 @@ from steerability.optimization.evaluation.plan import make_plan
 from steerability.optimization.evaluation.result import Result, level_of
 from steerability.optimization.measurement import evidence
 from steerability.optimization.measurement.evidence import Batch
-from steerability.optimization.measurement.stats import confirm_looks
-from steerability.optimization.study import Candidate, Study, StudyInfeasibleError, record_study
+from steerability.optimization.measurement.stats import floor_variance, guard_band, look_sizes
+from steerability.optimization.study import Candidate, Study, StudyError, StudyInfeasibleError, record_study
 
 if TYPE_CHECKING:
     from steerability.algorithms.core.store import Store
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
     from steerability.evaluation.items import Benchmark
 
 logger = logging.getLogger(__name__)
+
+_VARIANCE_RATIO_RANGE = (2.0 / 3.0, 1.5)
 
 
 @dataclass(frozen=True)
@@ -72,7 +75,8 @@ class StudySession:
         max_candidates: The number of candidates this session may record, or None.
         max_generations: The number of generations this session may run, or None.
         max_seconds: The wall time this session may run from `start`, or None.
-        allow_infeasible: Whether to accept a study that fails the feasibility check.
+        allow_infeasible: Whether to run a study that fails the feasibility check, i.e., one whose pools give it low
+            power. It waives no check of the baseline.
 
     Attributes:
         study: The study.
@@ -109,7 +113,7 @@ class StudySession:
         self._started_at: float | None = None
         self._open: tuple[str, ExitStack, Steered] | None = None
         self._sealed_counts: dict[str, int] = {}
-        self._floors: dict[str, float] = {}
+        self._looks: dict[str, tuple[int, int, int]] = {}
         self._rescoring = False
 
     def __enter__(self) -> StudySession:
@@ -119,11 +123,23 @@ class StudySession:
         self.close()
 
     def start(self) -> None:
-        """Validate the study, record it, measure its baseline, and resume or open its rounds.
+        """Validate the study, check its feasibility, measure its baseline, and resume or open its rounds.
 
-        On a store that already contains the study, `round_index` is the highest recorded round and the count of
-        candidates in it is the number of first result versions recorded with it. Otherwise the batches of round 0
-        are recorded. After the baseline, feasibility is checked again with the measured noise floors.
+        The steps are:
+
+        1. `study.validate(store)`.
+        2. `evidence.feasibility` before the baseline. Without a baseline it uses raw pool sizes and the floor
+           variance, and a problem it reports does not depend on what the baseline shows.
+        3. The study is recorded and its baseline measured (`evidence.ensure_baseline`).
+        4. `evidence.feasibility` again, at the design variance and the usable pool sizes.
+        5. One line per constraint is logged with its design variance, baseline variance, floor, block sizes, looks,
+           band, and margin.
+        6. On a store that already contains the study, `round_index` is the highest recorded round and the count of
+           candidates in it is the number of first result versions recorded with it. Otherwise the batches of round
+           0 are recorded.
+
+        At steps 2 and 4, problems raise `StudyInfeasibleError`, unless `allow_infeasible` is True, in which case
+        they are logged as a warning.
 
         Raises:
             ValueError: If the study does not validate.
@@ -133,15 +149,16 @@ class StudySession:
         if self._started_at is not None:
             return
         study, store = self.study, self.store
-        study.validate(store, allow_infeasible=self.allow_infeasible)
+        study.validate(store)
+        self._check_feasibility("whatever its baseline shows")
         record_study(store, study)
         evidence.ensure_baseline(study, self.factory, store)
-        problems = study.feasibility(store)
-        if problems:
-            message = "The study is infeasible with its measured noise floors: " + "; ".join(problems) + "."
-            if not self.allow_infeasible:
-                raise StudyInfeasibleError(message)
-            logger.warning("%s It proceeds under allow_infeasible=True.", message)
+        self._check_feasibility(
+            "at its measured baseline",
+            "A study with another margin on the same store reuses the baseline's evidence rows and generates nothing "
+            "to try it.",
+        )
+        self._log_sizes()
         self._rounds = evidence.load_rounds(store, study)
         if not self._rounds:
             evidence.record_round(store, study, 0, self._new_batches(0))
@@ -152,12 +169,42 @@ class StudySession:
         if self._round_count >= study.settings.round_candidates:
             self._advance_round()
 
+    def _check_feasibility(self, where: str, note: str = "") -> None:
+        problems = evidence.feasibility(self.study, self.store)
+        if not problems:
+            return
+        listed = "\n".join(f"- {problem}." for problem in problems)
+        message = f"Study {self.study.name!r} is infeasible {where}:\n{listed}"
+        if note:
+            message += f"\n{note}"
+        if not self.allow_infeasible:
+            raise StudyInfeasibleError(message)
+        logger.warning("%s\nIt proceeds under allow_infeasible=True.", message)
+
+    def _log_sizes(self) -> None:
+        study, store, settings = self.study, self.store, self.study.settings
+        for constraint in study.constraints:
+            benchmark = constraint.benchmark
+            variance = evidence.design_variance(study, store, benchmark)
+            ladder, last = evidence.block_sizes(study, store, benchmark)
+            n_sealed = self.n_sealed(benchmark)
+            band = 0.0
+            if settings.guard_band and n_sealed:
+                band = guard_band(math.sqrt(variance / last), math.sqrt(variance / n_sealed), alpha=settings.alpha,
+                                  power=settings.power, benchmarks=len(study.constraints))
+            logger.info(
+                "%s: design variance %.4f (baseline %.4f, floor %.4f), last look %d, ladder block %d, looks %s, band "
+                "%.2f points, margin %.2f points.", benchmark.name, variance,
+                evidence.baseline_variance(study, store, benchmark) or 0.0, floor_variance(constraint.margin), last,
+                ladder, self.looks(benchmark), 100 * band, 100 * constraint.margin,
+            )
+
     def _require_started(self) -> None:
         if self._started_at is None:
             raise RuntimeError("The session is not started; call start() first.")
 
     def _new_batches(self, round_index: int) -> dict[str, Batch]:
-        return evidence.round_batches(self.study, self.store, round_index, allow_infeasible=self.allow_infeasible)
+        return evidence.round_batches(self.study, self.store, round_index)
 
     @property
     def rounds(self) -> dict[int, dict[str, Batch]]:
@@ -174,11 +221,14 @@ class StudySession:
             self._sealed_counts[benchmark.id] = len(evidence.usable(self.study, self.store, benchmark, "sealed"))
         return self._sealed_counts[benchmark.id]
 
-    def sd_floor(self, benchmark: Benchmark) -> float:
-        """The per-item standard deviation floor of a benchmark (`evidence.sd_floor`)."""
-        if benchmark.id not in self._floors:
-            self._floors[benchmark.id] = evidence.sd_floor(self.study, self.store, benchmark)
-        return self._floors[benchmark.id]
+    def looks(self, benchmark: Benchmark) -> tuple[int, int, int]:
+        """The cumulative item counts of the three looks of a confirmation on a constraint.
+
+        They are `look_sizes` of the constraint's fresh block size (`evidence.block_sizes`), the same in every round.
+        """
+        if benchmark.id not in self._looks:
+            self._looks[benchmark.id] = look_sizes(evidence.block_sizes(self.study, self.store, benchmark)[1])
+        return self._looks[benchmark.id]
 
     def _over_limits(self) -> bool:
         if self.budget is not None and not self.budget:
@@ -340,7 +390,27 @@ class StudySession:
         self._rounds = evidence.load_rounds(self.store, self.study)
         self._round_count = self.archive.first_versions(self.round_index)
         logger.info("Study %s starts round %d.", self.study.name, self.round_index)
+        self._log_variances()
         self.rescore()
+
+    def _log_variances(self) -> None:
+        """Log each constraint's design variance next to the mean variance of the ranked ladder tables."""
+        study, store = self.study, self.store
+        results = self.archive.results()
+        low, high = _VARIANCE_RATIO_RANGE
+        for constraint in study.constraints:
+            name = constraint.benchmark.name
+            tables = [point.capability[name] for result in results for point in result.ladder
+                      if point.rank is not None and name in point.capability]
+            count = sum(table.n for table in tables)
+            if not count:
+                continue
+            mean = sum(table.n * table.variance for table in tables) / count
+            design = evidence.design_variance(study, store, constraint.benchmark)
+            ratio = mean / design
+            log = logger.info if low <= ratio <= high else logger.warning
+            log("%s: design variance %.4f, item-weighted mean variance %.4f over %d ranked ladder table(s) (ratio "
+                "%.2f; the expected range is %.2f to %.2f).", name, design, mean, len(tables), ratio, low, high)
 
     def rescore(self) -> None:
         """Re-score the `settings.rescore_top` accepted results with the highest fitness on the current round.
@@ -368,19 +438,18 @@ class StudySession:
         finally:
             self._rescoring = False
 
-    def finalists(self) -> list[Finalist]:
-        """The points to take to certification, safest first.
+    def plan_finalists(self) -> list[dict]:
+        """Select the finalists and, for each, the search items its level is measured on, without measuring.
 
-        The accepted results whose gain lower bound (`behavior.lower(fitness_alpha)`) is at least `min_gain` are
-        taken, and the envelope result is chosen at `settings.finalists` evenly spaced levels from their lowest to
-        their highest level, without repeated resolved ids. Each finalist is then measured on up to
-        `confirm_looks(margin)[2]` usable search items per constraint that it has no evidence row for (in a seeded
-        order). When at least `confirm_looks(margin)[1]` such items exist on every constraint, its level comes from
-        those items alone and `fresh` is set. Otherwise it keeps its pooled level. Since each call measures items the
-        point has no rows for, a second call measures other items.
+        The accepted results whose gain lower bound (`behavior.lower(fitness_alpha)`) is at least `min_gain` are taken,
+        and the envelope result is chosen at `settings.finalists` evenly spaced levels from their lowest to their
+        highest level, without repeated resolved ids. For each finalist, up to `looks(benchmark)[2]` usable search
+        items per constraint that it has no evidence row for are selected (in a seeded order). Its `fresh_items` are
+        empty when fewer than `looks(benchmark)[1]` such items exist on some constraint.
 
         Returns:
-            The finalists, ordered by level, lowest first.
+            One record per finalist, `{"candidate_id", "version", "fresh_items", "level": None, "fresh": False}`,
+            whose `fresh_items` map a constraint's benchmark id to its item ids.
         """
         self._require_started()
         settings = self.study.settings
@@ -399,38 +468,79 @@ class StudySession:
         for result in self.archive.envelope(targets, among=candidates):
             if result is not None and result.operating.resolved_id not in unique:
                 unique[result.operating.resolved_id] = result
-        finalists = []
-        for result in unique.values():
-            level, fresh = self._fresh_level(result)
-            finalists.append(Finalist(result, level, fresh))
-        return sorted(finalists, key=lambda finalist: (finalist.level, finalist.result.candidate_id))
+        return [
+            {"candidate_id": result.candidate_id, "version": result.version, "fresh_items": self._fresh_items(result),
+             "level": None, "fresh": False}
+            for result in unique.values()
+        ]
 
-    def _fresh_level(self, result: Result) -> tuple[float, bool]:
+    def _fresh_items(self, result: Result) -> dict[str, list[str]]:
         study, store = self.study, self.store
-        point = result.operating
-        if not study.constraints:
-            return result.level, False
-        selections = []
+        selections: dict[str, list[str]] = {}
         for constraint in study.constraints:
             benchmark = constraint.benchmark
-            looks = confirm_looks(constraint.margin)
-            measured = evidence.point_rows(study, store, point.resolved_id, benchmark)
+            looks = self.looks(benchmark)
+            measured = evidence.point_rows(study, store, result.operating.resolved_id, benchmark)
             pool = sorted(evidence.usable(study, store, benchmark, "search"))
             order = random.Random(derive_seed(study.seed, "finalist", benchmark.id)).sample(pool, len(pool))
             available = [item for item in order if item not in measured]
             if len(available) < looks[1]:
-                return result.level, False
-            selections.append((benchmark, available[:looks[2]]))
+                return {}
+            selections[benchmark.id] = available[:looks[2]]
+        return selections
+
+    def finalists(self, plan: Sequence[Mapping] | None = None) -> list[Finalist]:
+        """The points to take to certification, safest first.
+
+        Each finalist of the plan (`plan_finalists()` when None) is measured on its recorded `fresh_items`, and its
+        level comes from exactly those items (`fresh` is set). A finalist without fresh items, or whose candidate
+        cannot be rebuilt, keeps its pooled level, which is logged. Measurement reuses stored rows, and a second call
+        with the same plan after an interruption measures the same items.
+
+        Args:
+            plan: Records from `plan_finalists`, or None.
+
+        Returns:
+            The finalists, ordered by level, lowest first.
+
+        Raises:
+            StudyError: If a planned result version is not in the archive.
+        """
+        self._require_started()
+        if plan is None:
+            plan = self.plan_finalists()
+        finalists = []
+        for record in plan:
+            versions = {result.version: result for result in self.archive.versions(record["candidate_id"])}
+            result = versions.get(int(record["version"]))
+            if result is None or result.operating is None:
+                raise StudyError(f"Finalist {record['candidate_id']} version {record['version']} is not in the "
+                                 "archive.")
+            level, fresh = self._fresh_level(result, record.get("fresh_items") or {})
+            finalists.append(Finalist(result, level, fresh))
+        return sorted(finalists, key=lambda finalist: (finalist.level, finalist.result.candidate_id))
+
+    def _fresh_level(self, result: Result, fresh_items: Mapping[str, Sequence[str]]) -> tuple[float, bool]:
+        study, store = self.study, self.store
+        if not study.constraints:
+            return result.level, False
+        if not fresh_items:
+            logger.info("Finalist %s keeps its pooled level %.3f (too few unmeasured search items).",
+                        result.candidate_id, result.level)
+            return result.level, False
         candidate = self.archive.candidate(result.candidate_id)
         try:
-            recipe = evaluator.recipe_at(make_plan(study, candidate), point.position)
+            recipe = evaluator.recipe_at(make_plan(study, candidate), result.operating.position)
         except (RecipeError, AttributeError):
-            logger.warning("Candidate %s cannot be rebuilt; it keeps its pooled level.", result.candidate_id)
+            logger.info("Finalist %s cannot be rebuilt; it keeps its pooled level %.3f.", result.candidate_id,
+                        result.level)
             return result.level, False
+        by_id = {constraint.benchmark.id: constraint.benchmark for constraint in study.constraints}
         capability = {}
-        for benchmark, items in selections:
-            resolved, _ = self.measure(recipe, benchmark, items, None, limited=False)
-            capability[benchmark.name] = evidence.paired(study, store, resolved, benchmark, items)
+        for benchmark_id, items in fresh_items.items():
+            benchmark = by_id[benchmark_id]
+            resolved, _ = self.measure(recipe, benchmark, list(items), None, limited=False)
+            capability[benchmark.name] = evidence.paired(study, store, resolved, benchmark, list(items))
         margins = {constraint.benchmark.name: constraint.margin for constraint in study.constraints}
         return level_of(capability, margins), True
 

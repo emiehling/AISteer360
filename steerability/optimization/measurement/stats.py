@@ -1,19 +1,26 @@
 """Statistics of paired differences between a candidate and the unsteered baseline.
 
-Every estimate in a study is a table of per-item differences `d = candidate score - baseline score`, held as its
+Every estimate in a study is a table of per-item differences `d = candidate score - baseline score`, stored as its
 sufficient statistics (`Paired`). A loss on a capability benchmark is `-paired.mean` and a gain on the behavior
 benchmark is `paired.mean`. The functions here are pure. `alpha` and `power` have no defaults, since every caller
 passes them from the study's `Settings`.
 
-The decision rules are the following:
+The per-item variance of a capability table is taken as at least `floor_variance(margin)`, the variance of a 0/1
+score whose only changes are losses that add up to the margin. A table built from few changed items would otherwise
+understate its variance. The decision rules are the following:
 
-- **Certification (`Paired.passes`)**: the smoothed one-sided lower bound of the difference is above `-margin`.
+- **Certification (`Paired.passes`)**: the one-sided lower bound of the difference, at the floor variance, is above
+  `-margin`.
 - **Guard band (`guard_band`, `release_band`)**: how far inside the margin a search estimate must sit so that the
   sealed test passes with probability `power`, covering the noise of both the search estimate and the sealed test.
 - **Confirmation (`confirm_step`)**: one look of a sequential check that accepts a point whose loss is inside the
   margin by the band (`feasible`) and rejects a point whose loss is above the margin (`clearly_over`).
 - **Ladder decisions (`provisional_positions`, `rank_positions`)**: which positions of a solved axis are worth
   confirming, and in which order.
+
+The sizes of a confirmation follow from the margin and the per-item variance a study is designed for. The last look
+(`last_look`) gives the estimate a standard error of `margin / sqrt(LOOK_PRECISION)`, and the earlier looks
+(`look_sizes`) and the ladder block (`ladder_size`) are set from it.
 """
 from __future__ import annotations
 
@@ -27,11 +34,24 @@ import numpy as np
 
 _Z = NormalDist().inv_cdf
 
-CONFIRM_LOOKS: dict[float, tuple[int, int, int]] = {
-    0.05: (64, 192, 400),
-    0.03: (128, 512, 1100),
-    0.02: (128, 1024, 2400),
-}
+LOOK_PRECISION = 9.6  # the last look has a standard error of margin / sqrt(LOOK_PRECISION)
+LOOK_STEP = 100  # last looks are whole multiples of this many items
+BAND_SHARE = 0.6  # the largest share of a margin that the guard band of a feasible study takes
+
+
+def floor_variance(margin: float) -> float:
+    """The smallest per-item variance the statistics assume at a margin, `margin * (1 - margin)`.
+
+    It is the variance of a 0/1 score whose only changes are losses that add up to the margin, which is the least
+    favorable case for a test on few items. A table that shows less is treated as having this much.
+
+    Args:
+        margin: The margin.
+
+    Returns:
+        The variance.
+    """
+    return margin * (1.0 - margin)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,42 +98,44 @@ class Paired:
         return self.total / self.n if self.n else 0.0
 
     @property
+    def variance(self) -> float:
+        """The per-item (population) variance of the differences (0.0 for an empty table)."""
+        if self.n == 0:
+            return 0.0
+        mean = self.total / self.n
+        return max(self.total_sq / self.n - mean * mean, 0.0)
+
+    @property
     def change_rate(self) -> float:
         """The share of items whose difference is not zero (0.0 for an empty table)."""
         return self.changed / self.n if self.n else 0.0
 
-    def se(self, *, smooth: bool = False) -> float:
-        """The standard error of the mean difference.
-
-        The smoothed form adds two items to the count and one to the sum of squares. A table with no changed items
-        then still has a positive standard error.
+    def se(self, *, floor: float = 0.0) -> float:
+        """The standard error of the mean difference, with the per-item variance taken as at least `floor`.
 
         Args:
-            smooth: Whether to smooth.
+            floor: The smallest per-item variance.
 
         Returns:
             The standard error, or infinity for an empty table.
         """
-        n, total_sq = (self.n + 2, self.total_sq + 1.0) if smooth else (self.n, self.total_sq)
-        if n == 0:
+        if self.n == 0:
             return math.inf
-        mean = self.total / n
-        return math.sqrt(max(total_sq / n - mean * mean, 0.0) / n)
+        return math.sqrt(max(self.variance, floor) / self.n)
 
-    def lower(self, alpha: float, *, smooth: bool = False) -> float:
+    def lower(self, alpha: float, *, floor: float = 0.0) -> float:
         """The one-sided lower confidence bound of the mean difference at level `alpha`.
 
         Args:
             alpha: The error rate of the bound.
-            smooth: Whether to use the smoothed mean and standard error (two added items).
+            floor: The smallest per-item variance of its standard error.
 
         Returns:
             The bound, or minus infinity for an empty table.
         """
-        n = self.n + 2 if smooth else self.n
-        if n == 0:
+        if self.n == 0:
             return -math.inf
-        return self.total / n - _Z(1 - alpha) * self.se(smooth=smooth)
+        return self.mean - _Z(1 - alpha) * self.se(floor=floor)
 
     def upper(self, alpha: float) -> float:
         """The one-sided upper confidence bound of the mean difference at level `alpha` (infinity when empty)."""
@@ -122,7 +144,7 @@ class Paired:
         return self.mean + _Z(1 - alpha) * self.se()
 
     def passes(self, margin: float, alpha: float) -> bool:
-        """The certification test, i.e., whether the smoothed lower bound of the difference is above `-margin`.
+        """The certification test, i.e., whether the lower bound at `floor_variance(margin)` is above `-margin`.
 
         Args:
             margin: The allowed loss, as an absolute difference of scores.
@@ -131,29 +153,50 @@ class Paired:
         Returns:
             Whether the table passes.
         """
-        return self.lower(alpha, smooth=True) > -margin
+        return self.lower(alpha, floor=floor_variance(margin)) > -margin
 
 
-def confirm_looks(margin: float) -> tuple[int, int, int]:
-    """The cumulative item counts of the three looks of a confirmation at a margin.
+def last_look(*, margin: float, variance: float) -> int:
+    """The number of items a confirmation needs at a margin and per-item variance.
 
-    Margins of 0.05, 0.03, and 0.02 use the tabulated counts in `CONFIRM_LOOKS`. Any other margin uses a last look
-    of `0.96 / margin**2` items rounded up to a hundred, a middle look at the largest power of two below 47% of it
-    (at least 64), and a first look of a quarter of the middle one, between 32 and 128.
+    The count is `LOOK_PRECISION * variance / margin**2` rounded up to a whole multiple of `LOOK_STEP`. Both arguments
+    are keyword-only, since they are small floats of similar size.
 
     Args:
         margin: The margin.
+        variance: The per-item variance of the differences.
+
+    Returns:
+        The size of the last look.
+    """
+    return int(math.ceil(round(LOOK_PRECISION * variance / margin ** 2 / LOOK_STEP, 9))) * LOOK_STEP
+
+
+def look_sizes(last: int) -> tuple[int, int, int]:
+    """The cumulative item counts of the three looks of a confirmation whose last look has `last` items.
+
+    The middle look is the largest power of two below 47% of the last one (at least 64), and the first look is a
+    quarter of the middle one, between 32 and 128. Neither is larger than the look after it.
+
+    Args:
+        last: The size of the last look.
 
     Returns:
         The three counts, in increasing order.
+
+    Raises:
+        ValueError: If `last` is smaller than 1.
     """
-    key = round(margin, 4)
-    if key in CONFIRM_LOOKS:
-        return CONFIRM_LOOKS[key]
-    last = int(math.ceil(0.96 / margin ** 2 / 100.0)) * 100
-    middle = max(64, 2 ** int(math.floor(math.log2(0.47 * last))))
-    first = max(32, min(128, middle // 4))
+    if last < 1:
+        raise ValueError(f"A confirmation needs at least one item; got {last}.")
+    middle = min(last, max(64, 2 ** int(math.floor(math.log2(0.47 * last)))))
+    first = min(middle, max(32, min(128, middle // 4)))
     return first, middle, last
+
+
+def ladder_size(last: int) -> int:
+    """The capability items per ladder position, a quarter of the last look and at least 32."""
+    return max(32, last // 4)
 
 
 def guard_band(se_search: float, se_sealed: float, *, alpha: float, power: float, benchmarks: int = 1) -> float:
@@ -178,9 +221,9 @@ def guard_band(se_search: float, se_sealed: float, *, alpha: float, power: float
 
 def release_band(
     paired: Paired,
+    margin: float,
     *,
     n_sealed: int,
-    sd_floor: float,
     alpha: float,
     power: float,
     benchmarks: int = 1,
@@ -189,13 +232,13 @@ def release_band(
 ) -> float:
     """The guard band of a table.
 
-    The per-item standard deviation is the table's own, floored at `sd_floor`. The search estimate's standard error
-    uses the larger of the table's size and `n_search`, which plans for a later confirmation of that size.
+    The per-item variance is the table's own, and at least `floor_variance(margin)`. The search estimate's standard
+    error uses the larger of the table's size and `n_search`, which plans for a later confirmation of that size.
 
     Args:
         paired: The table.
+        margin: The margin.
         n_sealed: The number of sealed items the point is certified on.
-        sd_floor: The lower limit of the per-item standard deviation.
         alpha: The error rate of the sealed test.
         power: The probability that the point passes the sealed test.
         benchmarks: The number of constraint benchmarks.
@@ -207,7 +250,7 @@ def release_band(
     """
     if not guard:
         return 0.0
-    per_item_sd = max(paired.se() * math.sqrt(paired.n), sd_floor)
+    per_item_sd = math.sqrt(max(paired.variance, floor_variance(margin)))
     n = max(paired.n, n_search or 0)
     return guard_band(per_item_sd / math.sqrt(n), per_item_sd / math.sqrt(n_sealed), alpha=alpha, power=power,
                       benchmarks=benchmarks)
@@ -218,7 +261,6 @@ def feasible(
     margin: float,
     *,
     n_sealed: int,
-    sd_floor: float,
     alpha: float,
     power: float,
     benchmarks: int = 1,
@@ -230,7 +272,6 @@ def feasible(
         paired: The table.
         margin: The margin.
         n_sealed: The number of sealed items.
-        sd_floor: The lower limit of the per-item standard deviation.
         alpha: The error rate of the sealed test.
         power: The probability that the point passes the sealed test.
         benchmarks: The number of constraint benchmarks.
@@ -239,7 +280,7 @@ def feasible(
     Returns:
         Whether `-paired.mean <= margin - band`.
     """
-    band = release_band(paired, n_sealed=n_sealed, sd_floor=sd_floor, alpha=alpha, power=power, benchmarks=benchmarks,
+    band = release_band(paired, margin, n_sealed=n_sealed, alpha=alpha, power=power, benchmarks=benchmarks,
                         guard=guard)
     return -paired.mean <= margin - band
 
@@ -255,7 +296,6 @@ def confirm_step(
     margin: float,
     *,
     n_sealed: int,
-    sd_floor: float,
     alpha: float,
     power: float,
     benchmarks: int = 1,
@@ -271,7 +311,6 @@ def confirm_step(
         look: The index of the look (0, 1, or 2).
         margin: The margin.
         n_sealed: The number of sealed items.
-        sd_floor: The lower limit of the per-item standard deviation.
         alpha: The error rate.
         power: The probability that an accepted point passes the sealed test.
         benchmarks: The number of constraint benchmarks.
@@ -282,8 +321,8 @@ def confirm_step(
     """
     if clearly_over(paired, margin, alpha):
         return "reject"
-    if look >= 1 and feasible(paired, margin, n_sealed=n_sealed, sd_floor=sd_floor, alpha=alpha, power=power,
-                              benchmarks=benchmarks, guard=guard):
+    if look >= 1 and feasible(paired, margin, n_sealed=n_sealed, alpha=alpha, power=power, benchmarks=benchmarks,
+                              guard=guard):
         return "accept"
     return "continue"
 
@@ -342,7 +381,6 @@ def last_feasible(
     *,
     n_target: int,
     n_sealed: int,
-    sd_floor: float,
     alpha: float,
     power: float,
     benchmarks: int = 1,
@@ -358,7 +396,6 @@ def last_feasible(
         margin: The margin.
         n_target: The size of the planned confirmation.
         n_sealed: The number of sealed items.
-        sd_floor: The lower limit of the per-item standard deviation.
         alpha: The error rate.
         power: The power of the band.
         benchmarks: The number of constraint benchmarks.
@@ -370,8 +407,8 @@ def last_feasible(
     fitted = isotonic_increasing([-paired.mean for paired in losses], [paired.n for paired in losses])
     best = None
     for index, paired in enumerate(losses):
-        band = release_band(paired, n_sealed=n_sealed, sd_floor=sd_floor, alpha=alpha, power=power,
-                            benchmarks=benchmarks, n_search=n_target, guard=guard)
+        band = release_band(paired, margin, n_sealed=n_sealed, alpha=alpha, power=power, benchmarks=benchmarks,
+                            n_search=n_target, guard=guard)
         if fitted[index] > margin - band:
             break
         best = index
@@ -384,7 +421,6 @@ def provisional_positions(
     *,
     n_target: int,
     n_sealed: int,
-    sd_floor: float,
     monotone: bool,
     alpha: float,
     power: float,
@@ -401,7 +437,6 @@ def provisional_positions(
         margin: The margin.
         n_target: The size of the planned confirmation.
         n_sealed: The number of sealed items.
-        sd_floor: The lower limit of the per-item standard deviation.
         monotone: Whether the loss is assumed not to fall as the position rises.
         alpha: The error rate.
         power: The power of the band.
@@ -412,13 +447,13 @@ def provisional_positions(
         The kept position indices, in increasing order.
     """
     if monotone:
-        last = last_feasible(losses, margin, n_target=n_target, n_sealed=n_sealed, sd_floor=sd_floor, alpha=alpha,
-                             power=power, benchmarks=benchmarks, guard=guard)
+        last = last_feasible(losses, margin, n_target=n_target, n_sealed=n_sealed, alpha=alpha, power=power,
+                             benchmarks=benchmarks, guard=guard)
         return [] if last is None else list(range(last + 1))
     kept = []
     for index, paired in enumerate(losses):
-        band = release_band(paired, n_sealed=n_sealed, sd_floor=sd_floor, alpha=alpha, power=power,
-                            benchmarks=benchmarks, n_search=n_target, guard=guard)
+        band = release_band(paired, margin, n_sealed=n_sealed, alpha=alpha, power=power, benchmarks=benchmarks,
+                            n_search=n_target, guard=guard)
         if -paired.mean <= margin - band:
             kept.append(index)
     return kept
@@ -439,16 +474,21 @@ def rank_positions(positions: Sequence[int], gains: Sequence[Paired], alpha: flo
 
 
 __all__ = [
-    "CONFIRM_LOOKS",
+    "BAND_SHARE",
+    "LOOK_PRECISION",
+    "LOOK_STEP",
     "Paired",
     "certify_fixed_order",
     "clearly_over",
-    "confirm_looks",
     "confirm_step",
     "feasible",
+    "floor_variance",
     "guard_band",
     "isotonic_increasing",
+    "ladder_size",
     "last_feasible",
+    "last_look",
+    "look_sizes",
     "provisional_positions",
     "rank_positions",
     "release_band",

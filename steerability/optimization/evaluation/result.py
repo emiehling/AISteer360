@@ -170,7 +170,8 @@ def summarize(
 
     Returns:
         A mapping with `gain`, `gain_lower`, `level`, `cost_ratio`, `degenerate_increase`, one `loss.<name>` per
-        measured constraint, and `position` as compact JSON text, each when measured.
+        measured constraint, and `position` as compact JSON text, each when measured. `level` is written when every
+        constraint has a measured table (0.0 for a study without constraints).
     """
     summary: dict[str, float | str] = {}
 
@@ -181,12 +182,11 @@ def summarize(
     if behavior is not None and behavior.n:
         put("gain", behavior.mean)
         put("gain_lower", behavior.lower(fitness_alpha))
-    if capability:
-        measured = {name: table for name, table in capability.items() if table.n}
-        for name, table in measured.items():
-            put(f"loss.{name}", -table.mean)
-        if measured and set(margins) <= set(measured):
-            put("level", level_of(measured, margins))
+    measured = {name: table for name, table in (capability or {}).items() if table.n}
+    for name, table in measured.items():
+        put(f"loss.{name}", -table.mean)
+    if set(margins) <= set(measured):
+        put("level", level_of(measured, margins))
     put("cost_ratio", cost_ratio)
     put("degenerate_increase", degenerate_increase)
     if position is not None:

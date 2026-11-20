@@ -1,9 +1,16 @@
 """A synthetic world for the optimization tests: benchmarks with known truth and a factory that steers nothing.
 
 `SyntheticBenchmark` scores every item from a `Truth` chosen per (recipe, item) by the test, so a capability item's
-value is `base - loss` and a behavior item's value is `base + gain` (plus an optional per-item spread). Differences
-against the baseline are then exact, which makes every statistical decision deterministic. `StubFactory` yields
-`Steered` objects whose resolved id is derived from the recipe id, and `StubPipeline` records the bundles written.
+value is its baseline value minus `loss` and a behavior item's value is its baseline value plus `gain` (plus an
+optional per-item spread). Differences against the baseline are then exact, which makes every statistical decision
+deterministic. The capability benchmark of `benchmarks` has a two-level baseline (1.0 for an item with
+`unit(item_id) < 0.5`, else 0.4), which gives it a baseline variance close to 0.09. `StubFactory` yields `Steered`
+objects whose resolved id is derived from the recipe id, and `StubPipeline` records the bundles written.
+
+With the default pools (1,000 search and 2,000 sealed capability items, 200 behavior search items) and the 5-point
+margin, a constraint has blocks of (100, 400) items and looks of (32, 128, 400). A candidate that shifts every item
+equally is confirmed when its loss is at most 0.0253 (second look) or 0.0319 (third look), a ladder position is kept
+when its loss is at most 0.0420, and the sealed test passes up to a loss of 0.0420.
 """
 import hashlib
 from collections.abc import Callable, Mapping
@@ -28,8 +35,8 @@ OTHER = {"positives": ["the mat", "on the mat"], "negatives": ["the dog", "a dog
 RAW = {"method": "mean_diff", "prompt_format": "raw"}
 
 SMALL = Settings(
-    round_candidates=4, ladder_points=4, ladder_items=64, behavior_ladder_items=32, behavior_items=64,
-    quick_behavior_items=16, rescore_top=2, finalists=3,
+    round_candidates=4, ladder_points=4, behavior_ladder_items=32, behavior_items=64, quick_behavior_items=16,
+    rescore_top=2, finalists=3,
 )
 MARGIN = 0.05
 CAPABILITY_ITEMS = 3000
@@ -87,12 +94,12 @@ class SyntheticBenchmark:
         size: The number of items.
         kind: `"capability"` or `"behavior"`.
         truth: The truth function; BASELINE gets `Truth()` unless the function says otherwise.
-        base: The baseline value of every item.
+        base: The baseline value of every item, or a mapping from item id to its baseline value.
         groups: Mapping from item id to group id.
         omit: Items `run` always omits (they get error rows).
     """
 
-    def __init__(self, name: str, size: int, *, kind: str, truth: TruthFunction, base: float,
+    def __init__(self, name: str, size: int, *, kind: str, truth: TruthFunction, base: float | Mapping[str, float],
                  groups: Mapping[str, str] | None = None, omit: set[str] | None = None) -> None:
         self.name = name
         self.items = [f"{name}-{index:05d}" for index in range(size)]
@@ -123,12 +130,16 @@ class SyntheticBenchmark:
     def groups(self) -> Mapping[str, str]:
         return dict(self.groups_by_item)
 
+    def baseline(self, item_id: str) -> float:
+        """The baseline value of an item."""
+        return float(self.base[item_id]) if isinstance(self.base, Mapping) else float(self.base)
+
     def value(self, recipe: Recipe, item_id: str) -> tuple[float, Truth]:
         truth = Truth() if not recipe.entries else self._truth(recipe, item_id)
         if self.kind == "capability":
-            return self.base - truth.loss, truth
+            return self.baseline(item_id) - truth.loss, truth
         spread = truth.spread if unit(item_id) < 0.5 else -truth.spread
-        return self.base + truth.gain + spread, truth
+        return self.baseline(item_id) + truth.gain + spread, truth
 
     def run(self, steered: Steered, item_ids, *, store: Store, replicate: int) -> dict[str, ItemResult]:
         item_ids = list(item_ids)
@@ -227,11 +238,17 @@ def protocol() -> Protocol:
     return Protocol.create("synthetic-model", generate_defaults={"temperature": 0})
 
 
+def two_level(name: str, size: int, *, high: float = 1.0, low: float = 0.4) -> dict[str, float]:
+    """The two-level baseline of a synthetic benchmark's items: `high` when `unit(item_id) < 0.5`, else `low`."""
+    items = (f"{name}-{index:05d}" for index in range(size))
+    return {item: high if unit(item) < 0.5 else low for item in items}
+
+
 def benchmarks(truth: TruthFunction, *, capability_omit=None, behavior_omit=None,
                capability_items: int = CAPABILITY_ITEMS, behavior_items: int = BEHAVIOR_ITEMS):
-    """A capability benchmark (base 0.8) and a behavior benchmark (base 0.3) under one truth function."""
-    capability = SyntheticBenchmark("capability", capability_items, kind="capability", truth=truth, base=0.8,
-                                    omit=capability_omit)
+    """A capability benchmark (the two-level baseline) and a behavior benchmark (base 0.3) under one truth function."""
+    capability = SyntheticBenchmark("capability", capability_items, kind="capability", truth=truth,
+                                    base=two_level("capability", capability_items), omit=capability_omit)
     behavior = SyntheticBenchmark("behavior", behavior_items, kind="behavior", truth=truth, base=0.3,
                                   omit=behavior_omit)
     return capability, behavior

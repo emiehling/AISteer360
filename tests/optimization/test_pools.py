@@ -56,7 +56,7 @@ def test_a_sealed_size_beyond_the_items_is_refused(store):
         split_items(_benchmark(store), sealed=201, seed=0)
 
 
-def test_check_pools_rejects_overlap_groups_and_fit_items(store):
+def test_check_pools_rejects_overlap_groups_fit_items_and_empty_pools(store):
     study = build_study(store, _quiet)
     check_pools(study)
     capability = study.constraints[0].benchmark
@@ -76,6 +76,17 @@ def test_check_pools_rejects_overlap_groups_and_fit_items(store):
                                                 if key != capability.id})
     with pytest.raises(ValueError, match="no pool split"):
         check_pools(missing)
+    no_search = dataclasses.replace(study, pools={**study.pools, capability.id: PoolSplit((), split.sealed)})
+    with pytest.raises(ValueError, match="search pool is empty"):
+        check_pools(no_search)
+    no_sealed = dataclasses.replace(study, pools={**study.pools, capability.id: PoolSplit(split.search, ())})
+    with pytest.raises(ValueError, match="sealed pool of a constraint is empty"):
+        check_pools(no_sealed)
+    objective = study.objective
+    open_objective = dataclasses.replace(
+        study, pools={**study.pools, objective.id: PoolSplit(study.pools[objective.id].search, ())},
+    )
+    check_pools(open_objective)
 
 
 def test_check_pools_rejects_a_group_in_both_pools(store):

@@ -1,7 +1,8 @@
 """Certification of a study's finalists on the sealed items, and the release of certified points as bundles.
 
 The finalists and their order are fixed and recorded before any sealed item is read, and each finalist is tested on
-every constraint at the full error rate `settings.alpha`, from the safest point up. Testing stops at the first
+every constraint at the full error rate `settings.alpha`, from the safest point up. Each sealed call evaluates the
+whole sealed pool in pool order, which is the request set of the baseline's sealed call. Testing stops at the first
 finalist that fails, and every finalist before it is certified. No multiplicity correction applies, since the order
 was fixed first. A study is certified once, and an interrupted call continues with the recorded order. Sealed
 results are returned to the caller only and never reach a proposer.
@@ -21,8 +22,9 @@ from steerability.optimization.evaluation.evaluator import recipe_at
 from steerability.optimization.evaluation.plan import make_plan
 from steerability.optimization.evaluation.result import jsonable
 from steerability.optimization.evaluation.session import Finalist
-from steerability.optimization.measurement.evidence import paired, usable
+from steerability.optimization.measurement.evidence import noise_floor, paired, usable
 from steerability.optimization.measurement.pools import record_sealed_use, sealed_id, shared_sealed_items
+from steerability.optimization.measurement.stats import floor_variance
 from steerability.optimization.study import StudyError, dumps, ensure_tables, now
 from steerability.spipe.format import CERTIFICATE_SCHEMA
 
@@ -56,11 +58,12 @@ def _finite(value: float) -> float | None:
     return float(value) if math.isfinite(value) else None
 
 
-def _finalist_records(finalists: list[Finalist]) -> list[dict]:
+def _ordered_records(finalists: list[Finalist], plan: list[dict]) -> list[dict]:
+    fresh_items = {(record["candidate_id"], int(record["version"])): record["fresh_items"] for record in plan}
     return [
         {
             "candidate_id": finalist.result.candidate_id, "version": finalist.result.version,
-            "recipe_id": finalist.result.operating.recipe_id, "resolved_id": finalist.result.operating.resolved_id,
+            "fresh_items": fresh_items[(finalist.result.candidate_id, finalist.result.version)],
             "level": finalist.level, "fresh": finalist.fresh,
         }
         for finalist in finalists
@@ -68,21 +71,30 @@ def _finalist_records(finalists: list[Finalist]) -> list[dict]:
 
 
 def _fixed_finalists(session: StudySession) -> list[Finalist]:
-    """The recorded finalists of the study, or the session's finalists recorded now."""
+    """The recorded finalists of the study in their order, planned, measured, and recorded now when needed.
+
+    Without a `certifications` row, the plan (`session.plan_finalists()`) is written first. Records without levels are
+    then measured (`session.finalists(plan)`, which reuses stored rows) and the row is updated with the ordered
+    records. A row whose records have levels is used as it is.
+    """
     study, store = session.study, session.store
     ensure_tables(store)
     row = store.execute("SELECT finalists, outcome FROM certifications WHERE study_id = ?", (study.id,)).fetchone()
     if row is not None and row[1] is not None:
         raise StudyError(f"Study {study.name!r} ({study.id}) is certified already; a study is certified once.")
     if row is None:
-        records = _finalist_records(session.finalists())
         store.execute(
             "INSERT OR IGNORE INTO certifications (study_id, finalists, outcome, created_at) VALUES (?, ?, NULL, ?)",
-            (study.id, dumps(records), now()),
+            (study.id, dumps(session.plan_finalists()), now()),
         )
         row = store.execute("SELECT finalists FROM certifications WHERE study_id = ?", (study.id,)).fetchone()
+    records = json.loads(row[0])
+    if any(record["level"] is None for record in records):
+        records = _ordered_records(session.finalists(records), records)
+        store.execute("UPDATE certifications SET finalists = ? WHERE study_id = ? AND outcome IS NULL",
+                      (dumps(records), study.id))
     finalists = []
-    for record in json.loads(row[0]):
+    for record in records:
         versions = {result.version: result for result in session.archive.versions(record["candidate_id"])}
         result = versions.get(record["version"])
         if result is None or result.operating is None:
@@ -106,14 +118,14 @@ def _recipe(session: StudySession, finalist: Finalist) -> Recipe:
     return recipe
 
 
-def _sealed_table(session: StudySession, steered: Steered, benchmark: Any) -> tuple[Paired, tuple[str, ...]]:
+def _sealed_table(session: StudySession, steered: Steered, benchmark: Any) -> Paired:
+    """Evaluate the whole sealed pool in pool order and build the table on its usable items."""
     from steerability.evaluation.items import evaluate_items
 
     study, store = session.study, session.store
-    items = usable(study, store, benchmark, "sealed")
     record_sealed_use(store, study, benchmark, steered.resolved_id)
-    evaluate_items(steered, benchmark, items, store=store, replicate=0)
-    return paired(study, store, steered.resolved_id, benchmark, items), items
+    evaluate_items(steered, benchmark, list(study.pools[benchmark.id].sealed), store=store, replicate=0)
+    return paired(study, store, steered.resolved_id, benchmark, usable(study, store, benchmark, "sealed"))
 
 
 def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_sealed: bool = False) -> Certification:
@@ -121,19 +133,21 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_seale
 
     The procedure is:
 
-    1. The finalists (`session.finalists()`) and their order are recorded in `certifications` before any sealed item
-       is read. A recorded outcome raises, and a recorded order without an outcome (an interrupted call) is used
-       unchanged.
+    1. The finalists are fixed before any sealed item is read. A recorded outcome raises. Without a `certifications`
+       row, the finalist plan (`session.plan_finalists()`, with the search items each level is measured on) is
+       written first. Records without levels are then measured (`session.finalists(plan)`, which reuses stored rows)
+       and recorded in their order. Recorded records with levels (an interrupted call) are used unchanged.
     2. The sealed pools are compared with those of every other study that has a recorded sealed use of a benchmark of
        the same name, and a shared item raises unless `allow_reused_sealed`.
-    3. For each finalist in order, a `sealed_uses` row is written for each benchmark before its sealed items are read,
-       every usable sealed item of every constraint is measured, and each constraint's table must pass
-       (`Paired.passes(margin, settings.alpha)`). Testing stops at the first finalist that fails. Stored evidence
-       rows are reused, and a resumed call reads nothing twice.
-    4. Each certified finalist is measured on the objective's usable sealed items, and its gain is recorded with a
-       two-sided 90% interval (per finalist, not simultaneous).
+    3. For each finalist in order, a `sealed_uses` row is written for each benchmark before its sealed items are read.
+       The whole sealed pool of every constraint is evaluated in pool order, its table is built on the usable sealed
+       items, and each constraint's table must pass (`Paired.passes(margin, settings.alpha)`). Testing stops at the
+       first finalist that fails. Stored evidence rows are reused, and a resumed call reads nothing twice.
+    4. Each certified finalist is measured on the objective's sealed pool in the same way, and its gain is recorded
+       with a two-sided 90% interval (per finalist, not simultaneous).
     5. Each certified finalist is written to `bundle_dir` as a frozen bundle whose lock records the study's protocol
-       and the certificate (`"certificate/1"`).
+       and the certificate (`"certificate/1"`). The certificate's `lower_bound` of a constraint is the bound that
+       `Paired.passes` tests, and every benchmark's entry contains its baseline's `noise_floor`.
     6. The outcome is recorded in `certifications`.
 
     Args:
@@ -170,12 +184,13 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_seale
             passed = True
             for constraint in study.constraints:
                 benchmark = constraint.benchmark
-                table, _ = _sealed_table(session, steered, benchmark)
+                table = _sealed_table(session, steered, benchmark)
                 constraints[benchmark.name] = {
                     "benchmark_id": benchmark.id, "margin": constraint.margin,
                     "sealed_id": sealed_id(benchmark, study.pools[benchmark.id]), "n": table.n,
-                    "delta": table.mean, "lower_bound": _finite(table.lower(settings.alpha, smooth=True)),
-                    "change_rate": table.change_rate,
+                    "delta": table.mean,
+                    "lower_bound": _finite(table.lower(settings.alpha, floor=floor_variance(constraint.margin))),
+                    "change_rate": table.change_rate, "noise_floor": noise_floor(study, store, benchmark),
                 }
                 if not table.passes(constraint.margin, settings.alpha):
                     passed = False
@@ -183,7 +198,7 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_seale
             if not passed:
                 failed_at = index
                 break
-            behavior, _ = _sealed_table(session, steered, study.objective)
+            behavior = _sealed_table(session, steered, study.objective)
             candidate = session.archive.candidate(finalist.result.candidate_id)
             certificate = {
                 "schema": CERTIFICATE_SCHEMA,
@@ -197,6 +212,7 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_seale
                     "benchmark_id": study.objective.id, "n": behavior.n, "gain": behavior.mean,
                     "lower": _finite(behavior.lower(BEHAVIOR_INTERVAL_ALPHA)),
                     "upper": _finite(behavior.upper(BEHAVIOR_INTERVAL_ALPHA)),
+                    "noise_floor": noise_floor(study, store, study.objective),
                 },
                 "finalists": order,
                 "index": index,

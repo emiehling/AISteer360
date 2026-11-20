@@ -198,6 +198,18 @@ def test_generate_requests_uses_stored_rollouts(tmp_path, steered, batches):
     assert {g.rollout_key for g in sampled.values()}.isdisjoint({g.rollout_key for g in first.values()})
 
 
+def test_one_request_set_is_batched_alike_for_two_recipes(tmp_path, steered, batches):
+    store = Store.open(tmp_path)
+    requests = [Request(item_id, prompt) for item_id, prompt in PROMPTS.items()]
+    generate_requests(steered, requests, store=store, benchmark_generate={}, replicate=0)
+    first = list(batches)
+    batches.clear()
+    other = Steered(steered.pipeline, BASELINE, "other-resolved", steered.protocol)
+    generated = generate_requests(other, requests, store=store, benchmark_generate={}, replicate=0)
+    assert all(generation.generated for generation in generated.values())
+    assert batches == first and len(first) == 2
+
+
 TASK_FILE = '''
 from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset, Sample

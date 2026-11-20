@@ -1,4 +1,4 @@
-"""Tests for the study definition: axes, candidates, validation, and feasibility (`optimization/study.py`)."""
+"""Tests for the study definition: axes, candidates, validation, and identity (`optimization/study.py`)."""
 import dataclasses
 
 import pytest
@@ -6,13 +6,14 @@ import pytest
 pytest.importorskip("inspect_ai")
 
 from steerability.algorithms.core.identity import versioned
+from steerability.algorithms.core.protocol import Protocol
 from steerability.algorithms.core.recipe import Choice, Entry, Interval, RecipeError, Template, Text, entry
 from steerability.algorithms.core.store import Store
 from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
 from steerability.algorithms.output_control.best_of_n.control import BestOfN
 from steerability.optimization.evaluation.plan import make_plan
 from steerability.optimization.measurement.pools import split_items
-from steerability.optimization.study import Candidate, Constraint, Settings, Study, StudyInfeasibleError
+from steerability.optimization.study import Candidate, Constraint, Settings
 from tests.optimization.helpers import (
     OTHER,
     PAIRS,
@@ -21,7 +22,6 @@ from tests.optimization.helpers import (
     build_study,
     caa_template,
     prompt_template,
-    protocol,
 )
 
 
@@ -54,26 +54,26 @@ class TestValidate:
     def test_a_structural_entry_is_refused(self, store):
         lora = Template((Entry(method="structural_control/load_lora", args={"path": "adapter"}),))
         with pytest.raises(ValueError, match="structural"):
-            _with_space(store, {"lora": lora}).validate(store, allow_infeasible=True)
+            _with_space(store, {"lora": lora}).validate(store)
 
     def test_an_unversioned_callable_is_refused(self, store):
         unversioned = Template((entry(BestOfN, scorer=unversioned_scorer, n=Choice((2, 4))),))
         with pytest.raises(ValueError, match="version"):
-            _with_space(store, {"best": unversioned}).validate(store, allow_infeasible=True)
+            _with_space(store, {"best": unversioned}).validate(store)
         marked = Template((entry(BestOfN, scorer=versioned_scorer, n=Choice((2, 4))),))
-        _with_space(store, {"best": marked}).validate(store, allow_infeasible=True)
+        _with_space(store, {"best": marked}).validate(store)
 
     def test_two_ordered_axes_left_free_are_refused(self, store):
         template = caa_template(layer_id=Choice((1, 2), ordered=True))
         with pytest.raises(ValueError, match="ordered axes"):
-            _with_space(store, {"caa": template}).validate(store, allow_infeasible=True)
-        _with_space(store, {"caa": template}, searched={"caa.layer_id"}).validate(store, allow_infeasible=True)
+            _with_space(store, {"caa": template}).validate(store)
+        _with_space(store, {"caa": template}, searched={"caa.layer_id"}).validate(store)
 
     def test_a_solved_axis_that_changes_a_fit_is_refused_until_it_is_searched(self, store):
         template = caa_template(1.0, data=Choice((PAIRS, OTHER), ordered=True))
         with pytest.raises(RecipeError, match="study.searched"):
-            _with_space(store, {"caa": template}).validate(store, allow_infeasible=True)
-        _with_space(store, {"caa": template}, searched={"caa.data"}).validate(store, allow_infeasible=True)
+            _with_space(store, {"caa": template}).validate(store)
+        _with_space(store, {"caa": template}, searched={"caa.data"}).validate(store)
 
     def test_searched_and_monotone_keys_must_be_axes(self, store):
         with pytest.raises(ValueError, match="searched"):
@@ -97,11 +97,17 @@ class TestValidate:
         with pytest.raises(ValueError, match="distinct"):
             named.validate(store)
 
-    def test_an_infeasible_study_raises_unless_allowed(self, store):
-        study = build_study(store, _quiet, capability_sealed=200)
-        with pytest.raises(StudyInfeasibleError, match="guard band"):
-            study.validate(store)
-        study.validate(store, allow_infeasible=True)
+    def test_an_unset_temperature_is_refused(self, store):
+        study = build_study(store, _quiet)
+        unset = dataclasses.replace(study, protocol=Protocol.create("synthetic-model"))
+        with pytest.raises(ValueError, match="temperature"):
+            unset.validate(store)
+
+    def test_a_protocol_without_versions_is_refused(self, store):
+        study = build_study(store, _quiet)
+        bare = dataclasses.replace(study, protocol=dataclasses.replace(study.protocol, versions={}))
+        with pytest.raises(ValueError, match="versions"):
+            bare.validate(store)
 
 
 class TestCandidates:
@@ -148,27 +154,9 @@ class TestCandidates:
         assert study.bind(Candidate("prompt", {"prompt.text": "be kind"})).axes() == {}
 
 
-class TestIdentityAndFeasibility:
+class TestIdentity:
     def test_the_id_covers_the_settings_and_is_stable(self, store):
         study = build_study(store, _quiet)
         assert study.id == build_study(store, _quiet).id
-        assert dataclasses.replace(study, settings=Settings(ladder_items=128)).id != study.id
+        assert dataclasses.replace(study, settings=Settings(ladder_points=5)).id != study.id
         assert dataclasses.replace(study, seed=3).id != study.id
-
-    def test_the_gsm8k_example(self, store):
-        capability = SyntheticBenchmark("gsm8k", 8792, kind="capability", truth=_quiet, base=0.8)
-        behavior = SyntheticBenchmark("formality", 1000, kind="behavior", truth=_quiet, base=0.3)
-        for benchmark in (capability, behavior):
-            benchmark.prepare(store)
-        pools = {capability.id: split_items(capability, sealed=5000, seed=0),
-                 behavior.id: split_items(behavior, sealed=200, seed=0)}
-        assert len(pools[capability.id].search) == 3792
-
-        def study(margin):
-            return Study(name="gsm8k", protocol=protocol(), space={"caa": caa_template()}, objective=behavior,
-                         constraints=(Constraint(capability, margin),), pools=pools)
-
-        assert study(0.03).feasibility() == []
-        problems = study(0.02).feasibility()
-        assert len(problems) == 2
-        assert "2,656" in problems[0] and "1.40 points" in problems[1]

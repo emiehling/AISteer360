@@ -95,9 +95,10 @@ def _examples(items: Sequence[str] | set[str]) -> str:
 def check_pools(study: Study) -> None:
     """Check that the pools of a study separate their items.
 
-    Every benchmark of the study (objective and constraints) needs a split of its own items. The two pools of one
-    benchmark must share no item id and no group id, neither pool may repeat an item, and neither may contain an
-    item of `study.fit_item_ids`. The benchmarks must be prepared.
+    Every benchmark of the study (objective and constraints) needs a split of its own items with a search pool that is
+    not empty, and a constraint also needs a sealed pool that is not empty. The two pools of one benchmark must share
+    no item id and no group id, neither pool may repeat an item, and neither may contain an item of
+    `study.fit_item_ids`. The benchmarks must be prepared.
 
     Args:
         study: The study.
@@ -116,6 +117,10 @@ def check_pools(study: Study) -> None:
         split = study.pools.get(benchmark.id)
         if split is None:
             raise ValueError(f"Benchmark {benchmark.name!r} ({benchmark.id}) has no pool split in study.pools.")
+        if not split.search:
+            raise ValueError(f"{benchmark.name}: the search pool is empty.")
+        if not split.sealed and study.constraint_for(benchmark) is not None:
+            raise ValueError(f"{benchmark.name}: the sealed pool of a constraint is empty.")
         known = set(benchmark.item_ids())
         for role, items in (("search", split.search), ("sealed", split.sealed)):
             repeated = {item for item, count in Counter(items).items() if count > 1}
