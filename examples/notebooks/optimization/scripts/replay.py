@@ -8,7 +8,8 @@ The `run` command runs one replay per seed. A replay draws its pools with replac
 search and 5,000 sealed GSM8K items, 1,500 search and 600 sealed formality items). Each drawn item gets a new id that
 maps to its grid item. The truth of a setting is its mean over all grid items, and the pools are independent of it
 and of each other. The benchmarks serve the exported values and tokens with a stand-in completion (empty when the
-real one was degenerate), and the factory steers nothing.
+real one was degenerate), and the factory steers nothing. The notebook `formality_gsm8k.ipynb` reads the export with
+`load_export` and the truth with `truth`, and builds the world of one replay with `build_world`.
 
 The study of a replay has one structure, the grid's CAA entry with `layer_id` as an unordered `Choice` and
 `multiplier` as an ordered `Choice`. The multiplier is in `study.monotone`, or in `study.searched` with
@@ -40,6 +41,7 @@ import math
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -196,15 +198,97 @@ class ReplayFactory:
         pass
 
 
+def load_export(path: str | Path) -> dict:
+    """Read an export written by the `export` command."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def _load(path: str) -> None:
     global _DATA
-    _DATA = json.loads(Path(path).read_text(encoding="utf-8"))
+    _DATA = load_export(path)
 
 
-def _truth(data: dict, name: str) -> np.ndarray:
+def _differences(data: dict, name: str) -> np.ndarray:
     exported = data["benchmarks"][name]
     baseline = float(np.mean(exported["baseline"][0]["values"]))
     return np.asarray([float(np.mean(setting["values"])) - baseline for setting in exported["settings"]])
+
+
+def truth(data: dict) -> list[dict]:
+    """The true loss and gain of every setting of an export, as means over all grid items.
+
+    Args:
+        data: The export, as returned by `load_export`.
+
+    Returns:
+        One row per setting, in export order. Its keys are:
+
+            - `"layer"`, `"multiplier"`: The setting.
+            - `"loss"`: The baseline's GSM8K accuracy minus the setting's accuracy.
+            - `"gain"`: The setting's mean formality score minus the baseline's mean.
+    """
+    loss, gain = -_differences(data, "capability"), _differences(data, "behavior")
+    return [{"layer": setting["caa.layer_id"], "multiplier": setting["caa.multiplier"], "loss": float(loss[index]),
+             "gain": float(gain[index])} for index, setting in enumerate(data["settings"])]
+
+
+@dataclass(frozen=True)
+class World:
+    """The benchmarks, pools, protocol, and factory of one replay.
+
+    Attributes:
+        gsm8k: The capability benchmark (named `"capability"`).
+        formality: The objective (named `"behavior"`).
+        pools: The pool split of each benchmark, by benchmark id.
+        protocol: The protocol of the replay (greedy decoding and no model).
+        factory: The pipeline factory, whose steered pipelines run nothing.
+        template: The grid's CAA template, with `layer_id` unordered and `multiplier` ordered.
+        recipes: Mapping from recipe id to the setting index of the export.
+        sealed: The grid item index of every sealed item of `gsm8k`, in pool order.
+    """
+
+    gsm8k: ReplayBenchmark
+    formality: ReplayBenchmark
+    pools: dict[str, PoolSplit]
+    protocol: Protocol
+    factory: ReplayFactory
+    template: Template
+    recipes: dict[str, int]
+    sealed: np.ndarray
+
+
+def build_world(data: dict, *, seed: int) -> World:
+    """Draw the pools of one replay from the grid's items and build its benchmarks, protocol, and factory.
+
+    Args:
+        data: The export, as returned by `load_export`.
+        seed: The seed of the draws.
+
+    Returns:
+        The world of the replay.
+    """
+    settings_list = data["settings"]
+    layers = sorted({setting["caa.layer_id"] for setting in settings_list})
+    multipliers = sorted({setting["caa.multiplier"] for setting in settings_list})
+    template = _template(layers, multipliers)
+    recipes = {template.bind({"caa.layer_id": setting["caa.layer_id"], "caa.multiplier": setting["caa.multiplier"]})
+               .recipe().id: index for index, setting in enumerate(settings_list)}
+    rng = np.random.default_rng(seed)
+    benchmarks, pools, sealed_draws = {}, {}, {}
+    for name, (n_search, n_sealed) in POOLS.items():
+        size = len(data["benchmarks"][name]["items"])
+        search, sealed = rng.integers(0, size, n_search), rng.integers(0, size, n_sealed)
+        sealed_draws[name] = sealed
+        grid_items = {f"{name}-s{index:05d}": int(item) for index, item in enumerate(search)}
+        grid_items.update({f"{name}-x{index:05d}": int(item) for index, item in enumerate(sealed)})
+        benchmark = ReplayBenchmark(name, grid_items, data["benchmarks"][name], recipes)
+        benchmarks[name] = benchmark
+        pools[benchmark.id] = PoolSplit(tuple(grid_items)[:n_search], tuple(grid_items)[n_search:])
+    protocol = Protocol.create("replay-world", generate_defaults={"temperature": 0}, seed=0)
+    return World(
+        gsm8k=benchmarks["capability"], formality=benchmarks["behavior"], pools=pools, protocol=protocol,
+        factory=ReplayFactory(protocol), template=template, recipes=recipes, sealed=sealed_draws["capability"],
+    )
 
 
 def _sealed_passes(data: dict, sealed: np.ndarray, setting: int, alpha: float) -> bool:
@@ -218,40 +302,26 @@ def replay(seed: int, options: dict) -> dict:
     """Run one study in the replay world and return its measures."""
     data = _DATA
     settings_list = data["settings"]
-    layers = sorted({setting["caa.layer_id"] for setting in settings_list})
-    multipliers = sorted({setting["caa.multiplier"] for setting in settings_list})
-    template = _template(layers, multipliers)
-    recipes = {template.bind({"caa.layer_id": setting["caa.layer_id"], "caa.multiplier": setting["caa.multiplier"]})
-               .recipe().id: index for index, setting in enumerate(settings_list)}
-    rng = np.random.default_rng(seed)
-    benchmarks, pools, drawn = {}, {}, {}
-    for name, (n_search, n_sealed) in POOLS.items():
-        size = len(data["benchmarks"][name]["items"])
-        search, sealed = rng.integers(0, size, n_search), rng.integers(0, size, n_sealed)
-        drawn[name] = (search, sealed)
-        grid_items = {f"{name}-s{index:05d}": int(item) for index, item in enumerate(search)}
-        grid_items.update({f"{name}-x{index:05d}": int(item) for index, item in enumerate(sealed)})
-        benchmark = ReplayBenchmark(name, grid_items, data["benchmarks"][name], recipes)
-        benchmarks[name] = benchmark
-        pools[benchmark.id] = PoolSplit(tuple(grid_items)[:n_search], tuple(grid_items)[n_search:])
-    protocol = Protocol.create("replay-world", generate_defaults={"temperature": 0}, seed=0)
+    world = build_world(data, seed=seed)
+    recipes = world.recipes
     searched = frozenset({"caa.multiplier"}) if options["searched"] else frozenset()
     study = Study(
-        name=f"replay-{seed}", protocol=protocol, space={"caa": template}, objective=benchmarks["behavior"],
-        constraints=(Constraint(benchmarks["capability"], MARGIN),), pools=pools,
+        name=f"replay-{seed}", protocol=world.protocol, space={"caa": world.template}, objective=world.formality,
+        constraints=(Constraint(world.gsm8k, MARGIN),), pools=world.pools,
         settings=Settings(round_candidates=options["round_candidates"]), searched=searched,
         monotone=frozenset() if options["searched"] else frozenset({"caa.multiplier"}),
     )
-    loss, gain = -_truth(data, "capability"), _truth(data, "behavior")
-    factory = ReplayFactory(protocol)
+    loss, gain = -_differences(data, "capability"), _differences(data, "behavior")
+    factory = world.factory
     with tempfile.TemporaryDirectory(dir=options["scratch"]) as scratch:
         store = Store.open(Path(scratch) / "store")
         proposer = RandomProposer(study, seed=seed) if options["proposer"] == "random" else GridProposer(study)
         archive = run_study(study, proposer, store=store, factory=factory, max_generations=options["max_generations"])
-        generations = sum(result.generations for result in archive.results())
+        generations = sum(version.generations for result in archive.results()
+                          for version in archive.versions(result.candidate_id))
         with StudySession(study, store=store, factory=factory) as session:
             session.start()
-            capability = benchmarks["capability"]
+            capability = world.gsm8k
             variance = design_variance(study, store, capability)
             last = block_sizes(study, store, capability)[1]
             n_sealed = len(usable(study, store, capability, "sealed"))
@@ -285,7 +355,6 @@ def replay(seed: int, options: dict) -> dict:
     if winner is not None:
         table = winner.operating.capability[study.constraints[0].benchmark.name]
         winner_bias = float((-table.mean - loss[setting_of(winner.operating.resolved_id)]) / max(table.se(), 1e-12))
-    sealed = drawn["capability"][1]
     return {
         "seed": seed, "band": band, "design_variance": variance, "last_look": last, "generations": generations,
         "finalists": len(finalists), "certified": len(certification.certified), "failed_at": certification.failed_at,
@@ -294,7 +363,7 @@ def replay(seed: int, options: dict) -> dict:
         "best_certified_gain_share": (max((gain[index] for index in certified), default=0.0) / best_inside
                                       if best_inside > 0 else None),
         "best_accepted_gain_inside": max((gain[index] for index in accepted if loss[index] <= MARGIN), default=0.0),
-        "accepted_sealed_passes": [bool(_sealed_passes(data, sealed, index, alpha)) for index in accepted],
+        "accepted_sealed_passes": [bool(_sealed_passes(data, world.sealed, index, alpha)) for index in accepted],
         "picks": picks,
         "winner_loss_bias_in_se": winner_bias,
     }
@@ -315,7 +384,7 @@ def run(arguments) -> None:
     seeds = range(arguments.start_seed, arguments.start_seed + arguments.seeds)
     with ProcessPoolExecutor(max_workers=arguments.workers, initializer=_load, initargs=(arguments.data,)) as executor:
         outcomes = list(executor.map(replay, seeds, [options] * len(seeds)))
-    loss, gain = -_truth(data, "capability"), _truth(data, "behavior")
+    loss, gain = -_differences(data, "capability"), _differences(data, "behavior")
     settings_list = data["settings"]
     by_layer: dict = {}
     for outcome in outcomes:
@@ -337,8 +406,7 @@ def run(arguments) -> None:
         "options": {key: value for key, value in options.items() if key != "scratch"},
         "seeds": len(outcomes), "margin": MARGIN, "band_mean": float(np.mean(bands)),
         "design_variance_mean": float(np.mean([outcome["design_variance"] for outcome in outcomes])),
-        "truth": [{**setting, "loss": float(loss[index]), "gain": float(gain[index])}
-                  for index, setting in enumerate(settings_list)],
+        "truth": truth(data),
         "over_margin_certified_share": _mean(outcome["over_margin_certified"] for outcome in outcomes),
         "first_finalist_pass_share": _mean(outcome["first_finalist_passed"] for outcome in outcomes),
         "best_certified_gain_share": _mean(outcome["best_certified_gain_share"] for outcome in outcomes),

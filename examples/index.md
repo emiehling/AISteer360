@@ -6,6 +6,7 @@ functionality.
 - `algorithms/` contain demonstrations of the toolkit's built-in algorithms. Its `generics/` subfolder illustrates config-based generic controls and demonstrates how modular controls can be constructed, and its `wrappers/` subfolder covers the wrappers around existing libraries (e.g., `trl`, `mergekit`).
 - `recipes/` are worked examples that compose existing toolkit components into something new.
 - `studies/` demonstrate more extensive studies that compare methods on a given use case.
+- `optimization/` contains a study of the optimization package that is replayed on recorded scores, together with the scripts that recorded them.
 
 ## Algorithms
 
@@ -193,5 +194,22 @@ Studies provide in-depth comparisons of steering methods on a given use case. No
     This notebook compares the probe-based routing from the [routed decoding recipe](./notebooks/recipes/routed_decoding/routed_decoding.ipynb) against two prompting baselines that describe the same referral policy, i.e., the full policy in a system prompt and a prompted classifier.
 
     [:octicons-arrow-right-24: See the study](./notebooks/studies/routing_vs_prompting.ipynb)
+
+</div>
+
+
+## Optimization
+
+Optimization notebooks run studies with `steerability.optimization`, which searches over steering pipelines under capability constraints and certifies the result on sealed items.
+
+<div class="grid cards" markdown>
+
+-   :material-target:  __Formality under a GSM8K constraint__
+
+    ---
+
+    This notebook replays a study that searches the layer and the multiplier of a [CAA](https://arxiv.org/abs/2312.06681) vector for formality while GSM8K accuracy stays within five points of the unsteered model. The study reads recorded scores of every setting instead of a loaded model, which allows each of its decisions to be compared with the true loss and gain of the setting.
+
+    [:octicons-arrow-right-24: See the notebook](./notebooks/optimization/formality_gsm8k.ipynb)
 
 </div>
