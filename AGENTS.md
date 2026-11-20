@@ -81,8 +81,9 @@ steerability/
 │   └── plotting.py              # summary-frame plots over runs_frame output (optional `eval` extra)
 ├── optimization/                # constrained search over steering pipelines; study.py (Study, Constraint, Settings,
 │   │                            # Candidate); layered: measurement <- evaluation <- search, release
-│   ├── measurement/             # pools.py (PoolSplit, split_items, check_pools, sealed ledger), stats.py (Paired and
-│   │                            # the decision rules), evidence.py (baseline, usable items, batches, point tables)
+│   ├── measurement/             # pools.py (PoolSplit, split_items, check_pools, sealed ledger), stats.py (Paired,
+│   │                            # the decision rules, look sizes), evidence.py (baseline, design variance, sizes,
+│   │                            # feasibility, batches, point tables)
 │   ├── evaluation/              # plan.py, result.py, archive.py, evaluator.py and calibration.py (stages, not
 │   │                            # public), session.py (StudySession), service.py (EvaluationService)
 │   ├── search/                  # proposer.py (Proposer, run_study), enumerate.py (grid, random), openevolve.py and
@@ -95,7 +96,8 @@ docs/                            # MkDocs site: home/, concepts/, tutorials/ (in
                                  # reference/, .nav.yml
 examples/                        # notebooks/{algorithms (incl. generics/, wrappers/),studies,recipes,optimization}/,
                                  # index.md; notebooks/optimization/ has the local GSM8K task of the
-                                 # optimization experiments and their scripts (scripts/)
+                                 # optimization experiments and their scripts (scripts/: the formality objective,
+                                 # the truth grid, the replay, and the live search)
 tests/                           # controls/, core/, internals/, evaluation/, optimization/, utils/; conftest.py
 ```
 
@@ -593,8 +595,8 @@ evaluator solves for each candidate. Every other axis is a proposer axis, and a 
 value per proposer axis (`Study.bind` is the only way to turn one into a template). A solved axis must not change a
 fit (every ladder position has the same `fit_digests`), so an ordered input of a fit belongs in `searched`.
 `study.monotone` lists the solved axes along which capability loss is assumed not to fall. `Study.validate(store)`
-checks the space, the versioning of callables, the pools, the axes, the benchmark names, and the feasibility of the
-pool sizes and margins before any model work.
+checks the protocol's `versions` and every benchmark's `temperature`, the space, the versioning of callables, the
+pools, the axes, and the benchmark names before any model work.
 
 ```python
 from steerability.optimization import Constraint, Study, split_items
@@ -605,13 +607,14 @@ from steerability.optimization.search.proposer import run_study
 
 for benchmark in (gsm8k, formality):
     benchmark.prepare(store)
+protocol = Protocol.create(model, hf_model_kwargs={"dtype": "float32"}, generate_defaults={"temperature": 0}, seed=0)
 study = Study(
     name="formality", protocol=protocol,
     space={
         "prompt": Template((entry(SystemPrompt, text=Text()),)),
         "caa": Template((entry(CAA, data=pairs, layer_id=Choice((10, 14)), multiplier=Interval(0.0, 8.0)),)),
     },
-    objective=formality, constraints=(Constraint(gsm8k, margin=0.03),),
+    objective=formality, constraints=(Constraint(gsm8k, margin=0.05),),
     pools={gsm8k.id: split_items(gsm8k, sealed=5000, seed=0), formality.id: split_items(formality, sealed=500, seed=0)},
     monotone=frozenset({"caa.multiplier"}),
 )
@@ -621,35 +624,48 @@ with StudySession(study, store=store) as session:
     certification = certify(session, bundle_dir="bundles")
 ```
 
-Evaluation goes through one `StudySession` (`optimization/evaluation/session.py`). `start()` validates the study,
-records it in the store tables of the `"optimization/1"` schema, measures the unsteered baseline once
-(`ensure_baseline`: every search and sealed item, and the search items again in another batch order for the noise
-floor), and resumes the recorded rounds. An item with a baseline error row is excluded from its pool for the whole
-study. After the baseline, feasibility is checked again with twice the measured noise floor as the change rate. Greedy
-bf16 decoding changes completions with the batch composition (about 12% of GSM8K scores changed between batch orders
-for a 0.5B model with batches of 64, and none in float32). Studies therefore use a float32 protocol or
-`max_batch_size=1`.
-`screen` runs stages 0 to 3 (plan and support check, fits, a behavior quick look, a capability smoke test), and
-`finish` runs stage 4 (calibration of the solved axis on ladder blocks, then confirmation of the chosen position in up
-to three looks on fresh blocks) and stage 5 (the `Result`, recorded in the `Archive`). A candidate is accepted only
-with an eligible operating point (confirmed on every constraint and within the cost and degeneracy limits), and its
-fitness is the one-sided lower bound of its gain. Every estimate is a `Paired` table of per-item differences against
-the baseline (`measurement/stats.py`), and a point's tables use fresh-block items only, never the ladder block its
-position was chosen on. Results are memoized by candidate id, and a `budget` or `timeout` rejection is not recorded
-(its evidence rows stay). Every `settings.round_candidates` recorded candidates start a new round with new batches and
-re-score the best accepted results. `finalists()` spreads the finalists over levels and measures their levels again
-on items they were not evaluated on.
+Evaluation goes through one `StudySession` (`optimization/evaluation/session.py`). `start()` validates the study and
+checks its feasibility with the floor variance and the raw pool sizes (`feasibility` in `measurement/evidence.py`). It
+then records the study in the store tables of the `"optimization/1"` schema and measures the unsteered baseline once
+(`ensure_baseline`). Feasibility is checked again at the measured baseline before the recorded rounds are resumed. The
+baseline is measured on the search pool and on the sealed pool as a separate request set (the one every finalist's
+sealed call uses). A second search-pool run in a different batch order gives the noise floor (the mean absolute
+difference between the two runs). Evidence rows are keyed by recipe and item, and they must not depend on the batch.
+Under greedy decoding a noise floor above `GREEDY_NOISE_LIMIT` (0.01, checked first on 400 probe items) therefore raises
+`StudyError` with no override. For a 0.5B model with batches of 64, greedy bf16 decoding changed about 12% of GSM8K
+scores between batch orders (float32 changed 0.03%), and studies use a float32 protocol or `max_batch_size=1`. An item
+with a baseline error row is excluded from its pool for the whole study.
+
+A constraint's sizes follow from its margin and its design variance (`design_variance`), which is the baseline's
+search-pool score variance and at least `floor_variance(margin) = margin * (1 - margin)`. The last look is
+`last_look(margin=, variance=)`, and the ladder block is `ladder_size(last)` (a quarter of the last look). The looks are
+`look_sizes(last)`, which `StudySession.looks` caches. A feasible study has room for two rounds of blocks in each search
+pool, and each guard band is at most `BAND_SHARE` (60%) of its margin. `allow_infeasible=True` runs an infeasible study
+at low power and waives no baseline check.
+
+`screen` runs stages 0 to 3 (plan and support check, fits, a behavior quick look, a capability smoke test). `finish`
+runs stage 4 (calibration of the solved axis on ladder blocks, then confirmation of the chosen position in up to three
+looks on fresh blocks) and stage 5 (the `Result`, recorded in the `Archive`). A candidate is accepted only with an
+eligible operating point (confirmed on every constraint and within the cost and degeneracy limits), and its fitness is
+the one-sided lower bound of its gain. Every estimate is a `Paired` table of per-item differences against the baseline
+(`measurement/stats.py`), with the per-item variance taken as at least `floor_variance(margin)`. A point's tables use
+only fresh-block items and exclude the ladder block its position was chosen on. Results are memoized by candidate id,
+and a `budget` or `timeout` rejection is not recorded (its evidence rows stay). Every `settings.round_candidates`
+recorded candidates start a new round with new batches and re-score the best accepted results. `plan_finalists()`
+spreads the finalists over levels and selects previously unevaluated search items for each one, and `finalists(plan)`
+measures their levels again on exactly those items.
 
 Proposers see only the `ArchiveView` (per candidate the id, values, status, stage, reason, fitness, and a summary of
 search-pool aggregates). `run_study` drives an in-process `Proposer` (`GridProposer`, `RandomProposer`), and
 `run_openevolve` (`search/openevolve.py`, `optimize` extra) runs OpenEvolve in a subprocess. Its evaluator and its
 population strategy call an `EvaluationService` that serves the session over a local socket (JSON messages, one
-evaluation at a time, a deadline of 90% of the stage timeout), and the strategy admits and replaces programs by the
-archive's latest results. `certify` (`release/certify.py`) records the finalists and their order before it reads any
-sealed item, refuses sealed items that another study already used (unless `allow_reused_sealed`), tests the
-finalists in order at the full error rate until the first failure, and writes each certified point as a frozen bundle
-whose lock contains its `"certificate/1"` certificate. See `docs/tutorials/optimize_steering_pipelines.md` for the
-guide.
+evaluation at a time, a deadline of 90% of the stage timeout). The strategy admits and replaces programs by the
+archive's latest results. `certify` (`release/certify.py`) records the finalist plan before it measures any finalist,
+and it records the ordered finalists before it reads any sealed item. It refuses sealed items that another study already
+used (unless `allow_reused_sealed`). Each finalist is evaluated on the whole sealed pool in pool order, and the
+finalists are tested in order at the full error rate until the first failure. Each certified point is written as a
+frozen bundle whose lock contains its `"certificate/1"` certificate, which includes the tested lower bound and every
+benchmark's noise floor. See `docs/tutorials/optimize_steering_pipelines.md` for the guide.
 
 ## Developer guide
 

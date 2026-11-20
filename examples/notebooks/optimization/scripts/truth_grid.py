@@ -1,12 +1,17 @@
-"""The truth grid of the optimization experiments: every setting of a CAA grid on every GSM8K search item.
+"""The truth grid of the optimization experiments: every setting of a CAA grid on every search item of both benchmarks.
 
 The `collect` command measures the unsteered baseline twice (replicates 0 and 1, in different batch orders) and every
-(layer, multiplier) setting of one CAA vector once on every search item of the GSM8K pool split, and writes the
-settings-by-items score matrix into the store. No sealed item is used. Settings can be split into shards that run in
-separate processes, each with its own store. One shard measures the baseline and the others pass `--skip-baseline`,
-since a deterministic protocol gives every shard the same baseline. The `analyze` command reads the stores and reports
-the noise floor, the change rate of settings whose loss is near `margin - band`, the departures of each layer's loss
-curve from its isotonic fit, and the setup time of the pipeline factory against the generation time.
+(layer, multiplier) setting of one CAA vector once on every search item of the GSM8K pool split and of the formality
+objective's pool split, and writes the settings-by-items score matrices into the store. No sealed item is used.
+Settings can be split into shards that run in separate processes, each with its own store. One shard measures the
+baseline and the others pass `--skip-baseline`, since a deterministic protocol gives every shard the same baseline.
+`--benchmarks` selects the benchmarks a run measures, and stored rows are reused.
+
+The `analyze` command reads the stores and reports the noise floor and the variance of each benchmark's baseline, the
+design variance, last look, and guard band of GSM8K at `--margin`, and per setting the GSM8K loss, its paired
+variance, and the formality gain with its per-item standard deviation. It also reports the ratio of the paired
+variance to the baseline variance for settings within one point of `margin - band`, the departures of each layer's
+loss curve from its isotonic fit, and the setup time of the pipeline factory against the generation time.
 
 Run it from the repository root, since the GSM8K task is referenced by its relative path.
 
@@ -22,6 +27,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from formality import OBJECTIVE_SEALED, PAIRS, formality_benchmark
 
 from steerability.algorithms.core.execution.spec import BackendSpec
 from steerability.algorithms.core.protocol import Protocol
@@ -31,53 +37,41 @@ from steerability.algorithms.core.sweeps import PipelineFactory
 from steerability.algorithms.state_control.caa.control import CAA
 from steerability.evaluation.items import InspectBenchmark, evaluate_items
 from steerability.evaluation.provider import ProviderOptions
-from steerability.optimization import split_items
-from steerability.optimization.measurement.stats import Paired, confirm_looks, isotonic_increasing, release_band
+from steerability.optimization import Settings, split_items
+from steerability.optimization.measurement.stats import (
+    Paired,
+    floor_variance,
+    guard_band,
+    isotonic_increasing,
+    last_look,
+)
 
 logger = logging.getLogger("truth_grid")
 
 TASK = "examples/notebooks/optimization/gsm8k_all.py@gsm8k_all"  # relative to the repository root
+MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 LAYERS = (6, 8, 10, 12, 14, 16, 18, 20, 22, 23)
 MULTIPLIERS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0)
 SEALED = 5000
 
-FORMAL = [
-    "I regret to inform you that I will be delayed this evening.",
-    "Please be advised that the meeting has been rescheduled to Thursday.",
-    "I would be grateful if you could return the charger at your convenience.",
-    "I am pleased to confirm that the arrangements remain unchanged.",
-    "Kindly note that the event will commence at six o'clock.",
-    "I wish to express my sincere appreciation for your assistance.",
-    "It is with regret that I must decline your kind invitation.",
-    "I would like to inform you that your parcel has been delivered.",
-]
-CASUAL = [
-    "hey gonna be late tonight lol, sorry!!",
-    "yo the meeting got moved to thursday btw",
-    "can u bring back my charger whenever? thx!",
-    "yep we're still on, super pumped!!",
-    "party starts at 6, don't be late haha",
-    "dude thanks so much, you're awesome!",
-    "ugh can't make it, sorry guys",
-    "hey ur package showed up at my place!",
-]
-TASKS = [
-    "Tell a friend you will be late tonight.", "Tell a friend the meeting moved to Thursday.",
-    "Ask a friend to return your charger.", "Confirm the plans are still on.", "Say when the party starts.",
-    "Thank a friend for their help.", "Decline an invitation.", "Tell a friend their package arrived.",
-]
-PAIRS = {"prompts": TASKS, "positives": FORMAL, "negatives": CASUAL}
 
-
-def _protocol(model: str, backend: str, batch_size: int, dtype: str | None) -> Protocol:
+def protocol(model: str = MODEL, *, backend: str = "huggingface", batch_size: int = 64,
+             dtype: str | None = "float32") -> Protocol:
+    """The protocol of the grid: greedy decoding with the weights in `dtype` and batches of `batch_size`."""
     spec = None
     if backend == "vllm":
-        spec = BackendSpec(kind="vllm", model=model, options={
-            "hook_plugin": True, "engine_kwargs": {"gpu_memory_utilization": 0.8, "max_model_len": 4096},
-        })
+        engine_kwargs = {"gpu_memory_utilization": 0.8, "max_model_len": 4096}
+        if dtype:
+            engine_kwargs["dtype"] = dtype
+        spec = BackendSpec(kind="vllm", model=model, options={"hook_plugin": True, "engine_kwargs": engine_kwargs})
     return Protocol.create(model, backend=spec, provider=ProviderOptions(max_batch_size=batch_size),
-                           hf_model_kwargs={"dtype": dtype} if dtype else {}, generate_defaults={"temperature": 0},
-                           seed=0)
+                           hf_model_kwargs={"dtype": dtype} if dtype and backend != "vllm" else {},
+                           generate_defaults={"temperature": 0}, seed=0)
+
+
+def gsm8k_benchmark(max_tokens: int = 384) -> InspectBenchmark:
+    """The GSM8K constraint over the train and test splits."""
+    return InspectBenchmark(TASK, generate={"max_tokens": max_tokens})
 
 
 def grid(layers=LAYERS, multipliers=MULTIPLIERS) -> Template:
@@ -88,85 +82,146 @@ def grid(layers=LAYERS, multipliers=MULTIPLIERS) -> Template:
     ),))
 
 
+def _measure(steered, benchmark, items, store, record: dict, prefix: str, replicate: int = 0) -> None:
+    started = time.monotonic()
+    rows = evaluate_items(steered, benchmark, items, store=store, replicate=replicate)
+    generated = sum(row.generated for row in rows.values())
+    if generated or f"{prefix}seconds" not in record:
+        record[f"{prefix}seconds"] = time.monotonic() - started
+        record[f"{prefix}generated"] = generated
+
+
 def collect(arguments) -> None:
-    """Measure the baseline and the settings of one shard on every search item."""
+    """Measure the baseline and the settings of one shard on every search item of the selected benchmarks."""
     store = Store.open(arguments.store)
-    benchmark = InspectBenchmark(TASK, generate={"max_tokens": arguments.max_tokens})
-    benchmark.prepare(store)
-    search = list(split_items(benchmark, sealed=SEALED, seed=0).search)
+    chosen = {name.strip() for name in arguments.benchmarks.split(",") if name.strip()}
+    gsm8k = gsm8k_benchmark(arguments.max_tokens)
+    objective = formality_benchmark()
+    gsm8k.prepare(store)
+    objective.prepare(store)
+    search = list(split_items(gsm8k, sealed=SEALED, seed=0).search)
+    objective_search = list(split_items(objective, sealed=OBJECTIVE_SEALED, seed=0).search)
     if arguments.limit:
-        search = search[:arguments.limit]
-    protocol = _protocol(arguments.model, arguments.backend, arguments.batch_size, arguments.dtype)
+        search, objective_search = search[:arguments.limit], objective_search[:arguments.limit]
+    measured = [(name, benchmark, items, prefix) for name, benchmark, items, prefix in (
+        ("gsm8k", gsm8k, search, ""), ("formality", objective, objective_search, "objective_"),
+    ) if name in chosen]
+    grid_protocol = protocol(arguments.model, backend=arguments.backend, batch_size=arguments.batch_size,
+                             dtype=arguments.dtype or None)
     layers = [int(value) for value in arguments.layers.split(",")] if arguments.layers else LAYERS
     multipliers = [float(value) for value in arguments.multipliers.split(",")] if arguments.multipliers else MULTIPLIERS
     points = list(expand(grid(layers, multipliers)))[arguments.shard::arguments.shards]
-    factory = PipelineFactory(protocol, store=store)
+    factory = PipelineFactory(grid_protocol, store=store)
     index_path = Path(arguments.store) / f"grid_shard_{arguments.shard}.json"
     index = json.loads(index_path.read_text()) if index_path.exists() else {"points": {}}
     try:
         if not arguments.skip_baseline:
             with factory.steered(BASELINE) as steered:
-                for replicate in (0, 1):
-                    started = time.monotonic()
-                    evaluate_items(steered, benchmark, search, store=store, replicate=replicate)
-                    logger.info("baseline replicate %d: %.1f s", replicate, time.monotonic() - started)
+                baseline = index.setdefault("baseline_record", {})
+                for _, benchmark, items, prefix in measured:
+                    for replicate in (0, 1):
+                        _measure(steered, benchmark, items, store, baseline, f"{prefix}{replicate}_", replicate)
+                        logger.info("%s baseline replicate %d: %.1f s", benchmark.name, replicate,
+                                    baseline[f"{prefix}{replicate}_seconds"])
                 index["baseline"] = steered.resolved_id
         factory.prepare([point.recipe for point in points])
         for point in points:
-            started = time.monotonic()
+            record = index["points"].setdefault(point.recipe.id, {"position": point.assignment})
             with factory.steered(point.recipe) as steered:
-                rows = evaluate_items(steered, benchmark, search, store=store)
-            index["points"][point.recipe.id] = {
-                "position": point.assignment, "resolved_id": steered.resolved_id,
-                "seconds": time.monotonic() - started, "generated": sum(row.generated for row in rows.values()),
-            }
-            logger.info("%s: %.1f s", point.assignment, time.monotonic() - started)
+                record["resolved_id"] = steered.resolved_id
+                for _, benchmark, items, prefix in measured:
+                    _measure(steered, benchmark, items, store, record, prefix)
+            logger.info("%s: %s", point.assignment, {key: value for key, value in record.items() if "seconds" in key})
             index_path.write_text(json.dumps(index, indent=2))
     finally:
-        index.update({"benchmark_id": benchmark.id, "protocol_id": protocol.id, "items": search,
+        index.update({"benchmark_id": gsm8k.id, "protocol_id": grid_protocol.id, "items": search,
+                      "objective_id": objective.id, "objective_items": objective_search,
                       "factory": vars(factory.stats)})
         index_path.write_text(json.dumps(index, indent=2))
         factory.release()
 
 
-def _values(store: Store, protocol_id: str, resolved_id: str, benchmark_id: str, items, replicate=0) -> np.ndarray:
+def values(store: Store, protocol_id: str, resolved_id: str, benchmark_id: str, items, replicate=0) -> np.ndarray:
+    """The stored values of a resolved recipe on items, in item order."""
     rows = store.get_evidence(protocol_id, resolved_id, benchmark_id, items, replicate)
     return np.asarray([rows[item].value for item in items], dtype=float)
 
 
+def shards(roots) -> list[tuple[Store, dict]]:
+    """The stores and grid indexes of every shard under the given store directories."""
+    found = [(Store.open(root), json.loads(path.read_text()))
+             for root in roots for path in sorted(Path(root).glob("grid_shard_*.json"))]
+    if not found:
+        raise SystemExit("No grid_shard_*.json index found under the given stores.")
+    first = found[0][1]
+    for _, index in found:
+        if (index["items"], index["protocol_id"], index["benchmark_id"]) != (
+                first["items"], first["protocol_id"], first["benchmark_id"]):
+            raise SystemExit("The shards differ in their items, protocol, or benchmark.")
+    return found
+
+
 def analyze(arguments) -> None:
-    """Report the noise floor, change rates near the band, monotonicity departures, and setup time."""
+    """Report the noise floors, the design variance and band, the per-setting tables, monotonicity, and setup time."""
     margin = arguments.margin
-    look = confirm_looks(margin)[2]
-    report: dict = {"margin": margin, "layers": {}, "settings": []}
-    setup = generation = 0.0
-    shards = [(Store.open(root), json.loads(path.read_text()))
-              for root in arguments.stores for path in sorted(Path(root).glob("grid_shard_*.json"))]
-    measured = [(store, index) for store, index in shards if "baseline" in index]
+    settings = Settings()
+    found = shards(arguments.stores)
+    measured = [(store, index) for store, index in found if "baseline" in index]
     if not measured:
         raise SystemExit("No shard measured the baseline; collect one shard without --skip-baseline.")
     store, index = measured[0]
-    items, protocol_id, benchmark_id = index["items"], index["protocol_id"], index["benchmark_id"]
-    baseline = _values(store, protocol_id, index["baseline"], benchmark_id, items)
-    second = _values(store, protocol_id, index["baseline"], benchmark_id, items, replicate=1)
-    report["noise_floor"] = float(np.mean(baseline != second))
+    protocol_id, baseline_id = index["protocol_id"], index["baseline"]
+    items, benchmark_id = index["items"], index["benchmark_id"]
+    objective_items, objective_id = index.get("objective_items"), index.get("objective_id")
+    report: dict = {"margin": margin, "layers": {}, "settings": []}
+
+    baseline = values(store, protocol_id, baseline_id, benchmark_id, items)
+    second = values(store, protocol_id, baseline_id, benchmark_id, items, replicate=1)
+    report["noise_floor"] = float(np.mean(np.abs(baseline - second)))
     report["baseline_accuracy"] = float(baseline.mean())
-    for store, index in shards:
-        if (index["items"], index["protocol_id"], index["benchmark_id"]) != (items, protocol_id, benchmark_id):
-            raise SystemExit("The shards differ in their items, protocol, or benchmark.")
-        setup += index["factory"]["setup_seconds"]
-        for record in index["points"].values():
-            values = _values(store, protocol_id, record["resolved_id"], benchmark_id, items)
-            table = Paired.from_diffs(values - baseline)
-            generation += record["seconds"]
-            report["settings"].append({**record["position"], "loss": -table.mean, "se": table.se(),
-                                       "change_rate": table.change_rate, "n": table.n})
-    floor = math.sqrt(max(report.get("noise_floor", 0.0), 0.02))
-    band = release_band(Paired(look, 0.0, 0.1 * look, int(0.1 * look)), n_sealed=SEALED, sd_floor=floor, alpha=0.05,
-                        power=0.80)
+    report["baseline_variance"] = float(baseline.var())
+    variance = max(report["baseline_variance"], floor_variance(margin))
+    last = last_look(margin=margin, variance=variance)
+    band = guard_band(math.sqrt(variance / last), math.sqrt(variance / SEALED), alpha=settings.alpha,
+                      power=settings.power)
+    report.update({"design_variance": variance, "last_look": last, "band": band})
+    objective_baseline = None
+    if objective_items:
+        objective_baseline = values(store, protocol_id, baseline_id, objective_id, objective_items)
+        objective_second = values(store, protocol_id, baseline_id, objective_id, objective_items, replicate=1)
+        report["objective_noise_floor"] = float(np.mean(np.abs(objective_baseline - objective_second)))
+        report["objective_baseline_mean"] = float(objective_baseline.mean())
+
+    setup = generation = 0.0
+    for shard_store, shard_index in found:
+        setup += shard_index["factory"]["setup_seconds"]
+        for record in shard_index["points"].values():
+            table = Paired.from_diffs(values(shard_store, protocol_id, record["resolved_id"], benchmark_id, items)
+                                      - baseline)
+            generation += record.get("seconds", 0.0) + record.get("objective_seconds", 0.0)
+            setting = {**record["position"], "loss": -table.mean, "se": table.se(), "variance": table.variance,
+                       "change_rate": table.change_rate, "n": table.n}
+            if objective_baseline is not None and "objective_seconds" in record:
+                gains = (values(shard_store, protocol_id, record["resolved_id"], objective_id, objective_items)
+                         - objective_baseline)
+                setting.update({"gain": float(gains.mean()), "gain_sd": float(gains.std())})
+            report["settings"].append(setting)
+
     near = [setting for setting in report["settings"] if abs(setting["loss"] - (margin - band)) <= 0.01]
-    report["band"] = band
-    report["change_rate_near_margin_minus_band"] = float(np.mean([s["change_rate"] for s in near])) if near else None
+    ratios = [setting["variance"] / report["baseline_variance"] for setting in near]
+    report["near_margin_minus_band"] = {
+        "count": len(near), "variance_ratio_mean": float(np.mean(ratios)) if ratios else None,
+        "variance_ratio_min": float(np.min(ratios)) if ratios else None,
+        "variance_ratio_max": float(np.max(ratios)) if ratios else None,
+    }
+    inside = [setting for setting in report["settings"] if setting["loss"] <= margin - band and "gain" in setting]
+    report["inside_room"] = {
+        "count": len(inside),
+        "above_min_gain": sum(setting["gain"] > settings.min_gain for setting in inside),
+        "best_gain": max((setting["gain"] for setting in inside), default=None),
+        "gain_sd_mean": float(np.mean([setting["gain_sd"] for setting in inside])) if inside else None,
+    }
+
     departures = total = 0
     for layer in sorted({setting["caa.layer_id"] for setting in report["settings"]}):
         curve = sorted((s for s in report["settings"] if s["caa.layer_id"] == layer),
@@ -176,14 +231,16 @@ def analyze(arguments) -> None:
         off = [abs(loss - fit) > 2 * max(setting["se"], 1e-12) for loss, fit, setting in zip(losses, fitted, curve)]
         departures += sum(off)
         total += len(off)
-        report["layers"][str(layer)] = {"losses": losses, "isotonic": fitted.tolist(), "departures": int(sum(off))}
+        largest = max((s["caa.multiplier"] for s in curve if s["loss"] <= margin - band), default=None)
+        report["layers"][str(layer)] = {"losses": losses, "isotonic": fitted.tolist(), "departures": int(sum(off)),
+                                        "largest_multiplier_inside_room": largest}
     report["monotone_departure_share"] = departures / total if total else None
     report["setup_seconds"] = setup
     report["generation_seconds"] = generation
     report["setup_share"] = setup / generation if generation else None
     Path(arguments.output).write_text(json.dumps(report, indent=2), encoding="utf-8")
-    logger.info("noise floor %s, monotone departures %s, setup share %s; report written to %s",
-                report.get("noise_floor"), report["monotone_departure_share"], report["setup_share"], arguments.output)
+    logger.info("noise floor %s, design variance %.4f, band %.4f, monotone departures %s; report written to %s",
+                report["noise_floor"], variance, band, report["monotone_departure_share"], arguments.output)
 
 
 def main() -> None:
@@ -194,19 +251,20 @@ def main() -> None:
     collecting.add_argument("store")
     collecting.add_argument("--shard", type=int, default=0)
     collecting.add_argument("--shards", type=int, default=1)
-    collecting.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    collecting.add_argument("--model", default=MODEL)
     collecting.add_argument("--backend", default="huggingface", choices=("huggingface", "vllm"))
     collecting.add_argument("--batch-size", type=int, default=64)
     collecting.add_argument("--max-tokens", type=int, default=384)
-    collecting.add_argument("--limit", type=int, default=0, help="Use only the first items of the search pool.")
-    collecting.add_argument("--dtype", default=None, help="The weights dtype, e.g., float32.")
+    collecting.add_argument("--limit", type=int, default=0, help="Use only the first items of each search pool.")
+    collecting.add_argument("--dtype", default="float32", help="The weights dtype; an empty string loads the default.")
+    collecting.add_argument("--benchmarks", default="gsm8k,formality", help="Comma-separated benchmarks to measure.")
     collecting.add_argument("--layers", default="", help="Comma-separated layers in place of the default grid.")
     collecting.add_argument("--multipliers", default="", help="Comma-separated multipliers in place of the default.")
     collecting.add_argument("--skip-baseline", action="store_true",
                             help="Measure only the settings; the analysis reads the baseline from another shard.")
     analyzing = commands.add_parser("analyze")
     analyzing.add_argument("stores", nargs="+")
-    analyzing.add_argument("--margin", type=float, default=0.03)
+    analyzing.add_argument("--margin", type=float, default=0.05)
     analyzing.add_argument("--output", default="truth_grid_report.json")
     arguments = parser.parse_args()
     if arguments.command == "collect":
