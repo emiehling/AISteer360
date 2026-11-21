@@ -13,10 +13,11 @@ from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.scorer import includes
 from inspect_ai.solver import generate
 
+from steerability.algorithms.core.protocol import ProviderOptions
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 from steerability.algorithms.input_control.base import InputControl
 from steerability.algorithms.state_control.pasta.control import PASTA
-from steerability.evaluation.provider import ProviderOptions, as_inspect_model
+from steerability.evaluation.provider import as_inspect_model
 from steerability.evaluation.solvers import runtime_kwargs_solver
 from tests.evaluation.conftest import CHAT_TEMPLATE
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer

@@ -1,12 +1,13 @@
 """Tests for the measurement protocol (`algorithms/core/protocol.py`)."""
 import json
+import subprocess
+import sys
 
 import pytest
 import torch
 
 from steerability.algorithms.core.execution.spec import BackendSpec
-from steerability.algorithms.core.protocol import Protocol, ProtocolFacts, ProtocolMismatchError
-from steerability.evaluation.provider import ProviderOptions
+from steerability.algorithms.core.protocol import Protocol, ProtocolFacts, ProtocolMismatchError, ProviderOptions
 
 MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 
@@ -106,3 +107,23 @@ class TestFacts:
         assert facts.model_fingerprint and facts.tokenizer_fingerprint
         assert facts.torch_dtype == "float32"
         assert ProtocolFacts.from_dict(facts.to_dict()) == facts
+
+
+_NO_INSPECT = """
+import sys
+
+sys.modules["inspect_ai"] = None
+
+from steerability.algorithms.core.protocol import Protocol
+from steerability.algorithms.core.steering_pipeline import SteeringPipeline
+
+protocol = Protocol.create("some/model")
+assert protocol.id and protocol.fit_context_id
+spipe = SteeringPipeline(model_name_or_path="some/model", controls=[]).to_spipe(freeze=True)
+assert spipe.manifest["lock"]["protocol_id"]
+"""
+
+
+def test_protocol_ids_and_a_frozen_bundle_need_no_inspect():
+    result = subprocess.run([sys.executable, "-c", _NO_INSPECT], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

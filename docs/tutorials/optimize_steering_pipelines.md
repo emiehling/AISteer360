@@ -95,8 +95,7 @@ set makes no assumption about behavior, which often rises and then falls at stro
 The `Study` dataclass combines the protocol, the space, the benchmarks, and the pools:
 
 ```python
-from steerability.algorithms.core.protocol import Protocol
-from steerability.evaluation.provider import ProviderOptions
+from steerability.algorithms.core.protocol import Protocol, ProviderOptions
 from steerability.optimization import Constraint, Study
 
 protocol = Protocol.create(

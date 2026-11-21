@@ -5,14 +5,13 @@ import pytest
 
 pytest.importorskip("inspect_ai")
 
-from steerability.algorithms.core.protocol import Protocol
+from steerability.algorithms.core.protocol import Protocol, ProviderOptions
 from steerability.algorithms.core.recipe import BASELINE
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 from steerability.algorithms.core.store import Store
 from steerability.algorithms.core.sweeps import Steered
 from steerability.algorithms.state_control.pasta.control import PASTA
 from steerability.evaluation.items import InspectBenchmark, evaluate_items
-from steerability.evaluation.provider import ProviderOptions
 from tests.evaluation.conftest import CHAT_TEMPLATE
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 

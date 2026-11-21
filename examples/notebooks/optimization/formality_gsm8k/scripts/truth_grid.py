@@ -32,13 +32,12 @@ import numpy as np
 from formality import OBJECTIVE_SEALED, PAIRS, formality_benchmark
 
 from steerability.algorithms.core.execution.spec import BackendSpec
-from steerability.algorithms.core.protocol import Protocol
+from steerability.algorithms.core.protocol import Protocol, ProviderOptions
 from steerability.algorithms.core.recipe import BASELINE, Choice, Template, entry, expand
 from steerability.algorithms.core.store import Store
 from steerability.algorithms.core.sweeps import PipelineFactory
 from steerability.algorithms.state_control.caa.control import CAA
 from steerability.evaluation.items import InspectBenchmark, evaluate_items
-from steerability.evaluation.provider import ProviderOptions
 from steerability.optimization import Settings, split_items
 from steerability.optimization.measurement.stats import (
     Paired,

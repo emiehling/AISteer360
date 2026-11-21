@@ -18,7 +18,8 @@ The `as_inspect_model` function wraps a steered pipeline as an Inspect model:
 
 ```python
 from inspect_ai import eval as inspect_eval
-from steerability.evaluation.provider import ProviderOptions, as_inspect_model
+from steerability.algorithms.core.protocol import ProviderOptions
+from steerability.evaluation.provider import as_inspect_model
 
 pipeline.steer()
 model = as_inspect_model(pipeline, options=ProviderOptions(max_batch_size=8))
@@ -129,11 +130,10 @@ scores a mapping of prompts with a `SampleScorer`. `SteeringEval` then measures 
 benchmark, over trials:
 
 ```python
-from steerability.algorithms.core.protocol import Protocol
+from steerability.algorithms.core.protocol import Protocol, ProviderOptions
 from steerability.algorithms.core.recipe import BASELINE, Choice, Template, entry
 from steerability.algorithms.state_control.pasta.control import PASTA
 from steerability.evaluation.items import InspectBenchmark
-from steerability.evaluation.provider import ProviderOptions
 from steerability.evaluation.runner import SteeringEval
 
 protocol = Protocol.create(

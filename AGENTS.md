@@ -46,7 +46,7 @@ steerability/
 ├── algorithms/
 │   ├── core/                    # SteeringPipeline, registry, BaseArgs, BaseControl, Output; recipe.py
 │   │   │                        # (Recipe, Template, ranges, expand); identity.py (content_id, derive_seed);
-│   │   │                        # protocol.py (Protocol); store.py (Store); fits.py (fit cache);
+│   │   │                        # protocol.py (Protocol, ProviderOptions); store.py (Store); fits.py (fit cache);
 │   │   │                        # sweeps.py (expansion, PipelineFactory, BackendPool); scoring.py (SampleScorer)
 │   │   ├── execution/           # backend interface: spec, contracts, payloads, backend (sessions, Backend, backend
 │   │   │                        # registry), params, fanout; access (ModelAccess, SteerPlan); session_utils (scoped
@@ -72,7 +72,7 @@ steerability/
 │                                # content-addressed artifact store, freeze orchestration
 ├── backends/                    # huggingface/ (HFBackend, ExclusiveSession); vllm/ (VLLMBackend, VLLMServeBackend)
 ├── evaluation/                  # Inspect AI stack (optional `eval` extra; __init__ stays empty)
-│   ├── provider.py              # ProviderOptions, SteeringPipelineModelAPI, as_inspect_model
+│   ├── provider.py              # SteeringPipelineModelAPI, as_inspect_model
 │   ├── batching.py              # lock-leader collator (batched dispatch over concurrent requests)
 │   ├── solvers.py               # runtime_kwargs_solver (per-sample runtime kwargs)
 │   ├── scorers.py               # sample_scorer_from_inspect (Inspect scorers as SampleScorer rewards)
@@ -510,10 +510,9 @@ is the empty recipe. A recipe's `id` comes from each method's `Args` dataclass, 
 entry names, disabled entries, and cross-category order do not change it.
 
 ```python
-from steerability.algorithms.core.protocol import Protocol
+from steerability.algorithms.core.protocol import Protocol, ProviderOptions
 from steerability.algorithms.core.recipe import BASELINE, Choice, Template, entry
 from steerability.evaluation.items import InspectBenchmark
-from steerability.evaluation.provider import ProviderOptions
 from steerability.evaluation.runner import SteeringEval, summarize_runs
 
 protocol = Protocol.create(

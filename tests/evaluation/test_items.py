@@ -6,7 +6,7 @@ import pytest
 pytest.importorskip("inspect_ai")
 
 from steerability.algorithms.core.identity import versioned
-from steerability.algorithms.core.protocol import Protocol
+from steerability.algorithms.core.protocol import Protocol, ProviderOptions
 from steerability.algorithms.core.recipe import BASELINE
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
 from steerability.algorithms.core.store import Store
@@ -20,7 +20,6 @@ from steerability.evaluation.items import (
     evaluate_items,
     generate_requests,
 )
-from steerability.evaluation.provider import ProviderOptions
 from tests.utils.tiny_models import tiny_llama, wordlevel_tokenizer
 
 PROMPTS = {"a": "the cat", "b": "the cat sat on", "c": "the dog sat", "d": "a cat"}

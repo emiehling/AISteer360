@@ -4,7 +4,8 @@ A `Protocol` states everything outside a recipe that a measurement depends on. I
 every stored rollout and evidence row, and its `fit_context_id` scopes every cached fit. Both are
 computed from declared fields only, so they are known before a model loads. `ProtocolFacts` are the
 facts observed once a model is loaded (fingerprints, dtype, resolved commit); they are recorded on
-first load and compared on later loads.
+first load and compared on later loads. `ProviderOptions` are the options of the evaluation
+provider, which a protocol records as one of its fields.
 """
 from __future__ import annotations
 
@@ -18,12 +19,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from steerability.algorithms.core.execution.spec import KNOWN_BACKEND_KINDS, BackendSpec
 from steerability.algorithms.core.identity import canonical_json, json_id
+from steerability.utils.thinking import DEFAULT_THINK_TAGS
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
     from steerability.algorithms.core.steering_pipeline import SteeringPipeline
-    from steerability.evaluation.provider import ProviderOptions
 
 PROTOCOL_SCHEMA = "protocol/1"
 
@@ -71,12 +72,6 @@ def _backend_identity(spec: BackendSpec | None) -> dict | None:
     if spec is None:
         return None
     return {"kind": spec.kind, "model": spec.model, "options": _without_credentials(spec.options_dict())}
-
-
-def _default_provider() -> ProviderOptions:
-    from steerability.evaluation.provider import ProviderOptions
-
-    return ProviderOptions()
 
 
 @dataclass(frozen=True)
@@ -174,6 +169,104 @@ class ProtocolFacts:
             f.name: getattr(self, f.name) if getattr(self, f.name) is not None else getattr(other, f.name)
             for f in dataclasses.fields(self)
         })
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderOptions:
+    """Options for the Inspect model provider that serves a steering pipeline.
+
+    A `Protocol` records these options (`Protocol.provider`), and every benchmark run under the
+    protocol passes them to the provider and to direct generation.
+
+    Attributes:
+        runtime_kwargs: Static runtime kwargs applied to every dispatch. The value of a `"call"`-scoped
+            key is passed through unchanged. The value of a `"row"`-scoped key is one row's value, in
+            the per-row form the consuming control expects, and it is broadcast to every row. A key that
+            no enabled control declares is ignored (and logged once). A key that is also supplied per
+            sample raises `ValueError` when the request is admitted. Static kwargs suit catalog tasks
+            whose datasets have no steering columns, and kwargs that belong to the pipeline rather than
+            to the sample.
+        chat_template_kwargs: Keyword arguments forwarded to `apply_chat_template` on the messages
+            path. Must be None when the tokenizer has no chat template, since the provider raises
+            `TypeError` otherwise.
+        max_batch_size: Maximum number of requests the collator combines into one dispatch. The
+            provider uses 1 when the pipeline does not support batching.
+        default_max_tokens: The value `ModelAPI.max_tokens()` returns, which Inspect uses when a
+            request sets no `max_tokens`.
+        reasoning_tags: The `(open_tag, close_tag)` pair used to split each generation into a
+            reasoning part and an answer part, which lets scorers grade only the answer. Defaults to
+            `("<think>", "</think>")`. None disables the split.
+        reasoning_opened_at_start: Whether the chat template's generation prompt already opens the
+            reasoning channel (some thinking-mode templates end the generation prompt with the open
+            tag). A continuation that contains the close tag is split the same way under either
+            setting. The setting affects only a continuation that contains neither tag (reasoning
+            truncated before the close tag). Such a continuation is treated as unclosed reasoning when
+            True and as an answer when False.
+        reasoning_split: How the split finds the tags, resolved once against the pipeline tokenizer.
+            `"text"` splits the decoded continuation by substring. `"tokens"` splits the continuation
+            ids and decodes each segment. `"auto"` (default) picks `"text"` when decoding with
+            `skip_special_tokens=True` keeps both tags, and `"tokens"` otherwise. Splitting on the ids
+            keeps tags that are special tokens from being removed before the split.
+        on_unsupported_param: `"raise"` (default) rejects a request with `ValueError` when it sets a
+            `GenerateConfig` parameter the pipeline cannot honor. `"warn"` emits one `UserWarning` per
+            parameter per provider and ignores the parameter. Log-probability parameters raise
+            `NotImplementedError` under either setting.
+        seed_scope: How the seed of a seeded sampling dispatch applies to its rows, forwarded to
+            `pipeline.generate()`. The seed is the request's seed, or `base_seed` when the request sets
+            none. With `"dispatch"` (default), the Hugging Face backend decodes the dispatch in one
+            batched pass under one derived seed, and the batch is reproducible as a whole. Each
+            `pipeline.generate()` call opens a new session on that backend. Every dispatch with the
+            same seed therefore starts sampling from the same random state (common random numbers
+            across prompts). With `"item"`, each row derives its own seed and the rows are decoded one
+            at a time. The collator groups requests by arrival time, which makes per-row
+            reproducibility unattainable under either setting. `"item"` therefore only makes decoding
+            serial. The setting has no effect on the vLLM backends or in per-request mode.
+        max_concurrency: Selects per-request mode when set (at least 1). When the pipeline's
+            `supports_concurrent_generate` is True, each request is dispatched at once as its own
+            single-prompt `pipeline.generate()` call in a worker thread, with at most
+            `max_concurrency` calls in flight, and `max_connections()` returns `max_concurrency`.
+            A seeded request then samples under a seed derived from the base seed and the request
+            (its prompt and per-sample runtime kwargs), and a cancelled request aborts its
+            generation. When the pipeline does not support concurrent generation, the provider
+            logs at info level and keeps batching mode. None (default) selects batching mode.
+    """
+
+    runtime_kwargs: Mapping[str, Any] = field(default_factory=dict)
+    chat_template_kwargs: Mapping[str, Any] | None = None
+    max_batch_size: int = 8
+    default_max_tokens: int = 1024
+    reasoning_tags: tuple[str, str] | None = DEFAULT_THINK_TAGS
+    reasoning_opened_at_start: bool = False
+    reasoning_split: Literal["auto", "text", "tokens"] = "auto"
+    on_unsupported_param: Literal["raise", "warn"] = "raise"
+    seed_scope: Literal["item", "dispatch"] = "dispatch"
+    max_concurrency: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.runtime_kwargs, Mapping):
+            raise TypeError(f"runtime_kwargs must be a mapping; got {type(self.runtime_kwargs).__name__}.")
+        if self.chat_template_kwargs is not None and not isinstance(self.chat_template_kwargs, Mapping):
+            raise TypeError(
+                f"chat_template_kwargs must be a mapping or None; got {type(self.chat_template_kwargs).__name__}."
+            )
+        if int(self.max_batch_size) < 1:
+            raise ValueError(f"max_batch_size must be >= 1; got {self.max_batch_size}.")
+        if int(self.default_max_tokens) < 1:
+            raise ValueError(f"default_max_tokens must be >= 1; got {self.default_max_tokens}.")
+        if self.reasoning_tags is not None:
+            open_tag, close_tag = self.reasoning_tags
+            if not (isinstance(open_tag, str) and open_tag and isinstance(close_tag, str) and close_tag):
+                raise ValueError("reasoning_tags must be a pair of non-empty strings, or None.")
+        if self.reasoning_split not in ("auto", "text", "tokens"):
+            raise ValueError(
+                f"reasoning_split must be 'auto', 'text', or 'tokens'; got {self.reasoning_split!r}."
+            )
+        if self.on_unsupported_param not in ("raise", "warn"):
+            raise ValueError(f"on_unsupported_param must be 'raise' or 'warn'; got {self.on_unsupported_param!r}.")
+        if self.seed_scope not in ("item", "dispatch"):
+            raise ValueError(f"seed_scope must be 'item' or 'dispatch'; got {self.seed_scope!r}.")
+        if self.max_concurrency is not None and int(self.max_concurrency) < 1:
+            raise ValueError(f"max_concurrency must be >= 1 or None; got {self.max_concurrency}.")
 
 
 @dataclass(frozen=True)
@@ -277,7 +370,7 @@ class Protocol:
     @property
     def resolved_provider(self) -> ProviderOptions:
         """`provider`, or `ProviderOptions()` when it is None."""
-        return self.provider if self.provider is not None else _default_provider()
+        return self.provider if self.provider is not None else ProviderOptions()
 
     def _identity_payload(self) -> dict:
         provider = self.resolved_provider
@@ -317,7 +410,6 @@ class Protocol:
         Raises:
             ValueError: If `data` is not a `protocol/1` identity.
         """
-        from steerability.evaluation.provider import ProviderOptions
         from steerability.spipe.codec import DecodeContext, decode
 
         if not isinstance(data, Mapping) or data.get("schema") != PROTOCOL_SCHEMA:
@@ -374,4 +466,4 @@ class Protocol:
         return hash(self.id)
 
 
-__all__ = ["Protocol", "ProtocolFacts", "ProtocolMismatchError", "package_versions"]
+__all__ = ["Protocol", "ProtocolFacts", "ProtocolMismatchError", "ProviderOptions", "package_versions"]

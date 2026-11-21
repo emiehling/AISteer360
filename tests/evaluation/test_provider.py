@@ -27,12 +27,12 @@ from inspect_ai.model import (
 )
 
 from steerability.algorithms.core.output import Output
+from steerability.algorithms.core.protocol import ProviderOptions
 from steerability.evaluation.provider import (
     MAPPED_FIELDS,
     POLICY_FIELDS,
     REFUSED_FIELDS,
     UPSTREAM_FIELDS,
-    ProviderOptions,
     SteeringPipelineModelAPI,
     as_inspect_model,
     convert_input,
