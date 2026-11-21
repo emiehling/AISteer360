@@ -18,6 +18,10 @@ configuration). An existing pool file is reused, and a shorter one is completed.
 file into a run directory that has none, which lets the random arm run without `--llm`. The pool is built before the
 baseline is measured, with at most four calls per missing prompt.
 
+The pools of both benchmarks come from the published grid (`--grid`, the file that `replay.py export` writes).
+The grid's items of a benchmark are its search pool, and every other item is held out. This keeps every item that
+the grid measured, and that informed the space of the search, out of the held-out pools.
+
 The baseline is measured once in `<run_dir>/baseline`, and each arm runs on its own copy of that store with its own
 study name. The arms share no evidence row other than the baseline's. Each arm has a budget of `--max-generations`,
 counted over every version of every result in its archive. An arm has spent its budget when what is left would not
@@ -35,7 +39,7 @@ task reference, and names appear in the summaries a proposer sees).
 
 usage:
     python examples/notebooks/optimization/formality_gsm8k/scripts/live_search.py \
-        <run_dir> --llm llm.json [--arms random,naive] [--prompt-pool FILE] [--certify-short]
+        <run_dir> --grid grid.json --llm llm.json [--arms random,naive] [--prompt-pool FILE] [--certify-short]
 """
 import argparse
 import asyncio
@@ -48,15 +52,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from formality import OBJECTIVE_HELD_OUT, PAIRS, formality_benchmark
-from truth_grid import HELD_OUT, MODEL, gsm8k_benchmark, protocol
+from formality import PAIRS, formality_benchmark
+from truth_grid import MODEL, gsm8k_benchmark, protocol
 
 from steerability.algorithms.core.recipe import Choice, Interval, RecipeError, Template, Text, entry
 from steerability.algorithms.core.store import Store
 from steerability.algorithms.core.sweeps import PipelineFactory
 from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
 from steerability.algorithms.state_control.caa.control import CAA
-from steerability.optimization import Constraint, PoolSplit, Settings, Study, split_items
+from steerability.optimization import Constraint, PoolSplit, Settings, Study
 from steerability.optimization.evaluation.archive import Archive
 from steerability.optimization.evaluation.session import StudySession
 from steerability.optimization.measurement.evidence import ensure_baseline
@@ -79,8 +83,30 @@ POOL_INSTRUCTION = (
 CALLS_PER_PROMPT = 4
 
 
-def build_study(store: Store, *, arm: str, model: str, prompt_pool: Sequence[str] | None = None) -> Study:
-    """The study of one arm.
+def load_grid_items(path: str | Path) -> dict[str, list[str]]:
+    """The item ids of the grid's two benchmarks, keyed `"capability"` (GSM8K) and `"behavior"`."""
+    benchmarks = json.loads(Path(path).read_text(encoding="utf-8"))["benchmarks"]
+    return {name: list(benchmarks[name]["items"]) for name in ("capability", "behavior")}
+
+
+def grid_pools(benchmark: Any, items: Sequence[str]) -> PoolSplit:
+    """The pools of a prepared benchmark: the grid's items are the search pool, and every other item is held out.
+
+    Raises:
+        SystemExit: If an item of the grid is not an item of the benchmark.
+    """
+    search = set(items)
+    item_ids = benchmark.item_ids()
+    missing = search - set(item_ids)
+    if missing:
+        raise SystemExit(f"{len(missing)} items of the grid are not items of {benchmark.name!r}.")
+    return PoolSplit(tuple(item for item in item_ids if item in search),
+                     tuple(item for item in item_ids if item not in search))
+
+
+def build_study(store: Store, *, arm: str, model: str, grid: Mapping[str, Sequence[str]],
+                prompt_pool: Sequence[str] | None = None) -> Study:
+    """The study of one arm, with the pools of the grid's items (`grid_pools`).
 
     The naive arm has a 100-item GSM8K search pool and no guard band. The random arm draws its system prompts from
     `prompt_pool`, and the other arms write them as free text.
@@ -92,10 +118,10 @@ def build_study(store: Store, *, arm: str, model: str, prompt_pool: Sequence[str
     formality = formality_benchmark()
     for benchmark in (gsm8k, formality):
         benchmark.prepare(store)
-    capability = split_items(gsm8k, held_out=HELD_OUT, seed=0)
+    capability = grid_pools(gsm8k, grid["capability"])
     if arm == "naive":
         capability = PoolSplit(capability.search[:NAIVE_SEARCH_ITEMS], capability.held_out)
-    pools = {gsm8k.id: capability, formality.id: split_items(formality, held_out=OBJECTIVE_HELD_OUT, seed=0)}
+    pools = {gsm8k.id: capability, formality.id: grid_pools(formality, grid["behavior"])}
     caa = entry(CAA, data=PAIRS, train_spec={"method": "mean_diff", "accumulate": "all"}, layer_id=Choice(LAYERS),
                 multiplier=Interval(0.25, 8.0, log=True))
     if arm == "random":
@@ -136,7 +162,7 @@ def _pool_prompt(study: Study, reply: str) -> str | None:
 
 
 def prompt_pool(run_dir: Path, *, size: int, llm: Mapping[str, Any] | None, model: str,
-                source: Path | None = None) -> list[str]:
+                grid: Mapping[str, Sequence[str]], source: Path | None = None) -> list[str]:
     """The random arm's prompt pool, read from `<run_dir>/prompt_pool.json` and completed by the model when short.
 
     Args:
@@ -144,6 +170,7 @@ def prompt_pool(run_dir: Path, *, size: int, llm: Mapping[str, Any] | None, mode
         size: The number of prompts.
         llm: OpenEvolve's `llm` configuration, or None.
         model: The model of the study.
+        grid: The item ids of the grid's benchmarks.
         source: A pool file to copy into the run directory when it has none, or None.
 
     Returns:
@@ -169,7 +196,7 @@ def prompt_pool(run_dir: Path, *, size: int, llm: Mapping[str, Any] | None, mode
 
     store = Store.open(run_dir / "baseline")
     try:
-        study = build_study(store, arm="openevolve", model=model)
+        study = build_study(store, arm="openevolve", model=model, grid=grid)
     finally:
         store.close()
     system = system_message(study, POOL_STRUCTURE)
@@ -232,13 +259,13 @@ def budget_fields(study: Study, store: Store, max_generations: int, *, random_ar
     return fields
 
 
-def measure_baseline(run_dir: Path, model: str) -> Path:
+def measure_baseline(run_dir: Path, model: str, grid: Mapping[str, Sequence[str]]) -> Path:
     """Measure the baseline once in `<run_dir>/baseline` (on the full pools) and return the store's directory."""
     root = run_dir / "baseline"
     done = root / "baseline.done"
     if not done.exists():
         store = Store.open(root)
-        study = build_study(store, arm="openevolve", model=model)
+        study = build_study(store, arm="openevolve", model=model, grid=grid)
         factory = PipelineFactory(study.protocol, store=store)
         try:
             ensure_baseline(study, factory, store)
@@ -261,6 +288,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("run_dir")
+    parser.add_argument("--grid", required=True, help="The grid file (grid.json), whose items are the search pools.")
     parser.add_argument("--llm", help="A JSON file with OpenEvolve's llm configuration.")
     parser.add_argument("--arms", default="random,openevolve,naive")
     parser.add_argument("--model", default=MODEL)
@@ -274,17 +302,18 @@ def main() -> None:
     run_dir = Path(arguments.run_dir)
     llm = json.loads(Path(arguments.llm).read_text()) if arguments.llm else None
     arms = [arm.strip() for arm in arguments.arms.split(",") if arm.strip()]
+    grid = load_grid_items(arguments.grid)
     if llm is None and any(arm != "random" for arm in arms):
         raise SystemExit("The openevolve and naive arms need --llm.")
     pool = None
     if "random" in arms:
-        pool = prompt_pool(run_dir, size=arguments.prompt_pool_size, llm=llm, model=arguments.model,
+        pool = prompt_pool(run_dir, size=arguments.prompt_pool_size, llm=llm, model=arguments.model, grid=grid,
                            source=Path(arguments.prompt_pool) if arguments.prompt_pool else None)
-    baseline = measure_baseline(run_dir, arguments.model)
+    baseline = measure_baseline(run_dir, arguments.model, grid)
 
     for arm in arms:
         store = arm_store(run_dir, arm, baseline)
-        study = build_study(store, arm=arm, model=arguments.model, prompt_pool=pool)
+        study = build_study(store, arm=arm, model=arguments.model, grid=grid, prompt_pool=pool)
         budget = budget_fields(study, store, arguments.max_generations, random_arm=arm == "random")
         if budget["budget_spent"]:
             logger.info("arm %s has spent its budget (%d generations) and is not searched again", arm,
@@ -307,7 +336,7 @@ def main() -> None:
     for arm in arms:
         store = arm_store(run_dir, arm, baseline)
         try:
-            study = build_study(store, arm=arm, model=arguments.model, prompt_pool=pool)
+            study = build_study(store, arm=arm, model=arguments.model, grid=grid, prompt_pool=pool)
             budgets[arm] = budget_fields(study, store, arguments.max_generations, random_arm=arm == "random")
         finally:
             store.close()
@@ -326,7 +355,7 @@ def main() -> None:
 
     for arm in arms:
         store = arm_store(run_dir, arm, baseline)
-        study = build_study(store, arm=arm, model=arguments.model, prompt_pool=pool)
+        study = build_study(store, arm=arm, model=arguments.model, grid=grid, prompt_pool=pool)
         factory = PipelineFactory(study.protocol, store=store)
         try:
             with StudySession(study, store=store, factory=factory, allow_infeasible=arm == "naive") as session:
