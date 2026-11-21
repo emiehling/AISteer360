@@ -23,7 +23,7 @@ from steerability.evaluation.items import InspectBenchmark, PromptBenchmark
 from steerability.optimization import split_items
 
 store = Store.open("runs/formality/store")
-gsm8k = InspectBenchmark("examples/notebooks/optimization/gsm8k_all.py@gsm8k_all")
+gsm8k = InspectBenchmark("examples/notebooks/optimization/formality_gsm8k/scripts/gsm8k_all.py@gsm8k_all")
 formality = PromptBenchmark("formality", prompts, formality_score)
 for benchmark in (gsm8k, formality):
     benchmark.prepare(store)
@@ -42,8 +42,8 @@ of a steering vector) can be listed per benchmark in the study's `fit_item_ids`,
 contain them.
 
 Note that `inspect_evals/gsm8k` evaluates only the 1,319 test items and takes its few-shot examples from the train
-split. The local task `examples/notebooks/optimization/gsm8k_all.py` is a zero-shot task over both splits (8,792
-items), and its prompts contain no other item.
+split. The local task `examples/notebooks/optimization/formality_gsm8k/scripts/gsm8k_all.py` is a zero-shot task over
+both splits (8,792 items), and its prompts contain no other item.
 
 ## The search space
 

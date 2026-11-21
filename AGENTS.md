@@ -95,10 +95,9 @@ steerability/
 docs/                            # MkDocs site: home/, concepts/, tutorials/ (incl. add_method_by_category/),
                                  # reference/, .nav.yml
 examples/                        # notebooks/{algorithms (incl. generics/, wrappers/),studies,recipes,optimization}/,
-                                 # index.md; notebooks/optimization/ has the local GSM8K task of the
-                                 # optimization experiments and one folder per study (formality_gsm8k/: the
-                                 # notebook and scripts/ with the formality objective, the truth grid, the
-                                 # replay, and the live search)
+                                 # index.md; notebooks/optimization/ has one folder per study
+                                 # (formality_gsm8k/: the notebook and scripts/ with the local GSM8K task, the
+                                 # formality objective, the truth grid, the replay, and the live search)
 tests/                           # controls/, core/, internals/, evaluation/, optimization/, utils/; conftest.py
 ```
 

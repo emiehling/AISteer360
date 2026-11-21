@@ -43,7 +43,8 @@ from steerability.optimization.measurement.stats import Paired, floor_variance, 
 
 logger = logging.getLogger("truth_grid")
 
-TASK = "examples/notebooks/optimization/gsm8k_all.py@gsm8k_all"  # relative to the repository root
+# relative to the repository root
+TASK = "examples/notebooks/optimization/formality_gsm8k/scripts/gsm8k_all.py@gsm8k_all"
 MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 LAYERS = (6, 8, 10, 12, 14, 16, 18, 20, 22, 23)
 MULTIPLIERS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0)
