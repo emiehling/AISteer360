@@ -15,8 +15,8 @@ understate its variance. The decision rules are the following:
   sealed test passes with probability `power`, covering the noise of both the search estimate and the sealed test.
 - **Confirmation (`confirm_step`)**: one look of a sequential check that accepts a point whose loss is inside the
   margin by the band (`feasible`) and rejects a point whose loss is above the margin (`clearly_over`).
-- **Ladder decisions (`provisional_positions`, `rank_positions`)**: which positions of a solved axis are worth
-  confirming, and in which order.
+- **Ladder decisions (`provisional_positions`, `rank_positions`)**: which positions of a solved axis outside
+  `study.monotone` are worth confirming, and the order in which the positions of a solved axis are confirmed.
 
 The sizes of a confirmation follow from the margin and the per-item variance a study is designed for. The last look
 (`last_look`) gives the estimate a standard error of `margin / sqrt(LOOK_PRECISION)`, and the earlier looks
@@ -346,82 +346,12 @@ def certify_fixed_order(finalists: Sequence[Sequence[Paired]], margins: Sequence
     return len(finalists)
 
 
-def isotonic_increasing(values: Sequence[float], weights: Sequence[float]) -> np.ndarray:
-    """The weighted least-squares fit to `values` that never decreases (pool adjacent violators).
-
-    Args:
-        values: The values, in order.
-        weights: Their positive weights.
-
-    Returns:
-        The fitted values.
-
-    Raises:
-        ValueError: If a weight is not positive.
-    """
-    blocks: list[list[float]] = []
-    for value, weight in zip(values, weights, strict=True):
-        if weight <= 0:
-            raise ValueError("isotonic_increasing requires positive weights.")
-        blocks.append([float(value), float(weight), 1])
-        while len(blocks) > 1 and blocks[-2][0] > blocks[-1][0]:
-            value_right, weight_right, count_right = blocks.pop()
-            value_left, weight_left, count_left = blocks.pop()
-            pooled = (value_left * weight_left + value_right * weight_right) / (weight_left + weight_right)
-            blocks.append([pooled, weight_left + weight_right, count_left + count_right])
-    fitted: list[float] = []
-    for value, _, count in blocks:
-        fitted.extend([value] * int(count))
-    return np.asarray(fitted)
-
-
-def last_feasible(
-    losses: Sequence[Paired],
-    margin: float,
-    *,
-    n_target: int,
-    n_sealed: int,
-    alpha: float,
-    power: float,
-    benchmarks: int = 1,
-    guard: bool = True,
-) -> int | None:
-    """The index of the last position whose isotonic loss is inside the margin by its band.
-
-    The losses (`-paired.mean`) are first fitted with `isotonic_increasing`, weighted by item counts. Positions are
-    scanned from the first, and the scan stops at the first position outside the margin by its band.
-
-    Args:
-        losses: One capability table per position, in order.
-        margin: The margin.
-        n_target: The size of the planned confirmation.
-        n_sealed: The number of sealed items.
-        alpha: The error rate.
-        power: The power of the band.
-        benchmarks: The number of constraint benchmarks.
-        guard: Whether the band applies.
-
-    Returns:
-        The index, or None when the first position is outside.
-    """
-    fitted = isotonic_increasing([-paired.mean for paired in losses], [paired.n for paired in losses])
-    best = None
-    for index, paired in enumerate(losses):
-        band = release_band(paired, margin, n_sealed=n_sealed, alpha=alpha, power=power, benchmarks=benchmarks,
-                            n_search=n_target, guard=guard)
-        if fitted[index] > margin - band:
-            break
-        best = index
-    return best
-
-
 def provisional_positions(
     losses: Sequence[Paired],
     margin: float,
     *,
     n_target: int,
     n_sealed: int,
-    monotone: bool,
     alpha: float,
     power: float,
     benchmarks: int = 1,
@@ -429,15 +359,13 @@ def provisional_positions(
 ) -> list[int]:
     """The ladder positions worth confirming on one constraint, judged on ladder-block tables.
 
-    With `monotone=True` the positions up to `last_feasible` are kept. Otherwise each position is kept when its own
-    loss is inside the margin by its band.
+    Each position is kept when its own loss is inside the margin by its band.
 
     Args:
         losses: One capability table per position, in order.
         margin: The margin.
         n_target: The size of the planned confirmation.
         n_sealed: The number of sealed items.
-        monotone: Whether the loss is assumed not to fall as the position rises.
         alpha: The error rate.
         power: The power of the band.
         benchmarks: The number of constraint benchmarks.
@@ -446,10 +374,6 @@ def provisional_positions(
     Returns:
         The kept position indices, in increasing order.
     """
-    if monotone:
-        last = last_feasible(losses, margin, n_target=n_target, n_sealed=n_sealed, alpha=alpha, power=power,
-                             benchmarks=benchmarks, guard=guard)
-        return [] if last is None else list(range(last + 1))
     kept = []
     for index, paired in enumerate(losses):
         band = release_band(paired, margin, n_sealed=n_sealed, alpha=alpha, power=power, benchmarks=benchmarks,
@@ -484,9 +408,7 @@ __all__ = [
     "feasible",
     "floor_variance",
     "guard_band",
-    "isotonic_increasing",
     "ladder_size",
-    "last_feasible",
     "last_look",
     "look_sizes",
     "provisional_positions",

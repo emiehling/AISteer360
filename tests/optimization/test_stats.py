@@ -11,7 +11,6 @@ from steerability.optimization.measurement.stats import (
     feasible,
     floor_variance,
     guard_band,
-    isotonic_increasing,
     ladder_size,
     last_look,
     look_sizes,
@@ -103,14 +102,6 @@ class TestReferenceValues:
         assert bound == pytest.approx(-0.0198, abs=5e-5)
         assert Paired(200, 0.0, 0.0, 0).passes(0.03, ALPHA)
 
-    def test_isotonic_example(self):
-        fitted = isotonic_increasing([0.1, 0.3, 0.2, 0.25, 0.6, 0.5], [1, 2, 1, 3, 1, 1])
-        assert fitted == pytest.approx([0.1, 0.258333, 0.258333, 0.258333, 0.55, 0.55], abs=1e-5)
-
-    def test_isotonic_requires_positive_weights(self):
-        with pytest.raises(ValueError, match="positive"):
-            isotonic_increasing([0.1, 0.2], [1, 0])
-
 
 class TestPaired:
     def test_stored_form_round_trips(self):
@@ -165,14 +156,10 @@ class TestBands:
 
 
 class TestLadderDecisions:
-    def test_monotone_positions_stop_at_the_first_outside(self):
+    def test_each_position_is_judged_on_its_own(self):
         losses = [Paired.from_diffs([-x] * 256) for x in (0.0, 0.01, 0.02, 0.09, 0.03)]
-        kept = provisional_positions(losses, 0.05, n_target=400, n_sealed=SEALED, monotone=True, alpha=ALPHA,
-                                     power=0.5)
-        assert kept == [0, 1, 2]
-        each = provisional_positions(losses, 0.05, n_target=400, n_sealed=SEALED, monotone=False, alpha=ALPHA,
-                                     power=0.5)
-        assert each == [0, 1, 2, 4]
+        kept = provisional_positions(losses, 0.05, n_target=400, n_sealed=SEALED, alpha=ALPHA, power=0.5)
+        assert kept == [0, 1, 2, 4]
 
     def test_ranking_orders_by_the_gain_lower_bound(self):
         gains = [Paired.from_diffs([value] * 64) for value in (0.1, 0.3, 0.2)]
@@ -203,17 +190,6 @@ def test_the_sealed_test_stays_near_its_level_over_margins_and_pools():
     rates = [_sealed_pass_rate(margin, n_sealed) for margin in (0.02, 0.03, 0.05, 0.08)
              for n_sealed in (65, 221, 1000, 5000)]
     assert max(rates) <= 0.06
-
-
-def test_isotonic_regression_matches_scikit_learn():
-    from sklearn.isotonic import IsotonicRegression
-
-    rng = np.random.default_rng(3)
-    for size in (1, 2, 7, 40):
-        values = rng.normal(size=size)
-        weights = rng.uniform(0.1, 3.0, size=size)
-        reference = IsotonicRegression().fit_transform(np.arange(size), values, sample_weight=weights)
-        assert np.allclose(isotonic_increasing(values, weights), reference, atol=1e-12)
 
 
 @pytest.mark.parametrize("changes", ["both ways", "losses only"])

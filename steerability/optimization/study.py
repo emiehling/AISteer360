@@ -111,14 +111,15 @@ class Settings:
     """The statistical and budget settings of a study.
 
     The capability block sizes are not settings. They follow from each constraint's margin and the variance of its
-    baseline (`evidence.block_sizes`).
+    baseline (`evidence.block_sizes`). The whole ladder block (`ladder_size`) and `ladder_power` serve the calibration
+    of a solved axis outside `study.monotone`, and a monotone solved axis reads the first look of its ladder block.
 
     Attributes:
         alpha: The one-sided error rate of certification.
         power: The design probability that one confirmed point passes certification.
         round_candidates: The number of new candidates per round.
         ladder_points: The number of positions of a continuous solved axis.
-        ladder_power: The power of the provisional check on the ladder.
+        ladder_power: The power of the provisional check on the ladder of a solved axis outside `study.monotone`.
         ladder_refinements: The number of positions calibration may insert on a monotone continuous axis.
         behavior_ladder_items: The behavior items per ladder position.
         behavior_items: The behavior items a point is reported on.

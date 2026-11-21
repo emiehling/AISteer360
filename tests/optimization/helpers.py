@@ -9,8 +9,9 @@ objects whose resolved id is derived from the recipe id, and `StubPipeline` reco
 
 With the default pools (1,000 search and 2,000 sealed capability items, 200 behavior search items) and the 5-point
 margin, a constraint has blocks of (100, 400) items and looks of (32, 128, 400). A candidate that shifts every item
-equally is confirmed when its loss is at most 0.0253 (second look) or 0.0319 (third look), a ladder position is kept
-when its loss is at most 0.0420, and the sealed test passes up to a loss of 0.0420.
+equally is confirmed when its loss is at most 0.0253 (second look) or 0.0319 (third look), a ladder position of a
+solved axis outside `study.monotone` is kept when its loss is at most 0.0420, and the sealed test passes up to a loss
+of 0.0420.
 """
 import hashlib
 from collections.abc import Callable, Mapping

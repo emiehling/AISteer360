@@ -331,16 +331,16 @@ def _behavior_and_limits(session: StudySession, outcome: Confirmation,
     return outcome
 
 
-def confirm(session: StudySession, partial: Partial, recipe: Recipe, *, calibration_round: int, fresh_round: int,
-            deadline: float | None) -> Confirmation:
-    """Confirm a point: sequential looks on each constraint's fresh block, then the objective's fresh block.
+def confirm_constraints(
+    session: StudySession, partial: Partial, recipe: Recipe, *, calibration_round: int, fresh_round: int,
+    deadline: float | None,
+) -> tuple[bool, str, dict[str, Paired], dict[str, tuple[str, ...]]]:
+    """Run the sequential looks of a confirmation on each constraint's fresh block.
 
     For each constraint the recipe is measured on the fresh block of `fresh_round` up to each size of
     `session.looks(benchmark)` in turn (a look larger than the block uses the whole block), and after each look
     `confirm_step` judges the point's table (built from fresh-block items only). `"accept"` settles the constraint,
-    and `"reject"` (or `"continue"` after the last look) fails the point with `not_confirmed`. The recipe is then
-    measured on the objective's fresh block, and a point over the cost or degeneracy limit fails with `over_cost` or
-    `degenerate`.
+    and `"reject"` (or `"continue"` after the last look) stops at that constraint.
 
     Args:
         session: The session.
@@ -351,7 +351,8 @@ def confirm(session: StudySession, partial: Partial, recipe: Recipe, *, calibrat
         deadline: A `time.monotonic()` deadline, or None.
 
     Returns:
-        The confirmation.
+        Whether every constraint accepted, the point's resolved id, its capability tables by constraint benchmark
+        name (as far as measured), and the items of each table by benchmark id.
 
     Raises:
         Stopped: If a limit or the deadline has passed.
@@ -380,9 +381,40 @@ def confirm(session: StudySession, partial: Partial, recipe: Recipe, *, calibrat
                 break
         capability[benchmark.name] = table
         if decision != "accept":
-            return Confirmation(False, "not_confirmed", resolved, capability)
-    objective = study.objective
-    resolved = measure(session, partial, recipe, objective, rounds[fresh_round][objective.id].fresh, deadline)
+            return False, resolved, capability, items_by_benchmark
+    return True, resolved, capability, items_by_benchmark
+
+
+def confirm(session: StudySession, partial: Partial, recipe: Recipe, *, calibration_round: int, fresh_round: int,
+            deadline: float | None) -> Confirmation:
+    """Confirm a point: sequential looks on each constraint's fresh block, then the objective's fresh block.
+
+    The looks on the constraints are those of `confirm_constraints`, and a point that a constraint does not accept
+    fails with `not_confirmed`. The recipe is then measured on the objective's fresh block, and a point over the cost
+    or degeneracy limit fails with `over_cost` or `degenerate`.
+
+    Args:
+        session: The session.
+        partial: The evaluation the generations are charged to.
+        recipe: The point's recipe.
+        calibration_round: The round the candidate was calibrated in, whose ladder blocks are excluded.
+        fresh_round: The round whose fresh blocks are measured.
+        deadline: A `time.monotonic()` deadline, or None.
+
+    Returns:
+        The confirmation.
+
+    Raises:
+        Stopped: If a limit or the deadline has passed.
+        SteeringFailure: If the recipe fails to steer.
+    """
+    accepted, resolved, capability, items_by_benchmark = confirm_constraints(
+        session, partial, recipe, calibration_round=calibration_round, fresh_round=fresh_round, deadline=deadline,
+    )
+    if not accepted:
+        return Confirmation(False, "not_confirmed", resolved, capability)
+    objective = session.study.objective
+    resolved = measure(session, partial, recipe, objective, session.rounds[fresh_round][objective.id].fresh, deadline)
     outcome = Confirmation(False, None, resolved, capability)
     return _behavior_and_limits(session, outcome, items_by_benchmark, calibration_round)
 
@@ -542,6 +574,7 @@ __all__ = [
     "Stopped",
     "accepted_result",
     "confirm",
+    "confirm_constraints",
     "finish",
     "judge",
     "measure",

@@ -638,14 +638,18 @@ with a baseline error row is excluded from its pool for the whole study.
 
 A constraint's sizes follow from its margin and its design variance (`design_variance`), which is the baseline's
 search-pool score variance and at least `floor_variance(margin) = margin * (1 - margin)`. The last look is
-`last_look(margin=, variance=)`, and the ladder block is `ladder_size(last)` (a quarter of the last look). The looks are
+`last_look(margin=, variance=)`, and the ladder block is `ladder_size(last)` (a quarter of the last look), of which a
+solved axis in `study.monotone` reads only the first look. The looks are
 `look_sizes(last)`, which `StudySession.looks` caches. A feasible study has room for two rounds of blocks in each search
 pool, and each guard band is at most `BAND_SHARE` (60%) of its margin. `allow_infeasible=True` runs an infeasible study
 at low power and waives no baseline check.
 
 `screen` runs stages 0 to 3 (plan and support check, fits, a behavior quick look, a capability smoke test). `finish`
-runs stage 4 (calibration of the solved axis on ladder blocks, then confirmation of the chosen position in up to three
-looks on fresh blocks) and stage 5 (the `Result`, recorded in the `Archive`). A candidate is accepted only with an
+runs stage 4 (calibration of the solved axis, then confirmation of the chosen position in up to three looks on fresh
+blocks) and stage 5 (the `Result`, recorded in the `Archive`). A solved axis in `study.monotone` gets a first look on
+its ladder blocks, and a bisection with the looks of a confirmation (`confirm_constraints`) finds its strongest
+confirmable position, which means that a ladder estimate alone never rejects the candidate. Any other solved axis is
+ranked on its whole ladder blocks (`provisional_positions`). A candidate is accepted only with an
 eligible operating point (confirmed on every constraint and within the cost and degeneracy limits), and its fitness is
 the one-sided lower bound of its gain. Every estimate is a `Paired` table of per-item differences against the baseline
 (`measurement/stats.py`), with the per-item variance taken as at least `floor_variance(margin)`. A point's tables use

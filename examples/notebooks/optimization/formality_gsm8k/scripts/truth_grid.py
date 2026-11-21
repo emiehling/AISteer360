@@ -39,13 +39,7 @@ from steerability.algorithms.core.sweeps import PipelineFactory
 from steerability.algorithms.state_control.caa.control import CAA
 from steerability.evaluation.items import InspectBenchmark, evaluate_items
 from steerability.optimization import Settings, split_items
-from steerability.optimization.measurement.stats import (
-    Paired,
-    floor_variance,
-    guard_band,
-    isotonic_increasing,
-    last_look,
-)
+from steerability.optimization.measurement.stats import Paired, floor_variance, guard_band, last_look
 
 logger = logging.getLogger("truth_grid")
 
@@ -162,6 +156,19 @@ def shards(roots) -> list[tuple[Store, dict]]:
     return found
 
 
+def _increasing_fit(values, weights) -> np.ndarray:
+    """The weighted least-squares fit to `values` that never decreases (pool adjacent violators)."""
+    blocks: list[list[float]] = []
+    for value, weight in zip(values, weights, strict=True):
+        blocks.append([float(value), float(weight), 1])
+        while len(blocks) > 1 and blocks[-2][0] > blocks[-1][0]:
+            value_right, weight_right, count_right = blocks.pop()
+            value_left, weight_left, count_left = blocks.pop()
+            pooled = (value_left * weight_left + value_right * weight_right) / (weight_left + weight_right)
+            blocks.append([pooled, weight_left + weight_right, count_left + count_right])
+    return np.asarray([value for value, _, count in blocks for _ in range(int(count))])
+
+
 def analyze(arguments) -> None:
     """Report the noise floors, the design variance and band, the per-setting tables, monotonicity, and setup time."""
     margin = arguments.margin
@@ -228,7 +235,7 @@ def analyze(arguments) -> None:
         curve = sorted((s for s in report["settings"] if s["caa.layer_id"] == layer),
                        key=lambda setting: setting["caa.multiplier"])
         losses = [setting["loss"] for setting in curve]
-        fitted = isotonic_increasing(losses, [setting["n"] for setting in curve])
+        fitted = _increasing_fit(losses, [setting["n"] for setting in curve])
         off = [abs(loss - fit) > 2 * max(setting["se"], 1e-12) for loss, fit, setting in zip(losses, fitted, curve)]
         departures += sum(off)
         total += len(off)

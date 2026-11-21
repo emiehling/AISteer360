@@ -125,11 +125,11 @@ axes that change a fit, and repeated benchmark names.
 
 The `Settings` dataclass contains the statistical settings and the behavior block sizes. The certification error rate
 (`alpha`) and the design power (`power`) set the guard band. The ladder settings (`ladder_points`,
-`behavior_ladder_items`, `ladder_power`, `ladder_refinements`) control how the solved axis is calibrated, and the
-reporting settings (`behavior_items`, `fitness_alpha`, `min_gain`) control how a point's gain is reported. Relative to
-the baseline, `max_cost_ratio` and `max_degenerate_increase` limit the generated tokens and the share of degenerate
-completions. Note that a constraint's block sizes are not settings, since they follow from its margin and its baseline
-(see [Sizes and feasibility](#sizes-and-feasibility)).
+`behavior_ladder_items`, `ladder_refinements`, and `ladder_power` for a solved axis outside `monotone`) control how the
+solved axis is calibrated, and the reporting settings (`behavior_items`, `fitness_alpha`, `min_gain`) control how a
+point's gain is reported. Relative to the baseline, `max_cost_ratio` and `max_degenerate_increase` limit the generated
+tokens and the share of degenerate completions. Note that a constraint's block sizes are not settings, since they follow
+from its margin and its baseline (see [Sizes and feasibility](#sizes-and-feasibility)).
 
 ## Evaluating candidates
 
@@ -164,11 +164,16 @@ candidate can lose more than the margin.
 Each evaluation runs in stages, and an early stage rejects a candidate cheaply. Stage 0 binds the candidate and checks
 that the protocol's backend supports it, and stage 1 runs its fits. Stage 2 is a quick behavior check of a few
 solved-axis positions on a few items, and stage 3 checks whether every probed position is clearly over the margin on a
-capability benchmark. Stage 4 finds the operating point. With a solved axis, calibration measures every
-position of the axis on a ladder block of items and keeps the positions whose loss is inside the margin. The kept
-positions are ranked by the lower bound of their behavior gain. The top-ranked position is then confirmed on a fresh
-block of items in up to three looks (checks after a growing number of items), and the next-ranked position is tried
-when it fails. Without a solved axis, the single recipe is confirmed. Stage 5 records the result.
+capability benchmark. Stage 4 finds the operating point. For a solved axis in `monotone`, calibration gives each
+position a first look on the start of a ladder block of items, from the weakest position up, and stops at the first
+position whose loss is clearly over the margin. The behavior of the remaining positions is measured on the
+objective's ladder block. Among the positions up to the one with the best lower bound of its gain, a bisection finds
+the strongest position that passes the looks of a confirmation (checks after a growing number of items) on a fresh
+block of items. The positions at or below it are then confirmed in the order of their gain bound, and the first one
+confirmed is the operating point. This means that a ladder estimate alone never rejects a candidate. For any other
+solved axis, calibration measures every position on the ladder block and keeps the positions whose loss is inside
+the margin. The kept positions are confirmed in the order of the lower bound of their behavior gain. Without a
+solved axis, the single recipe is confirmed. Stage 5 records the result.
 
 A candidate is accepted only when it has an eligible operating point, i.e., one that was confirmed on every
 constraint and is within the cost and degeneracy limits. Its fitness is the one-sided lower bound of its gain at
@@ -188,9 +193,10 @@ session resumes from them.
 A study sizes each constraint from its baseline. The design variance is the variance of the baseline's search-pool
 scores (`p * (1 - p)` for 0/1 scores with accuracy `p`), and it is at least the floor `margin * (1 - margin)`. At the
 design variance, a confirmation's last look is the smallest multiple of 100 items that gives the estimate a standard
-error of at most `margin / sqrt(9.6)`. The ladder block is a quarter of the last look. For instance, at a 5-point
-margin, GSM8K with a baseline accuracy of 0.457 (design variance 0.248) has a 1,000-item last look and a 250-item
-ladder block.
+error of at most `margin / sqrt(9.6)`. The ladder block is a quarter of the last look, and the calibration of a solved
+axis in `monotone` reads only its first look (as many items as a confirmation's first look). For instance, at a 5-point
+margin, GSM8K with a baseline accuracy of 0.457 (design variance 0.248) has a 1,000-item last look and a 250-item ladder
+block.
 
 The design variance is used only to size the looks and to decide feasibility. Acceptance and the sealed test use each
 table's own variance (at least the floor). This means that an inaccurate design variance changes a study's power and
