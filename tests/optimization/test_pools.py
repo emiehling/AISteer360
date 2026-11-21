@@ -43,6 +43,14 @@ def test_splits_are_deterministic_by_seed_and_disjoint(store):
     assert len(first.held_out) == 50
 
 
+def test_a_split_depends_on_the_item_ids_and_the_seed_only(store):
+    first = _benchmark(store)
+    other = SyntheticBenchmark("bench", 200, kind="capability", truth=_quiet, base=0.5)
+    other.prepare(store)
+    assert first.id != other.id and first.item_ids() == other.item_ids()
+    assert split_items(first, held_out=50, seed=0) == split_items(other, held_out=50, seed=0)
+
+
 def test_splits_keep_groups_whole(store):
     groups = {f"bench-{index:05d}": f"group-{index // 3}" for index in range(200)}
     benchmark = _benchmark(store, groups=groups)

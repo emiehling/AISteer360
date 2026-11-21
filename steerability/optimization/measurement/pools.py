@@ -14,7 +14,6 @@ items. A later study can then tell whether its held-out items were already used.
 """
 from __future__ import annotations
 
-import random
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -50,9 +49,11 @@ class PoolSplit:
 def split_items(benchmark: Benchmark, *, held_out: int, seed: int) -> PoolSplit:
     """Split a prepared benchmark's items into a search pool and a held-out pool, keeping groups whole.
 
-    The benchmark's groups are sorted (an ungrouped item is its own group) and shuffled with
-    `random.Random(derive_seed(seed, "split", benchmark.id))`. Whole groups are then assigned to the held-out pool until
-    it contains at least `held_out` items, and the rest is the search pool. Both pools keep the benchmark's item order.
+    Each group (an ungrouped item is its own group) is ranked by `derive_seed(seed, "split", key)`, where the key is
+    the group's name or the item's id. Whole groups are then assigned to the held-out pool in rank order until it
+    contains at least `held_out` items, and the rest is the search pool. Both pools keep the benchmark's item order.
+    The split depends only on the seed, the item ids, and the groups (not on the benchmark's id), and an item that is
+    added or removed moves no other item between the pools.
 
     Args:
         benchmark: The benchmark, prepared on a store.
@@ -74,8 +75,7 @@ def split_items(benchmark: Benchmark, *, held_out: int, seed: int) -> PoolSplit:
     for item_id in item_ids:
         key = f"group:{groups[item_id]}" if item_id in groups else f"item:{item_id}"
         members.setdefault(key, []).append(item_id)
-    keys = sorted(members)
-    random.Random(derive_seed(seed, "split", benchmark.id)).shuffle(keys)
+    keys = sorted(members, key=lambda key: (derive_seed(seed, "split", key), key))
     held_out_items: set[str] = set()
     for key in keys:
         if len(held_out_items) >= held_out:

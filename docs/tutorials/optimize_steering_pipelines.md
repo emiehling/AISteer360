@@ -34,12 +34,13 @@ pools = {
 }
 ```
 
-The `split_items` function shuffles the benchmark's groups with a seed and assigns whole groups to the held-out pool
-until it contains at least `held_out` items. Since groups are kept whole, related samples (such as shuffled variants of
-one question) are never in both pools. Estimates during the search use the search pool, and only its aggregate
-numbers reach a proposer. The held-out pool is read once, by certification. Fit-data items (e.g., the contrastive pairs
-of a steering vector) can be listed per benchmark in the study's `fit_item_ids`, and the study refuses pools that
-contain them.
+The `split_items` function ranks the benchmark's groups by a hash of the seed and each group's key, and it assigns whole
+groups to the held-out pool until it contains at least `held_out` items. The split depends only on the seed and the
+items, which means that an edit of a task file or an upgrade of Inspect does not move it. Since groups are kept whole,
+related samples (such as shuffled variants of one question) are never in both pools. Estimates during the search use the
+search pool, and only its aggregate numbers reach a proposer. The held-out pool is read once, by certification. Fit-data
+items (e.g., the contrastive pairs of a steering vector) can be listed per benchmark in the study's `fit_item_ids`, and
+the study refuses pools that contain them.
 
 Note that `inspect_evals/gsm8k` evaluates only the 1,319 test items and takes its few-shot examples from the train
 split. The local task `examples/notebooks/optimization/formality_gsm8k/scripts/gsm8k_all.py` is a zero-shot task over
