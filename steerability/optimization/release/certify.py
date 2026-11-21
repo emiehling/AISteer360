@@ -4,12 +4,14 @@ The finalists and their order are fixed and recorded before any sealed item is r
 every constraint at the full error rate `settings.alpha`, from the safest point up. Each sealed call evaluates the
 whole sealed pool in pool order, which is the request set of the baseline's sealed call. Testing stops at the first
 finalist that fails, and every finalist before it is certified. No multiplicity correction applies, since the order
-was fixed first. A study is certified once, and an interrupted call continues with the recorded order. Sealed
+was fixed first. A study is certified once, and an interrupted call continues with the recorded order. A study
+without finalists stays open, since a call then records nothing and returns an empty certification. Sealed
 results are returned to the caller only and never reach a proposer.
 """
 from __future__ import annotations
 
 import json
+import logging
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -33,6 +35,8 @@ if TYPE_CHECKING:
     from steerability.algorithms.core.sweeps import Steered
     from steerability.optimization.evaluation.session import StudySession
     from steerability.optimization.measurement.stats import Paired
+
+logger = logging.getLogger(__name__)
 
 BEHAVIOR_INTERVAL_ALPHA = 0.05
 
@@ -73,9 +77,10 @@ def _ordered_records(finalists: list[Finalist], plan: list[dict]) -> list[dict]:
 def _fixed_finalists(session: StudySession) -> list[Finalist]:
     """The recorded finalists of the study in their order, planned, measured, and recorded now when needed.
 
-    Without a `certifications` row, the plan (`session.plan_finalists()`) is written first. Records without levels are
-    then measured (`session.finalists(plan)`, which reuses stored rows) and the row is updated with the ordered
-    records. A row whose records have levels is used as it is.
+    Without a `certifications` row, the plan (`session.plan_finalists()`) is written first, and an empty plan returns
+    no finalists without writing a row. Records without levels are then measured (`session.finalists(plan)`, which
+    reuses stored rows) and the row is updated with the ordered records. A row whose records have levels is used as
+    it is.
     """
     study, store = session.study, session.store
     ensure_tables(store)
@@ -83,9 +88,12 @@ def _fixed_finalists(session: StudySession) -> list[Finalist]:
     if row is not None and row[1] is not None:
         raise StudyError(f"Study {study.name!r} ({study.id}) is certified already; a study is certified once.")
     if row is None:
+        plan = session.plan_finalists()
+        if not plan:
+            return []
         store.execute(
             "INSERT OR IGNORE INTO certifications (study_id, finalists, outcome, created_at) VALUES (?, ?, NULL, ?)",
-            (study.id, dumps(session.plan_finalists()), now()),
+            (study.id, dumps(plan), now()),
         )
         row = store.execute("SELECT finalists FROM certifications WHERE study_id = ?", (study.id,)).fetchone()
     records = json.loads(row[0])
@@ -136,7 +144,8 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_seale
     1. The finalists are fixed before any sealed item is read. A recorded outcome raises. Without a `certifications`
        row, the finalist plan (`session.plan_finalists()`, with the search items each level is measured on) is
        written first. Records without levels are then measured (`session.finalists(plan)`, which reuses stored rows)
-       and recorded in their order. Recorded records with levels (an interrupted call) are used unchanged.
+       and recorded in their order. Recorded records with levels (an interrupted call) are used unchanged. With no
+       finalists, nothing is recorded and an empty certification is returned, which leaves the study open.
     2. The sealed pools are compared with those of every other study that has a recorded sealed use of a benchmark of
        the same name, and a shared item raises unless `allow_reused_sealed`.
     3. For each finalist in order, a `sealed_uses` row is written for each benchmark before its sealed items are read.
@@ -156,7 +165,7 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_seale
         allow_reused_sealed: Whether to certify on sealed items that another study already used.
 
     Returns:
-        The certification.
+        The certification, with no certified point and no failure when the study has no finalists.
 
     Raises:
         StudyError: If the study is certified already, its sealed items were used by another study (and
@@ -164,6 +173,10 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_seale
     """
     study, store, settings = session.study, session.store, session.study.settings
     finalists = _fixed_finalists(session)
+    if not finalists:
+        logger.warning("Study %r (%s) has no finalists; nothing was certified or recorded, and the study can be "
+                       "certified later.", study.name, study.id)
+        return Certification((), None, {}, {})
     shared = shared_sealed_items(store, study)
     if shared and not allow_reused_sealed:
         details = "; ".join(f"{name}: studies {', '.join(others)}" for name, others in shared.items())

@@ -100,6 +100,20 @@ def test_a_study_is_certified_once(store, tmp_path):
         certify(session, bundle_dir=tmp_path / "bundles")
 
 
+def test_a_study_without_finalists_stays_open(store, tmp_path):
+    study = build_study(store, _truth, space={"prompt": prompt_template(tuple(TRUTHS))},
+                        settings=dataclasses.replace(SMALL, round_candidates=16))
+    session = StudySession(study, store=store, factory=StubFactory(study.protocol))
+    session.start()
+    early = certify(session, bundle_dir=tmp_path / "bundles")
+    assert early.certified == () and early.failed_at is None
+    assert store.execute("SELECT COUNT(*) FROM certifications WHERE study_id = ?", (study.id,)).fetchone()[0] == 0
+    for text in TRUTHS:
+        session.evaluate(Candidate("prompt", {"prompt.text": text}))
+    certification = certify(session, bundle_dir=tmp_path / "bundles")
+    assert certification.certified == tuple(_resolved(session, text) for text in ("safe", "middle", "edge"))
+
+
 def test_an_interrupted_call_continues_with_the_recorded_order(store, tmp_path, monkeypatch):
     session = _session(store)
     study = session.study

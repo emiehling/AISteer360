@@ -273,8 +273,9 @@ first) are fixed before any sealed item is read.
 Each finalist is measured on every constraint's whole sealed pool, which is the request set of the baseline's sealed
 measurement. It is then tested at the full error rate `alpha`, and testing stops at the first failing finalist. Every
 earlier finalist is certified without a multiplicity correction, since the order was fixed first. A study is
-certified once, and an interrupted call continues with the recorded order. Sealed items that another study already
-used are refused unless `allow_reused_sealed=True` is passed.
+certified once, and an interrupted call continues with the recorded order. A call on a study without finalists
+records nothing and returns an empty certification, which leaves the study open for a later call. Sealed items that
+another study already used are refused unless `allow_reused_sealed=True` is passed.
 
 Each certified point is written as a frozen bundle whose lock contains the study's protocol and the certificate. The
 certificate contains every constraint's sealed table with its tested lower bound, the behavior gain with a two-sided
