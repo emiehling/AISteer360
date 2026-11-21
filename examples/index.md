@@ -200,7 +200,7 @@ Studies provide in-depth comparisons of steering methods on a given use case. No
 
 ## Optimization
 
-Optimization notebooks run studies with `steerability.optimization`, which searches over steering pipelines under capability constraints and certifies the result on sealed items.
+Optimization notebooks run studies with `steerability.optimization`, which searches over steering pipelines under capability constraints and certifies the result on held-out items.
 
 <div class="grid cards" markdown>
 

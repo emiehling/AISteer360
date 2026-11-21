@@ -6,7 +6,7 @@ chosen pipelines are then certified once on held-out items.
 
 A decision in a study is never judged on the items it was made on. The position of a steering strength is chosen on
 one block of items and judged on another. Candidates are compared on search items, and the finalists are certified on
-sealed items. In this guide we define a study and evaluate candidates, then run a search and certify the result. The
+held-out items. In this guide we define a study and evaluate candidates, then run a search and certify the result. The
 guide uses the benchmarks, protocols, and recipes described in
 [Evaluate steering pipelines](evaluate_steering_pipelines.md).
 
@@ -15,7 +15,7 @@ guide uses the benchmarks, protocols, and recipes described in
 A study measures behavior with one benchmark (the objective) and capability with one or more benchmarks (the
 constraints). Each is a `Benchmark` from `steerability.evaluation.items` whose per-item scores are in [0, 1], and a
 higher score is better. Before defining the study, we prepare each benchmark on the store and split its items into a
-search pool and a sealed pool:
+search pool and a held-out pool:
 
 ```python
 from steerability.algorithms.core.store import Store
@@ -29,15 +29,15 @@ for benchmark in (gsm8k, formality):
     benchmark.prepare(store)
 
 pools = {
-    gsm8k.id: split_items(gsm8k, sealed=5000, seed=0),
-    formality.id: split_items(formality, sealed=500, seed=0),
+    gsm8k.id: split_items(gsm8k, held_out=5000, seed=0),
+    formality.id: split_items(formality, held_out=500, seed=0),
 }
 ```
 
-The `split_items` function shuffles the benchmark's groups with a seed and assigns whole groups to the sealed pool
-until it contains at least `sealed` items. Since groups are kept whole, related samples (such as shuffled variants of
+The `split_items` function shuffles the benchmark's groups with a seed and assigns whole groups to the held-out pool
+until it contains at least `held_out` items. Since groups are kept whole, related samples (such as shuffled variants of
 one question) are never in both pools. Estimates during the search use the search pool, and only its aggregate
-numbers reach a proposer. The sealed pool is read once, by certification. Fit-data items (e.g., the contrastive pairs
+numbers reach a proposer. The held-out pool is read once, by certification. Fit-data items (e.g., the contrastive pairs
 of a steering vector) can be listed per benchmark in the study's `fit_item_ids`, and the study refuses pools that
 contain them.
 
@@ -144,11 +144,11 @@ with StudySession(study, store=store, max_generations=200_000) as session:
 ```
 
 The `start` method validates the study and records it in the store. It then measures the unsteered baseline on every
-search and sealed item. A second run on the search items uses a different batch order, and the mean absolute
+search and held-out item. A second run on the search items uses a different batch order, and the mean absolute
 difference between the two runs is the benchmark's noise floor (for 0/1 scores, the share of changed scores). The
-sealed pool is generated as a separate request set (its items are batched only with each other). Every finalist's
-sealed measurement later uses the same request set, which puts each sealed item in the same batch for the baseline and
-the finalist. An item with a failed baseline measurement is excluded from its pool for the whole study, since its
+held-out pool is generated as a separate request set (its items are batched only with each other). Every finalist's
+held-out measurement later uses the same request set, which puts each held-out item in the same batch for the baseline
+and the finalist. An item with a failed baseline measurement is excluded from its pool for the whole study, since its
 baseline score of 0 would make every candidate look better on it.
 
 Note that a stored evidence row is keyed by recipe and item. The row describes the recipe only for batch-independent
@@ -198,15 +198,15 @@ axis in `monotone` reads only its first look (as many items as a confirmation's 
 margin, GSM8K with a baseline accuracy of 0.457 (design variance 0.248) has a 1,000-item last look and a 250-item ladder
 block.
 
-The design variance is used only to size the looks and to decide feasibility. Acceptance and the sealed test use each
+The design variance is used only to size the looks and to decide feasibility. Acceptance and the held-out test use each
 table's own variance (at least the floor). This means that an inaccurate design variance changes a study's power and
 generation count and leaves the certification error rate unchanged.
 
 The `start` method checks feasibility before the baseline (with the floor variance and the raw pool sizes) and again
 after it (with the design variance and the usable pool sizes). Each constraint's search pool needs room for two rounds
-of blocks. The constraint's guard band (how far inside the margin a search estimate must sit to pass the sealed test
+of blocks. The constraint's guard band (how far inside the margin a search estimate must sit to pass the held-out test
 with the design power) must also be at most 60% of the margin. The objective needs room for two rounds of behavior
-blocks. For instance, with the model above and GSM8K pools of 3,792 search and 5,000 sealed items, a 3-point margin is
+blocks. For instance, with the model above and GSM8K pools of 3,792 search and 5,000 held-out items, a 3-point margin is
 infeasible. Its 2,700-item last look needs 6,750 search items for two rounds, and its 2.16-point band is above the
 1.80-point limit. The same pools are feasible at a 4-point margin.
 
@@ -262,7 +262,7 @@ population.
 
 ## Certification
 
-The `certify` function tests the finalists on the sealed items and writes a bundle for each certified point:
+The `certify` function tests the finalists on the held-out items and writes a bundle for each certified point:
 
 ```python
 from steerability.optimization.release.certify import certify
@@ -276,17 +276,17 @@ certification.certified, certification.failed_at
 The finalists are spread over levels (a point's level is its largest loss as a share of the margin). Each finalist's
 level is measured again on previously unevaluated search items, and these items are recorded with the finalists before
 any of them is measured. An interrupted call then measures the same items. The finalists and their order (safest
-first) are fixed before any sealed item is read.
+first) are fixed before any held-out item is read.
 
-Each finalist is measured on every constraint's whole sealed pool, which is the request set of the baseline's sealed
+Each finalist is measured on every constraint's whole held-out pool, which is the request set of the baseline's held-out
 measurement. It is then tested at the full error rate `alpha`, and testing stops at the first failing finalist. Every
 earlier finalist is certified without a multiplicity correction, since the order was fixed first. A study is
 certified once, and an interrupted call continues with the recorded order. A call on a study without finalists
-records nothing and returns an empty certification, which leaves the study open for a later call. Sealed items that
-another study already used are refused unless `allow_reused_sealed=True` is passed.
+records nothing and returns an empty certification, which leaves the study open for a later call. Held-out items that
+another study already used are refused unless `allow_reused_held_out=True` is passed.
 
 Each certified point is written as a frozen bundle whose lock contains the study's protocol and the certificate. The
-certificate contains every constraint's sealed table with its tested lower bound, the behavior gain with a two-sided
+certificate contains every constraint's held-out table with its tested lower bound, the behavior gain with a two-sided
 90% interval, and every benchmark's noise floor:
 
 ```python

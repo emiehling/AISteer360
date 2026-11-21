@@ -1,6 +1,6 @@
 """The evidence a study's decisions are made on, and the sizes and feasibility that follow from its baseline.
 
-The unsteered baseline (`BASELINE`) is measured once per study on every search and sealed item, and a second time on
+The unsteered baseline (`BASELINE`) is measured once per study on every search and held-out item, and a second time on
 the search items in another batch order (`ensure_baseline`). The mean absolute difference between the two runs is
 the benchmark's noise floor (`noise_floor`). Under greedy decoding a noise floor above `GREEDY_NOISE_LIMIT` stops the
 study, since an evidence row is keyed by recipe and item and describes the recipe only when generation does not
@@ -130,7 +130,7 @@ def _measure_baseline(study: Study, store: Store, steered: Steered, benchmark: B
     rows: dict[int, dict[str, ItemResult]] = {}
     for replicate in replicates:
         rows[replicate] = {}
-        pools = (split.search, split.sealed) if sampling or replicate == 0 else (split.search,)
+        pools = (split.search, split.held_out) if sampling or replicate == 0 else (split.search,)
         for pool in pools:
             if pool:
                 rows[replicate].update(evaluate_items(steered, benchmark, list(pool), store=store,
@@ -139,7 +139,7 @@ def _measure_baseline(study: Study, store: Store, steered: Steered, benchmark: B
     excluded = sorted({item for results in rows.values() for item, result in results.items()
                        if result.status == "error"})
     excluded_set = set(excluded)
-    for role, pool in (("search", split.search), ("sealed", split.sealed)):
+    for role, pool in (("search", split.search), ("held_out", split.held_out)):
         if not pool:
             continue
         share = len(excluded_set.intersection(pool)) / len(pool)
@@ -178,8 +178,8 @@ def ensure_baseline(study: Study, factory: PipelineFactory, store: Store) -> Non
     """Measure the unsteered baseline of every benchmark of a study, once.
 
     Each benchmark is prepared, and `BASELINE` is evaluated at replicate 0 on the search pool and, in a separate
-    call, on the sealed pool, then at replicate 1 on the search pool. The sealed pool is its own request set, which
-    is the one a finalist's sealed call uses. Under a sampling protocol, replicates 0 to 3 are each evaluated on the
+    call, on the held-out pool, then at replicate 1 on the search pool. The held-out pool is its own request set, which
+    is the one a finalist's held-out call uses. Under a sampling protocol, replicates 0 to 3 are each evaluated on the
     two pools in separate calls. One `baselines` row per benchmark records the baseline's resolved id, the noise
     floor (the mean absolute difference between the values at replicates 0 and 1 over the usable search items), and
     the excluded items (those with an error row in any replicate). A benchmark that already has a row is skipped.
@@ -213,8 +213,8 @@ def ensure_baseline(study: Study, factory: PipelineFactory, store: Store) -> Non
             _measure_baseline(study, store, steered, benchmark)
 
 
-def usable(study: Study, store: Store, benchmark: Benchmark, role: Literal["search", "sealed"]) -> tuple[str, ...]:
-    """A benchmark's search or sealed pool without the items excluded by the baseline.
+def usable(study: Study, store: Store, benchmark: Benchmark, role: Literal["search", "held_out"]) -> tuple[str, ...]:
+    """A benchmark's search or held-out pool without the items excluded by the baseline.
 
     Raises:
         StudyError: If the benchmark has no baseline.
@@ -222,7 +222,7 @@ def usable(study: Study, store: Store, benchmark: Benchmark, role: Literal["sear
     _, _, excluded = _require_baseline(store, study, benchmark)
     excluded_set = set(excluded)
     split = study.pools[benchmark.id]
-    pool = split.search if role == "search" else split.sealed
+    pool = split.search if role == "search" else split.held_out
     return tuple(item for item in pool if item not in excluded_set)
 
 
@@ -339,7 +339,7 @@ def design_variance(study: Study, store: Store, benchmark: Benchmark) -> float:
 
     It is the baseline's variance (`baseline_variance`) and at least `floor_variance(margin)`, or the floor alone
     when the benchmark has no baseline. It is used only to size the looks and to decide feasibility. Acceptance and
-    the sealed test use each table's own variance (at least the floor). An inaccurate design variance therefore
+    the held-out test use each table's own variance (at least the floor). An inaccurate design variance therefore
     changes the power and the number of generations of a study, and it leaves the error rate of certification
     unchanged.
 
@@ -581,16 +581,16 @@ def point_items(study: Study, store: Store, resolved_id: str, benchmark: Benchma
 
 
 def _pool_counts(study: Study, store: Store, benchmark: Benchmark) -> tuple[int, int]:
-    """The search and sealed pool sizes: usable counts with a baseline, raw sizes without one."""
+    """The search and held-out pool sizes: usable counts with a baseline, raw sizes without one."""
     split = study.pools.get(benchmark.id)
     if split is None:
         return 0, 0
     if _baseline_row(store, study, benchmark) is None:
-        return len(split.search), len(split.sealed)
-    return len(usable(study, store, benchmark, "search")), len(usable(study, store, benchmark, "sealed"))
+        return len(split.search), len(split.held_out)
+    return len(usable(study, store, benchmark, "search")), len(usable(study, store, benchmark, "held_out"))
 
 
-def _size_problems(name: str, margin: float, variance: float, n_search: int, n_sealed: int, settings: Settings,
+def _size_problems(name: str, margin: float, variance: float, n_search: int, n_held_out: int, settings: Settings,
                    constraints: int) -> list[str]:
     """The room and band rules of one constraint at a margin and design variance."""
     last = last_look(margin=margin, variance=variance)
@@ -603,24 +603,24 @@ def _size_problems(name: str, margin: float, variance: float, n_search: int, n_s
         )
     if settings.guard_band:
         band = math.inf
-        if n_sealed:
-            band = guard_band(math.sqrt(variance / last), math.sqrt(variance / n_sealed), alpha=settings.alpha,
+        if n_held_out:
+            band = guard_band(math.sqrt(variance / last), math.sqrt(variance / n_held_out), alpha=settings.alpha,
                               power=settings.power, benchmarks=constraints)
         if band > BAND_SHARE * margin:
             problems.append(
                 f"{name}: the guard band is {100 * band:.2f} points, more than {100 * BAND_SHARE:.0f}% of the "
-                f"{100 * margin:g}-point margin (design variance {variance:.4f}, last look {last:,}, {n_sealed:,} "
-                "sealed items)"
+                f"{100 * margin:g}-point margin (design variance {variance:.4f}, last look {last:,}, {n_held_out:,} "
+                "held-out items)"
             )
     return problems
 
 
-def _feasible_alternatives(name: str, margin: float, measured: float | None, n_search: int, n_sealed: int,
+def _feasible_alternatives(name: str, margin: float, measured: float | None, n_search: int, n_held_out: int,
                            settings: Settings, constraints: int) -> str | None:
     """What would be feasible for one constraint on its pools: the smallest margin and the largest variance."""
 
     def feasible_at(at_margin: float, variance: float) -> bool:
-        return not _size_problems(name, at_margin, variance, n_search, n_sealed, settings, constraints)
+        return not _size_problems(name, at_margin, variance, n_search, n_held_out, settings, constraints)
 
     smallest = None
     step = 1
@@ -654,7 +654,7 @@ def feasibility(study: Study, store: Store) -> list[str]:
     `design_variance`. Each constraint, with `(ladder, last) = block_sizes(...)`, must pass two rules:
 
     - **Room**: `2 * (ladder + last) <= n_search`, i.e., two rounds of blocks fit the search pool.
-    - **Band**: the guard band at the last look and the sealed pool size is at most `BAND_SHARE` of the margin
+    - **Band**: the guard band at the last look and the held-out pool size is at most `BAND_SHARE` of the margin
       (skipped when `settings.guard_band` is False).
 
     The objective needs `2 * (settings.behavior_ladder_items + settings.behavior_items)` search items. Each failed rule
@@ -674,13 +674,13 @@ def feasibility(study: Study, store: Store) -> list[str]:
     problems: list[str] = []
     for constraint in study.constraints:
         benchmark = constraint.benchmark
-        n_search, n_sealed = _pool_counts(study, store, benchmark)
+        n_search, n_held_out = _pool_counts(study, store, benchmark)
         measured = baseline_variance(study, store, benchmark)
         variance = max(measured or 0.0, floor_variance(constraint.margin))
-        found = _size_problems(benchmark.name, constraint.margin, variance, n_search, n_sealed, settings, constraints)
+        found = _size_problems(benchmark.name, constraint.margin, variance, n_search, n_held_out, settings, constraints)
         if found:
             problems.extend(found)
-            alternative = _feasible_alternatives(benchmark.name, constraint.margin, measured, n_search, n_sealed,
+            alternative = _feasible_alternatives(benchmark.name, constraint.margin, measured, n_search, n_held_out,
                                                  settings, constraints)
             if alternative is not None:
                 problems.append(alternative)

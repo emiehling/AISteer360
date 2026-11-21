@@ -11,7 +11,7 @@ from steerability.algorithms.core.identity import versioned
 from steerability.evaluation.items import PromptBenchmark
 
 CLASSIFIER = "s-nlp/roberta-base-formality-ranker"
-OBJECTIVE_SEALED = 600
+OBJECTIVE_HELD_OUT = 600
 _PIPELINE = None
 
 WHO = ("your best friend", "your roommate", "your cousin", "your teammate", "your neighbor", "your little brother",

@@ -958,7 +958,7 @@ class SteeringPipeline:
             model_ref: Explicit model reference recorded in the spipe, overriding
                 `model_name_or_path` and the loaded model's `name_or_path`.
             protocol: The protocol recorded in a frozen bundle's lock.
-            certificate: A mapping with `"schema": "certificate/1"` recorded in a frozen bundle's
+            certificate: A mapping with `"schema": "certificate/2"` recorded in a frozen bundle's
                 lock; requires freezing.
 
         Returns:

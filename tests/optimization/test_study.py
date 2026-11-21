@@ -91,7 +91,7 @@ class TestValidate:
         study = build_study(store, _quiet)
         twin = SyntheticBenchmark("behavior", 3000, kind="capability", truth=_quiet, base=0.8)
         twin.prepare(store)
-        pools = {**study.pools, twin.id: split_items(twin, sealed=2000, seed=0)}
+        pools = {**study.pools, twin.id: split_items(twin, held_out=2000, seed=0)}
         pools.pop(study.constraints[0].benchmark.id)
         named = dataclasses.replace(study, constraints=(Constraint(twin, 0.05),), pools=pools)
         with pytest.raises(ValueError, match="distinct"):

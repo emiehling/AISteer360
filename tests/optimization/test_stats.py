@@ -21,7 +21,7 @@ from steerability.optimization.measurement.stats import (
 
 ALPHA = 0.05
 POWER = 0.80
-SEALED = 5000
+HELD_OUT = 5000
 
 
 def _diffs(rng, size, length, loss, change_rate=0.10):
@@ -50,28 +50,30 @@ def _confirmed_share(margin, variance, loss, *, runs=20000, seed=0):
             for look, count in enumerate(looks):
                 table = Paired(count, float(totals[run, count - 1]), float(changed[run, count - 1]),
                                int(changed[run, count - 1]))
-                decision = confirm_step(table, look, margin, n_sealed=SEALED, alpha=ALPHA, power=POWER)
+                decision = confirm_step(table, look, margin, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER)
                 if decision != "continue":
                     confirmed += decision == "accept"
                     break
     return confirmed / runs
 
 
-def _sealed_pass_rate(margin, n_sealed):
-    """The exact pass rate of the sealed test for a candidate on the margin whose changes are all losses."""
+def _held_out_pass_rate(margin, n_held_out):
+    """The exact pass rate of the held-out test for a candidate on the margin whose changes are all losses."""
     from scipy.stats import binom
 
-    losses = np.arange(n_sealed + 1)
-    passes = np.array([Paired(n_sealed, -float(k), float(k), int(k)).passes(margin, ALPHA) for k in losses])
-    return float(binom.pmf(losses, n_sealed, margin)[passes].sum())
+    losses = np.arange(n_held_out + 1)
+    passes = np.array([Paired(n_held_out, -float(k), float(k), int(k)).passes(margin, ALPHA) for k in losses])
+    return float(binom.pmf(losses, n_held_out, margin)[passes].sum())
 
 
 class TestReferenceValues:
     def test_guard_band(self):
-        se_sealed = math.sqrt(0.1 / 5000)
-        assert guard_band(math.sqrt(0.1 / 2400), se_sealed, alpha=ALPHA, power=POWER) == pytest.approx(0.0140, abs=5e-5)
-        assert guard_band(math.sqrt(0.1 / 1100), se_sealed, alpha=ALPHA, power=POWER) == pytest.approx(0.0162, abs=5e-5)
-        assert guard_band(math.sqrt(0.1 / 1100), se_sealed, alpha=ALPHA, power=POWER,
+        se_held_out = math.sqrt(0.1 / 5000)
+        assert guard_band(math.sqrt(0.1 / 2400), se_held_out, alpha=ALPHA, power=POWER) == pytest.approx(0.0140,
+                                                                                                        abs=5e-5)
+        assert guard_band(math.sqrt(0.1 / 1100), se_held_out, alpha=ALPHA, power=POWER) == pytest.approx(0.0162,
+                                                                                                        abs=5e-5)
+        assert guard_band(math.sqrt(0.1 / 1100), se_held_out, alpha=ALPHA, power=POWER,
                           benchmarks=3) == pytest.approx(0.0228, abs=5e-5)
 
     def test_floor_variance(self):
@@ -96,7 +98,7 @@ class TestReferenceValues:
     def test_ladder_size(self):
         assert (ladder_size(1000), ladder_size(100)) == (250, 32)
 
-    def test_the_floor_in_the_sealed_test(self):
+    def test_the_floor_in_the_held_out_test(self):
         assert not Paired(65, 0.0, 0.0, 0).passes(0.03, ALPHA)
         bound = Paired(200, 0.0, 0.0, 0).lower(ALPHA, floor=floor_variance(0.03))
         assert bound == pytest.approx(-0.0198, abs=5e-5)
@@ -130,35 +132,35 @@ class TestPaired:
 class TestBands:
     def test_no_guard_gives_a_zero_band(self):
         table = Paired.from_diffs([-1.0] * 5 + [0.0] * 95)
-        assert release_band(table, 0.05, n_sealed=SEALED, alpha=ALPHA, power=POWER, guard=False) == 0.0
-        assert feasible(table, 0.05, n_sealed=SEALED, alpha=ALPHA, power=POWER, guard=False)
-        assert not feasible(table, 0.05, n_sealed=SEALED, alpha=ALPHA, power=POWER)
+        assert release_band(table, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER, guard=False) == 0.0
+        assert feasible(table, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER, guard=False)
+        assert not feasible(table, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER)
 
     def test_the_band_plans_for_a_larger_confirmation(self):
         table = Paired.from_diffs([-1.0] * 5 + [0.0] * 95)
-        small = release_band(table, 0.05, n_sealed=SEALED, alpha=ALPHA, power=POWER)
-        planned = release_band(table, 0.05, n_sealed=SEALED, alpha=ALPHA, power=POWER, n_search=1000)
+        small = release_band(table, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER)
+        planned = release_band(table, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER, n_search=1000)
         assert planned < small
 
     def test_the_band_takes_the_variance_as_at_least_the_floor(self):
         constant = Paired.from_diffs([-0.01] * 400)
-        at_floor = guard_band(math.sqrt(0.0475 / 400), math.sqrt(0.0475 / SEALED), alpha=ALPHA, power=POWER)
-        assert release_band(constant, 0.05, n_sealed=SEALED, alpha=ALPHA, power=POWER) == pytest.approx(at_floor)
+        at_floor = guard_band(math.sqrt(0.0475 / 400), math.sqrt(0.0475 / HELD_OUT), alpha=ALPHA, power=POWER)
+        assert release_band(constant, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER) == pytest.approx(at_floor)
         wide = Paired.from_diffs([-1.0, 1.0] * 200)
-        assert release_band(wide, 0.05, n_sealed=SEALED, alpha=ALPHA, power=POWER) > at_floor
+        assert release_band(wide, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER) > at_floor
 
     def test_look_zero_only_rejects(self):
         inside = Paired.from_diffs([0.0] * 400)
-        assert confirm_step(inside, 0, 0.03, n_sealed=SEALED, alpha=ALPHA, power=POWER) == "continue"
-        assert confirm_step(inside, 1, 0.03, n_sealed=SEALED, alpha=ALPHA, power=POWER) == "accept"
+        assert confirm_step(inside, 0, 0.03, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER) == "continue"
+        assert confirm_step(inside, 1, 0.03, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER) == "accept"
         over = Paired.from_diffs([-1.0] * 40 + [0.0] * 60)
-        assert confirm_step(over, 0, 0.03, n_sealed=SEALED, alpha=ALPHA, power=POWER) == "reject"
+        assert confirm_step(over, 0, 0.03, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER) == "reject"
 
 
 class TestLadderDecisions:
     def test_each_position_is_judged_on_its_own(self):
         losses = [Paired.from_diffs([-x] * 256) for x in (0.0, 0.01, 0.02, 0.09, 0.03)]
-        kept = provisional_positions(losses, 0.05, n_target=400, n_sealed=SEALED, alpha=ALPHA, power=0.5)
+        kept = provisional_positions(losses, 0.05, n_target=400, n_held_out=HELD_OUT, alpha=ALPHA, power=0.5)
         assert kept == [0, 1, 2, 4]
 
     def test_ranking_orders_by_the_gain_lower_bound(self):
@@ -181,14 +183,14 @@ def test_confirmation_simulation(margin, variance, expected):
     (0.03, (65, 221, 1000, 5000), (0.000, 0.037, 0.052, 0.051)),
     (0.05, (65, 221, 1000, 5000), (0.036, 0.033, 0.043, 0.047)),
 ])
-def test_the_sealed_test_on_the_margin_with_losses_only(margin, pools, expected):
-    rates = [_sealed_pass_rate(margin, n_sealed) for n_sealed in pools]
+def test_the_held_out_test_on_the_margin_with_losses_only(margin, pools, expected):
+    rates = [_held_out_pass_rate(margin, n_held_out) for n_held_out in pools]
     assert rates == pytest.approx(expected, abs=0.0015)
 
 
-def test_the_sealed_test_stays_near_its_level_over_margins_and_pools():
-    rates = [_sealed_pass_rate(margin, n_sealed) for margin in (0.02, 0.03, 0.05, 0.08)
-             for n_sealed in (65, 221, 1000, 5000)]
+def test_the_held_out_test_stays_near_its_level_over_margins_and_pools():
+    rates = [_held_out_pass_rate(margin, n_held_out) for margin in (0.02, 0.03, 0.05, 0.08)
+             for n_held_out in (65, 221, 1000, 5000)]
     assert max(rates) <= 0.06
 
 
@@ -199,9 +201,9 @@ def test_fixed_order_certification_of_finalists_on_the_margin(changes):
     certified_any = 0
     for start in range(0, runs, 200):
         if changes == "both ways":
-            diffs = _diffs(rng, 200 * 5, SEALED, margin)
+            diffs = _diffs(rng, 200 * 5, HELD_OUT, margin)
         else:
-            diffs = _losses(rng, 200 * 5, SEALED, margin)
+            diffs = _losses(rng, 200 * 5, HELD_OUT, margin)
         tables = [Paired.from_diffs(row) for row in diffs]
         for run in range(200):
             finalists = [[tables[run * 5 + index]] for index in range(5)]

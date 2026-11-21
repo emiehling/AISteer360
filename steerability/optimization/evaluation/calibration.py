@@ -172,7 +172,7 @@ def _rank(session: StudySession, rungs: list[_Rung]) -> list[int]:
         benchmark = constraint.benchmark
         tables = [rung.capability[benchmark.name] for rung in rungs]
         kept &= set(provisional_positions(
-            tables, constraint.margin, n_target=session.looks(benchmark)[2], n_sealed=session.n_sealed(benchmark),
+            tables, constraint.margin, n_target=session.looks(benchmark)[2], n_held_out=session.n_held_out(benchmark),
             alpha=settings.alpha, power=settings.ladder_power, benchmarks=len(study.constraints),
             guard=settings.guard_band,
         ))

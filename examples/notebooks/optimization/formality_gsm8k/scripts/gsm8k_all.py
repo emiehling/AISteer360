@@ -1,7 +1,7 @@
 """GSM8K over the train and test splits (zero-shot) as an Inspect task.
 
 `inspect_evals/gsm8k` evaluates the test split only and takes its few-shot examples from the train split. This task
-covers both splits without few-shot examples, so a study can split its items into a search pool and a sealed pool. A
+covers both splits without few-shot examples, so a study can split its items into a search pool and a held-out pool. A
 question that appears in both splits is kept once.
 """
 from inspect_ai import Task, task

@@ -45,7 +45,7 @@ def test_a_frozen_lock_records_the_protocol():
         "protocol_id": protocol.id,
         "protocol": protocol.identity(),
         "facts": ProtocolFacts().to_dict(),
-        "certificate": {"schema": "certificate/1"},
+        "certificate": {"schema": "certificate/2"},
     }
     validate_manifest(minimal_manifest(lock=lock))
     with pytest.raises(SpipeFormatError, match="certificate"):

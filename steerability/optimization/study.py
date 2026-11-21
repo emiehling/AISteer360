@@ -2,14 +2,14 @@
 
 A `Study` searches the steering pipelines described by its `space` (a template per structure) for the one that
 maximizes a behavior score (`objective`) while the accuracy on each capability benchmark (`constraints`) stays within
-a fixed margin of the unsteered model. Items of every benchmark are split into a search pool and a sealed pool
-(`pools`); search decisions use the search pool only, and the result is certified once on the sealed pool.
+a fixed margin of the unsteered model. Items of every benchmark are split into a search pool and a held-out pool
+(`pools`); search decisions use the search pool only, and the result is certified once on the held-out pool.
 
 A `Candidate` is a structure and the values of that structure's proposer axes. Each template's ordered axis that is
 not listed in `Study.searched` is its solved axis, which the evaluator solves for each candidate, and every other axis
 is a proposer axis.
 
-The study's records are stored in the tables of the `"optimization/1"` schema (`ensure_tables`).
+The study's records are stored in the tables of the `"optimization/2"` schema (`ensure_tables`).
 """
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-STUDY_SCHEMA = "study/1"
-OPTIMIZATION_SCHEMA = "optimization/1"
+STUDY_SCHEMA = "study/2"
+OPTIMIZATION_SCHEMA = "optimization/2"
 
 TABLES = (
     """CREATE TABLE IF NOT EXISTS studies (study_id TEXT PRIMARY KEY, name TEXT NOT NULL, definition TEXT NOT NULL,
@@ -52,8 +52,8 @@ TABLES = (
         PRIMARY KEY (study_id, candidate_id, version))""",
     """CREATE TABLE IF NOT EXISTS certifications (study_id TEXT PRIMARY KEY, finalists TEXT NOT NULL, outcome TEXT,
         created_at TEXT NOT NULL)""",
-    """CREATE TABLE IF NOT EXISTS sealed_uses (study_id TEXT NOT NULL, benchmark_name TEXT NOT NULL,
-        sealed_id TEXT NOT NULL, resolved_id TEXT NOT NULL, used_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS held_out_uses (study_id TEXT NOT NULL, benchmark_name TEXT NOT NULL,
+        held_out_id TEXT NOT NULL, resolved_id TEXT NOT NULL, used_at TEXT NOT NULL)""",
 )
 
 _FLOAT_SETTINGS = (
@@ -84,7 +84,7 @@ def dumps(value: Any) -> str:
 
 
 def ensure_tables(store: Store) -> None:
-    """Create the tables of the `"optimization/1"` schema in a store (once)."""
+    """Create the tables of the `"optimization/2"` schema in a store (once)."""
     store.ensure_schema(OPTIMIZATION_SCHEMA, TABLES)
 
 
@@ -283,7 +283,7 @@ class Study:
                     for constraint in self.constraints
                 ],
                 "pools": {
-                    benchmark_id: {"search": list(split.search), "sealed": list(split.sealed)}
+                    benchmark_id: {"search": list(split.search), "held_out": list(split.held_out)}
                     for benchmark_id, split in self.pools.items()
                 },
                 "seed": self.seed,

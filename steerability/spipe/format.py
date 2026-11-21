@@ -34,7 +34,7 @@ _ENTRY_KEYS = {"method", "args", "resolved"}
 _RESOLVED_KEYS = {"method", "args", "artifacts", "origin"}
 _ARTIFACT_RECORD_KEYS = {"id", "encoding", "type", "artifact_class", "source", "fit_digest", "provenance"}
 _LOCK_KEYS = {"protocol_id", "protocol", "facts", "certificate"}
-CERTIFICATE_SCHEMA = "certificate/1"
+CERTIFICATE_SCHEMA = "certificate/2"
 
 
 def _require(condition: bool, message: str) -> None:
@@ -85,7 +85,7 @@ def validate_manifest(manifest: Any) -> None:
     recipe-entry JSON, `method` and `args`, plus a `resolved` list of frozen items or null), and a
     lock. The lock is null for a bundle that is not frozen. A frozen bundle's lock records the
     protocol it was fitted or measured under (`protocol_id`, `protocol`), the facts observed on its
-    model (`facts`), and an optional `certificate`, a mapping whose `schema` is `"certificate/1"`.
+    model (`facts`), and an optional `certificate`, a mapping whose `schema` is `"certificate/2"`.
 
     Args:
         manifest: The parsed manifest.

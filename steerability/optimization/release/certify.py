@@ -1,11 +1,11 @@
-"""Certification of a study's finalists on the sealed items, and the release of certified points as bundles.
+"""Certification of a study's finalists on the held-out items, and the release of certified points as bundles.
 
-The finalists and their order are fixed and recorded before any sealed item is read, and each finalist is tested on
-every constraint at the full error rate `settings.alpha`, from the safest point up. Each sealed call evaluates the
-whole sealed pool in pool order, which is the request set of the baseline's sealed call. Testing stops at the first
+The finalists and their order are fixed and recorded before any held-out item is read, and each finalist is tested on
+every constraint at the full error rate `settings.alpha`, from the safest point up. Each held-out call evaluates the
+whole held-out pool in pool order, which is the request set of the baseline's held-out call. Testing stops at the first
 finalist that fails, and every finalist before it is certified. No multiplicity correction applies, since the order
 was fixed first. A study is certified once, and an interrupted call continues with the recorded order. A study
-without finalists stays open, since a call then records nothing and returns an empty certification. Sealed
+without finalists stays open, since a call then records nothing and returns an empty certification. Held-out
 results are returned to the caller only and never reach a proposer.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ from steerability.optimization.evaluation.plan import make_plan
 from steerability.optimization.evaluation.result import jsonable
 from steerability.optimization.evaluation.session import Finalist
 from steerability.optimization.measurement.evidence import noise_floor, paired, usable
-from steerability.optimization.measurement.pools import record_sealed_use, sealed_id, shared_sealed_items
+from steerability.optimization.measurement.pools import held_out_id, record_held_out_use, shared_held_out_items
 from steerability.optimization.measurement.stats import floor_variance
 from steerability.optimization.study import StudyError, dumps, ensure_tables, now
 from steerability.spipe.format import CERTIFICATE_SCHEMA
@@ -126,50 +126,50 @@ def _recipe(session: StudySession, finalist: Finalist) -> Recipe:
     return recipe
 
 
-def _sealed_table(session: StudySession, steered: Steered, benchmark: Any) -> Paired:
-    """Evaluate the whole sealed pool in pool order and build the table on its usable items."""
+def _held_out_table(session: StudySession, steered: Steered, benchmark: Any) -> Paired:
+    """Evaluate the whole held-out pool in pool order and build the table on its usable items."""
     from steerability.evaluation.items import evaluate_items
 
     study, store = session.study, session.store
-    record_sealed_use(store, study, benchmark, steered.resolved_id)
-    evaluate_items(steered, benchmark, list(study.pools[benchmark.id].sealed), store=store, replicate=0)
-    return paired(study, store, steered.resolved_id, benchmark, usable(study, store, benchmark, "sealed"))
+    record_held_out_use(store, study, benchmark, steered.resolved_id)
+    evaluate_items(steered, benchmark, list(study.pools[benchmark.id].held_out), store=store, replicate=0)
+    return paired(study, store, steered.resolved_id, benchmark, usable(study, store, benchmark, "held_out"))
 
 
-def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_sealed: bool = False) -> Certification:
-    """Certify a study's finalists on the sealed items and write a bundle for each certified point.
+def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_held_out: bool = False) -> Certification:
+    """Certify a study's finalists on the held-out items and write a bundle for each certified point.
 
     The procedure is:
 
-    1. The finalists are fixed before any sealed item is read. A recorded outcome raises. Without a `certifications`
+    1. The finalists are fixed before any held-out item is read. A recorded outcome raises. Without a `certifications`
        row, the finalist plan (`session.plan_finalists()`, with the search items each level is measured on) is
        written first. Records without levels are then measured (`session.finalists(plan)`, which reuses stored rows)
        and recorded in their order. Recorded records with levels (an interrupted call) are used unchanged. With no
        finalists, nothing is recorded and an empty certification is returned, which leaves the study open.
-    2. The sealed pools are compared with those of every other study that has a recorded sealed use of a benchmark of
-       the same name, and a shared item raises unless `allow_reused_sealed`.
-    3. For each finalist in order, a `sealed_uses` row is written for each benchmark before its sealed items are read.
-       The whole sealed pool of every constraint is evaluated in pool order, its table is built on the usable sealed
-       items, and each constraint's table must pass (`Paired.passes(margin, settings.alpha)`). Testing stops at the
-       first finalist that fails. Stored evidence rows are reused, and a resumed call reads nothing twice.
-    4. Each certified finalist is measured on the objective's sealed pool in the same way, and its gain is recorded
+    2. The held-out pools are compared with those of every other study that has a recorded held-out use of a
+       benchmark of the same name, and a shared item raises unless `allow_reused_held_out`.
+    3. For each finalist in order, a `held_out_uses` row is written for each benchmark before its held-out items are
+       read. The whole held-out pool of every constraint is evaluated in pool order, its table is built on the usable
+       held-out items, and each constraint's table must pass (`Paired.passes(margin, settings.alpha)`). Testing stops
+       at the first finalist that fails. Stored evidence rows are reused, and a resumed call reads nothing twice.
+    4. Each certified finalist is measured on the objective's held-out pool in the same way, and its gain is recorded
        with a two-sided 90% interval (per finalist, not simultaneous).
     5. Each certified finalist is written to `bundle_dir` as a frozen bundle whose lock records the study's protocol
-       and the certificate (`"certificate/1"`). The certificate's `lower_bound` of a constraint is the bound that
+       and the certificate (`"certificate/2"`). The certificate's `lower_bound` of a constraint is the bound that
        `Paired.passes` tests, and every benchmark's entry contains its baseline's `noise_floor`.
     6. The outcome is recorded in `certifications`.
 
     Args:
         session: The started session of the study.
         bundle_dir: The directory the bundles are written to.
-        allow_reused_sealed: Whether to certify on sealed items that another study already used.
+        allow_reused_held_out: Whether to certify on held-out items that another study already used.
 
     Returns:
         The certification, with no certified point and no failure when the study has no finalists.
 
     Raises:
-        StudyError: If the study is certified already, its sealed items were used by another study (and
-            `allow_reused_sealed` is False), or a finalist cannot be rebuilt.
+        StudyError: If the study is certified already, its held-out items were used by another study (and
+            `allow_reused_held_out` is False), or a finalist cannot be rebuilt.
     """
     study, store, settings = session.study, session.store, session.study.settings
     finalists = _fixed_finalists(session)
@@ -177,11 +177,11 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_seale
         logger.warning("Study %r (%s) has no finalists; nothing was certified or recorded, and the study can be "
                        "certified later.", study.name, study.id)
         return Certification((), None, {}, {})
-    shared = shared_sealed_items(store, study)
-    if shared and not allow_reused_sealed:
+    shared = shared_held_out_items(store, study)
+    if shared and not allow_reused_held_out:
         details = "; ".join(f"{name}: studies {', '.join(others)}" for name, others in shared.items())
-        raise StudyError(f"The sealed items of study {study.name!r} were already used ({details}); pass "
-                         "allow_reused_sealed=True to certify on them anyway.")
+        raise StudyError(f"The held-out items of study {study.name!r} were already used ({details}); pass "
+                         "allow_reused_held_out=True to certify on them anyway.")
     session.release_pipeline()
     bundle_dir = Path(bundle_dir)
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -197,10 +197,10 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_seale
             passed = True
             for constraint in study.constraints:
                 benchmark = constraint.benchmark
-                table = _sealed_table(session, steered, benchmark)
+                table = _held_out_table(session, steered, benchmark)
                 constraints[benchmark.name] = {
                     "benchmark_id": benchmark.id, "margin": constraint.margin,
-                    "sealed_id": sealed_id(benchmark, study.pools[benchmark.id]), "n": table.n,
+                    "held_out_id": held_out_id(benchmark, study.pools[benchmark.id]), "n": table.n,
                     "delta": table.mean,
                     "lower_bound": _finite(table.lower(settings.alpha, floor=floor_variance(constraint.margin))),
                     "change_rate": table.change_rate, "noise_floor": noise_floor(study, store, benchmark),
@@ -211,7 +211,7 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_seale
             if not passed:
                 failed_at = index
                 break
-            behavior = _sealed_table(session, steered, study.objective)
+            behavior = _held_out_table(session, steered, study.objective)
             candidate = session.archive.candidate(finalist.result.candidate_id)
             certificate = {
                 "schema": CERTIFICATE_SCHEMA,

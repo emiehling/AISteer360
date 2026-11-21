@@ -2,7 +2,7 @@
 
 The `collect` command measures the unsteered baseline twice (replicates 0 and 1, in different batch orders) and every
 (layer, multiplier) setting of one CAA vector once on every search item of the GSM8K pool split and of the formality
-objective's pool split, and writes the settings-by-items score matrices into the store. No sealed item is used.
+objective's pool split, and writes the settings-by-items score matrices into the store. No held-out item is used.
 Settings can be split into shards that run in separate processes, each with its own store. One shard measures the
 baseline and the others pass `--skip-baseline`, since a deterministic protocol gives every shard the same baseline.
 `--benchmarks` selects the benchmarks a run measures, and stored rows are reused.
@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from formality import OBJECTIVE_SEALED, PAIRS, formality_benchmark
+from formality import OBJECTIVE_HELD_OUT, PAIRS, formality_benchmark
 
 from steerability.algorithms.core.execution.spec import BackendSpec
 from steerability.algorithms.core.protocol import Protocol, ProviderOptions
@@ -48,7 +48,7 @@ TASK = "examples/notebooks/optimization/formality_gsm8k/scripts/gsm8k_all.py@gsm
 MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 LAYERS = (6, 8, 10, 12, 14, 16, 18, 20, 22, 23)
 MULTIPLIERS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0)
-SEALED = 5000
+HELD_OUT = 5000
 
 
 def protocol(model: str = MODEL, *, backend: str = "huggingface", batch_size: int = 64,
@@ -95,8 +95,8 @@ def collect(arguments) -> None:
     objective = formality_benchmark()
     gsm8k.prepare(store)
     objective.prepare(store)
-    search = list(split_items(gsm8k, sealed=SEALED, seed=0).search)
-    objective_search = list(split_items(objective, sealed=OBJECTIVE_SEALED, seed=0).search)
+    search = list(split_items(gsm8k, held_out=HELD_OUT, seed=0).search)
+    objective_search = list(split_items(objective, held_out=OBJECTIVE_HELD_OUT, seed=0).search)
     if arguments.limit:
         search, objective_search = search[:arguments.limit], objective_search[:arguments.limit]
     measured = [(name, benchmark, items, prefix) for name, benchmark, items, prefix in (
@@ -191,7 +191,7 @@ def analyze(arguments) -> None:
     report["baseline_variance"] = float(baseline.var())
     variance = max(report["baseline_variance"], floor_variance(margin))
     last = last_look(margin=margin, variance=variance)
-    band = guard_band(math.sqrt(variance / last), math.sqrt(variance / SEALED), alpha=settings.alpha,
+    band = guard_band(math.sqrt(variance / last), math.sqrt(variance / HELD_OUT), alpha=settings.alpha,
                       power=settings.power)
     report.update({"design_variance": variance, "last_look": last, "band": band})
     objective_baseline = None

@@ -7,10 +7,10 @@ deterministic. The capability benchmark of `benchmarks` has a two-level baseline
 `unit(item_id) < 0.5`, else 0.4), which gives it a baseline variance close to 0.09. `StubFactory` yields `Steered`
 objects whose resolved id is derived from the recipe id, and `StubPipeline` records the bundles written.
 
-With the default pools (1,000 search and 2,000 sealed capability items, 200 behavior search items) and the 5-point
+With the default pools (1,000 search and 2,000 held-out capability items, 200 behavior search items) and the 5-point
 margin, a constraint has blocks of (100, 400) items and looks of (32, 128, 400). A candidate that shifts every item
 equally is confirmed when its loss is at most 0.0253 (second look) or 0.0319 (third look), a ladder position of a
-solved axis outside `study.monotone` is kept when its loss is at most 0.0420, and the sealed test passes up to a loss
+solved axis outside `study.monotone` is kept when its loss is at most 0.0420, and the held-out test passes up to a loss
 of 0.0420.
 """
 import hashlib
@@ -41,9 +41,9 @@ SMALL = Settings(
 )
 MARGIN = 0.05
 CAPABILITY_ITEMS = 3000
-CAPABILITY_SEALED = 2000
+CAPABILITY_HELD_OUT = 2000
 BEHAVIOR_ITEMS = 400
-BEHAVIOR_SEALED = 200
+BEHAVIOR_HELD_OUT = 200
 
 
 @dataclass(frozen=True)
@@ -258,7 +258,7 @@ def benchmarks(truth: TruthFunction, *, capability_omit=None, behavior_omit=None
 def build_study(store: Store, truth: TruthFunction, *, space: Mapping[str, Template] | None = None,
                 settings: Settings = SMALL, margin: float = MARGIN, name: str = "synthetic",
                 monotone=frozenset(), searched=frozenset(), capability=None, behavior=None,
-                capability_sealed: int = CAPABILITY_SEALED, behavior_sealed: int = BEHAVIOR_SEALED,
+                capability_held_out: int = CAPABILITY_HELD_OUT, behavior_held_out: int = BEHAVIOR_HELD_OUT,
                 fit_item_ids=None) -> Study:
     """A study over a synthetic capability constraint and a synthetic behavior objective."""
     if capability is None or behavior is None:
@@ -266,8 +266,8 @@ def build_study(store: Store, truth: TruthFunction, *, space: Mapping[str, Templ
     capability.prepare(store)
     behavior.prepare(store)
     pools = {
-        capability.id: split_items(capability, sealed=capability_sealed, seed=0),
-        behavior.id: split_items(behavior, sealed=behavior_sealed, seed=0),
+        capability.id: split_items(capability, held_out=capability_held_out, seed=0),
+        behavior.id: split_items(behavior, held_out=behavior_held_out, seed=0),
     }
     return Study(
         name=name, protocol=protocol(), space=space if space is not None else {"caa": caa_template()},

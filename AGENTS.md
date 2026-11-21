@@ -11,7 +11,7 @@ Steerability is a toolkit for steering large language models (Hugging Face causa
 into one operation on a model, an evaluation stack (recipes and templates, a measurement protocol, a store of fits
 and per-item evidence, benchmarks over Inspect AI tasks or prompts, and a sweep runner) for comparing steering
 pipelines, and an optimization package that searches steering pipelines under accuracy constraints and certifies the
-result on sealed items.
+result on held-out items.
 
 Pipelines execute on one configurable backend: the in-process Hugging Face backend (default), the offline vLLM
 engine (`kind="vllm"`), or a vLLM server (`kind="vllm-serve"`). For the generate and score phases, each control
@@ -81,14 +81,14 @@ steerability/
 │   └── plotting.py              # summary-frame plots over runs_frame output (optional `eval` extra)
 ├── optimization/                # constrained search over steering pipelines; study.py (Study, Constraint, Settings,
 │   │                            # Candidate); layered: measurement <- evaluation <- search, release
-│   ├── measurement/             # pools.py (PoolSplit, split_items, check_pools, sealed ledger), stats.py (Paired,
+│   ├── measurement/             # pools.py (PoolSplit, split_items, check_pools, held-out ledger), stats.py (Paired,
 │   │                            # the decision rules, look sizes), evidence.py (baseline, design variance, sizes,
 │   │                            # feasibility, batches, point tables)
 │   ├── evaluation/              # plan.py, result.py, archive.py, evaluator.py and calibration.py (stages, not
 │   │                            # public), session.py (StudySession), service.py (EvaluationService)
 │   ├── search/                  # loop.py (run_study), proposers/ (BaseProposer, grid.py, random.py), openevolve.py
 │   │                            # and _openevolve_controller.py (the only modules that import openevolve)
-│   └── release/                 # certify.py (certification on sealed items, certificates, bundles)
+│   └── release/                 # certify.py (certification on held-out items, certificates, bundles)
 └── utils/                       # tokenization, rendering, thinking, optional-dependency guard, verbosity
                                  # (opt-in package logging)
 
@@ -585,9 +585,9 @@ The core layers (`recipe.py`, `protocol.py`, `store.py`, `fits.py`, `sweeps.py`)
 
 The optimization package (`steerability/optimization/`) searches the steering pipelines of a space of templates for
 the one that maximizes a behavior score while the accuracy on each capability benchmark stays within a fixed margin
-of the unsteered model, and certifies the result once on sealed items. A `Study` (`optimization/study.py`) fixes the
+of the unsteered model, and certifies the result once on held-out items. A `Study` (`optimization/study.py`) fixes the
 protocol, the space (a `Template` per structure), the objective (a behavior benchmark), the `Constraint`s (a
-benchmark and a margin each), the split of every benchmark's items into a search pool and a sealed pool
+benchmark and a margin each), the split of every benchmark's items into a search pool and a held-out pool
 (`split_items`, which keeps groups whole), the seed, and the `Settings`. Per-item scores are in [0, 1], and higher is
 better. Each template's ordered axis that is not in `study.searched` is its solved axis (at most one), which the
 evaluator solves for each candidate. Every other axis is a proposer axis, and a `Candidate` is a structure with one
@@ -614,7 +614,8 @@ study = Study(
         "caa": Template((entry(CAA, data=pairs, layer_id=Choice((10, 14)), multiplier=Interval(0.0, 8.0)),)),
     },
     objective=formality, constraints=(Constraint(gsm8k, margin=0.05),),
-    pools={gsm8k.id: split_items(gsm8k, sealed=5000, seed=0), formality.id: split_items(formality, sealed=500, seed=0)},
+    pools={gsm8k.id: split_items(gsm8k, held_out=5000, seed=0),
+           formality.id: split_items(formality, held_out=500, seed=0)},
     monotone=frozenset({"caa.multiplier"}),
 )
 archive = run_study(study, RandomProposer(study, seed=0), store=store, max_generations=200_000)
@@ -625,10 +626,10 @@ with StudySession(study, store=store) as session:
 
 Evaluation goes through one `StudySession` (`optimization/evaluation/session.py`). `start()` validates the study and
 checks its feasibility with the floor variance and the raw pool sizes (`feasibility` in `measurement/evidence.py`). It
-then records the study in the store tables of the `"optimization/1"` schema and measures the unsteered baseline once
+then records the study in the store tables of the `"optimization/2"` schema and measures the unsteered baseline once
 (`ensure_baseline`). Feasibility is checked again at the measured baseline before the recorded rounds are resumed. The
-baseline is measured on the search pool and on the sealed pool as a separate request set (the one every finalist's
-sealed call uses). A second search-pool run in a different batch order gives the noise floor (the mean absolute
+baseline is measured on the search pool and on the held-out pool as a separate request set (the one every finalist's
+held-out call uses). A second search-pool run in a different batch order gives the noise floor (the mean absolute
 difference between the two runs). Evidence rows are keyed by recipe and item, and they must not depend on the batch.
 Under greedy decoding a noise floor above `GREEDY_NOISE_LIMIT` (0.01, checked first on 400 probe items) therefore raises
 `StudyError` with no override. For a 0.5B model with batches of 64, greedy bf16 decoding changed about 12% of GSM8K
@@ -664,10 +665,10 @@ search-pool aggregates). `run_study` drives an in-process `BaseProposer` (`GridP
 population strategy call an `EvaluationService` that serves the session over a local socket (JSON messages, one
 evaluation at a time, a deadline of 90% of the stage timeout). The strategy admits and replaces programs by the
 archive's latest results. `certify` (`release/certify.py`) records the finalist plan before it measures any finalist,
-and it records the ordered finalists before it reads any sealed item. It refuses sealed items that another study already
-used (unless `allow_reused_sealed`). Each finalist is evaluated on the whole sealed pool in pool order, and the
-finalists are tested in order at the full error rate until the first failure. Each certified point is written as a
-frozen bundle whose lock contains its `"certificate/1"` certificate, which includes the tested lower bound and every
+and it records the ordered finalists before it reads any held-out item. It refuses held-out items that another study
+already used (unless `allow_reused_held_out`). Each finalist is evaluated on the whole held-out pool in pool order, and
+the finalists are tested in order at the full error rate until the first failure. Each certified point is written as a
+frozen bundle whose lock contains its `"certificate/2"` certificate, which includes the tested lower bound and every
 benchmark's noise floor. See `docs/tutorials/optimize_steering_pipelines.md` for the guide.
 
 ## Developer guide
@@ -1019,7 +1020,7 @@ Rules that hold regardless of task:
     session's stated granularity and surfaces as `GenerationCancelled`.
 19. In a study, a decision is never judged on the items it was made on, and nothing item-level reaches a proposer.
     `Result.summary` and `ArchiveView` contain numbers and short enumerated strings computed from search-pool
-    aggregates, no function in `optimization/search/` receives item text or item-level rows, and sealed items are
+    aggregates, no function in `optimization/search/` receives item text or item-level rows, and held-out items are
     read only by `certify`, after the finalists are recorded.
 
 ## Pointers

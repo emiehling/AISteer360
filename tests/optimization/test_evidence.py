@@ -86,18 +86,18 @@ class TestBaseline:
         measured = {}
         for _, items, replicate in capability.calls:
             measured.setdefault(replicate, set()).update(items)
-        assert measured == {0: set(split.search) | set(split.sealed), 1: set(split.search)}
+        assert measured == {0: set(split.search) | set(split.held_out), 1: set(split.search)}
         assert noise_floor(study, store, capability) == 0.0
         calls = len(capability.calls)
         ensure_baseline(study, factory, store)
         assert len(capability.calls) == calls
 
-    def test_the_sealed_pool_is_its_own_request_set(self, store):
+    def test_the_held_out_pool_is_its_own_request_set(self, store):
         study, _ = _started(store)
         capability = study.constraints[0].benchmark
         split = study.pools[capability.id]
-        sealed_calls = [items for _, items, _ in capability.calls if set(items) & set(split.sealed)]
-        assert sealed_calls == [split.sealed]
+        held_out_calls = [items for _, items, _ in capability.calls if set(items) & set(split.held_out)]
+        assert held_out_calls == [split.held_out]
 
     def test_the_probe_comes_first_and_its_rows_are_reused(self, store):
         study, _ = _started(store)
@@ -157,7 +157,7 @@ class TestBaseline:
         capability = study.constraints[0].benchmark
         split = study.pools[capability.id]
         calls = [(items, replicate) for _, items, replicate in capability.calls]
-        assert calls == [(pool, replicate) for replicate in range(4) for pool in (split.search, split.sealed)]
+        assert calls == [(pool, replicate) for replicate in range(4) for pool in (split.search, split.held_out)]
 
     def test_a_constraint_that_cannot_fail_raises(self, store):
         capability = SyntheticBenchmark("capability", 3000, kind="capability", truth=_quiet, base=0.03)
@@ -275,8 +275,8 @@ class TestFeasibility:
         behavior = SyntheticBenchmark("formality", 1000, kind="behavior", truth=_quiet, base=0.3)
         for benchmark in (capability, behavior):
             benchmark.prepare(store)
-        pools = {capability.id: split_items(capability, sealed=5000, seed=0),
-                 behavior.id: split_items(behavior, sealed=200, seed=0)}
+        pools = {capability.id: split_items(capability, held_out=5000, seed=0),
+                 behavior.id: split_items(behavior, held_out=200, seed=0)}
         search = pools[capability.id].search
         assert len(search) == 3792
         capability.base = {**{item: 0.0 for item in capability.items}, **{item: 1.0 for item in search[:1733]}}
@@ -301,19 +301,19 @@ class TestFeasibility:
         assert feasibility(study(0.05), store) == []
 
     def test_the_band_rule_alone(self, store):
-        study, _ = _started(store, capability_sealed=200)
+        study, _ = _started(store, capability_held_out=200)
         problems = feasibility(study, store)
         assert any("guard band" in problem for problem in problems)
         assert not any("two rounds" in problem for problem in problems)
 
     def test_the_room_rule_alone(self, store):
-        study, _ = _started(store, capability_sealed=2100)
+        study, _ = _started(store, capability_held_out=2100)
         problems = feasibility(study, store)
         assert any("two rounds of blocks need 1,000 search items" in problem for problem in problems)
         assert not any("guard band" in problem for problem in problems)
 
     def test_the_objective_rule(self, store):
-        study, _ = _started(store, behavior_sealed=250)
+        study, _ = _started(store, behavior_held_out=250)
         assert feasibility(study, store) == [
             "behavior: two rounds of behavior blocks need 192 search items and the pool has 150"
         ]
@@ -339,7 +339,7 @@ class TestBatches:
         assert not drawn.overlapping
 
     def test_a_small_pool_gets_overlapping_blocks_with_a_warning(self, store, caplog):
-        study, _ = _started(store, capability_sealed=2800)
+        study, _ = _started(store, capability_held_out=2800)
         capability = study.constraints[0].benchmark
         with caplog.at_level(logging.WARNING):
             drawn = batch(study, store, capability, 0)

@@ -1,6 +1,6 @@
 """Evaluating candidates on a synthetic store: stages, calibration, confirmation, and reports.
 
-Differences against the baseline are exact in the synthetic world. With a margin of 0.05, 2,000 sealed items, the
+Differences against the baseline are exact in the synthetic world. With a margin of 0.05, 2,000 held-out items, the
 two-level capability baseline (design variance close to 0.09), and the default power settings, the looks are
 (32, 128, 400), and a point is confirmed when its loss is at most 0.0253 (second look) or 0.0319 (third look). On a
 solved axis outside `study.monotone`, a ladder position is kept when its loss is at most 0.0420. The quadratic truth

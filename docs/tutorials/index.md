@@ -27,7 +27,7 @@ steering pipelines under accuracy constraints.
     ---
 
     A study searches steering pipelines for the largest behavior gain whose capability loss stays within a margin,
-    and certifies the result on sealed items.
+    and certifies the result on held-out items.
 
     [:octicons-arrow-right-24: Optimize steering pipelines](./optimize_steering_pipelines.md)
 

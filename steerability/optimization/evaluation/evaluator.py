@@ -306,7 +306,7 @@ def judge(session: StudySession, resolved_id: str, calibration_round: int) -> Co
         items_by_benchmark[benchmark.id] = items
         table = paired(study, store, resolved_id, benchmark, items)
         outcome.capability[benchmark.name] = table
-        if not feasible(table, constraint.margin, n_sealed=session.n_sealed(benchmark), alpha=settings.alpha,
+        if not feasible(table, constraint.margin, n_held_out=session.n_held_out(benchmark), alpha=settings.alpha,
                         power=settings.power, benchmarks=len(study.constraints), guard=settings.guard_band):
             outcome.reason = "not_confirmed"
             return outcome
@@ -374,7 +374,7 @@ def confirm_constraints(
             items_by_benchmark[benchmark.id] = items
             table = paired(study, store, resolved, benchmark, items)
             decision = confirm_step(
-                table, look, constraint.margin, n_sealed=session.n_sealed(benchmark), alpha=settings.alpha,
+                table, look, constraint.margin, n_held_out=session.n_held_out(benchmark), alpha=settings.alpha,
                 power=settings.power, benchmarks=len(study.constraints), guard=settings.guard_band,
             )
             if decision != "continue":

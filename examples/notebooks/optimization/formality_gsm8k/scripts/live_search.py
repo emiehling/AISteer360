@@ -26,9 +26,9 @@ has spent it is not searched again. All searches finish before any arm is certif
 every arm has spent its budget (or with `--certify-short`). Otherwise it writes the budget fields of every arm and
 `comparison_valid: false` to the report and exits with an error.
 
-The arms share the sealed items. Since each arm has its own store, its sealed ledger records its own study only. The
+The arms share the held-out items. Since each arm has its own store, its held-out ledger records its own study only. The
 report gives, per arm, the budget fields, the certified gains, the number of finalists that passed, and the optimism
-gap (the search-time gain minus the sealed gain), and for the random arm the size and SHA-256 of its prompt pool.
+gap (the search-time gain minus the held-out gain), and for the random arm the size and SHA-256 of its prompt pool.
 
 Run it from the repository root, since the GSM8K task is referenced by its relative path (a benchmark's name is its
 task reference, and names appear in the summaries a proposer sees).
@@ -48,8 +48,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from formality import OBJECTIVE_SEALED, PAIRS, formality_benchmark
-from truth_grid import MODEL, SEALED, gsm8k_benchmark, protocol
+from formality import OBJECTIVE_HELD_OUT, PAIRS, formality_benchmark
+from truth_grid import HELD_OUT, MODEL, gsm8k_benchmark, protocol
 
 from steerability.algorithms.core.recipe import Choice, Interval, RecipeError, Template, Text, entry
 from steerability.algorithms.core.store import Store
@@ -92,10 +92,10 @@ def build_study(store: Store, *, arm: str, model: str, prompt_pool: Sequence[str
     formality = formality_benchmark()
     for benchmark in (gsm8k, formality):
         benchmark.prepare(store)
-    capability = split_items(gsm8k, sealed=SEALED, seed=0)
+    capability = split_items(gsm8k, held_out=HELD_OUT, seed=0)
     if arm == "naive":
-        capability = PoolSplit(capability.search[:NAIVE_SEARCH_ITEMS], capability.sealed)
-    pools = {gsm8k.id: capability, formality.id: split_items(formality, sealed=OBJECTIVE_SEALED, seed=0)}
+        capability = PoolSplit(capability.search[:NAIVE_SEARCH_ITEMS], capability.held_out)
+    pools = {gsm8k.id: capability, formality.id: split_items(formality, held_out=OBJECTIVE_HELD_OUT, seed=0)}
     caa = entry(CAA, data=PAIRS, train_spec={"method": "mean_diff", "accumulate": "all"}, layer_id=Choice(LAYERS),
                 multiplier=Interval(0.25, 8.0, log=True))
     if arm == "random":

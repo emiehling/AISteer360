@@ -44,7 +44,7 @@ def _started(study, store, **limits):
 
 
 def test_an_infeasible_study_raises_unless_allowed(store, caplog):
-    study = build_study(store, _quadratic, space={"prompt": prompt_template(("a",))}, capability_sealed=200)
+    study = build_study(store, _quadratic, space={"prompt": prompt_template(("a",))}, capability_held_out=200)
     with pytest.raises(StudyInfeasibleError, match="guard band"):
         _started(study, store)
     with caplog.at_level(logging.WARNING):

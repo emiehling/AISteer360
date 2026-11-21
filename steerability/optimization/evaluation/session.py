@@ -112,7 +112,7 @@ class StudySession:
         self._rounds: dict[int, dict[str, Batch]] = {}
         self._started_at: float | None = None
         self._open: tuple[str, ExitStack, Steered] | None = None
-        self._sealed_counts: dict[str, int] = {}
+        self._held_out_counts: dict[str, int] = {}
         self._looks: dict[str, tuple[int, int, int]] = {}
         self._rescoring = False
 
@@ -187,10 +187,10 @@ class StudySession:
             benchmark = constraint.benchmark
             variance = evidence.design_variance(study, store, benchmark)
             ladder, last = evidence.block_sizes(study, store, benchmark)
-            n_sealed = self.n_sealed(benchmark)
+            n_held_out = self.n_held_out(benchmark)
             band = 0.0
-            if settings.guard_band and n_sealed:
-                band = guard_band(math.sqrt(variance / last), math.sqrt(variance / n_sealed), alpha=settings.alpha,
+            if settings.guard_band and n_held_out:
+                band = guard_band(math.sqrt(variance / last), math.sqrt(variance / n_held_out), alpha=settings.alpha,
                                   power=settings.power, benchmarks=len(study.constraints))
             logger.info(
                 "%s: design variance %.4f (baseline %.4f, floor %.4f), last look %d, ladder block %d, looks %s, band "
@@ -215,11 +215,11 @@ class StudySession:
         """The batches of a round, by benchmark id."""
         return self._rounds[round_index]
 
-    def n_sealed(self, benchmark: Benchmark) -> int:
-        """The number of usable sealed items of a benchmark."""
-        if benchmark.id not in self._sealed_counts:
-            self._sealed_counts[benchmark.id] = len(evidence.usable(self.study, self.store, benchmark, "sealed"))
-        return self._sealed_counts[benchmark.id]
+    def n_held_out(self, benchmark: Benchmark) -> int:
+        """The number of usable held-out items of a benchmark."""
+        if benchmark.id not in self._held_out_counts:
+            self._held_out_counts[benchmark.id] = len(evidence.usable(self.study, self.store, benchmark, "held_out"))
+        return self._held_out_counts[benchmark.id]
 
     def looks(self, benchmark: Benchmark) -> tuple[int, int, int]:
         """The cumulative item counts of the three looks of a confirmation on a constraint.

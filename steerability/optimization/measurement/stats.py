@@ -12,7 +12,7 @@ understate its variance. The decision rules are the following:
 - **Certification (`Paired.passes`)**: the one-sided lower bound of the difference, at the floor variance, is above
   `-margin`.
 - **Guard band (`guard_band`, `release_band`)**: how far inside the margin a search estimate must sit so that the
-  sealed test passes with probability `power`, covering the noise of both the search estimate and the sealed test.
+  held-out test passes with probability `power`, covering the noise of both the search estimate and the held-out test.
 - **Confirmation (`confirm_step`)**: one look of a sequential check that accepts a point whose loss is inside the
   margin by the band (`feasible`) and rejects a point whose loss is above the margin (`clearly_over`).
 - **Ladder decisions (`provisional_positions`, `rank_positions`)**: which positions of a solved axis outside
@@ -199,31 +199,31 @@ def ladder_size(last: int) -> int:
     return max(32, last // 4)
 
 
-def guard_band(se_search: float, se_sealed: float, *, alpha: float, power: float, benchmarks: int = 1) -> float:
-    """How far inside the margin a search estimate must sit to pass the sealed test with the given power.
+def guard_band(se_search: float, se_held_out: float, *, alpha: float, power: float, benchmarks: int = 1) -> float:
+    """How far inside the margin a search estimate must sit to pass the held-out test with the given power.
 
-    A point whose search estimate sits exactly at `margin - band` passes the sealed test with probability `power`.
+    A point whose search estimate sits exactly at `margin - band` passes the held-out test with probability `power`.
     With several constraint benchmarks, each one is given the power `power ** (1 / benchmarks)`.
 
     Args:
         se_search: The standard error of the search estimate.
-        se_sealed: The standard error of the sealed test.
-        alpha: The error rate of the sealed test.
-        power: The probability that the point passes the sealed test.
+        se_held_out: The standard error of the held-out test.
+        alpha: The error rate of the held-out test.
+        power: The probability that the point passes the held-out test.
         benchmarks: The number of constraint benchmarks the point must pass.
 
     Returns:
         The band, as an absolute difference of scores.
     """
     per_benchmark = power ** (1.0 / benchmarks)
-    return _Z(1 - alpha) * se_sealed + _Z(per_benchmark) * math.hypot(se_search, se_sealed)
+    return _Z(1 - alpha) * se_held_out + _Z(per_benchmark) * math.hypot(se_search, se_held_out)
 
 
 def release_band(
     paired: Paired,
     margin: float,
     *,
-    n_sealed: int,
+    n_held_out: int,
     alpha: float,
     power: float,
     benchmarks: int = 1,
@@ -238,9 +238,9 @@ def release_band(
     Args:
         paired: The table.
         margin: The margin.
-        n_sealed: The number of sealed items the point is certified on.
-        alpha: The error rate of the sealed test.
-        power: The probability that the point passes the sealed test.
+        n_held_out: The number of held-out items the point is certified on.
+        alpha: The error rate of the held-out test.
+        power: The probability that the point passes the held-out test.
         benchmarks: The number of constraint benchmarks.
         n_search: The size of a planned confirmation, or None.
         guard: Whether the band applies; False gives a band of 0.
@@ -252,7 +252,7 @@ def release_band(
         return 0.0
     per_item_sd = math.sqrt(max(paired.variance, floor_variance(margin)))
     n = max(paired.n, n_search or 0)
-    return guard_band(per_item_sd / math.sqrt(n), per_item_sd / math.sqrt(n_sealed), alpha=alpha, power=power,
+    return guard_band(per_item_sd / math.sqrt(n), per_item_sd / math.sqrt(n_held_out), alpha=alpha, power=power,
                       benchmarks=benchmarks)
 
 
@@ -260,7 +260,7 @@ def feasible(
     paired: Paired,
     margin: float,
     *,
-    n_sealed: int,
+    n_held_out: int,
     alpha: float,
     power: float,
     benchmarks: int = 1,
@@ -271,16 +271,16 @@ def feasible(
     Args:
         paired: The table.
         margin: The margin.
-        n_sealed: The number of sealed items.
-        alpha: The error rate of the sealed test.
-        power: The probability that the point passes the sealed test.
+        n_held_out: The number of held-out items.
+        alpha: The error rate of the held-out test.
+        power: The probability that the point passes the held-out test.
         benchmarks: The number of constraint benchmarks.
         guard: Whether the band applies.
 
     Returns:
         Whether `-paired.mean <= margin - band`.
     """
-    band = release_band(paired, margin, n_sealed=n_sealed, alpha=alpha, power=power, benchmarks=benchmarks,
+    band = release_band(paired, margin, n_held_out=n_held_out, alpha=alpha, power=power, benchmarks=benchmarks,
                         guard=guard)
     return -paired.mean <= margin - band
 
@@ -295,7 +295,7 @@ def confirm_step(
     look: int,
     margin: float,
     *,
-    n_sealed: int,
+    n_held_out: int,
     alpha: float,
     power: float,
     benchmarks: int = 1,
@@ -310,9 +310,9 @@ def confirm_step(
         paired: The point's table after this look.
         look: The index of the look (0, 1, or 2).
         margin: The margin.
-        n_sealed: The number of sealed items.
+        n_held_out: The number of held-out items.
         alpha: The error rate.
-        power: The probability that an accepted point passes the sealed test.
+        power: The probability that an accepted point passes the held-out test.
         benchmarks: The number of constraint benchmarks.
         guard: Whether the band applies.
 
@@ -321,7 +321,7 @@ def confirm_step(
     """
     if clearly_over(paired, margin, alpha):
         return "reject"
-    if look >= 1 and feasible(paired, margin, n_sealed=n_sealed, alpha=alpha, power=power, benchmarks=benchmarks,
+    if look >= 1 and feasible(paired, margin, n_held_out=n_held_out, alpha=alpha, power=power, benchmarks=benchmarks,
                               guard=guard):
         return "accept"
     return "continue"
@@ -333,7 +333,7 @@ def certify_fixed_order(finalists: Sequence[Sequence[Paired]], margins: Sequence
     Testing stops at the first finalist that fails.
 
     Args:
-        finalists: Per finalist, in test order, one sealed table per constraint.
+        finalists: Per finalist, in test order, one held-out table per constraint.
         margins: The margin of each constraint.
         alpha: The error rate of each test.
 
@@ -351,7 +351,7 @@ def provisional_positions(
     margin: float,
     *,
     n_target: int,
-    n_sealed: int,
+    n_held_out: int,
     alpha: float,
     power: float,
     benchmarks: int = 1,
@@ -365,7 +365,7 @@ def provisional_positions(
         losses: One capability table per position, in order.
         margin: The margin.
         n_target: The size of the planned confirmation.
-        n_sealed: The number of sealed items.
+        n_held_out: The number of held-out items.
         alpha: The error rate.
         power: The power of the band.
         benchmarks: The number of constraint benchmarks.
@@ -376,7 +376,7 @@ def provisional_positions(
     """
     kept = []
     for index, paired in enumerate(losses):
-        band = release_band(paired, margin, n_sealed=n_sealed, alpha=alpha, power=power, benchmarks=benchmarks,
+        band = release_band(paired, margin, n_held_out=n_held_out, alpha=alpha, power=power, benchmarks=benchmarks,
                             n_search=n_target, guard=guard)
         if -paired.mean <= margin - band:
             kept.append(index)
