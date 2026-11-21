@@ -218,17 +218,18 @@ Re-scoring reduces the selection bias in the fitness values.
 The `run_study` function drives an in-process proposer:
 
 ```python
-from steerability.optimization.search.enumerate import RandomProposer
-from steerability.optimization.search.proposer import run_study
+from steerability.optimization.search.loop import run_study
+from steerability.optimization.search.proposers import RandomProposer
 
 archive = run_study(study, RandomProposer(study, seed=0), store=store, max_generations=200_000)
 best = archive.best()
 ```
 
 The `GridProposer` enumerates every combination of discrete proposer axes, and the `RandomProposer` draws a structure
-uniformly and then one value per proposer axis (a text axis keeps the empty seed value). A custom proposer implements
-`ask(view, n)` and `tell(candidate, result)`. It sees only the `ArchiveView` of the archive, which contains each
-candidate's id, values, status, stage, reason, fitness, and summary (no item-level data).
+uniformly and then one value per proposer axis (a text axis keeps the empty seed value). A custom proposer subclasses
+`BaseProposer`, implements `ask(view, n)`, and overrides `tell(candidate, result)` when it learns from results. It
+sees only the `ArchiveView` of the archive, which contains each candidate's id, values, status, stage, reason, fitness,
+and summary (no item-level data).
 
 The `run_openevolve` function (in `steerability.optimization.search.openevolve`, with the `optimize` extra) searches
 with [OpenEvolve](https://github.com/codelion/openevolve), which evolves the candidate programs with a language model:

@@ -86,8 +86,8 @@ steerability/
 │   │                            # feasibility, batches, point tables)
 │   ├── evaluation/              # plan.py, result.py, archive.py, evaluator.py and calibration.py (stages, not
 │   │                            # public), session.py (StudySession), service.py (EvaluationService)
-│   ├── search/                  # proposer.py (Proposer, run_study), enumerate.py (grid, random), openevolve.py and
-│   │                            # _openevolve_controller.py (the only modules that import openevolve)
+│   ├── search/                  # loop.py (run_study), proposers/ (BaseProposer, grid.py, random.py), openevolve.py
+│   │                            # and _openevolve_controller.py (the only modules that import openevolve)
 │   └── release/                 # certify.py (certification on sealed items, certificates, bundles)
 └── utils/                       # tokenization, rendering, thinking, optional-dependency guard, verbosity
                                  # (opt-in package logging)
@@ -602,8 +602,8 @@ pools, the axes, and the benchmark names before any model work.
 from steerability.optimization import Constraint, Study, split_items
 from steerability.optimization.evaluation.session import StudySession
 from steerability.optimization.release.certify import certify
-from steerability.optimization.search.enumerate import RandomProposer
-from steerability.optimization.search.proposer import run_study
+from steerability.optimization.search.loop import run_study
+from steerability.optimization.search.proposers import RandomProposer
 
 for benchmark in (gsm8k, formality):
     benchmark.prepare(store)
@@ -656,7 +656,7 @@ spreads the finalists over levels and selects previously unevaluated search item
 measures their levels again on exactly those items.
 
 Proposers see only the `ArchiveView` (per candidate the id, values, status, stage, reason, fitness, and a summary of
-search-pool aggregates). `run_study` drives an in-process `Proposer` (`GridProposer`, `RandomProposer`), and
+search-pool aggregates). `run_study` drives an in-process `BaseProposer` (`GridProposer`, `RandomProposer`), and
 `run_openevolve` (`search/openevolve.py`, `optimize` extra) runs OpenEvolve in a subprocess. Its evaluator and its
 population strategy call an `EvaluationService` that serves the session over a local socket (JSON messages, one
 evaluation at a time, a deadline of 90% of the stage timeout). The strategy admits and replaces programs by the

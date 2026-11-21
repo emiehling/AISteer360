@@ -68,8 +68,8 @@ from steerability.optimization.measurement.evidence import (
 )
 from steerability.optimization.measurement.stats import Paired, guard_band
 from steerability.optimization.release.certify import certify
-from steerability.optimization.search.enumerate import GridProposer, RandomProposer
-from steerability.optimization.search.proposer import run_study
+from steerability.optimization.search.loop import run_study
+from steerability.optimization.search.proposers import GridProposer, RandomProposer
 
 logger = logging.getLogger("replay")
 

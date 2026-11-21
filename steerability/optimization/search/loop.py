@@ -1,8 +1,7 @@
-"""Proposers and the in-process study loop."""
+"""The in-process study loop."""
 from __future__ import annotations
 
 import logging
-import typing
 from typing import TYPE_CHECKING
 
 from steerability.optimization.evaluation.session import StudySession
@@ -10,34 +9,16 @@ from steerability.optimization.evaluation.session import StudySession
 if TYPE_CHECKING:
     from steerability.algorithms.core.store import Store
     from steerability.algorithms.core.sweeps import PipelineFactory
-    from steerability.optimization.evaluation.archive import Archive, ArchiveView
-    from steerability.optimization.evaluation.result import Result
-    from steerability.optimization.study import Candidate, Study
+    from steerability.optimization.evaluation.archive import Archive
+    from steerability.optimization.search.proposers.base import BaseProposer
+    from steerability.optimization.study import Study
 
 logger = logging.getLogger(__name__)
 
 
-class Proposer(typing.Protocol):
-    """A source of candidates that sees only the archive's view.
-
-    Attributes:
-        name: The proposer's name, recorded with each candidate it proposes.
-    """
-
-    name: str
-
-    def ask(self, view: ArchiveView, n: int) -> list[Candidate]:
-        """Up to `n` candidates to evaluate next; an empty list ends the study."""
-        ...
-
-    def tell(self, candidate: Candidate, result: Result) -> None:
-        """Receive the result of a proposed candidate."""
-        ...
-
-
 def run_study(
     study: Study,
-    proposer: Proposer,
+    proposer: BaseProposer,
     *,
     store: Store,
     factory: PipelineFactory | None = None,
@@ -89,4 +70,4 @@ def run_study(
     return session.archive
 
 
-__all__ = ["Proposer", "run_study"]
+__all__ = ["run_study"]

@@ -41,7 +41,8 @@ PRODUCTION_CLASSES = {
     "PartialBatchError", "TransportError",
     "Artifact", "ArtifactProvenance", "ModelArtifact", "CheckpointArtifact", "LoRAArtifact",
     "Study", "StudySession", "Archive", "ArchiveView", "EvaluationService", "Candidate", "Constraint", "PoolSplit",
-    "Paired", "EvaluationPlan", "OperatingPoint", "LadderPoint", "Certification", "GridProposer", "RandomProposer",
+    "Paired", "EvaluationPlan", "OperatingPoint", "LadderPoint", "Certification", "BaseProposer", "GridProposer",
+    "RandomProposer",
 }
 
 PRODUCTION_FUNCTIONS = {

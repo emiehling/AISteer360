@@ -1,4 +1,4 @@
-"""Tests for the evaluation service and the in-process study loop (`evaluation/service.py`, `search/proposer.py`)."""
+"""Tests for the evaluation service and the in-process study loop (`evaluation/service.py`, `search/loop.py`)."""
 import json
 from multiprocessing.connection import Client
 
@@ -9,9 +9,9 @@ pytest.importorskip("inspect_ai")
 from steerability.algorithms.core.store import Store
 from steerability.optimization.evaluation.service import EvaluationService, call
 from steerability.optimization.evaluation.session import StudySession
-from steerability.optimization.search.enumerate import GridProposer, RandomProposer
+from steerability.optimization.search.loop import run_study
 from steerability.optimization.search.openevolve import parse, program_text
-from steerability.optimization.search.proposer import run_study
+from steerability.optimization.search.proposers import BaseProposer
 from steerability.optimization.study import Candidate
 from tests.optimization.helpers import (
     StubFactory,
@@ -122,12 +122,13 @@ def test_messages_over_the_socket_are_json(tmp_path, space):
         service.stop()
 
 
-class FixedProposer:
+class FixedProposer(BaseProposer):
     """Proposes a fixed list of candidates in order, once."""
 
     name = "fixed"
 
-    def __init__(self, candidates):
+    def __init__(self, study, candidates):
+        super().__init__(study)
         self.candidates = list(candidates)
         self.told = []
 
@@ -153,7 +154,7 @@ def test_run_study_and_the_service_advance_rounds_identically(tmp_path, space):
     candidates = [Candidate("prompt", {"prompt.text": text}) for text in TEXTS[:5]]
     looped = Store.open(tmp_path / "looped")
     study = build_study(looped, _truth, space=space)
-    proposer = FixedProposer(candidates)
+    proposer = FixedProposer(study, candidates)
     run_study(study, proposer, store=looped, factory=StubFactory(study.protocol))
     assert len(proposer.told) == 5
     served = _session(Store.open(tmp_path / "served"), space=space)
@@ -163,27 +164,3 @@ def test_run_study_and_the_service_advance_rounds_identically(tmp_path, space):
     assert served.round_index == 1
     assert _rounds(looped) == _rounds(served.store)
     assert _versions(looped) == _versions(served.store)
-
-
-def test_grid_and_random_proposers(tmp_path, space):
-    session = _session(Store.open(tmp_path / "store"), space=space)
-    grid = GridProposer(session.study)
-    first = grid.ask(session.archive.view(), 3)
-    assert first == [Candidate("caa", {}), Candidate("prompt", {"prompt.text": "text 0"}),
-                     Candidate("prompt", {"prompt.text": "text 1"})]
-    assert len(grid.ask(session.archive.view(), 10)) == 4
-    assert grid.ask(session.archive.view(), 10) == []
-    draws = RandomProposer(session.study, seed=3).ask(session.archive.view(), 5)
-    assert draws == RandomProposer(session.study, seed=3).ask(session.archive.view(), 5)
-    assert len({session.study.candidate_id(candidate) for candidate in draws}) == len(draws)
-    session.evaluate(draws[0])
-    assert session.study.candidate_id(draws[0]) not in {
-        session.study.candidate_id(candidate) for candidate in RandomProposer(session.study, seed=3).ask(
-            session.archive.view(), 5)
-    }
-
-
-def test_the_grid_requires_discrete_proposer_axes(tmp_path):
-    session = _session(Store.open(tmp_path / "store"), space={"caa": caa_template()}, searched={"caa.multiplier"})
-    with pytest.raises(ValueError, match="continuous"):
-        GridProposer(session.study)

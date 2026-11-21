@@ -40,9 +40,9 @@ from steerability.optimization import Constraint, PoolSplit, Settings, Study, sp
 from steerability.optimization.evaluation.session import StudySession
 from steerability.optimization.measurement.evidence import ensure_baseline
 from steerability.optimization.release.certify import certify
-from steerability.optimization.search.enumerate import RandomProposer
+from steerability.optimization.search.loop import run_study
 from steerability.optimization.search.openevolve import run_openevolve
-from steerability.optimization.search.proposer import run_study
+from steerability.optimization.search.proposers import RandomProposer
 
 logger = logging.getLogger("live_search")
 
