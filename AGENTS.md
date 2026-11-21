@@ -115,9 +115,9 @@ Optional extras, in three tiers:
 
 - backends: `vllm`, the vLLM backends plus the `vllm_hook_plugins` core; pulls in `trl[vllm]` so the resolved vLLM
   stays inside trl's supported vLLM range
-- workflows: `eval`, the Inspect AI evaluation stack plus matplotlib and seaborn for `evaluation/plotting.py`
+- workflows: `eval`, the Inspect AI evaluation stack plus matplotlib and seaborn for `evaluation/plotting.py`, and
+  `optimize` (OpenEvolve, for `run_openevolve`); the optimization package also needs `eval`
 - method-specific: `merging` (MergeKit)
-- search: `optimize` (OpenEvolve, for `run_openevolve`); the optimization package also needs `eval`
 - `all`: `eval` and `merging`
 
 Contributor tooling lives in `[dependency-groups]`: `dev` (pytest, pre-commit, the plugin core, and the `notebooks`

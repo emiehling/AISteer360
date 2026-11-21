@@ -10,6 +10,8 @@ The test tree is organized by area:
 - `tests/core/` covers the pipeline, registry, and other core functionality
 - `tests/internals/` covers the `core/internals` substrate and probes
 - `tests/evaluation/` covers the Inspect AI evaluation stack (provider, collator, solver, scorer adapter, suite, runner)
+- `tests/optimization/` covers the optimization package (studies, statistics, evaluation, proposers, the OpenEvolve
+  adapter, and certification)
 - `tests/utils/` holds shared test utilities
 
 ## Executing tests

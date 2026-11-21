@@ -76,7 +76,7 @@ A candidate is a structure and one value per proposer axis:
 ```python
 from steerability.optimization import Candidate
 
-candidate = Candidate("both", {"prompt.text": "Answer in a formal register.", "caa.layer_id": 12})
+candidate = Candidate("both", {"system_prompt.text": "Answer in a formal register.", "caa.layer_id": 12})
 ```
 
 The `Study.bind` method binds every proposer axis of a candidate's template and leaves the solved axis free. It raises
