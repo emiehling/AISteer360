@@ -14,7 +14,8 @@ real one was degenerate), and the factory steers nothing. The notebook `formalit
 The study of a replay has one structure, the grid's CAA entry with `layer_id` as an unordered `Choice` and
 `multiplier` as an ordered `Choice`. The multiplier is in `study.monotone`, or in `study.searched` with
 `--searched`. The margin is 5 points, and the settings are `Settings(round_candidates=5)` unless
-`--round-candidates` is given. Each replay runs `run_study` on a new store and then `certify`. The proposer is a
+`--round-candidates` is given (and `ladder_power` is `--ladder-power` when it is given). Each replay runs `run_study`
+on a new store and then `certify`. The proposer is a
 `GridProposer`, or a `RandomProposer` seeded with the replay's seed with `--proposer random`, which visits the layers
 in no fixed order when `--max-generations` stops a search early.
 
@@ -29,18 +30,37 @@ The report gives the following measures over the seeds:
 - the best true gain among accepted points truly inside the margin (solved against searched, at an equal
   `--max-generations`)
 - the bias of the winner's loss estimate in standard errors (round length)
+- the mean number of recorded candidates and the mean generations per candidate
+- the false-rejection share, i.e., the share of rejected candidates among the recoverable ones (those whose layer
+  has a multiplier with a true loss of at most `margin - band` and a true gain of at least `min_gain`), and the
+  number of rejections per reason
+
+The `compare` command reads a report of today's rule and the reports of challengers (run on the same seeds), listed
+from the smallest change to the largest. A challenger qualifies when it passes three gates and shows a benefit.
+The gates are validity (at most the one-sided 95% binomial limit of replays at `alpha` certify a setting over the
+margin), the promise (an accepted point's sealed pass share of at least `min(power, today's share - 0.02)`), and
+value (the one-sided 95% bound of the per-seed difference in the best certified gain share is above -0.05). The
+benefits are a better value (that bound is above 0), or at most 0.85 of today's generations per candidate together
+with a positive bound of the per-seed difference in false-rejection share (today's minus the challenger's). The
+choice starts from the qualifying challenger with the highest mean value, and the first qualifying challenger in
+the listed order that it does not beat (the bound of their per-seed value difference is at most 0) replaces it.
+Without a qualifying challenger, the choice is today's rule.
 
 usage:
     python examples/notebooks/optimization/formality_gsm8k/scripts/replay.py export \
         <store> [<store> ...] --output grid.json
     python examples/notebooks/optimization/formality_gsm8k/scripts/replay.py run \
-        grid.json --seeds 200 [--workers 8] [--searched]
+        grid.json --seeds 200 [--workers 8] [--searched] [--ladder-power P]
+    python examples/notebooks/optimization/formality_gsm8k/scripts/replay.py compare \
+        today.json challenger.json [challenger.json ...]
 """
 import argparse
+import dataclasses
 import json
 import logging
 import math
 import tempfile
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -76,6 +96,11 @@ logger = logging.getLogger("replay")
 MARGIN = 0.05
 POOLS = {"capability": (3792, 5000), "behavior": (1500, 600)}
 STAND_IN = "a stand-in completion of the replayed item"
+BOUND_Z = 1.645  # one-sided 95% bound of a mean over seeds
+VALIDITY_QUANTILE = 0.95
+PROMISE_SLACK = 0.02
+VALUE_TOLERANCE = 0.05
+COST_SHARE = 0.85
 _DATA: dict | None = None
 
 
@@ -300,6 +325,22 @@ def _sealed_passes(data: dict, sealed: np.ndarray, setting: int, alpha: float) -
     return Paired.from_diffs(diffs).passes(MARGIN, alpha)
 
 
+def _rejection_fields(archive, settings_list: list[dict], loss: np.ndarray, gain: np.ndarray, *, room: float,
+                      min_gain: float) -> dict:
+    """The recorded candidates, the recoverable ones, those of them rejected, and the rejections per reason."""
+    recoverable_layers = {setting["caa.layer_id"] for index, setting in enumerate(settings_list)
+                          if loss[index] <= room and gain[index] >= min_gain}
+    results = archive.results()
+    recoverable = [result for result in results
+                   if archive.candidate(result.candidate_id).values["caa.layer_id"] in recoverable_layers]
+    return {
+        "candidates": len(results),
+        "recoverable": len(recoverable),
+        "false_rejections": sum(result.status == "rejected" for result in recoverable),
+        "rejections": dict(Counter(result.reason for result in results if result.status == "rejected")),
+    }
+
+
 def replay(seed: int, options: dict) -> dict:
     """Run one study in the replay world and return its measures."""
     data = _DATA
@@ -307,10 +348,12 @@ def replay(seed: int, options: dict) -> dict:
     world = build_world(data, seed=seed)
     recipes = world.recipes
     searched = frozenset({"caa.multiplier"}) if options["searched"] else frozenset()
+    settings = Settings(round_candidates=options["round_candidates"])
+    if options["ladder_power"] is not None:
+        settings = dataclasses.replace(settings, ladder_power=options["ladder_power"])
     study = Study(
         name=f"replay-{seed}", protocol=world.protocol, space={"caa": world.template}, objective=world.formality,
-        constraints=(Constraint(world.gsm8k, MARGIN),), pools=world.pools,
-        settings=Settings(round_candidates=options["round_candidates"]), searched=searched,
+        constraints=(Constraint(world.gsm8k, MARGIN),), pools=world.pools, settings=settings, searched=searched,
         monotone=frozenset() if options["searched"] else frozenset({"caa.multiplier"}),
     )
     loss, gain = -_differences(data, "capability"), _differences(data, "behavior")
@@ -332,6 +375,8 @@ def replay(seed: int, options: dict) -> dict:
             finalists = session.plan_finalists()
             certification = certify(session, bundle_dir=Path(scratch) / "bundles")
         points = archive.points()
+        rejection_fields = None if options["searched"] else _rejection_fields(
+            archive, settings_list, loss, gain, room=MARGIN - band, min_gain=study.settings.min_gain)
         store.close()
 
     def setting_of(resolved_id: str) -> int:
@@ -368,6 +413,7 @@ def replay(seed: int, options: dict) -> dict:
         "accepted_sealed_passes": [bool(_sealed_passes(data, world.sealed, index, alpha)) for index in accepted],
         "picks": picks,
         "winner_loss_bias_in_se": winner_bias,
+        **(rejection_fields or dict.fromkeys(("candidates", "recoverable", "false_rejections", "rejections"))),
     }
 
 
@@ -382,7 +428,7 @@ def run(arguments) -> None:
     data = _DATA
     options = {"searched": arguments.searched, "round_candidates": arguments.round_candidates,
                "max_generations": arguments.max_generations, "proposer": arguments.proposer,
-               "scratch": arguments.scratch}
+               "ladder_power": arguments.ladder_power, "scratch": arguments.scratch}
     seeds = range(arguments.start_seed, arguments.start_seed + arguments.seeds)
     with ProcessPoolExecutor(max_workers=arguments.workers, initializer=_load, initargs=(arguments.data,)) as executor:
         outcomes = list(executor.map(replay, seeds, [options] * len(seeds)))
@@ -404,6 +450,11 @@ def run(arguments) -> None:
             "chosen": sorted(by_layer.get(str(layer), [])),
         }
     passes = [passed for outcome in outcomes for passed in outcome["accepted_sealed_passes"]]
+    counted = [outcome for outcome in outcomes if outcome["candidates"] is not None]
+    recoverable = sum(outcome["recoverable"] for outcome in counted)
+    rejections: Counter = Counter()
+    for outcome in counted:
+        rejections.update(outcome["rejections"])
     report = {
         "options": {key: value for key, value in options.items() if key != "scratch"},
         "seeds": len(outcomes), "margin": MARGIN, "band_mean": float(np.mean(bands)),
@@ -419,6 +470,12 @@ def run(arguments) -> None:
         "generations_mean": _mean(outcome["generations"] for outcome in outcomes),
         "certified_mean": _mean(outcome["certified"] for outcome in outcomes),
         "finalists_mean": _mean(outcome["finalists"] for outcome in outcomes),
+        "candidates_mean": _mean(outcome["candidates"] for outcome in counted),
+        "generations_per_candidate": _mean(outcome["generations"] / outcome["candidates"] for outcome in counted
+                                           if outcome["candidates"]),
+        "false_rejection_share": (sum(outcome["false_rejections"] for outcome in counted) / recoverable
+                                  if recoverable else None),
+        "rejections": dict(sorted(rejections.items())) if counted else None,
         "layers": layers,
         "outcomes": outcomes,
     }
@@ -426,6 +483,102 @@ def run(arguments) -> None:
     logger.info("%d replays: over-margin certified %.3f, first finalist passed %s, report written to %s",
                 len(outcomes), report["over_margin_certified_share"], report["first_finalist_pass_share"],
                 arguments.output)
+
+
+def _bound(differences: list[float]) -> float | None:
+    """The one-sided 95% lower bound of the mean of per-seed differences, or None with fewer than two."""
+    if len(differences) < 2:
+        return None
+    values = np.asarray(differences, dtype=float)
+    return float(values.mean() - BOUND_Z * values.std(ddof=1) / math.sqrt(len(values)))
+
+
+def _value_differences(first: dict, second: dict) -> list[float]:
+    """The per-seed differences in `best_certified_gain_share`, first minus second."""
+    return [first[seed]["best_certified_gain_share"] - second[seed]["best_certified_gain_share"] for seed in first
+            if first[seed]["best_certified_gain_share"] is not None
+            and second[seed]["best_certified_gain_share"] is not None]
+
+
+def _false_rejection_differences(first: dict, second: dict) -> list[float]:
+    """The per-seed differences in false-rejection share, first minus second, over seeds where both have some."""
+    return [first[seed]["false_rejections"] / first[seed]["recoverable"]
+            - second[seed]["false_rejections"] / second[seed]["recoverable"] for seed in first
+            if first[seed]["recoverable"] and second[seed]["recoverable"]]
+
+
+def _validity_limit(seeds: int, rate: float) -> int:
+    """The one-sided 95% limit of a binomial count over `seeds` replays at a true rate of `rate`."""
+    total = 0.0
+    for count in range(seeds + 1):
+        total += math.comb(seeds, count) * rate ** count * (1 - rate) ** (seeds - count)
+        if total >= VALIDITY_QUANTILE:
+            return count
+    return seeds
+
+
+def compare(arguments) -> None:
+    """Compare the report of today's rule with the reports of challengers and apply the rule of choice."""
+    names = [Path(path).stem for path in arguments.reports]
+    reports = [json.loads(Path(path).read_text(encoding="utf-8")) for path in arguments.reports]
+    by_seed = [{outcome["seed"]: outcome for outcome in report["outcomes"]} for report in reports]
+    if any(set(seeds) != set(by_seed[0]) for seeds in by_seed[1:]):
+        raise SystemExit("The reports were run on different seeds.")
+    settings = Settings()
+    limit = _validity_limit(len(by_seed[0]), settings.alpha)
+    over = [sum(bool(outcome["over_margin_certified"]) for outcome in seeds.values()) for seeds in by_seed]
+    logger.info("%-12s %8s %8s %8s %10s %10s %10s", "report", "over", "sealed", "value", "gen/cand", "false rej",
+                "candidates")
+    for name, report, count in zip(names, reports, over):
+        logger.info("%-12s %8d %8.3f %8.3f %10.1f %10.3f %10.2f", name, count, report["accepted_sealed_pass_share"],
+                    report["best_certified_gain_share"], report["generations_per_candidate"],
+                    report["false_rejection_share"], report["candidates_mean"])
+    today, today_seeds = reports[0], by_seed[0]
+    if over[0] > limit:
+        raise SystemExit(f"Today's rule ({names[0]}) certifies a setting over the margin in {over[0]} replays, above "
+                         f"the limit of {limit}; this is a fault in certification.")
+    promise = min(settings.power, today["accepted_sealed_pass_share"] - PROMISE_SLACK)
+    qualifying = []
+    for index in range(1, len(reports)):
+        name, report, seeds = names[index], reports[index], by_seed[index]
+        value_bound = _bound(_value_differences(seeds, today_seeds))
+        rejection_bound = _bound(_false_rejection_differences(today_seeds, seeds))
+        cost_share = report["generations_per_candidate"] / today["generations_per_candidate"]
+        gates = {
+            "validity": over[index] <= limit,
+            "promise": report["accepted_sealed_pass_share"] >= promise,
+            "value": value_bound is not None and value_bound > -VALUE_TOLERANCE,
+        }
+        benefits = {
+            "better value": value_bound is not None and value_bound > 0,
+            "cheaper, with fewer false rejections": (cost_share <= COST_SHARE and rejection_bound is not None
+                                                      and rejection_bound > 0),
+        }
+        logger.info("%s: validity %d of %d replays over the margin (limit %d): %s", name, over[index],
+                    len(seeds), limit, gates["validity"])
+        logger.info("%s: promise sealed pass share %.3f (needs %.3f): %s", name, report["accepted_sealed_pass_share"],
+                    promise, gates["promise"])
+        logger.info("%s: value bound of the per-seed difference %s (needs > %.2f): %s", name,
+                    "n/a" if value_bound is None else f"{value_bound:.4f}", -VALUE_TOLERANCE, gates["value"])
+        logger.info("%s: benefit better value (bound > 0): %s", name, benefits["better value"])
+        logger.info("%s: benefit cheaper: generations per candidate %.3f of today's (needs <= %.2f), false-rejection "
+                    "bound %s (needs > 0): %s", name, cost_share, COST_SHARE,
+                    "n/a" if rejection_bound is None else f"{rejection_bound:.4f}",
+                    benefits["cheaper, with fewer false rejections"])
+        if all(gates.values()) and any(benefits.values()):
+            qualifying.append(index)
+    if not qualifying:
+        logger.info("choice: %s (no challenger qualifies)", names[0])
+        return
+    best = max(qualifying, key=lambda index: reports[index]["best_certified_gain_share"])
+    choice = best
+    for index in qualifying:
+        bound = _bound(_value_differences(by_seed[best], by_seed[index]))
+        if bound is None or bound <= 0:
+            choice = index
+            break
+    logger.info("highest mean value among the qualifying challengers: %s", names[best])
+    logger.info("choice: %s", names[choice])
 
 
 def main() -> None:
@@ -445,13 +598,20 @@ def main() -> None:
     running.add_argument("--round-candidates", type=int, default=5)
     running.add_argument("--max-generations", type=int, default=None)
     running.add_argument("--proposer", default="grid", choices=("grid", "random"))
+    running.add_argument("--ladder-power", type=float, default=None, help="The settings' ladder_power.")
     running.add_argument("--scratch", default=None, help="The directory of the replays' temporary stores.")
     running.add_argument("--output", default="replay_report.json")
+    comparing = commands.add_parser("compare")
+    comparing.add_argument("reports", nargs="+", help="Today's report, then the challengers' reports.")
     arguments = parser.parse_args()
     if arguments.command == "export":
         export(arguments)
-    else:
+    elif arguments.command == "run":
         run(arguments)
+    else:
+        if len(arguments.reports) < 2:
+            parser.error("compare needs today's report and at least one challenger's report.")
+        compare(arguments)
 
 
 if __name__ == "__main__":
