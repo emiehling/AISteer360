@@ -77,7 +77,7 @@ nav:
       - Instruction following: "examples/notebooks/studies/instruction_following/instruction_following.ipynb"
       - Routing versus prompting: "examples/notebooks/studies/routing_vs_prompting.ipynb"
     - Optimization:
-      - Formality under a GSM8K constraint: "examples/notebooks/optimization/formality_gsm8k.ipynb"
+      - Formality under a GSM8K constraint: "examples/notebooks/optimization/formality_gsm8k/formality_gsm8k.ipynb"
   - API Reference:
     - Overview: reference/index.md
     - Algorithms:

@@ -210,6 +210,6 @@ Optimization notebooks run studies with `steerability.optimization`, which searc
 
     This notebook replays a study that searches the layer and the multiplier of a [CAA](https://arxiv.org/abs/2312.06681) vector for formality while GSM8K accuracy stays within five points of the unsteered model. The study reads recorded scores of every setting instead of a loaded model, which allows each of its decisions to be compared with the true loss and gain of the setting.
 
-    [:octicons-arrow-right-24: See the notebook](./notebooks/optimization/formality_gsm8k.ipynb)
+    [:octicons-arrow-right-24: See the notebook](./notebooks/optimization/formality_gsm8k/formality_gsm8k.ipynb)
 
 </div>

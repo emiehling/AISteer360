@@ -1,4 +1,4 @@
-"""GSM8K over the train and test splits, zero-shot, as one Inspect task.
+"""GSM8K over the train and test splits (zero-shot) as an Inspect task.
 
 `inspect_evals/gsm8k` evaluates the test split only and takes its few-shot examples from the train split. This task
 covers both splits without few-shot examples, so a study can split its items into a search pool and a sealed pool. A
@@ -14,7 +14,7 @@ from inspect_evals.utils.huggingface import hf_dataset
 
 @task
 def gsm8k_all() -> Task:
-    """GSM8K over the train and test splits, zero-shot."""
+    """GSM8K over the train and test splits (zero-shot)."""
     samples, seen = [], set()
     for split in ("train", "test"):
         for sample in hf_dataset(path=DATASET_PATH, data_dir="main", split=split, sample_fields=record_to_sample,

@@ -31,8 +31,10 @@ The report gives the following measures over the seeds:
 - the bias of the winner's loss estimate in standard errors (round length)
 
 usage:
-    python examples/notebooks/optimization/scripts/replay.py export <store> [<store> ...] --output grid.json
-    python examples/notebooks/optimization/scripts/replay.py run grid.json --seeds 200 [--workers 8] [--searched]
+    python examples/notebooks/optimization/formality_gsm8k/scripts/replay.py export \
+        <store> [<store> ...] --output grid.json
+    python examples/notebooks/optimization/formality_gsm8k/scripts/replay.py run \
+        grid.json --seeds 200 [--workers 8] [--searched]
 """
 import argparse
 import json

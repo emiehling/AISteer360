@@ -18,7 +18,8 @@ Run it from the repository root, since the GSM8K task is referenced by its relat
 task reference, and names appear in the summaries a proposer sees).
 
 usage:
-    python examples/notebooks/optimization/scripts/live_search.py <run_dir> --llm llm.json [--arms random,naive]
+    python examples/notebooks/optimization/formality_gsm8k/scripts/live_search.py \
+        <run_dir> --llm llm.json [--arms random,naive]
 """
 import argparse
 import dataclasses

@@ -16,8 +16,10 @@ loss curve from its isotonic fit, and the setup time of the pipeline factory aga
 Run it from the repository root, since the GSM8K task is referenced by its relative path.
 
 usage:
-    python examples/notebooks/optimization/scripts/truth_grid.py collect <store> [--shard I --shards N] [--model M]
-    python examples/notebooks/optimization/scripts/truth_grid.py analyze <store> [<store> ...] [--margin M] [--output F]
+    python examples/notebooks/optimization/formality_gsm8k/scripts/truth_grid.py collect \
+        <store> [--shard I --shards N] [--model M]
+    python examples/notebooks/optimization/formality_gsm8k/scripts/truth_grid.py analyze \
+        <store> [<store> ...] [--margin M] [--output F]
 """
 import argparse
 import json
