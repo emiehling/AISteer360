@@ -1,9 +1,13 @@
 """Tests for the built-in proposers (`search/proposers/`)."""
+import logging
+
 import pytest
 
 pytest.importorskip("inspect_ai")
 
+from steerability.algorithms.core.recipe import Template, Text, entry
 from steerability.algorithms.core.store import Store
+from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
 from steerability.optimization.evaluation.session import StudySession
 from steerability.optimization.search.proposers import GridProposer, RandomProposer
 from steerability.optimization.study import Candidate
@@ -62,3 +66,17 @@ def test_the_grid_requires_discrete_proposer_axes(tmp_path):
     session = _session(Store.open(tmp_path / "store"), space={"caa": caa_template()}, searched={"caa.multiplier"})
     with pytest.raises(ValueError, match="continuous"):
         GridProposer(session.study)
+
+
+def test_the_random_proposer_warns_about_text_axes(tmp_path, space, caplog):
+    text_space = {"caa": caa_template(), "text": Template((entry(SystemPrompt, text=Text(max_chars=200)),))}
+    with_text = build_study(Store.open(tmp_path / "text"), _truth, space=text_space)
+    with caplog.at_level(logging.WARNING, logger="steerability.optimization.search.proposers.random"):
+        RandomProposer(with_text, seed=0)
+    warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "'text'" in warnings[0] and "system_prompt.text" in warnings[0]
+    caplog.clear()
+    without_text = build_study(Store.open(tmp_path / "plain"), _truth, space=space)
+    with caplog.at_level(logging.WARNING, logger="steerability.optimization.search.proposers.random"):
+        RandomProposer(without_text, seed=0)
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]

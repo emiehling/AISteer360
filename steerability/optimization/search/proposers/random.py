@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import random
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
@@ -15,14 +16,18 @@ if TYPE_CHECKING:
     from steerability.optimization.evaluation.archive import ArchiveView
     from steerability.optimization.study import Study
 
+logger = logging.getLogger(__name__)
+
 
 class RandomProposer(BaseProposer):
     """Candidates drawn at random: a uniformly chosen structure, and one random draw of its proposer axes.
 
     Draw `i` uses `derive_seed(seed, i)` for the axes (one index per discrete axis and one fraction per continuous
     axis, as `assignments` draws them), and a structure chosen with `derive_seed(seed, i, "structure")`. `Text`
-    ranges cannot be drawn and keep the value of the structure's seed candidate (an empty string). Candidates already
-    in the archive are skipped, and at most `10 * n` draws are made per `ask`.
+    ranges cannot be drawn and keep the value of the structure's seed candidate (an empty string), and the
+    constructor logs a warning for each structure that has one. An unordered `Choice` of strings is drawn like any
+    other discrete axis, which makes a text setting searchable. Candidates already in the archive are skipped, and
+    at most `10 * n` draws are made per `ask`.
 
     Args:
         study: The study.
@@ -43,6 +48,12 @@ class RandomProposer(BaseProposer):
             self._fixed[structure] = {
                 path: "" for axis in axes.values() if axis.has_text for path in axis.members
             }
+            if self._fixed[structure]:
+                logger.warning(
+                    "RandomProposer cannot draw text; the Text axis paths %s of structure %r keep the empty seed "
+                    "value. A Choice of strings makes such an axis searchable.", sorted(self._fixed[structure]),
+                    structure,
+                )
         self._draw = 0
 
     def _draws(self) -> Iterator[Candidate]:

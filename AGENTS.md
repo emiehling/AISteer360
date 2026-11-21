@@ -611,7 +611,7 @@ protocol = Protocol.create(model, hf_model_kwargs={"dtype": "float32"}, generate
 study = Study(
     name="formality", protocol=protocol,
     space={
-        "prompt": Template((entry(SystemPrompt, text=Text()),)),
+        "prompt": Template((entry(SystemPrompt, text=Choice(("Write formally.", "Use a formal register."))),)),
         "caa": Template((entry(CAA, data=pairs, layer_id=Choice((10, 14)), multiplier=Interval(0.0, 8.0)),)),
     },
     objective=formality, constraints=(Constraint(gsm8k, margin=0.05),),

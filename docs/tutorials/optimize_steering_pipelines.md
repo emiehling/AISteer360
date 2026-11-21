@@ -226,10 +226,11 @@ best = archive.best()
 ```
 
 The `GridProposer` enumerates every combination of discrete proposer axes, and the `RandomProposer` draws a structure
-uniformly and then one value per proposer axis (a text axis keeps the empty seed value). A custom proposer subclasses
-`BaseProposer`, implements `ask(view, n)`, and overrides `tell(candidate, result)` when it learns from results. It
-sees only the `ArchiveView` of the archive, which contains each candidate's id, values, status, stage, reason, fitness,
-and summary (no item-level data).
+uniformly and then one value per proposer axis. The `RandomProposer` cannot draw text and logs a warning for each
+`Text` axis, which keeps its empty seed value. It searches prompts when the axis is a `Choice` of strings. A custom
+proposer subclasses `BaseProposer`, implements `ask(view, n)`, and overrides `tell(candidate, result)` when it learns
+from results. It sees only the `ArchiveView` of the archive, which contains each candidate's id, values, status,
+stage, reason, fitness, and summary (no item-level data).
 
 The `run_openevolve` function (in `steerability.optimization.search.openevolve`, with the `optimize` extra) searches
 with [OpenEvolve](https://github.com/codelion/openevolve), which evolves the candidate programs with a language model:
