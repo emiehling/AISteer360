@@ -92,6 +92,12 @@ class EvaluationService:
         proposer: The proposer name recorded with evaluated candidates.
         parse: The function that turns a program into a `Candidate`, raising `ValueError` for a malformed program.
         stage_deadline_seconds: The time each operation may take.
+
+    Attributes:
+        programs: The number of `stage1` and `full` operations received. A `stage2` operation is not counted,
+            since its program was counted at `stage1`.
+        unparsed: The counted programs that did not parse.
+        unbound: The counted programs whose candidate did not bind.
     """
 
     def __init__(self, session: StudySession, *, proposer: str, parse: Callable[[str], Candidate],
@@ -101,6 +107,9 @@ class EvaluationService:
         self.parse = parse
         self.stage_deadline_seconds = float(stage_deadline_seconds)
         self._lock = threading.Lock()
+        self.programs = 0
+        self.unparsed = 0
+        self.unbound = 0
         self._partials: dict[str, Partial] = {}
         self._listener: Listener | None = None
         self._authkey: bytes | None = None
@@ -217,9 +226,12 @@ class EvaluationService:
 
     def _evaluate(self, operation: str, program: str) -> dict:
         deadline = time.monotonic() + self.stage_deadline_seconds
+        counted = int(operation != "stage2")
+        self.programs += counted
         try:
             candidate = self.parse(program)
         except (ValueError, RecipeError) as error:
+            self.unparsed += counted
             return self._invalid(str(error), stage1=operation == "stage1")
         session = self.session
         if operation == "stage2":
@@ -233,6 +245,7 @@ class EvaluationService:
                 return {"metrics": final_metrics(result), "artifacts": result_artifacts(result, partial.error)}
         partial = session.screen(candidate, proposer=self.proposer, deadline=deadline)
         if partial.candidate_id is None:
+            self.unbound += counted
             return self._invalid(partial.error or "The candidate does not bind.", stage1=operation == "stage1")
         if operation == "stage1":
             result = partial.result

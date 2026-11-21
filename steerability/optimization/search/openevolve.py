@@ -88,6 +88,39 @@ def evaluate(program_path):
 '''
 
 
+# OpenEvolve's default user template for full rewrites, with a task section that describes a steering
+# configuration in place of code
+USER_TEMPLATE = '''# Current Program Information
+- Fitness: {fitness_score}
+- Feature coordinates: {feature_coords}
+- Focus areas: {improvement_areas}
+
+{artifacts}
+
+# Program Evolution History
+{evolution_history}
+
+# Current Program
+```{language}
+{current_program}
+```
+
+# Task
+Propose a new program with a higher FITNESS SCORE.
+The system maintains diversity across these dimensions: {feature_dimensions}
+Different programs with similar fitness but different features are valuable.
+
+A program here is a steering configuration, not code. Change only the JSON object between the block markers, and keep
+the header line and the two marker lines exactly as they are.
+
+Reply with the complete program in one fenced block:
+
+```{language}
+# the complete program
+```
+'''
+
+
 def program_text(study: Study, candidate: Candidate) -> str:
     """The program text of a candidate."""
     body = json.dumps({"structure": candidate.structure, "values": jsonable(dict(candidate.values))}, sort_keys=True)
@@ -251,7 +284,9 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
     The initial program is the seed candidate of the first structure, and every further structure gets an island
     seeded with its own seed candidate. The configuration has one island per structure, OpenEvolve's built-in
     feature dimensions, full rewrites inside the enforced block, and a two-stage cascade with one evaluation at a
-    time.
+    time. Its user template (`USER_TEMPLATE`, in `<run_dir>/templates/full_rewrite_user.txt`) asks for a steering
+    configuration rather than code, and the hint to simplify a long program is turned off
+    (`suggest_simplification_after_chars: null`).
 
     Args:
         study: The study.
@@ -261,8 +296,8 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
         stage_timeout_seconds: OpenEvolve's timeout of each evaluation stage.
 
     Returns:
-        Mapping with the paths of `"initial_program"`, `"evaluator"`, `"config"`, and each island seed
-        (`"island_<i>"`).
+        Mapping with the paths of `"initial_program"`, `"evaluator"`, `"config"`, `"user_template"`, and each
+        island seed (`"island_<i>"`).
     """
     import yaml
 
@@ -279,6 +314,10 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
         seeds.append(str(path.resolve()))
     paths["evaluator"] = run_dir / "evaluator.py"
     paths["evaluator"].write_text(EVALUATOR_SOURCE, encoding="utf-8")
+    templates = run_dir / "templates"
+    templates.mkdir(exist_ok=True)
+    paths["user_template"] = templates / "full_rewrite_user.txt"
+    paths["user_template"].write_text(USER_TEMPLATE, encoding="utf-8")
     config = {
         "max_iterations": int(iterations),
         "random_seed": study.seed,
@@ -289,6 +328,8 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
         "prompt": {
             "system_message": system_message(study),
             "island_system_messages": [system_message(study, structure) for structure in structures],
+            "template_dir": str(templates.resolve()),
+            "suggest_simplification_after_chars": None,
         },
         "database": {
             "num_islands": len(structures),
@@ -395,12 +436,15 @@ def run_openevolve(
             process.wait()
         if service is not None:
             service.stop()
+            logger.info("OpenEvolve sent %d programs: %d did not parse and %d did not bind.", service.programs,
+                        service.unparsed, service.unbound)
         session.close()
     return session.archive
 
 
 __all__ = [
     "EVALUATOR_SOURCE",
+    "USER_TEMPLATE",
     "parse",
     "program_text",
     "require_openevolve",

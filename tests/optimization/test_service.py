@@ -90,6 +90,7 @@ def test_an_unparsed_program_is_invalid_and_not_recorded(tmp_path, space):
     reply = service.handle({"op": "stage1", "program": unbound})
     assert reply["metrics"]["stage1_passed"] == 0.0 and reply["artifacts"]["reason"] == "invalid"
     assert session.store.execute("SELECT COUNT(*) FROM results").fetchone()[0] == 0
+    assert (service.programs, service.unparsed, service.unbound) == (2, 1, 1)
 
 
 def test_estimates_read_the_archive(tmp_path, space):

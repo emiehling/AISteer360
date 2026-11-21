@@ -28,6 +28,9 @@ from steerability.optimization.search.openevolve import (
 from steerability.optimization.study import Candidate
 from tests.optimization.helpers import Truth, build_study, caa_template, prompt_template
 
+TEMPLATE_PLACEHOLDERS = ("metrics", "fitness_score", "feature_coords", "feature_dimensions", "improvement_areas",
+                         "evolution_history", "current_program", "language", "artifacts")
+
 
 def _quiet(recipe, item_id):
     return Truth()
@@ -86,6 +89,33 @@ def test_the_run_files(study, tmp_path):
     assert parse(paths["initial_program"].read_text(encoding="utf-8")) == study.seed_candidate("prompt")
     seed = Path(database["island_initial_programs"][1])
     assert seed.is_absolute() and parse(seed.read_text(encoding="utf-8")) == study.seed_candidate("caa")
+    assert config["prompt"]["suggest_simplification_after_chars"] is None
+    template_dir = Path(config["prompt"]["template_dir"])
+    assert template_dir.is_absolute() and paths["user_template"] == template_dir / "full_rewrite_user.txt"
+    template = paths["user_template"].read_text(encoding="utf-8")
+    assert "internal implementation" not in template
+    template.format(**{name: "" for name in TEMPLATE_PLACEHOLDERS})
+
+
+def test_openevolve_builds_the_user_prompt_from_the_run_files(study, tmp_path):
+    pytest.importorskip("openevolve")
+    from openevolve.config import Config
+    from openevolve.prompt.sampler import PromptSampler
+
+    llm = {"models": [{"name": "model", "api_base": "http://localhost:1"}], "temperature": 0.7}
+    paths = write_run_files(study, tmp_path / "run", llm=llm, iterations=7, stage_timeout_seconds=120)
+    config = Config.from_yaml(paths["config"])
+    assert config.prompt.suggest_simplification_after_chars is None
+    assert Path(config.prompt.template_dir) == paths["user_template"].parent
+    program = program_text(study, Candidate("prompt", {"prompt.text": "Write formally. " * 40}))
+    assert len(program) > 500
+    prompt = PromptSampler(config.prompt).build_prompt(
+        current_program=program, program_metrics={"combined_score": 0.1}, language="text",
+        diff_based_evolution=False, feature_dimensions=["complexity", "diversity"],
+    )
+    assert "Propose a new program with a higher FITNESS SCORE." in prompt["user"]
+    assert "A program here is a steering configuration, not code." in prompt["user"]
+    assert "Consider simplifying" not in prompt["user"]
 
 
 def test_system_messages_describe_the_axes_and_contain_no_item_text(study):
