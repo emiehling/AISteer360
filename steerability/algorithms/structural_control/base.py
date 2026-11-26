@@ -109,3 +109,20 @@ class StructuralControl(BaseControl):
     def steer_access(self) -> ModelAccess:
         """`ModelAccess.MODULE`; training happens on live weights."""
         return ModelAccess.MODULE
+
+    def restore(self, model: PreTrainedModel | None) -> PreTrainedModel | None:
+        """Undo this control's change to the model it steered and return the model as it was before `steer()`.
+
+        A control whose change can be undone in place (an unmerged LoRA adapter attached to the incoming model)
+        removes it and returns the restored model. A `PipelineFactory` steers a recipe whose structural controls all
+        install an adapter from disk on its shared base model, and it calls this method, last control first, when the
+        recipe's pipeline is released. The default returns None, i.e., the change cannot be undone.
+
+        Args:
+            model: The pipeline model after this control's `steer()` (and after the restore of the controls that
+                follow it).
+
+        Returns:
+            The restored model, or None when the change cannot be undone.
+        """
+        return None

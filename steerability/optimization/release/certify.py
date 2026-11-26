@@ -126,6 +126,33 @@ def _recipe(session: StudySession, finalist: Finalist) -> Recipe:
     return recipe
 
 
+def certificate_weights(*, pipeline: Any) -> list[dict]:
+    """The weights of a steered pipeline, as its certificate records them.
+
+    Each enabled structural control gives one item, with its method key (`"method"`) and the id that the spipe codec
+    computes in identity mode for the content of its artifact (`export_artifact()`), i.e., of the adapter or checkpoint
+    directory (`"artifact_id"`, None for a control without an artifact). The artifact of a trained or merged product
+    is the stored one, which the bundle contains, and the artifact of a loader is the directory at its path.
+
+    Args:
+        pipeline: The steered pipeline (`structural_controls` is read).
+
+    Returns:
+        One item per enabled structural control, in pipeline order.
+    """
+    from steerability.algorithms.core.registry import method_key_for
+    from steerability.spipe.codec import EncodeContext, encode
+
+    weights = []
+    for control in pipeline.structural_controls:
+        if not control.enabled:
+            continue
+        artifact = control.export_artifact()
+        artifact_id = None if artifact is None else encode(value=artifact, ctx=EncodeContext(store=None))["$artifact"]
+        weights.append({"method": method_key_for(control_cls=type(control)), "artifact_id": artifact_id})
+    return weights
+
+
 def _held_out_table(session: StudySession, steered: Steered, benchmark: Any) -> Paired:
     """Evaluate the whole held-out pool in pool order and build the table on its usable items."""
     from steerability.evaluation.items import evaluate_items
@@ -155,8 +182,10 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_held_
     4. Each certified finalist is measured on the objective's held-out pool in the same way, and its gain is recorded
        with a two-sided 90% interval (per finalist, not simultaneous).
     5. Each certified finalist is written to `bundle_dir` as a frozen bundle whose lock records the study's protocol
-       and the certificate (`"certificate/2"`). The certificate's `lower_bound` of a constraint is the bound that
-       `Paired.passes` tests, and every benchmark's entry contains its baseline's `noise_floor`.
+       and the certificate (`"certificate/3"`). The certificate's `lower_bound` of a constraint is the bound that
+       `Paired.passes` tests, every benchmark's entry contains its baseline's `noise_floor`, and `weights` identifies
+       the weights of each structural control (`certificate_weights`). A bundle contains trained or merged weights
+       by value and loads after the store is deleted. A loader's bundle refers to the loader's path.
     6. The outcome is recorded in `certifications`.
 
     Args:
@@ -219,6 +248,7 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_held_
                 "recipe_id": recipe.id, "resolved_id": steered.resolved_id, "structure": candidate.structure,
                 "values": jsonable(dict(candidate.values)),
                 "position": jsonable(dict(finalist.result.operating.position)),
+                "weights": certificate_weights(pipeline=steered.pipeline),
                 "alpha": settings.alpha, "power": settings.power,
                 "constraints": constraints,
                 "behavior": {
@@ -249,4 +279,4 @@ def certify(session: StudySession, *, bundle_dir: str | Path, allow_reused_held_
     return Certification(tuple(certified), failed_at, certificates, bundles)
 
 
-__all__ = ["Certification", "certify"]
+__all__ = ["Certification", "certificate_weights", "certify"]

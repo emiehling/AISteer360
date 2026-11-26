@@ -423,14 +423,15 @@ class Study:
            the toolkit version in the protocol id, which is part of the id only when `versions` is filled.
         2. For every benchmark, the generation arguments merged from `protocol.generate_defaults` and the benchmark's
            `generate` set `temperature`, since the decoding mode decides which baseline rules apply.
-        3. No template has an entry in the structural category.
-        4. Every callable reachable from a template or a benchmark is versioned (`versioned`).
-        5. The pools pass `check_pools` (the benchmarks are prepared on `store` first).
-        6. Each template has at most one solved axis, a discrete solved axis has at most `2 * settings.ladder_points`
+        3. Every callable reachable from a template or a benchmark is versioned (`versioned`).
+        4. The pools pass `check_pools` (the benchmarks are prepared on `store` first).
+        5. Each template has at most one solved axis, a discrete solved axis has at most `2 * settings.ladder_points`
            positions, every key in `searched` and `monotone` gives an axis of some template, and every key in
            `monotone` gives a solved axis.
-        7. The objective and the constraints have distinct benchmark names.
-        8. `make_plan` succeeds for the default candidate of every structure.
+        6. The objective and the constraints have distinct benchmark names.
+        7. `make_plan` succeeds for the default candidate of every structure, and every enabled structural control of
+           its first recipe that declares a fit (a training or a merge) reports an `artifact_capability()`, i.e., it
+           leaves a product to store.
 
         A warning is logged for a template with a solved axis that contains a control whose fit has no identity,
         since such a control refits at every position. Whether the pools are large enough is checked by
@@ -442,6 +443,7 @@ class Study:
         Raises:
             ValueError: If a check fails (`RecipeError` for a template that cannot be bound or planned).
         """
+        from steerability.algorithms.structural_control.base import StructuralControl
         from steerability.optimization.evaluation.plan import make_plan
 
         if not self.protocol.versions:
@@ -457,15 +459,6 @@ class Study:
                 f"Benchmarks {unset} have no temperature in protocol.generate_defaults or their own generate "
                 "arguments; set it (0 for greedy decoding), since the decoding mode decides which baseline rules apply."
             )
-
-        for structure, template in self.space.items():
-            structural = [item.method for item in template.entries
-                          if item.enabled and item.category == "structural_control"]
-            if structural:
-                raise ValueError(
-                    f"Structure {structure!r} has structural entries {structural}; a study does not search weight "
-                    "changes."
-                )
 
         unversioned: list[str] = []
         for structure, template in self.space.items():
@@ -510,9 +503,18 @@ class Study:
 
         for structure in self.space:
             plan = make_plan(study=self, candidate=self.default_candidate(structure=structure))
+            controls = plan.recipes[0].instantiate()
+            for control in controls:
+                trains = isinstance(control, StructuralControl) and bool(control.steer_fits())
+                if trains and control.artifact_capability() is None:
+                    raise ValueError(
+                        f"Structure {structure!r}: {type(control).__name__} trains and leaves no product to store, "
+                        "since a merged LoRA run writes its weights only to merged_output_dir; set merged_output_dir, "
+                        "or leave the adapter unmerged."
+                    )
             if plan.solved is None:
                 continue
-            for control in plan.recipes[0].instantiate():
+            for control in controls:
                 if control.steer_fits() and control.fit_identity() is None:
                     logger.warning(
                         "Structure %r has a solved axis and a %s control whose fit has no identity; it refits at "

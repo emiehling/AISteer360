@@ -29,7 +29,8 @@ class LoadLoRA(StructuralControl):
 
     With `merge=False` (the default) the pipeline model stays a `PeftModel`, so a state control
     listed after this control hooks the adapted model: layout resolution peels the PEFT wrapper
-    and the hooked modules are the adapter's own.
+    and the hooked modules are the adapter's own. The adapter can then be removed again
+    (`restore`), which gives back the incoming model without merging the adapter.
     """
 
     Args = LoadLoRAArgs
@@ -46,6 +47,22 @@ class LoadLoRA(StructuralControl):
     def steer_access(self) -> ModelAccess:
         """`ModelAccess.FACTS`; an engine backend serves the configured adapter without a staged model."""
         return ModelAccess.FACTS
+
+    def restore(self, model: PreTrainedModel | None) -> PreTrainedModel | None:
+        """Remove the attached adapter and return the incoming model, without merging the adapter.
+
+        Args:
+            model: The adapted pipeline model.
+
+        Returns:
+            The model without the adapter (PEFT's `unload()`), or None when the adapter was merged into the weights
+            (`merge=True`) or `model` is not a PEFT model.
+        """
+        from peft import PeftModel
+
+        if self.merge or not isinstance(model, PeftModel):
+            return None
+        return model.unload()
 
     def steer(
         self,

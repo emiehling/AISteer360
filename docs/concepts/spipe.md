@@ -159,4 +159,4 @@ from, and `to_spipe(model_ref=...)` overrides it. The lock's `protocol` (read ba
 arguments, backend, fit policy, decoding defaults, and package versions, with credentials left out. The two differ
 only when `model_ref` was passed. The lock also records the facts observed on the loaded model (`facts`: model and
 tokenizer fingerprints, chat-template digest, dtype, resolved commit) and an optional `certificate`, a mapping whose
-`schema` is `"certificate/2"`. A bundle that is not frozen has a null lock, and its `protocol` is None.
+`schema` is `"certificate/3"`. A bundle that is not frozen has a null lock, and its `protocol` is None.

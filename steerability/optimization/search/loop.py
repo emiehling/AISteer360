@@ -25,13 +25,14 @@ class SearchPhase:
     """One engine and the allowance it runs under.
 
     The allowance limits the phase on top of the limits of the run (`StudySession.allowance`), and None leaves a
-    limit open.
+    limit open. A phase with `structural_fits=0` trains nothing and searches on the products that the store contains.
 
     Attributes:
         engine: The search engine.
         candidates: The number of candidates the phase may record, or None.
         generations: The number of rows the phase may generate, or None.
         seconds: The wall time the phase may run, or None.
+        structural_fits: The number of new structural fits (trainings and merges) the phase may run, or None.
 
     Raises:
         TypeError: If `engine` is not a `SearchEngine`.
@@ -42,6 +43,7 @@ class SearchPhase:
     candidates: int | None = None
     generations: int | None = None
     seconds: float | None = None
+    structural_fits: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.engine, SearchEngine):
@@ -49,6 +51,7 @@ class SearchPhase:
         check_limit(name="candidates", value=self.candidates, count=True)
         check_limit(name="generations", value=self.generations, count=True)
         check_limit(name="seconds", value=self.seconds, count=False)
+        check_limit(name="structural_fits", value=self.structural_fits, count=True)
 
 
 def run_study(
@@ -61,6 +64,7 @@ def run_study(
     max_candidates: int | None = None,
     max_generations: int | None = None,
     max_seconds: float | None = None,
+    max_structural_fits: int | None = None,
     allow_infeasible: bool = False,
 ) -> Archive:
     """Run a study: evaluate the initial candidates, then run each phase's engine in order on one session.
@@ -89,6 +93,7 @@ def run_study(
         max_candidates: The number of candidates the run may record, or None.
         max_generations: The number of rows the run may generate, or None.
         max_seconds: The wall time the run may take from the session's start, or None.
+        max_structural_fits: The number of distinct structural fits (trainings and merges) the run may run, or None.
         allow_infeasible: Whether to run a study that fails the feasibility check.
 
     Returns:
@@ -119,6 +124,7 @@ def run_study(
         max_candidates=max_candidates,
         max_generations=max_generations,
         max_seconds=max_seconds,
+        max_structural_fits=max_structural_fits,
         allow_infeasible=allow_infeasible,
     )
     try:
@@ -139,6 +145,7 @@ def run_study(
                 candidates=phase.candidates,
                 generations=phase.generations,
                 seconds=phase.seconds,
+                structural_fits=phase.structural_fits,
             ):
                 phase.engine.run(session=session, initial_candidates=initial_candidates)
             logger.info("Phase %d (%s) ends with %d candidate(s) recorded.", index, name, session.recorded - recorded)

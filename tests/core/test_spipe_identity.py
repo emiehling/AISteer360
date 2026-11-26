@@ -147,8 +147,8 @@ def test_a_certificate_requires_a_frozen_bundle():
 
     pipeline = SteeringPipeline(model_name_or_path=TINY_MODEL, controls=make_controls()[:1])
     with pytest.raises(SpipeSaveError, match="frozen"):
-        pipeline.to_spipe(freeze=False, certificate={"schema": "certificate/2"})
-    frozen = pipeline.to_spipe(freeze=True, certificate={"schema": "certificate/2", "note": "x"})
-    assert frozen.manifest["lock"]["certificate"] == {"schema": "certificate/2", "note": "x"}
-    with pytest.raises(SpipeSaveError, match="certificate/2"):
+        pipeline.to_spipe(freeze=False, certificate={"schema": "certificate/3"})
+    frozen = pipeline.to_spipe(freeze=True, certificate={"schema": "certificate/3", "note": "x"})
+    assert frozen.manifest["lock"]["certificate"] == {"schema": "certificate/3", "note": "x"}
+    with pytest.raises(SpipeSaveError, match="certificate/3"):
         pipeline.to_spipe(freeze=True, certificate={"note": "x"})

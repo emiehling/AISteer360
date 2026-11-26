@@ -5,7 +5,9 @@ value is its baseline value minus `loss` and a behavior item's value is its base
 optional per-item spread). Differences against the baseline are then exact, which makes every statistical decision
 deterministic. The capability benchmark of `benchmarks` has a two-level baseline (1.0 for an item with
 `unit(item_id) < 0.5`, else 0.4), which gives it a baseline variance close to 0.09. `StubFactory` yields `Steered`
-objects whose resolved id is derived from the recipe id, and `StubPipeline` records the bundles written.
+objects whose resolved id is derived from the recipe id, and `StubPipeline` records the bundles written. A structural
+fit of the stub factory is a weights context other than `"base"` (e.g., of a `LoadLoRA` entry) that it has not prepared
+or steered yet.
 
 With the default pools (1,000 search and 2,000 held-out capability items, 200 behavior search items) and the 5-point
 margin, a constraint has blocks of (100, 400) items and looks of (32, 128, 400). A candidate that shifts every item
@@ -20,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from steerability.algorithms.core.fits import weights_context
 from steerability.algorithms.core.identity import content_id
 from steerability.algorithms.core.protocol import Protocol
 from steerability.algorithms.core.recipe import Choice, Interval, Recipe, Template, entry
@@ -27,6 +30,7 @@ from steerability.algorithms.core.store import ItemRow, Store
 from steerability.algorithms.core.sweeps import Steered
 from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
 from steerability.algorithms.state_control.caa.control import CAA
+from steerability.algorithms.structural_control.base import StructuralControl
 from steerability.evaluation.items import ItemResult
 from steerability.optimization.measurement.pools import split_items
 from steerability.optimization.search.proposers import BaseProposer
@@ -187,11 +191,13 @@ class StubBundle:
 
 
 class StubPipeline:
-    """A pipeline that records the bundles written from it."""
+    """A pipeline that records the bundles written from it; its structural controls are those of its recipe."""
 
     def __init__(self, recipe: Recipe) -> None:
         self.recipe = recipe
         self.bundles: list[StubBundle] = []
+        self.structural_controls = [control for control in recipe.instantiate()
+                                    if isinstance(control, StructuralControl)]
 
     def to_spipe(self, **options) -> StubBundle:
         bundle = StubBundle(dict(options))
@@ -200,21 +206,32 @@ class StubPipeline:
 
 
 class StubFactory:
-    """A factory whose steered pipelines run nothing; each recipe resolves to `"resolved-<recipe id>"`."""
+    """A factory whose steered pipelines run nothing; each recipe resolves to `"resolved-<recipe id>"`.
+
+    A recipe's structural fit is its weights context when that is not `"base"`, and the fit counts as stored once the
+    factory has prepared or steered a recipe with that context (`fitted_weights`).
+    """
 
     def __init__(self, protocol: Protocol) -> None:
         self.protocol = protocol
         self.prepared: list[list[str]] = []
         self.steered_recipes: list[str] = []
         self.pipelines: list[StubPipeline] = []
+        self.fitted_weights: set[str] = set()
         self.released = False
 
+    def pending_structural_fits(self, *, recipes) -> frozenset[str]:
+        return frozenset(weights_context(recipe=recipe) for recipe in recipes) - {"base"} - self.fitted_weights
+
     def prepare(self, recipes) -> None:
+        recipes = list(recipes)
         self.prepared.append([recipe.id for recipe in recipes])
+        self.fitted_weights.update(weights_context(recipe=recipe) for recipe in recipes)
 
     @contextmanager
     def steered(self, recipe: Recipe):
         self.steered_recipes.append(recipe.id)
+        self.fitted_weights.add(weights_context(recipe=recipe))
         pipeline = StubPipeline(recipe)
         self.pipelines.append(pipeline)
         yield Steered(pipeline, recipe, f"resolved-{recipe.id}", self.protocol)

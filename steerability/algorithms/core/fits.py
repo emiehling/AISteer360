@@ -1,14 +1,17 @@
-"""Fits: their keys, the fit cache, and the two routes through which steering consults it.
+"""Fits: their keys, the fit cache, and the routes through which steering consults it.
 
 A fit is the model-side work a control's `steer()` does to produce a reusable artifact. Its digest
 (`fit_digest`) covers the inputs of that work, and its key (`fit_key`) adds the protocol's fit
 context and the recipe's structural weights. The `FitCache` serves stored fits by key, so a recipe
 whose fits are all stored steers without model work.
 
-Two routes consult the cache. Intervention controls resolve their fit sources through
+Three routes consult the cache. Intervention controls resolve their fit sources through
 `resolve_source`, which returns a stored value on a hit and stores the result of a miss; while a
 cache is active, `source_access` reports `ModelAccess.FACTS` for a stored source, so the steer
-plan needs no model for it. Other controls with a fit identity are replaced before steering by
+plan needs no model for it. A structural control that trains or merges has one fit, its product
+(an adapter or a checkpoint in the store's artifacts), which it resolves through `resolve_product`
+in the same way. While the cache contains the product (`product_is_stored`), the control
+installs it and declares `ModelAccess.FACTS`. Other controls with a fit identity are replaced before steering by
 their frozen form on a hit (`apply_control_hits`), and their exported state is stored after
 steering (`record_control_fits`).
 
@@ -24,7 +27,7 @@ import logging
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,7 +123,8 @@ def control_fit_digests(control: BaseControl) -> tuple[str, ...]:
 
     An intervention control contributes one digest per fit source. Another control with a fit
     contributes the digest of its fit identity under its method key, or nothing when the
-    identity is None.
+    identity is None. The fits a control declares are read with no cache active, since a
+    control whose fit the active cache contains declares none.
 
     Args:
         control: A constructed control.
@@ -135,7 +139,9 @@ def control_fit_digests(control: BaseControl) -> tuple[str, ...]:
         return ()
     if isinstance(control, InterventionControl):
         return tuple(source_digest(source) for source in control.declared_fit_sources())
-    if not control.steer_fits():
+    with fit_cache_scope(cache=None):
+        declared = control.steer_fits()
+    if not declared:
         return ()
     identity = control.fit_identity()
     if identity is None:
@@ -179,6 +185,7 @@ class FitCache:
     Attributes:
         hit_count: Values served by `get`.
         stored_count: Values written by `put` and `put_own`.
+        product_count: Products of structural controls fitted and written by `resolve_product`.
     """
 
     def __init__(self, protocol: Protocol, weights: str, store: Store | None):
@@ -190,6 +197,7 @@ class FitCache:
         self._local = False
         self.hit_count = 0
         self.stored_count = 0
+        self.product_count = 0
         self._scratch: tempfile.TemporaryDirectory | None = None
         if store is None:
             from steerability.spipe.store import ArtifactStore
@@ -408,12 +416,84 @@ def resolve_source(source: Any, model, tokenizer, *, session=None, **kwargs: Any
     return cache.put(digest, value, time.monotonic() - started)
 
 
+def _product_digest(*, control: BaseControl) -> str | None:
+    """The digest of a control's product under its method key, or None when its fit identity is None."""
+    from steerability.algorithms.core.registry import method_key_for
+
+    identity = control.fit_identity()
+    return None if identity is None else fit_digest(kind=method_key_for(control_cls=type(control)), identity=identity)
+
+
+def product_is_stored(*, control: BaseControl) -> bool:
+    """Whether the active fit cache contains the product of a control that trains or merges.
+
+    Args:
+        control: The control.
+
+    Returns:
+        False without an active cache or for a control whose `fit_identity()` is None.
+    """
+    cache = active_fit_cache()
+    if cache is None:
+        return False
+    digest = _product_digest(control=control)
+    return digest is not None and cache.has(digest=digest)
+
+
+def stored_product(*, control: BaseControl) -> Any | None:
+    """The stored state of a control's product under the active fit cache, recorded as used.
+
+    Args:
+        control: The control.
+
+    Returns:
+        A freshly decoded copy of the stored state, whose artifacts are paths into the store's
+        artifacts, or None when the active cache contains no product of the control (`product_is_stored`).
+    """
+    if not product_is_stored(control=control):
+        return None
+    return active_fit_cache().get(digest=_product_digest(control=control))
+
+
+def resolve_product(*, control: BaseControl, fit: Callable[[], Any]) -> Any:
+    """Resolve the product of a control that trains or merges through the active fit cache.
+
+    With an active cache and a control whose `fit_identity()` is not None, a stored product is
+    returned without running `fit` (`FitCache.get`). Otherwise `fit` runs, and the state it
+    returns is stored with the measured duration (`FitCache.put`, which copies an adapter or
+    checkpoint directory into the store's artifacts). The stored value is returned, and the
+    control must use it. The cache counts the products it fitted (`FitCache.product_count`).
+    Without an active cache, or for a control without a fit identity, `fit` runs and its state
+    is returned.
+
+    Args:
+        control: The control.
+        fit: A function that trains or merges and returns the control's state (`export_state()`).
+
+    Returns:
+        The stored state (its artifacts decoded to paths into the store's artifacts), or the
+        state `fit` returned when nothing is stored.
+    """
+    cache = active_fit_cache()
+    digest = _product_digest(control=control) if cache is not None else None
+    if digest is None:
+        return fit()
+    if cache.has(digest=digest):
+        return cache.get(digest=digest)
+    started = time.monotonic()
+    state = fit()
+    stored = cache.put(digest=digest, value=state, seconds=time.monotonic() - started)
+    cache.product_count += 1
+    return stored
+
+
 def stores_a_fit(controls: Sequence[BaseControl], pending: Sequence[BaseControl], cache: FitCache) -> bool:
     """Whether steering a recipe's controls stores a fit that a later steer of the recipe reuses.
 
-    A recipe with an enabled structural control stores nothing, since structural controls steer
-    every time. Otherwise a pending control with a fit identity, or an intervention fit source with
-    a digest and no stored value, stores a fit.
+    A pending control with a fit identity stores a fit. So does an enabled structural control
+    whose product (a fit digest of `control_fit_digests`) the cache does not contain, and an
+    intervention fit source with a digest and no stored value. An artifact loader declares no
+    fit and stores none, and it does not keep the other controls' fits from counting.
 
     Args:
         controls: The controls after `apply_control_hits`.
@@ -427,11 +507,13 @@ def stores_a_fit(controls: Sequence[BaseControl], pending: Sequence[BaseControl]
     from steerability.algorithms.structural_control.base import StructuralControl
 
     enabled = [control for control in controls if getattr(control, "enabled", True)]
-    if any(isinstance(control, StructuralControl) for control in enabled):
-        return False
     if any(control.fit_identity() is not None for control in pending):
         return True
     for control in enabled:
+        if isinstance(control, StructuralControl):
+            if any(not cache.has(digest=digest) for digest in control_fit_digests(control=control)):
+                return True
+            continue
         if not isinstance(control, InterventionControl):
             continue
         for source in control.declared_fit_sources():
@@ -545,12 +627,15 @@ __all__ = [
     "fit_digest",
     "fit_digests",
     "fit_key",
+    "product_is_stored",
     "record_control_fits",
+    "resolve_product",
     "resolve_source",
     "resolved_id",
     "source_access",
     "source_digest",
     "source_identity",
+    "stored_product",
     "stores_a_fit",
     "weights_context",
 ]

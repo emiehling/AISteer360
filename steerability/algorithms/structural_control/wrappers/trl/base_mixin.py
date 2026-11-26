@@ -1,7 +1,10 @@
 import difflib
+import shutil
 import tempfile
+from collections.abc import Mapping
 from dataclasses import fields
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import torch.nn as nn
 import trl
@@ -9,9 +12,14 @@ from peft import LoraConfig, PeftType
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
 from steerability.algorithms.core.base_control import NotFreezableError
+from steerability.algorithms.core.execution.access import ModelAccess
 from steerability.algorithms.core.execution.contracts import Capability
 from steerability.algorithms.core.execution.payloads import Artifact, CheckpointArtifact, LoRAArtifact
+from steerability.algorithms.core.fits import product_is_stored, resolve_product, stored_product
 from steerability.algorithms.core.internals import lora_target_pattern
+
+if TYPE_CHECKING:
+    from steerability.algorithms.core.execution.backend import SteeringSession
 
 
 def resolve_config_kwargs(config_cls: type, training_args: dict[str, Any]) -> dict[str, Any]:
@@ -49,8 +57,16 @@ def resolve_config_kwargs(config_cls: type, training_args: dict[str, Any]) -> di
 
 
 class TRLMixin:
-    """
-    Small shared helpers for TRL-based structural controls.
+    """The shared steer step, artifacts, and freezing of the TRL-based structural controls.
+
+    A configuration with a `train_dataset` trains, and its product (the LoRA adapter, or the checkpoint of a full
+    fine-tune or a merged LoRA run) is its one fit. Under an active fit cache, `steer()` resolves the product through
+    the cache (`resolve_product`). A stored product is installed as the frozen form does (a `load_lora` or
+    `load_checkpoint` steer), and nothing trains. While the cache contains the product, the steer step declares
+    `ModelAccess.FACTS` and no fit. After `steer()`, the control refers to the stored product, which `export_artifact()`
+    and `export_state()` report as an artifact object. Without a cache, `steer()` trains every time and the product
+    is the output directory. A subclass implements `_train(model, tokenizer, **kwargs)`, which trains (when a dataset
+    is set) and returns the model.
     """
 
     # populated from Args by subclasses
@@ -76,6 +92,113 @@ class TRLMixin:
     device = None
     _resolved_base_ref: str | None = None
     _transient_output_dir: str | None = None
+    _product: Artifact | None = None
+    _installed: bool = False
+
+    def _train(self, model: PreTrainedModel | None, tokenizer: PreTrainedTokenizerBase | None = None,
+               **kwargs) -> PreTrainedModel:
+        raise NotImplementedError
+
+    def steer(
+        self,
+        model: PreTrainedModel | None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
+        session: "SteeringSession | None" = None,
+        **kwargs: Any,
+    ) -> PreTrainedModel | None:
+        """Train the model, or install the stored product of an earlier training, and return the model.
+
+        A configuration without a `train_dataset` trains nothing and returns the resolved model, frozen, and a merged
+        LoRA run without `merged_output_dir` trains every time, since it leaves no product. Otherwise the product is
+        resolved through the active fit cache (`resolve_product`). On a hit the stored product is installed
+        on the incoming model as the frozen form does, and nothing trains. On a miss the model is trained, the product
+        is stored, and the trained model is returned, and a temporary output directory that the control created is
+        removed once the product is stored elsewhere. On a hit as on a miss, the control then refers to the stored
+        product (`export_artifact`).
+
+        Args:
+            model: The incoming pipeline model, or None (the model is then loaded from `base_model_name_or_path`).
+            tokenizer: The pipeline tokenizer, or None.
+            session: The steering session. On a session that serves no in-process model (an engine backend), a
+                stored product is not installed and the engine serves it.
+            **kwargs: Further arguments of the training (e.g., `ref_model` for DPO).
+
+        Returns:
+            The trained or adapted model, or None on a session that serves no in-process model.
+        """
+        if self.fit_identity() is None or self.artifact_capability() is None:
+            return self._train(model=model, tokenizer=tokenizer, session=session, **kwargs)
+        trained: list[PreTrainedModel] = []
+
+        def fit() -> dict[str, Any]:
+            trained.append(self._train(model=model, tokenizer=tokenizer, session=session, **kwargs))
+            return self.export_state()
+
+        if self._product is None:
+            self._product = self._artifact_of(state=resolve_product(control=self, fit=fit))
+            self._remove_transient_output_dir()
+        if trained:
+            return trained[0]
+        return self._install(model=model, tokenizer=tokenizer, session=session)
+
+    def _artifact_of(self, *, state: Mapping[str, Any]) -> Artifact:
+        """The product of a state, as this configuration's `artifact_capability()` decides.
+
+        The state's `"artifact"` is an artifact object (a state the control exported) or a path (a state decoded from
+        the fit cache), and a LoRA state gives its base model reference under `"base_model"`.
+        """
+        artifact = state["artifact"]
+        path = str(getattr(artifact, "path", artifact))
+        if self.artifact_capability() == Capability.SERVE_LORA:
+            return LoRAArtifact(path=path, base_model=str(state["base_model"]))
+        return CheckpointArtifact(path=path)
+
+    def _remove_transient_output_dir(self) -> None:
+        """Remove the temporary output directory once the product is stored in another place."""
+        transient = self._transient_output_dir
+        if transient is None or self._product is None or Path(self._product.path) == Path(transient):
+            return
+        shutil.rmtree(transient, ignore_errors=True)
+        self._transient_output_dir = None
+
+    def _install(self, *, model: PreTrainedModel | None, tokenizer: PreTrainedTokenizerBase | None,
+                 session) -> PreTrainedModel | None:
+        """Install the product on the incoming model with the loader of the frozen form."""
+        from steerability.algorithms.core.registry import resolve_method_key
+
+        product = self._product
+        state = {"artifact": product.path}
+        if isinstance(product, LoRAArtifact):
+            state["base_model"] = product.base_model
+            if model is None and getattr(session, "in_process", True):
+                model, tokenizer = self._resolve_model_tokenizer(model=model, tokenizer=tokenizer)
+        method, loader_args = self.frozen_form(state=state)
+        loader = resolve_method_key(key=method).control_cls(**loader_args)
+        self._installed = True
+        return loader.steer(model=model, tokenizer=tokenizer, session=session)
+
+    def restore(self, model: PreTrainedModel | None) -> PreTrainedModel | None:
+        """Remove an installed adapter and return the incoming model, without merging the adapter.
+
+        Args:
+            model: The adapted pipeline model.
+
+        Returns:
+            The model without the adapter (PEFT's `unload()`), or None unless `steer()` installed a stored LoRA
+            product (rather than training) on `model`, a PEFT model.
+        """
+        from peft import PeftModel
+
+        if not self._installed or not isinstance(self._product, LoRAArtifact) or not isinstance(model, PeftModel):
+            return None
+        return model.unload()
+
+    def steer_access(self) -> ModelAccess:
+        """`ModelAccess.FACTS` while the active fit cache contains this configuration's product, else `MODULE`.
+
+        A stored product is installed rather than trained, which needs no staged model on an engine backend.
+        """
+        return ModelAccess.FACTS if product_is_stored(control=self) else ModelAccess.MODULE
 
     def _resolve_model_tokenizer(
         self,
@@ -198,11 +321,18 @@ class TRLMixin:
         return Capability.SERVE_CHECKPOINT
 
     def export_artifact(self) -> Artifact | None:
-        """The on-disk product of this configuration's `steer()`, matching
-        `artifact_capability()`."""
+        """The on-disk product of this configuration's `steer()`, matching `artifact_capability()`.
+
+        After `steer()`, and before it while the active fit cache contains the product, this is the stored product.
+        Otherwise it is the configured output directory (`merged_output_dir` for a merged LoRA run).
+        """
         capability = self.artifact_capability()
         if capability is None:
             return None
+        if self._product is None and product_is_stored(control=self):
+            self._product = self._artifact_of(state=stored_product(control=self))
+        if self._product is not None:
+            return self._product
         if capability == Capability.SERVE_LORA:
             base = self.base_model_name_or_path or self._resolved_base_ref or ""
             return LoRAArtifact(path=str(self._resolved_output_dir()), base_model=str(base))
@@ -211,17 +341,18 @@ class TRLMixin:
         return CheckpointArtifact(path=str(path))
 
     def steer_fits(self) -> tuple[tuple[str, str], ...]:
-        """One `("TrainedWeights", "direction")` fit when the configuration trains (`train_dataset`
-        is set), else none."""
-        if getattr(self, "train_dataset", None) is None:
+        """One `("TrainedWeights", "direction")` fit when the configuration trains (`train_dataset` is set) and the
+        active fit cache does not contain its product, else none."""
+        if getattr(self, "train_dataset", None) is None or product_is_stored(control=self):
             return ()
         return (("TrainedWeights", "direction"),)
 
     def export_state(self) -> dict[str, Any]:
-        """The trained on-disk product under the `"artifact"` key, for freezing.
+        """The trained product under the `"artifact"` key, for freezing and for the fit cache.
 
-        Returns an empty mapping when the configuration trains nothing (`train_dataset` is
-        None), so an inert wrapper's recipe is its frozen form.
+        The artifact is the one `export_artifact()` reports, and a LoRA product also gives its base model reference
+        under `"base_model"`, since a stored adapter decodes to a path. Returns an empty mapping when the
+        configuration trains nothing (`train_dataset` is None), so an inert wrapper's recipe is its frozen form.
 
         Raises:
             NotFreezableError: If the configuration trains but produces no on-disk product
@@ -235,18 +366,24 @@ class TRLMixin:
                 f"{type(self).__name__} merges its LoRA adapter after training but writes no on-disk "
                 "product; set merged_output_dir to make the result freezable."
             )
-        return {"artifact": artifact}
+        state: dict[str, Any] = {"artifact": artifact}
+        if isinstance(artifact, LoRAArtifact):
+            state["base_model"] = artifact.base_model
+        return state
 
     def frozen_form(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        """The trained artifact as a `load_lora` or `load_checkpoint` entry."""
-        artifact = state["artifact"]
-        if isinstance(artifact, LoRAArtifact):
+        """The product as a `load_lora` or `load_checkpoint` entry, as this configuration's `artifact_capability()`
+        decides.
+
+        `state["artifact"]` is an artifact object, which a bundle stores by value, or a path.
+        """
+        if self.artifact_capability() == Capability.SERVE_LORA:
             return "structural_control/load_lora", {
-                "path": artifact,
-                "base_model": artifact.base_model,
+                "path": state["artifact"],
+                "base_model": state["base_model"],
                 "merge": False,
             }
-        return "structural_control/load_checkpoint", {"path": artifact}
+        return "structural_control/load_checkpoint", {"path": state["artifact"]}
 
     def fit_identity(self) -> Any | None:
         """The training-relevant args projection, or None when nothing trains.

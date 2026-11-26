@@ -17,7 +17,12 @@ class SFTTrainerMixin(TRLMixin, StructuralControl):
     eval_dataset: Any | None = None
     data_collator: Any | None = None
 
-    def steer(self, model: PreTrainedModel | None, tokenizer: PreTrainedTokenizerBase | None = None, **_) -> PreTrainedModel:
+    def _train(
+        self,
+        model: PreTrainedModel | None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
+        **_,
+    ) -> PreTrainedModel:
 
         self.tokenizer = tokenizer or (getattr(model, "tokenizer", None) if model is not None else None)
 

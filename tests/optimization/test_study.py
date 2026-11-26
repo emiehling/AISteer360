@@ -5,24 +5,34 @@ import pytest
 
 pytest.importorskip("inspect_ai")
 
+from datasets import Dataset
+
 from steerability.algorithms.core.identity import versioned
 from steerability.algorithms.core.protocol import Protocol
-from steerability.algorithms.core.recipe import Choice, Entry, Interval, RecipeError, Template, Text, entry
+from steerability.algorithms.core.recipe import Choice, Interval, RecipeError, Template, Text, entry
 from steerability.algorithms.core.store import Store
 from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
 from steerability.algorithms.output_control.best_of_n.control import BestOfN
+from steerability.algorithms.structural_control.load_lora.control import LoadLoRA
+from steerability.algorithms.structural_control.wrappers.trl.sfttrainer.control import SFT
+from steerability.optimization import optional, structures
 from steerability.optimization.evaluation.plan import make_plan
+from steerability.optimization.evaluation.session import StudySession
 from steerability.optimization.measurement.pools import split_items
 from steerability.optimization.study import Candidate, Constraint, Settings
 from tests.optimization.helpers import (
     OTHER,
     PAIRS,
+    StubFactory,
     SyntheticBenchmark,
     Truth,
     build_study,
     caa_template,
     prompt_template,
 )
+
+DATASET = Dataset.from_dict({"text": ["a formal reply", "another formal reply"]})
+PROMPT = entry(SystemPrompt, name="prompt", text=Choice(values=("be brief", "be kind")))
 
 
 def _quiet(recipe, item_id):
@@ -51,10 +61,40 @@ class TestValidate:
     def test_a_valid_study_passes(self, store):
         build_study(store, _quiet).validate(store)
 
-    def test_a_structural_entry_is_refused(self, store):
-        lora = Template((Entry(method="structural_control/load_lora", args={"path": "adapter"}),))
-        with pytest.raises(ValueError, match="structural"):
-            _with_space(store, {"lora": lora}).validate(store)
+    def test_a_study_with_a_loader_structure_validates_and_runs(self, store):
+        lora = entry(LoadLoRA, name="lora", path=Choice(values=("adapter-a", "adapter-b")), base_model="synthetic")
+        study = _with_space(store, structures(optional(lora), optional(PROMPT)))
+        study.validate(store=store)
+        study.objective.set_truth(truth=lambda recipe, item_id: Truth(gain=0.1))
+        session = StudySession(study=study, store=store, factory=StubFactory(protocol=study.protocol))
+        session.start()
+        values = {"lora.path": "adapter-b", "prompt.text": "be kind"}
+        assert session.evaluate(candidate=Candidate(structure="lora+prompt", values=values)).status == "accepted"
+        assert session.evaluate(candidate=Candidate(structure="lora", values={"lora.path": "adapter-a"})).accepted
+
+    def test_a_training_argument_left_as_the_solved_axis_points_to_searched(self, store):
+        rate = Interval(low=1e-5, high=1e-4)
+        sft = Template(entries=(entry(SFT, train_dataset=DATASET, use_peft=True, learning_rate=rate),))
+        with pytest.raises(RecipeError, match="study.searched"):
+            _with_space(store, {"lora": sft}).validate(store=store)
+        _with_space(store, {"lora": sft}, searched={"sft.learning_rate"}).validate(store=store)
+
+    def test_a_training_that_leaves_no_product_to_store_is_refused(self, store):
+        merged = Template(entries=(entry(SFT, train_dataset=DATASET, use_peft=True, merge_lora_after_train=True),))
+        with pytest.raises(ValueError, match="merged_output_dir"):
+            _with_space(store, {"merged": merged}).validate(store=store)
+        stored = Template(
+            entries=(
+                entry(
+                    SFT,
+                    train_dataset=DATASET,
+                    use_peft=True,
+                    merge_lora_after_train=True,
+                    merged_output_dir="merged",
+                ),
+            ),
+        )
+        _with_space(store, {"merged": stored}).validate(store=store)
 
     def test_an_unversioned_callable_is_refused(self, store):
         unversioned = Template((entry(BestOfN, scorer=unversioned_scorer, n=Choice((2, 4))),))

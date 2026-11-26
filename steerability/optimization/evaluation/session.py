@@ -64,8 +64,10 @@ class _Allowance:
     candidates: int | None
     generations: int | None
     seconds: float | None
+    structural_fits: int | None
     recorded_at: int
     generations_at: int
+    structural_fits_at: int
     started_at: float
 
     def over(self, *, session: StudySession, candidates: bool) -> bool:
@@ -108,6 +110,11 @@ class StudySession:
     is true and `screen` returns a rejected result with reason `budget`. A candidate stopped by a limit or a deadline
     is not recorded.
 
+    `max_structural_fits` and an allowance's `structural_fits` limit the distinct structural fits (trainings and
+    merges whose products the store does not contain) that the session lets through (`admit_fits`). A spent limit stops
+    single candidates and does not exhaust the session. A candidate that needs another structural fit gets a `budget`
+    result that is not recorded, and candidates whose products are stored are evaluated as usual.
+
     Args:
         study: The study.
         store: The store.
@@ -116,6 +123,7 @@ class StudySession:
         max_candidates: The number of candidates this session may record, or None.
         max_generations: The number of generations this session may run, or None.
         max_seconds: The wall time this session may run from `start`, or None.
+        max_structural_fits: The number of distinct structural fits this session may let through, or None.
         allow_infeasible: Whether to run a study that fails the feasibility check, i.e., one whose pools give it low
             power. It waives no check of the baseline.
 
@@ -139,11 +147,13 @@ class StudySession:
         max_candidates: int | None = None,
         max_generations: int | None = None,
         max_seconds: float | None = None,
+        max_structural_fits: int | None = None,
         allow_infeasible: bool = False,
     ) -> None:
         check_limit(name="max_candidates", value=max_candidates, count=True)
         check_limit(name="max_generations", value=max_generations, count=True)
         check_limit(name="max_seconds", value=max_seconds, count=False)
+        check_limit(name="max_structural_fits", value=max_structural_fits, count=True)
         self.study = study
         self.store = store
         self._owns_factory = factory is None
@@ -153,8 +163,10 @@ class StudySession:
         self.max_candidates = max_candidates
         self.max_generations = max_generations
         self.max_seconds = max_seconds
+        self.max_structural_fits = max_structural_fits
         self.allow_infeasible = allow_infeasible
         self._generations = 0
+        self._structural_fits: set[str] = set()
         self._allowances: list[_Allowance] = []
         self._recorded = 0
         self._round_count = 0
@@ -289,6 +301,11 @@ class StudySession:
         """The number of candidates this session recorded (their first result versions)."""
         return self._recorded
 
+    @property
+    def structural_fits(self) -> int:
+        """The number of distinct structural fits this session let through (`admit_fits`)."""
+        return len(self._structural_fits)
+
     @contextmanager
     def allowance(
         self,
@@ -296,20 +313,23 @@ class StudySession:
         candidates: int | None = None,
         generations: int | None = None,
         seconds: float | None = None,
+        structural_fits: int | None = None,
     ) -> Iterator[None]:
         """Limit the session further for the span of a block.
 
-        On entry the allowance notes `recorded`, `generations`, and the time. While the block runs, `exhausted()` is
-        also true once the block has recorded `candidates` candidates, generated `generations` rows, or run for
-        `seconds`, and a running evaluation is stopped with `budget` once the generations or the seconds are spent.
-        The candidate limit is checked between evaluations, as `max_candidates` is. Allowances nest, and every active
-        allowance applies. Measurements made with `limited=False` ignore allowances, as they ignore the session's own
-        limits.
+        On entry the allowance notes `recorded`, `generations`, `structural_fits`, and the time. While the block runs,
+        `exhausted()` is also true once the block has recorded `candidates` candidates, generated `generations` rows,
+        or run for `seconds`, and a running evaluation is stopped with `budget` once the generations or the seconds
+        are spent. The candidate limit is checked between evaluations, as `max_candidates` is. The block may let
+        through `structural_fits` new structural fits, and a candidate that needs more gets a `budget` result without
+        exhausting the session. Allowances nest, and every active allowance applies. Measurements made with
+        `limited=False` ignore allowances, as they ignore the session's own limits.
 
         Args:
             candidates: The number of candidates the block may record, or None.
             generations: The number of rows the block may generate, or None.
             seconds: The wall time the block may run, or None.
+            structural_fits: The number of structural fits the block may let through, or None; 0 trains nothing.
 
         Yields:
             None.
@@ -320,12 +340,15 @@ class StudySession:
         check_limit(name="candidates", value=candidates, count=True)
         check_limit(name="generations", value=generations, count=True)
         check_limit(name="seconds", value=seconds, count=False)
+        check_limit(name="structural_fits", value=structural_fits, count=True)
         allowance = _Allowance(
             candidates=candidates,
             generations=generations,
             seconds=seconds,
+            structural_fits=structural_fits,
             recorded_at=self._recorded,
             generations_at=self._generations,
+            structural_fits_at=self.structural_fits,
             started_at=time.monotonic(),
         )
         self._allowances.append(allowance)
@@ -360,9 +383,36 @@ class StudySession:
         if limited and self._over_limits():
             raise Stopped("budget")
 
-    def _steered(self, recipe: Recipe) -> Steered:
+    def admit_fits(self, *, recipes: Sequence[Recipe]) -> None:
+        """Let through the structural fits that recipes need, within the limits on structural fits.
+
+        The fit keys of `factory.pending_structural_fits(recipes=recipes)` that the session has not let through yet
+        are new. When the session's `max_structural_fits` or an active allowance's `structural_fits` does not cover
+        all of them, nothing is let through. Otherwise the new keys count as let through.
+
+        Args:
+            recipes: The recipes of one candidate (or one recipe).
+
+        Raises:
+            Stopped: With reason `"budget"` when a limit does not cover the new fits.
+        """
+        new = set(self.factory.pending_structural_fits(recipes=recipes)) - self._structural_fits
+        if not new:
+            return
+        total = self.structural_fits + len(new)
+        if self.max_structural_fits is not None and total > self.max_structural_fits:
+            raise Stopped("budget")
+        for allowance in self._allowances:
+            limit = allowance.structural_fits
+            if limit is not None and total - allowance.structural_fits_at > limit:
+                raise Stopped("budget")
+        self._structural_fits |= new
+
+    def _steered(self, recipe: Recipe, *, limited: bool) -> Steered:
         if self._open is not None and self._open[0] == recipe.id:
             return self._open[2]
+        if limited:
+            self.admit_fits(recipes=[recipe])
         self._close_steered()
         stack = ExitStack()
         try:
@@ -401,13 +451,14 @@ class StudySession:
             The recipe's resolved id and the number of rows this call generated.
 
         Raises:
-            Stopped: If the deadline has passed or a limit is reached.
+            Stopped: If the deadline has passed, a limit is reached, or (when `limited`) the recipe needs a structural
+                fit beyond the limits on structural fits.
             SteeringFailure: If the recipe fails to steer.
         """
         from steerability.evaluation.items import evaluate_items
 
         self.check(deadline, limited=limited)
-        steered = self._steered(recipe)
+        steered = self._steered(recipe=recipe, limited=limited)
         results = evaluate_items(steered, benchmark, list(item_ids), store=self.store, replicate=0)
         generated = sum(1 for result in results.values() if result.generated)
         self._generations += generated
@@ -422,7 +473,9 @@ class StudySession:
         """Run the fits of a batch of candidates before any of them generates.
 
         The plan of each candidate that binds and has no recorded result is made, and `factory.prepare` runs once on
-        all their recipes. A failure is logged, and each candidate then fits in its own stage 1.
+        the recipes of those whose structural fits the limits let through (`admit_fits`). A candidate that needs a
+        structural fit beyond the limits is left out, and its evaluation returns `budget`. A failure is logged, and
+        each candidate then fits in its own stage 1.
 
         Args:
             candidates: The candidates.
@@ -433,8 +486,13 @@ class StudySession:
                 plan = make_plan(self.study, candidate)
             except RecipeError:
                 continue
-            if self.archive.latest(plan.candidate_id) is None:
-                recipes.extend(plan.recipes)
+            if self.archive.latest(candidate_id=plan.candidate_id) is not None:
+                continue
+            try:
+                self.admit_fits(recipes=plan.recipes)
+            except Stopped:
+                continue
+            recipes.extend(plan.recipes)
         if not recipes:
             return
         try:

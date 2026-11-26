@@ -23,7 +23,7 @@ not parse or bind) also lists what failed before, since OpenEvolve stores the ar
 - `recent_rejections`: the latest recorded rejections of the candidate's structure, newest first, one line each
   with the candidate's values, the reason, and the level and gain when the summary has them.
 - `recent_unevaluated`: the messages of the latest programs that could not be evaluated, newest first, i.e.,
-  programs that did not parse or bind.
+  programs that did not parse or bind and candidates that needed a structural fit beyond the limits.
 
 Both contain candidate values, reason names, and search-pool aggregates only.
 """
@@ -289,6 +289,13 @@ class EvaluationService:
 
     def _final(self, *, result: Result, partial: Partial, stage1: bool = False) -> dict:
         candidate = partial.candidate
+        if result.reason == "budget" and not self.session.exhausted():
+            values = compact(value=dict(candidate.values))
+            message = (
+                f"{values} of structure {candidate.structure!r} was not evaluated, since it needs a training or merge "
+                "beyond the limits of this search"
+            )
+            self._unevaluated.append(_cut(text=message, limit=MESSAGE_CHARS))
         metrics = final_metrics(result=result)
         if stage1:
             metrics = {"stage1_passed": 0.0, **metrics}

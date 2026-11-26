@@ -25,7 +25,7 @@ class GRPOTrainerMixin(TRLMixin, StructuralControl):
     eval_dataset: Any | None = None
     reward_funcs: Callable | list[Callable] | None = None
 
-    def steer(
+    def _train(
         self,
         model: PreTrainedModel | None,
         tokenizer: PreTrainedTokenizerBase | None = None,

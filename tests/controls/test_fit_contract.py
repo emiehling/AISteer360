@@ -8,12 +8,14 @@ exports, and an application-only change. The checks:
   declares a fit;
 - two fits give the same exported content (controls whose fit samples from a model are exempt);
 - `frozen_form(state)` depends only on the args and `state`;
-- `export_state()` after a cache hit equals `export_state()` after the fit that filled the cache;
+- `export_state()` after a cache hit equals `export_state()` after the fit that filled the cache, for intervention
+  controls and for the product of a structural control that trains;
 - steering leaves the recipe of a control unchanged.
 
 Every registered control is either configured here or listed in `NOT_CONFIGURED` with the reason.
 """
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 import torch
@@ -140,11 +142,11 @@ NOT_CONFIGURED = {
     "state_control/pasta": "a dict head map has no fit; HeadProfile fits are covered in test_pasta.py",
     "structural_control/load_checkpoint": "an artifact loader; receives the model by pipeline convention, fits nothing",
     "structural_control/load_lora": "an artifact loader; receives the model by pipeline convention, fits nothing",
-    "structural_control/mergekit": "structural controls steer every time; covered in the MergeKit tests",
-    "structural_control/sft": "structural controls steer every time; covered in the TRL tests",
-    "structural_control/dpo": "structural controls steer every time; covered in the TRL tests",
-    "structural_control/grpo": "structural controls steer every time; covered in the TRL tests",
-    "structural_control/apo": "structural controls steer every time; covered in the TRL tests",
+    "structural_control/mergekit": "merges models; its product route is covered in tests/core/test_fits.py",
+    "structural_control/sft": "trains on a dataset; covered below and in tests/core/test_fits.py",
+    "structural_control/dpo": "trains on preference data with the product route of sft (TRLMixin)",
+    "structural_control/grpo": "trains with a reward callable with the product route of sft (TRLMixin)",
+    "structural_control/apo": "trains on preference data with the product route of sft (TRLMixin)",
 }
 
 
@@ -244,6 +246,45 @@ def test_export_state_after_a_cache_hit_equals_the_fit(method, model):
             _steer(controls[0], model)
         record_control_fits(pending, cache)
         results.append(content_id(controls[0].export_state()))
+    assert results[0] == results[1]
+
+
+def test_a_structural_product_after_a_cache_hit_is_the_product_the_fit_stored(tmp_path):
+    from datasets import Dataset
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from steerability.algorithms.core.store import Store
+    from steerability.algorithms.structural_control.wrappers.trl.sfttrainer.control import SFT
+
+    model_name = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+    store = Store.open(root=tmp_path / "store")
+    cache = FitCache(protocol=Protocol.create(model=model_name), weights="base", store=store)
+    dataset = Dataset.from_dict({"text": [f"the cat sat {index}" for index in range(4)]})
+    results = []
+    for _ in range(2):
+        control = SFT(
+            train_dataset=dataset,
+            use_peft=True,
+            num_train_epochs=1,
+            per_device_train_batch_size=2,
+            logging_steps=100,
+            load_best_model_at_end=False,
+            max_length=16,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
+        pipeline = SteeringPipeline(
+            controls=[control],
+            model=AutoModelForCausalLM.from_pretrained(model_name),
+            tokenizer=tokenizer,
+        )
+        with fit_cache_scope(cache=cache):
+            assert (control.steer_access() == ModelAccess.FACTS) == bool(results)
+            assert bool(control.steer_fits()) == (not results)
+            pipeline.steer()
+        state = control.export_state()
+        assert Path(state["artifact"].path).is_relative_to(store.artifacts.root)
+        results.append(content_id(value=state))
     assert results[0] == results[1]
 
 

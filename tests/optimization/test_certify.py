@@ -57,7 +57,8 @@ def test_certified_points_are_written_as_bundles(store, tmp_path):
     assert certification.certified == expected and certification.failed_at is None
     for index, resolved in enumerate(expected):
         certificate = certification.certificates[resolved]
-        assert certificate["schema"] == "certificate/2" and certificate["index"] == index
+        assert certificate["schema"] == "certificate/3" and certificate["index"] == index
+        assert certificate["weights"] == []
         assert certificate["study_id"] == study.id and certificate["protocol_id"] == study.protocol.id
         assert certificate["constraints"]["capability"]["n"] == len(study.pools[study.constraints[0].benchmark.id]
                                                                     .held_out)
@@ -69,7 +70,7 @@ def test_certified_points_are_written_as_bundles(store, tmp_path):
     assert len(bundles) == 3
     for bundle in bundles:
         assert bundle.options["freeze"] is True and bundle.options["protocol"] == study.protocol
-        assert bundle.options["certificate"]["schema"] == "certificate/2"
+        assert bundle.options["certificate"]["schema"] == "certificate/3"
         assert len(bundle.saved) == 1
 
 

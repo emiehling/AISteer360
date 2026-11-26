@@ -324,9 +324,11 @@ class OpenEvolveEngine(SearchEngine):
     other run files are rewritten, and a changed `goal`, `llm`, or `iterations` takes effect.
 
     Each evaluation operation has a deadline of 90% of `stage_timeout_seconds`, which stops a long evaluation before
-    OpenEvolve's own timeout does. When OpenEvolve gives up on a call first, the result is still recorded, and a later
-    proposal of the candidate is a lookup. The numeric defaults follow OpenEvolve's own short-run examples and were
-    not measured on a study.
+    OpenEvolve's own timeout does. A training or merge of a structural control runs inside a stage and is not
+    interrupted by a deadline. For a phase over a structure that trains, `stage_timeout_seconds` must therefore cover
+    one training plus screening, or the phase runs with `structural_fits=0` on the products an earlier phase trained.
+    When OpenEvolve gives up on a call first, the result is still recorded, and a later proposal of the candidate is
+    a lookup. The numeric defaults follow OpenEvolve's own short-run examples and were not measured on a study.
 
     Args:
         run_dir: The run directory (programs, configuration, and OpenEvolve's output under `<run_dir>/openevolve`).

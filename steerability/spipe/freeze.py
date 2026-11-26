@@ -249,7 +249,7 @@ def build_spipe(
         model_ref: Explicit model reference, overriding the pipeline's.
         protocol: The protocol a frozen bundle records in its lock; defaults to
             `Protocol.from_pipeline(pipeline)`.
-        certificate: A mapping with `"schema": "certificate/2"` recorded in a frozen bundle's
+        certificate: A mapping with `"schema": "certificate/3"` recorded in a frozen bundle's
             lock, or None.
 
     Returns:

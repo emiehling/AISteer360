@@ -37,7 +37,7 @@ class DPOTrainerMixin(TRLMixin, StructuralControl):
     precompute_ref_log_probs: bool | None = True
     disable_dropout: bool | None = True
 
-    def steer(
+    def _train(
         self,
         model: PreTrainedModel | None,
         tokenizer: PreTrainedTokenizerBase | None = None,

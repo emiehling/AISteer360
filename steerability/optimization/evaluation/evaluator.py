@@ -4,7 +4,8 @@
 it rejects with are:
 
 - **0. Static**: `make_plan`, and `preflight` on the plan's first recipe (`invalid`, `unsupported`).
-- **1. Fits**: `factory.prepare(plan.recipes)` (`fit_failed`).
+- **1. Fits**: the limits on structural fits (`StudySession.admit_fits`), then `factory.prepare(plan.recipes)`
+  (`fit_failed`).
 - **2. Behavior quick look**: probe recipes on the start of the objective's ladder block (`no_behavior_gain`).
 - **3. Capability smoke test**: with a solved axis, probe recipes on the start of each constraint's ladder block
   (`capability_fail`).
@@ -14,8 +15,8 @@ it rejects with are:
 
 Confirmation (`confirm`) is the one routine that judges a point, and every candidate ends in it. A rejection is
 recorded with its stage, reason, and summary, except for a candidate that does not bind (it has no id) and a candidate
-stopped by a limit (`budget`) or a deadline (`timeout`), whose evidence rows stay so that a later evaluation resumes
-from them.
+stopped by a limit (`budget`, also for a structural fit beyond the limits) or a deadline (`timeout`), whose evidence
+rows stay so that a later evaluation resumes from them.
 """
 from __future__ import annotations
 
@@ -232,6 +233,7 @@ def _screen_stages(session: StudySession, partial: Partial, progress: _Progress,
 
     progress.stage = 1
     session.check(deadline)
+    session.admit_fits(recipes=plan.recipes)
     try:
         session.fit(plan.recipes)
     except Exception as error:
