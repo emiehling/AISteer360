@@ -55,6 +55,7 @@ PRODUCTION_FUNCTIONS = {
     "steerability_provider", "run_study", "certify", "split_items", "make_plan", "ensure_baseline",
     "design_variance", "feasibility", "initial_population", "structures", "optional", "one_of", "select_structures",
     "candidate_document", "parse_document", "describe_task", "describe_structure", "describe_axes", "check_limit",
+    "check_space",
 }
 
 

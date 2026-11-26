@@ -2,8 +2,10 @@
 
 A fit is the model-side work a control's `steer()` does to produce a reusable artifact. Its digest
 (`fit_digest`) covers the inputs of that work, and its key (`fit_key`) adds the protocol's fit
-context and the recipe's structural weights. The `FitCache` serves stored fits by key, so a recipe
-whose fits are all stored steers without model work.
+context and the weights the fit runs on. A fit of a state, input, or output control runs on the
+recipe's structural weights (`weights_context`). The product of a structural control is fitted on
+the structural entries before it only (`product_weights`). The `FitCache` serves stored fits by key,
+so a recipe whose fits are all stored steers without model work.
 
 Three routes consult the cache. Intervention controls resolve their fit sources through
 `resolve_source`, which returns a stored value on a hit and stores the result of a miss; while a
@@ -56,6 +58,10 @@ def _qualname(value_type: type) -> str:
     return f"{value_type.__module__}.{value_type.__qualname__}"
 
 
+def _is_structural(item: Mapping[str, Any]) -> bool:
+    return item["method"].startswith("structural_control/")
+
+
 def weights_context(recipe: Recipe) -> str:
     """The identity of the weights a recipe's fits run on.
 
@@ -63,8 +69,50 @@ def weights_context(recipe: Recipe) -> str:
         The content id of the canonical entries whose method is a structural control, in entry
         order, or `"base"` when the recipe has none.
     """
-    structural = [item for item in recipe.canonical()["entries"] if item["method"].startswith("structural_control/")]
+    structural = [item for item in recipe.canonical()["entries"] if _is_structural(item)]
     return json_id(structural) if structural else "base"
+
+
+def product_weights(recipe: Recipe) -> dict[str, str]:
+    """The identity of the weights each structural product of a recipe is fitted on, by its fit digest.
+
+    A product is fitted in a pipeline of the recipe's structural controls up to its own, so its
+    weights are those of the enabled structural entries before it, in entry order. An entry that
+    trains or merges is given there by its fit digest, which leaves its output locations out, and
+    any other structural entry (an artifact loader) by its canonical entry. A product with no
+    structural entry before it is fitted on `"base"`. Two recipes therefore share a product when
+    its training and the structural entries before it are the same. The structural entries after
+    it and the output locations of the trainings do not enter its key.
+
+    Args:
+        recipe: The recipe.
+
+    Returns:
+        Mapping from the fit digest of each enabled structural control that declares one
+        (`control_fit_digests`) to the content id of its weights, or `"base"`.
+
+    Raises:
+        RecipeError: If two structural controls of the recipe declare the same fit, i.e., the
+            recipe contains one training twice.
+    """
+    from steerability.algorithms.core.recipe import RecipeError
+
+    products: dict[str, str] = {}
+    before: list[Any] = []
+    for item, control in zip(recipe.canonical()["entries"], recipe.instantiate()):
+        if not _is_structural(item):
+            continue
+        digests = control_fit_digests(control=control)
+        for digest in digests:
+            if digest in products:
+                raise RecipeError(
+                    f"Recipe {recipe.id} contains the training of {item['method']} twice with one fit identity, "
+                    "and a product is identified by its fit identity and the structural entries before it; "
+                    "give the two entries different training arguments."
+                )
+            products[digest] = json_id(before) if before else "base"
+        before.extend([{"product": digest} for digest in digests] or [item])
+    return products
 
 
 def source_identity(source: Any) -> Any:
@@ -168,19 +216,22 @@ def _now() -> str:
 
 
 class FitCache:
-    """Stored fits for one pipeline, under one protocol and weights context.
+    """Stored fits for one pipeline, under one protocol and the weights each fit runs on.
 
-    With a store, values are encoded in save mode into the store's artifacts and their JSON is kept
-    in its `fits` table. Without one, the cache keeps them in memory with a temporary artifact
-    store of its own. Two kinds of fit are not stored and are recorded as process-local: a value
-    the encoder rejects (logged once per type at warning level), and the fit of a control whose
-    `fit_identity()` is None (`mark_local`). A process-local fit makes the pipeline's resolved id
-    unique to the process.
+    A fit is keyed under the recipe's weights context (`weights`), and the product of a structural
+    control under the weights it is fitted on (`products`). With a store, values are encoded in
+    save mode into the store's artifacts and their JSON is kept in its `fits` table. Without one,
+    the cache keeps them in memory with a temporary artifact store of its own. Two kinds of fit are
+    not stored and are recorded as process-local: a value the encoder rejects (logged once per type
+    at warning level), and the fit of a control whose `fit_identity()` is None (`mark_local`). A
+    process-local fit makes the pipeline's resolved id unique to the process.
 
     Args:
         protocol: The protocol whose fit context keys the fits.
-        weights: The recipe's weights context.
+        weights: The recipe's weights context (`weights_context`).
         store: The persistent store, or None.
+        products: The weights each product of the recipe is fitted on, by its fit digest
+            (`product_weights`). A digest that is not listed is keyed under `weights`.
 
     Attributes:
         hit_count: Values served by `get`.
@@ -188,9 +239,11 @@ class FitCache:
         product_count: Products of structural controls fitted and written by `resolve_product`.
     """
 
-    def __init__(self, protocol: Protocol, weights: str, store: Store | None):
+    def __init__(self, protocol: Protocol, weights: str, store: Store | None, *,
+                 products: Mapping[str, str] | None = None):
         self.protocol = protocol
         self.weights = weights
+        self.products = dict(products or {})
         self.store = store
         self._memory: dict[str, str] = {}
         self._used: dict[str, str] = {}
@@ -212,9 +265,13 @@ class FitCache:
         """The artifact store that fitted values are encoded into."""
         return self._artifacts
 
+    def weights_of(self, digest: str) -> str:
+        """The weights a fit runs on: those of `products` for a listed product, else `weights`."""
+        return self.products.get(digest, self.weights)
+
     def key(self, digest: str) -> str:
-        """The fit key of a digest under this cache's protocol and weights."""
-        return fit_key(self.protocol, self.weights, digest)
+        """The fit key of a digest under this cache's protocol and the weights the fit runs on (`weights_of`)."""
+        return fit_key(self.protocol, self.weights_of(digest), digest)
 
     def _stored(self, key: str) -> str | None:
         if self.store is None:
@@ -261,7 +318,7 @@ class FitCache:
         from steerability.algorithms.core.store import FitRow
 
         row = self.store.put_fit(FitRow(
-            fit_key=key, fit_context_id=self.protocol.fit_context_id, weights_context=self.weights,
+            fit_key=key, fit_context_id=self.protocol.fit_context_id, weights_context=self.weights_of(digest),
             fit_digest=digest, value=value_json, seconds=float(seconds), created_at=_now(),
         ))
         return row.value
@@ -628,6 +685,7 @@ __all__ = [
     "fit_digests",
     "fit_key",
     "product_is_stored",
+    "product_weights",
     "record_control_fits",
     "resolve_product",
     "resolve_source",

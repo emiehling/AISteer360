@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from steerability.algorithms.core.fits import fit_digests
+from steerability.algorithms.core.fits import fit_digests, product_weights
 from steerability.algorithms.core.recipe import Axis, Recipe, RecipeError, Template
 from steerability.spipe.errors import SpipeSaveError
 
@@ -52,6 +52,21 @@ def continuous_fractions(axis: Axis, n: int) -> tuple[float, ...]:
     return tuple(fractions)
 
 
+def _check_products(*, structure: str, recipe: Recipe) -> None:
+    """Check that every structural product of a recipe has an identity and is trained once (`product_weights`).
+
+    Raises:
+        RecipeError: If a product's fit has no identity or the recipe contains one training twice.
+    """
+    try:
+        product_weights(recipe=recipe)
+    except RecipeError:
+        raise
+    except (TypeError, ValueError, SpipeSaveError) as error:
+        raise RecipeError(f"Structure {structure!r}: a structural fit of the recipe has no identity "
+                          f"({type(error).__name__}: {error}).") from error
+
+
 def make_plan(study: Study, candidate: Candidate) -> EvaluationPlan:
     """The plan of a candidate.
 
@@ -67,8 +82,9 @@ def make_plan(study: Study, candidate: Candidate) -> EvaluationPlan:
         The plan.
 
     Raises:
-        RecipeError: If the candidate does not bind, a ladder recipe has an argument that cannot be encoded, or the
-            solved axis changes a fit (the message points to `study.searched`).
+        RecipeError: If the candidate does not bind, a ladder recipe has an argument that cannot be encoded, the
+            solved axis changes a fit (the message points to `study.searched`), or a recipe contains one training
+            twice (`product_weights`).
     """
     candidate_id = study.candidate_id(candidate)
     template = study.bind(candidate)
@@ -82,6 +98,7 @@ def make_plan(study: Study, candidate: Candidate) -> EvaluationPlan:
     if expected is None:
         recipe = template.recipe()
         _ = recipe.id
+        _check_products(structure=candidate.structure, recipe=recipe)
         return EvaluationPlan(candidate_id, template, None, False, ({},), (recipe,))
     solved = remaining[expected.key]
     fractions = None
@@ -104,6 +121,7 @@ def make_plan(study: Study, candidate: Candidate) -> EvaluationPlan:
             f"Structure {candidate.structure!r}: the solved axis {solved.key!r} changes a fit, and its positions "
             f"cannot share fitted artifacts; list {solved.key!r} in study.searched to fit each proposed value once."
         )
+    _check_products(structure=candidate.structure, recipe=recipes[0])
     return EvaluationPlan(
         candidate_id, template, solved, solved.key in study.monotone, tuple(positions), recipes, fractions,
     )

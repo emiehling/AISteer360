@@ -19,6 +19,7 @@ from steerability.algorithms.core.fits import (
     fit_cache_scope,
     fit_digests,
     product_is_stored,
+    product_weights,
     resolve_product,
     resolved_id,
     source_access,
@@ -27,7 +28,7 @@ from steerability.algorithms.core.fits import (
     weights_context,
 )
 from steerability.algorithms.core.protocol import Protocol
-from steerability.algorithms.core.recipe import Recipe, entry
+from steerability.algorithms.core.recipe import Recipe, RecipeError, entry
 from steerability.algorithms.core.registry import REGISTRY, register_method
 from steerability.algorithms.core.store import Store
 from steerability.algorithms.core.sweeps import PipelineFactory
@@ -51,9 +52,11 @@ class CountingAdapterArgs(BaseArgs):
 
     Attributes:
         seed: The seed of the adapter's weights, its one training argument.
+        out_dir: An output location, which the fit identity leaves out.
     """
 
     seed: int = 0
+    out_dir: str | None = None
 
 
 class CountingAdapter(StructuralControl):
@@ -121,6 +124,29 @@ class CountingAdapter(StructuralControl):
         return model.unload() if self._installed and isinstance(model, PeftModel) else None
 
 
+@dataclass
+class PassThroughArgs(BaseArgs):
+    """Arguments of `PassThrough`.
+
+    Attributes:
+        label: A label that tells two entries apart and changes nothing.
+    """
+
+    label: str = ""
+
+
+class PassThrough(StructuralControl):
+    """A structural control that returns the model it receives and declares no fit."""
+
+    Args = PassThroughArgs
+
+    def steer_access(self) -> ModelAccess:
+        return ModelAccess.FACTS
+
+    def steer(self, model, tokenizer=None, session=None, **kwargs):
+        return model
+
+
 def _lora(state):
     artifact = state["artifact"]
     return LoRAArtifact(path=str(getattr(artifact, "path", artifact)), base_model=str(state["base_model"]))
@@ -140,6 +166,21 @@ def adapter():
         yield CountingAdapter
     finally:
         REGISTRY["structural_control"].pop("counting_adapter", None)
+
+
+@pytest.fixture()
+def pass_through():
+    """Register `PassThrough` for one test."""
+    register_method(
+        category="structural",
+        name="pass_through",
+        control_cls=PassThrough,
+        args_cls=PassThroughArgs,
+    )
+    try:
+        yield PassThrough
+    finally:
+        REGISTRY["structural_control"].pop("pass_through", None)
 
 
 def _adapted(seed: int = 0, multiplier: float = 2.0) -> Recipe:
@@ -389,6 +430,47 @@ class TestProducts:
             factory.release()
         assert [fit.seed for fit in CountingAdapter.fits] == [0, 1]
         assert factory.stats.structural_fits == 2
+
+    def test_a_product_is_keyed_by_its_training_and_the_structural_entries_before_it(
+        self, tmp_path, adapter, pass_through,
+    ):
+        factory, _ = _factory(tmp_path)
+        recipes = [
+            Recipe(entries=(entry(CountingAdapter, seed=0, out_dir="first"),)),
+            Recipe(entries=(entry(CountingAdapter, seed=0, out_dir="second"),)),
+            Recipe(entries=(entry(CountingAdapter, seed=0), entry(PassThrough, label="after"))),
+        ]
+        assert len({weights_context(recipe=recipe) for recipe in recipes}) == 3
+        assert len(factory.pending_structural_fits(recipes=recipes)) == 1
+        try:
+            for recipe in recipes:
+                with factory.steered(recipe=recipe):
+                    pass
+        finally:
+            factory.release()
+        assert len(CountingAdapter.fits) == 1 and factory.stats.structural_fits == 1
+        before = Recipe(entries=(entry(PassThrough, label="before"), entry(CountingAdapter, seed=0)))
+        assert len(factory.pending_structural_fits(recipes=[before])) == 1
+        (digest,) = product_weights(recipe=recipes[0])
+        assert product_weights(recipe=before)[digest] != product_weights(recipe=recipes[2])[digest] == "base"
+
+    def test_a_recipe_that_contains_one_training_twice_is_refused(self, tmp_path, adapter):
+        factory, _ = _factory(tmp_path)
+        twice = Recipe(
+            entries=(
+                entry(CountingAdapter, name="first", seed=0),
+                entry(CountingAdapter, name="second", seed=0),
+            ),
+        )
+        with pytest.raises(RecipeError, match="twice"):
+            factory.pending_structural_fits(recipes=[twice])
+        other = Recipe(
+            entries=(
+                entry(CountingAdapter, name="first", seed=0),
+                entry(CountingAdapter, name="second", seed=1),
+            ),
+        )
+        assert len(factory.pending_structural_fits(recipes=[other])) == 2
 
     def test_the_yielded_pipeline_installs_the_stored_product_and_trains_nothing(self, tmp_path, adapter):
         factory, store = _factory(tmp_path)

@@ -81,7 +81,7 @@ steerability/
 │   ├── runner.py                # SteeringEval (points x trials x benchmarks), samples_frame, runs_frame
 │   └── plotting.py              # summary-frame plots over runs_frame output (optional `eval` extra)
 ├── optimization/                # constrained search over steering pipelines; study.py (Study, Constraint, Settings,
-│   │                            # Candidate); space.py (structures, optional, one_of, Slot); layered:
+│   │                            # Candidate); space.py (structures, optional, one_of, Slot, check_space); layered:
 │   │                            # measurement <- evaluation <- search, release
 │   ├── measurement/             # pools.py (PoolSplit, split_items, check_pools, held-out ledger), stats.py (Paired,
 │   │                            # the decision rules, look sizes), evidence.py (baseline, design variance, sizes,
@@ -552,8 +552,10 @@ the artifact store. It caches fits per fit source (`algorithms/core/fits.py`): i
 through `resolve_source`, other fitting controls are replaced by their frozen form on a hit, and a recipe's resolved
 id (the key of its rollouts and evidence) combines its id with the stored fits it used. A structural control that
 trains or merges has one fit, its product (an adapter or a checkpoint copied into the store's artifacts), which it
-resolves through `resolve_product`. Two recipes share a product when their structural entries are equal. A stored
-product is installed rather than trained again, and the control then declares `ModelAccess.FACTS`.
+resolves through `resolve_product`. A product is keyed by its fit digest and by the structural entries before it
+(`product_weights`, where an earlier training is given by its own digest), and two recipes that agree on these share
+it. Output locations and the structural entries after it are not part of the key. A stored product is installed rather
+than trained again, and the control then declares `ModelAccess.FACTS`.
 `PipelineFactory(protocol, store=...)` steers recipes in their fit cache, shares the base model, pools engine backends,
 and runs a batch's fits up front (`prepare`). It fits each pending product alone, in a pipeline of its own, before
 anything else of the recipe. Every pipeline it yields and every other fit of the recipe then runs on stored products.
@@ -609,8 +611,10 @@ must not change a fit (every ladder position has the same `fit_digests`), so an 
 `searched`.
 `study.monotone` lists the solved axes along which capability loss is assumed not to fall. `Study.validate(store)`
 checks the protocol's `versions` and every benchmark's `temperature`, the versioning of callables, the pools, the
-axes, the benchmark names, and that every structural control that trains or merges leaves a product to store, before
-any model work.
+axes, the benchmark names, that every structural control that trains or merges leaves a product to store, and that
+the protocol's backend can run every structure, before any model work. `check_space(space=..., protocol=...)`
+(`optimization/space.py`) gives the structures a backend cannot run, with the messages of `preflight`, so that a study
+can be built from the others.
 
 ```python
 from steerability.optimization import Constraint, Study, optional, split_items, structures
@@ -691,8 +695,11 @@ only fresh-block items and exclude the ladder block its position was chosen on. 
 and a `budget` or `timeout` rejection is not recorded (its evidence rows stay). A training or merge whose product the
 store does not contain is a structural fit, and `admit_fits` counts the distinct ones against `max_structural_fits` and
 an allowance's `structural_fits`. A candidate that needs a fit beyond them gets `budget` without exhausting the
-session. A phase with `structural_fits=0` therefore searches on stored products only. Every `settings.round_candidates`
-recorded candidates start a new round with new batches and re-score the best accepted results. `plan_finalists()`
+session. A phase with `structural_fits=0` therefore searches on stored products only. Once `settings.round_candidates`
+candidates are recorded in a round, `StudySession.advance` starts a new round with new batches and re-scores the best
+accepted results. The session calls it at the start of `screen` and `plan_finalists`, `run_study` after the initial
+candidates and after each phase, and `EvaluationService` once it has sent the reply of an evaluation. The call whose
+result completed a round therefore returns before the re-scoring starts. `plan_finalists()`
 spreads the finalists over levels and selects previously unevaluated search items for each one, and `finalists(plan)`
 measures their levels again on exactly those items.
 

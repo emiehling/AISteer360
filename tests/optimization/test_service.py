@@ -1,6 +1,7 @@
 """Tests for the evaluation service and the in-process study loop (`evaluation/service.py`, `search/loop.py`)."""
 import dataclasses
 import json
+import threading
 from multiprocessing.connection import Client
 
 import pytest
@@ -197,6 +198,33 @@ def test_messages_over_the_socket_are_json(tmp_path, space):
             assert "error" in json.loads(connection.recv_bytes().decode("utf-8"))
     finally:
         service.stop()
+
+
+def test_the_call_that_completes_a_round_returns_before_the_rescoring_starts(tmp_path, space):
+    session = _session(Store.open(root=tmp_path / "store"), space=space)
+    service = _service(session)
+    replied = threading.Event()
+    waited = []
+
+    def hold_the_rescoring(steered, item_ids):
+        if session.round_index == 1:
+            waited.append(replied.wait(timeout=10))
+
+    session.study.constraints[0].benchmark.set_hook(hook=hold_the_rescoring)
+    address, authkey = service.start()
+    try:
+        for text in TEXTS[1:5]:
+            program = program_text(study=session.study, candidate=_prompt(text))
+            call(address, authkey, {"op": "full", "program": program})
+        replied.set()
+        fifth = program_text(study=session.study, candidate=_prompt(TEXTS[5]))
+        call(address, authkey, {"op": "full", "program": fifth})
+    finally:
+        service.stop()
+    assert waited and all(waited)
+    rows = session.store.execute("SELECT version, round_index FROM results ORDER BY rowid").fetchall()
+    assert [version for version, _ in rows] == [1, 1, 1, 1, 2, 2, 1]
+    assert rows[-1] == (1, 1) and session.round_index == 1
 
 
 def _rounds(store):

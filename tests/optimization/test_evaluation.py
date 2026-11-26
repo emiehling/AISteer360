@@ -258,6 +258,7 @@ class TestReporting:
                            monotone={"caa.multiplier"})
         for candidate in (CAA, *(Candidate("prompt", {"prompt.text": text}) for text in "abc")):
             session.evaluate(candidate)
+        session.advance()
         assert session.round_index == 1
         study = session.study
         latest = session.archive.latest(study.candidate_id(CAA))
@@ -289,6 +290,7 @@ class TestReporting:
         behavior.set_truth(truth)
         for candidate in (CAA, *(Candidate("prompt", {"prompt.text": text}) for text in "abc")):
             session.evaluate(candidate)
+        session.advance()
         versions = session.archive.versions(study.candidate_id(CAA))
         assert versions[0].operating.position["caa.multiplier"] == pytest.approx(2.5)
         assert len(versions) == 2 and versions[1].status == "accepted"

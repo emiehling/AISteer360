@@ -81,6 +81,10 @@ def run_study(
        number of candidates it recorded.
     5. The session is closed, also when a step raises an error.
 
+    After the initial candidates and after each phase, outside the phase's allowance, a round that is complete is
+    followed by the next (`StudySession.advance`). Each phase therefore begins on a re-scored archive, and the run
+    ends with one.
+
     An empty `phases` evaluates the initial candidates only. Since each engine reads the archive, a later phase
     begins from what the earlier phases found.
 
@@ -134,6 +138,7 @@ def run_study(
             if session.exhausted():
                 break
             session.evaluate(candidate=candidate, proposer=INITIAL_PROPOSER)
+        session.advance()
         for index, phase in enumerate(phases):
             if session.exhausted():
                 logger.info("The session is exhausted; %d phase(s) do not run.", len(phases) - index)
@@ -148,6 +153,7 @@ def run_study(
                 structural_fits=phase.structural_fits,
             ):
                 phase.engine.run(session=session, initial_candidates=initial_candidates)
+            session.advance()
             logger.info("Phase %d (%s) ends with %d candidate(s) recorded.", index, name, session.recorded - recorded)
     finally:
         session.close()

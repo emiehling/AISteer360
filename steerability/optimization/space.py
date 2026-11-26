@@ -3,14 +3,20 @@
 A slot is one position of a pipeline with its alternatives. `optional` makes a control (or a slot) optional, and
 `one_of` makes several controls exclusive. The call `structures(optional(prompt), optional(caa))` gives the
 structures `prompt`, `caa`, and `prompt+caa`. The result is the mapping from structure name to `Template` that
-`Study.space` takes, and nothing downstream depends on how it was built.
+`Study.space` takes, and nothing downstream depends on how it was built. `check_space` gives the structures of a
+space that a protocol's backend cannot run, so that a study can be built from the others.
 """
 from __future__ import annotations
 
 import itertools
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from steerability.algorithms.core.recipe import Entry, RecipeError, Template
+from steerability.algorithms.core.recipe import Entry, Point, RecipeError, Template
+
+if TYPE_CHECKING:
+    from steerability.algorithms.core.protocol import Protocol
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -135,6 +141,45 @@ def structures(*slots: Entry | Slot) -> dict[str, Template]:
     return expanded
 
 
+def check_space(
+    *,
+    space: Mapping[str, Template],
+    protocol: Protocol,
+) -> dict[str, tuple[str, ...]]:
+    """The structures of a space that the protocol's backend cannot run, each with the messages of `preflight`.
+
+    Each template is bound with every axis at its default position (`Axis.default`), and its recipe is checked by
+    `preflight`, which builds an unsteered pipeline on the protocol's backend and does no I/O. The check covers the
+    backend's capabilities and the backend configuration that the controls declare (`SpecConstraint`). Support can
+    depend on values that a default position does not take (e.g., a merged or an unmerged adapter), and stage 0 of
+    an evaluation therefore still checks each candidate (`unsupported`). `structures` does not prune its result, and
+    one space can therefore be checked against several protocols.
+
+    Args:
+        space: Mapping from structure name to template, e.g., the result of `structures`.
+        protocol: The protocol whose backend runs the study.
+
+    Returns:
+        Mapping from the name of each structure that the backend cannot run to its messages, in the order of `space`.
+        It is empty when the backend supports every structure.
+
+    Raises:
+        RecipeError: If a template does not bind at its default positions.
+    """
+    from steerability.algorithms.core.sweeps import preflight
+
+    problems: dict[str, tuple[str, ...]] = {}
+    for name, template in space.items():
+        assignment = {}
+        for axis in template.axes().values():
+            assignment.update(axis.default())
+        recipe = template.bind(assignment).recipe()
+        messages = preflight([(name, Point(recipe, {}))], protocol)
+        if messages:
+            problems[name] = tuple(messages)
+    return problems
+
+
 def _check_names(*, entries: list[Entry]) -> None:
     """Raise `RecipeError` unless every entry has one name in every combination and no two entries share a name."""
     by_method: dict[str, list[Entry]] = {}
@@ -152,4 +197,4 @@ def _check_names(*, entries: list[Entry]) -> None:
         raise RecipeError(f"Entries resolve to the same name(s) {repeated}; give each entry a distinct name=.")
 
 
-__all__ = ["Slot", "one_of", "optional", "structures"]
+__all__ = ["Slot", "check_space", "one_of", "optional", "structures"]

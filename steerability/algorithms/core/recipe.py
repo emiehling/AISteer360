@@ -253,6 +253,21 @@ class Axis:
             for path, member in self.members.items()
         }
 
+    def default(self) -> dict[str, Any]:
+        """The value of every member at the axis's default position.
+
+        The default position is the first position of a discrete axis and the midpoint (fraction 0.5) of a continuous
+        one. A `Text` member defaults to the empty string.
+
+        Returns:
+            Mapping from member path to value.
+        """
+        if self.has_text:
+            return {path: "" for path in self.members}
+        if self.continuous:
+            return self.at(0.5)
+        return self.at_index(0)
+
     def positions(self, n: int | None = None) -> tuple[dict[str, Any], ...]:
         """The positions of the axis in order, each a mapping from member path to value.
 

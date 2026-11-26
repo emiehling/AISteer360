@@ -30,6 +30,7 @@ from steerability.algorithms.core.fits import (
     control_fit_digests,
     fit_cache_scope,
     fit_key,
+    product_weights,
     record_control_fits,
     resolved_id,
     stores_a_fit,
@@ -379,31 +380,30 @@ class PipelineFactory:
         ), False
 
     def _cache(self, recipe: Recipe) -> FitCache:
-        return FitCache(self.protocol, weights_context(recipe), self.store)
+        return FitCache(self.protocol, weights_context(recipe), self.store, products=product_weights(recipe=recipe))
 
     def pending_structural_fits(self, *, recipes: Iterable[Recipe]) -> frozenset[str]:
         """The fit keys of the structural fits (trainings and merges) that recipes need and the store does not contain.
 
-        Each enabled structural control that declares a fit contributes the key of each of its digests
-        (`control_fit_digests`) under its recipe's weights context. Without a store, every such fit is pending.
-        No model is loaded.
+        Each enabled structural control that declares a fit contributes the key of its product, i.e., its digest
+        under the weights it is fitted on (`product_weights`). Without a store, every such fit is pending. No model
+        is loaded.
 
         Args:
             recipes: The recipes.
 
         Returns:
             The pending fit keys.
+
+        Raises:
+            RecipeError: If a recipe contains one training twice.
         """
         pending: set[str] = set()
         for recipe in dict.fromkeys(recipes):
-            weights = weights_context(recipe=recipe)
-            for control in recipe.instantiate():
-                if not isinstance(control, StructuralControl):
-                    continue
-                for digest in control_fit_digests(control=control):
-                    key = fit_key(protocol=self.protocol, weights=weights, digest=digest)
-                    if self.store is None or self.store.get_fit(fit_key=key) is None:
-                        pending.add(key)
+            for digest, weights in product_weights(recipe=recipe).items():
+                key = fit_key(protocol=self.protocol, weights=weights, digest=digest)
+                if self.store is None or self.store.get_fit(fit_key=key) is None:
+                    pending.add(key)
         return frozenset(pending)
 
     def _fit_products(self, *, recipe: Recipe, cache: FitCache) -> None:

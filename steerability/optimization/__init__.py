@@ -2,8 +2,8 @@
 
 A `Study` defines the search space (a template per structure, which `structures` expands from optional and
 exclusive controls), the behavior benchmark to maximize, the capability benchmarks whose accuracy must stay within a
-margin of the unsteered model, and the split of every benchmark's items into a search pool and a held-out pool. The
-subpackages are layered:
+margin of the unsteered model, and the split of every benchmark's items into a search pool and a held-out pool.
+`check_space` gives the structures of a space that a protocol's backend cannot run. The subpackages are layered:
 
 - `measurement`: pools, the statistics of paired differences, and the evidence decisions are made on.
 - `evaluation`: the plan, stages, calibration, and confirmation of a candidate, the archive of results, the
@@ -13,7 +13,7 @@ subpackages are layered:
 - `release`: certification of the finalists on the held-out items and the bundles of certified points.
 """
 from steerability.optimization.measurement.pools import PoolSplit, split_items
-from steerability.optimization.space import Slot, one_of, optional, structures
+from steerability.optimization.space import Slot, check_space, one_of, optional, structures
 from steerability.optimization.study import Candidate, Constraint, Settings, Study, StudyError, StudyInfeasibleError
 
 __all__ = [
@@ -25,6 +25,7 @@ __all__ = [
     "Study",
     "StudyError",
     "StudyInfeasibleError",
+    "check_space",
     "one_of",
     "optional",
     "split_items",

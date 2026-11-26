@@ -398,20 +398,15 @@ class Study:
     def default_candidate(self, structure: str) -> Candidate:
         """The default candidate of a structure.
 
-        Every proposer axis is at its first position if it is discrete, at its midpoint if it is continuous, and an
-        empty string for a `Text` range.
+        Every proposer axis is at its default position (`Axis.default`), i.e., at its first position if it is
+        discrete, at its midpoint if it is continuous, and an empty string for a `Text` range.
 
         Raises:
             RecipeError: If the structure is unknown or its axes are invalid.
         """
         values: dict[str, Any] = {}
         for axis in self.proposer_axes(structure).values():
-            if axis.has_text:
-                values.update({path: "" for path in axis.members})
-            elif axis.continuous:
-                values.update(axis.at(0.5))
-            else:
-                values.update(axis.at_index(0))
+            values.update(axis.default())
         return Candidate(structure, values)
 
     def validate(self, store: Store) -> None:
@@ -432,6 +427,7 @@ class Study:
         7. `make_plan` succeeds for the default candidate of every structure, and every enabled structural control of
            its first recipe that declares a fit (a training or a merge) reports an `artifact_capability()`, i.e., it
            leaves a product to store.
+        8. The protocol's backend can run every structure (`check_space`).
 
         A warning is logged for a template with a solved axis that contains a control whose fit has no identity,
         since such a control refits at every position. Whether the pools are large enough is checked by
@@ -445,6 +441,7 @@ class Study:
         """
         from steerability.algorithms.structural_control.base import StructuralControl
         from steerability.optimization.evaluation.plan import make_plan
+        from steerability.optimization.space import check_space
 
         if not self.protocol.versions:
             raise ValueError(
@@ -520,6 +517,14 @@ class Study:
                         "Structure %r has a solved axis and a %s control whose fit has no identity; it refits at "
                         "every position of the axis.", structure, type(control).__name__,
                     )
+
+        problems = check_space(space=self.space, protocol=self.protocol)
+        if problems:
+            listed = "\n".join(f"- {name}: {'; '.join(messages)}" for name, messages in problems.items())
+            raise ValueError(
+                f"The protocol's backend cannot run structures {list(problems)}:\n{listed}\nBuild the study from the "
+                "structures that check_space(space=..., protocol=...) does not list."
+            )
 
 
 def record_study(store: Store, study: Study) -> None:

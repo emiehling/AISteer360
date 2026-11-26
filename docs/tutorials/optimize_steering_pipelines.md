@@ -143,7 +143,23 @@ The `validate` method checks the study before any model work. It refuses a proto
 without `Protocol.create`) and any benchmark with an unset `temperature`, since the decoding mode decides which rules
 apply to the baseline. It also refuses unversioned callables (see `versioned`) and overlapping pools (shared items or
 groups). The remaining checks refuse templates with more than one free ordered axis, solved axes that change a fit,
-repeated benchmark names, and trainings that leave no product to store (see [Weight changes](#weight-changes)).
+repeated benchmark names, trainings that leave no product to store (see [Weight changes](#weight-changes)), and
+structures that the protocol's backend cannot run.
+
+The `check_space` function gives the structures of a space that a protocol's backend cannot run, each with the messages
+of the support check. It binds every axis of a template at its default position and checks the recipe as
+`pipeline.check()` does, without loading a model. Since `validate` refuses such a structure, we check the space before
+the study is built and build the study from the other structures:
+
+```python
+from steerability.optimization import check_space
+
+problems = check_space(space=space, protocol=protocol)
+space = {name: template for name, template in space.items() if name not in problems}
+```
+
+Note that support can depend on values that the default positions do not take (e.g., a merged or an unmerged adapter),
+and the evaluation of each candidate checks it again (a rejection with the reason `unsupported`).
 
 The `Settings` dataclass contains the statistical settings and the behavior block sizes. The certification error rate
 (`alpha`) and the design power (`power`) set the guard band. The ladder settings (`ladder_points`,
@@ -281,7 +297,10 @@ rows (`generations`), the wall time (`seconds`), and the structural fits (`struc
 `max_generations`, `max_seconds`, and `max_structural_fits`). A phase ends when its allowance or the limits of the run
 are spent, or when its engine has nothing new to propose. The session groups candidates into rounds of
 `settings.round_candidates`. Each new round draws new item batches and re-scores the best accepted results on them,
-which reduces the selection bias in the fitness values.
+which reduces the selection bias in the fitness values. A round starts once the previous one is complete, when the next
+evaluation begins or when a phase ends. The call whose result completed a round therefore returns before the
+re-scoring starts, and an engine that times its calls (such as OpenEvolve) does not count the re-scoring against that
+call.
 
 The terms of the toolkit correspond to those of other search tools as follows:
 
@@ -398,9 +417,10 @@ adapters, and the second phase searches on them without training (`structural_fi
 
 Note that an unmerged LoRA adapter is small, while a full fine-tune, a merge, or a merged LoRA stores a whole
 checkpoint per distinct training. We therefore recommend unmerged LoRA adapters. A merged LoRA run stores its product
-only in `merged_output_dir`, and the study refuses one without it. The output locations of a training (`output_dir`,
-`merged_output_dir`, and `resume_from_checkpoint`) are arguments of its entry, which means that they are part of the
-identity of its product. We therefore leave them unset in a study (except `merged_output_dir` for a merged product).
+only in `merged_output_dir`, and the study refuses one without it. A product is identified by its training arguments
+and by the structural entries before it. The output locations of a training (`output_dir`, `merged_output_dir`, and
+`resume_from_checkpoint`) and the structural entries after it are not part of this identity, and two recipes whose
+trainings differ only in these share one product.
 
 Items of a study benchmark that are used as training data belong in the study's `fit_item_ids`, like the data of any
 other fit, since the study cannot see inside a dataset. A loader entry (`LoadLoRA`, `LoadCheckpoint`) is identified by

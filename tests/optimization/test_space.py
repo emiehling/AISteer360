@@ -1,16 +1,21 @@
-"""Tests for structure expansion (`optimization/space.py`)."""
+"""Tests for structure expansion and the support check of a space (`optimization/space.py`)."""
+import dataclasses
+
 import pytest
 
 pytest.importorskip("inspect_ai")
 
-from steerability.algorithms.core.recipe import Choice, Interval, RecipeError, Template, entry
+from steerability.algorithms.core.execution.spec import BackendSpec
+from steerability.algorithms.core.protocol import Protocol
+from steerability.algorithms.core.recipe import Choice, Interval, Point, RecipeError, Template, entry
 from steerability.algorithms.core.store import Store
+from steerability.algorithms.core.sweeps import preflight
 from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
 from steerability.algorithms.input_control.user_prefix.control import UserPrefix
 from steerability.algorithms.state_control.act_add.control import ActAdd
 from steerability.algorithms.state_control.caa.control import CAA
-from steerability.optimization import Slot, one_of, optional, structures
-from tests.optimization.helpers import PAIRS, RAW, Truth, build_study
+from steerability.optimization import Slot, check_space, one_of, optional, structures
+from tests.optimization.helpers import PAIRS, RAW, Truth, build_study, protocol
 
 PROMPT = entry(SystemPrompt, name="prompt", text=Choice(values=("be brief", "be formal")))
 PREFIX = entry(UserPrefix, text=Choice(values=("please", "kindly")))
@@ -114,3 +119,38 @@ def test_a_study_on_an_expanded_space_validates_and_its_axes_keep_their_keys(tmp
     keys = {structure: set(study.proposer_axes(structure=structure)) for structure in space}
     assert keys["prompt+caa"] == keys["prompt"] | keys["caa"] == {"prompt.text", "caa.layer_id"}
     assert study.solved_axis(structure="prompt+caa").key == "caa.multiplier"
+
+
+ENGINE = BackendSpec(kind="vllm", model="synthetic-model")
+DEFAULTS = {"prompt.text": "be brief", "caa.layer_id": 1, "caa.multiplier": 1.5}
+
+
+def _engine_protocol():
+    return Protocol.create(model="synthetic-model", backend=ENGINE, generate_defaults={"temperature": 0})
+
+
+def test_check_space_gives_the_structures_a_backend_cannot_run_with_the_messages_of_preflight():
+    space = structures(optional(PROMPT), optional(CAA_ENTRY))
+    assert check_space(space=space, protocol=protocol()) == {}
+    engine = _engine_protocol()
+    problems = check_space(space=space, protocol=engine)
+    assert list(problems) == ["caa", "prompt+caa"]
+    for name, messages in problems.items():
+        template = space[name]
+        recipe = template.bind({path: value for path, value in DEFAULTS.items() if path in template.axes()}).recipe()
+        assert messages == tuple(preflight(points=[(name, Point(recipe=recipe, assignment={}))], protocol=engine))
+        assert all(" CAA (" in message for message in messages)
+        assert any("CAA is unsupported at generate on backend kind 'vllm'" in message for message in messages)
+
+
+def test_a_study_refuses_a_structure_its_backend_cannot_run(tmp_path):
+    store = Store.open(root=tmp_path / "store")
+    space = structures(optional(PROMPT), optional(CAA_ENTRY))
+    study = build_study(store=store, truth=lambda recipe, item_id: Truth(), space=space)
+    engine = dataclasses.replace(study, protocol=_engine_protocol())
+    with pytest.raises(ValueError, match=r"cannot run structures \['caa', 'prompt\+caa'\]") as raised:
+        engine.validate(store=store)
+    assert "CAA is unsupported at generate on backend kind 'vllm'" in str(raised.value)
+    problems = check_space(space=space, protocol=engine.protocol)
+    supported = {name: template for name, template in space.items() if name not in problems}
+    dataclasses.replace(engine, space=supported).validate(store=store)

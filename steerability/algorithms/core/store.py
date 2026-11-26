@@ -105,7 +105,8 @@ class FitRow:
     Attributes:
         fit_key: The key of the fit (protocol fit context, weights, and fit digest).
         fit_context_id: The protocol's fit context id.
-        weights_context: The recipe's weights context.
+        weights_context: The weights the fit runs on (the recipe's weights context, or the weights a
+            structural product is fitted on).
         fit_digest: The fit's digest.
         value: The fitted value's encoded JSON, whose artifacts are in the store's `artifacts`.
         seconds: The duration of the fit.

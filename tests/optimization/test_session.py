@@ -186,8 +186,25 @@ def test_a_restarted_session_resumes_at_the_recorded_round(store):
     assert again.archive.first_versions(1) == 1
     for text in texts[5:]:
         again.evaluate(Candidate("prompt", {"prompt.text": text}))
+    assert again.round_index == 1
+    again.advance()
     assert again.round_index == 2
     assert sorted(again.rounds) == [0, 1, 2]
+
+
+def test_the_result_that_completes_a_round_is_returned_before_the_next_round_starts(store):
+    texts = tuple(f"text {index}" for index in range(5))
+    study = build_study(store=store, truth=_quadratic, space={"prompt": prompt_template(texts=texts)})
+    session = _started(study=study, store=store)
+    for text in texts[:4]:
+        assert session.evaluate(candidate=_prompt(text)).round_index == 0
+    assert session.round_index == 0 and _rows(store, "results") == 4
+    fifth = session.evaluate(candidate=_prompt(texts[4]))
+    assert fifth.round_index == 1 and session.round_index == 1
+    rows = store.execute("SELECT version FROM results ORDER BY rowid").fetchall()
+    assert [version for (version,) in rows] == [1, 1, 1, 1, 2, 2, 1]
+    session.advance()
+    assert session.round_index == 1
 
 
 def test_the_session_closes_a_factory_it_built_only(store):

@@ -12,6 +12,11 @@ JSON object (never a pickled object). The operations are:
   parse or bind).
 - `{"op": "ping"}`: an empty reply.
 
+Evaluations run one at a time. Over the socket, once the reply of an evaluation is sent, the service starts the
+session's next round when the current one is complete (`StudySession.advance`), still under its lock, and the call
+whose result completed a round therefore returns before the re-scoring starts. A request that arrives during the
+re-scoring waits for it, as it waits for another evaluation.
+
 Evaluation operations reply `{"metrics": {...}, "artifacts": {...}}`. A final result (accepted or rejected) has the
 metrics `combined_score` (the fitness), `gain` (the operating point's gain, or 0.0), `accepted` (1.0 or 0.0), and
 `level` (the result's level clipped to [0, 1], or 0.0 when it was not measured). A candidate that passes `stage1`
@@ -53,6 +58,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HANDLER_THREADS = 4
+EVALUATIONS = ("stage1", "stage2", "full")
 UNEVALUATED_MESSAGES = 3
 VALUES_CHARS = 300
 MESSAGE_CHARS = 200
@@ -108,6 +114,11 @@ def _cut(*, text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit - 3] + "..."
 
 
+def _failure(*, error: Exception) -> dict:
+    """The reply to a request that could not be answered."""
+    return {"error": f"{type(error).__name__}: {error}"}
+
+
 def _rejection_line(*, entry: ArchiveEntry) -> str:
     """One line on a rejected archive entry: its values (at most 300 characters), reason, level, and gain."""
     line = f"{_cut(text=compact(value=dict(entry.values)), limit=VALUES_CHARS)} -> {entry.reason}"
@@ -122,10 +133,12 @@ class EvaluationService:
     """A study session served over a local socket.
 
     Evaluations run one at a time (a lock is held around each), and each operation passes the session the deadline
-    `time.monotonic() + stage_deadline_seconds`. Estimates and pings do not wait for a running evaluation. A program
-    that does not parse, or a candidate that does not bind, gets a `combined_score` of 0.0 with the reason `invalid`
-    and the error message as an artifact, and nothing is recorded. The service keeps the messages of the last three
-    programs that could not be evaluated (each cut at 200 characters), since they are not in the archive.
+    `time.monotonic() + stage_deadline_seconds`. Over the socket, the service keeps the lock after it sends the reply
+    of an evaluation, while the session starts its next round when the current one is complete
+    (`StudySession.advance`). Estimates and pings do not wait for a running evaluation. A program that does not
+    parse, or a candidate that does not bind, gets a `combined_score` of 0.0 with the reason `invalid` and the error
+    message as an artifact, and nothing is recorded. The service keeps the messages of the last three programs that
+    could not be evaluated (each cut at 200 characters), since they are not in the archive.
 
     Args:
         session: The started session.
@@ -201,17 +214,39 @@ class EvaluationService:
             self._executor.submit(self._answer, connection)
 
     def _answer(self, connection) -> None:
+        """Answer one request over a connection, and after the reply of an evaluation, advance the session's round."""
         with connection:
             try:
                 request = json.loads(connection.recv_bytes().decode("utf-8"))
-                reply = self.handle(request)
+                evaluation = isinstance(request, Mapping) and request.get("op") in EVALUATIONS
             except Exception as error:
                 logger.warning("The evaluation service failed on a request.", exc_info=True)
-                reply = {"error": f"{type(error).__name__}: {error}"}
-            try:
-                connection.send_bytes(json.dumps(reply).encode("utf-8"))
-            except (OSError, EOFError):
-                logger.info("The client closed its connection before the reply.")
+                self._send(connection=connection, reply=_failure(error=error))
+                return
+            if not evaluation:
+                self._send(connection=connection, reply=self._reply(request=request))
+                return
+            with self._lock:
+                self._send(connection=connection, reply=self._reply(request=request))
+                try:
+                    self.session.advance()
+                except Exception:
+                    logger.warning("Starting the session's next round failed.", exc_info=True)
+
+    def _reply(self, *, request: Any) -> dict:
+        """The reply to a request, or an error reply when answering it raises an error."""
+        try:
+            return self._dispatch(request=request)
+        except Exception as error:
+            logger.warning("The evaluation service failed on a request.", exc_info=True)
+            return _failure(error=error)
+
+    @staticmethod
+    def _send(*, connection, reply: Mapping[str, Any]) -> None:
+        try:
+            connection.send_bytes(json.dumps(reply).encode("utf-8"))
+        except (OSError, EOFError):
+            logger.info("The client closed its connection before the reply.")
 
     def stop(self) -> None:
         """Stop serving, wait for the requests in progress, and close the listener."""
@@ -234,20 +269,28 @@ class EvaluationService:
     def handle(self, request: Mapping[str, Any]) -> dict:
         """Answer one request (the operations in the module docstring).
 
+        An evaluation runs under the service's lock. A round that it completes is followed by the next at the
+        session's next `advance` (the next evaluation's, at the latest).
+
         Args:
             request: The JSON request.
 
         Returns:
             The JSON reply.
         """
+        if request.get("op") in EVALUATIONS:
+            with self._lock:
+                return self._dispatch(request=request)
+        return self._dispatch(request=request)
+
+    def _dispatch(self, *, request: Mapping[str, Any]) -> dict:
         operation = request.get("op")
         if operation == "ping":
             return {}
         if operation == "estimate":
             return self._estimate(str(request.get("program", "")))
-        if operation in ("stage1", "stage2", "full"):
-            with self._lock:
-                return self._evaluate(operation, str(request.get("program", "")))
+        if operation in EVALUATIONS:
+            return self._evaluate(operation, str(request.get("program", "")))
         return {"error": f"Unknown operation {operation!r}."}
 
     def _estimate(self, program: str) -> dict:

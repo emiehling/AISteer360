@@ -1,8 +1,8 @@
 """The session of a running study, the one public entry to evaluation.
 
 Search engines (run by `run_study`, in process or through an `EvaluationService`) and certification evaluate through
-a `StudySession`. The session keeps the round counter, the limits, and the re-scoring. Every caller therefore advances
-rounds in the same way.
+a `StudySession`. The session keeps the round counter, the limits, and the re-scoring. It starts a round that is
+complete before the next evaluation takes its round, and every caller therefore advances rounds in the same way.
 """
 from __future__ import annotations
 
@@ -99,8 +99,11 @@ class StudySession:
 
     Candidates are evaluated in two parts, `screen` (stages 0 to 3, cheap rejections) and `finish` (stages 4 and 5,
     the operating point and the report), or with `evaluate`. A candidate with a recorded result is returned without
-    model work. After every `settings.round_candidates` recorded candidates, the session starts a new round with new
-    batches and re-scores the best accepted results on them (`rescore`).
+    model work. A round is complete once `settings.round_candidates` candidates are recorded in it, and `advance`
+    then starts a new round with new batches and re-scores the best accepted results on them (`rescore`). The session
+    calls `advance` at the start of `screen` and of `plan_finalists`. An owner of the loop may call it earlier, between
+    evaluations (`EvaluationService` does once it has sent the reply of an evaluation), so the evaluation whose result
+    completes a round returns before the re-scoring starts.
 
     Limits belong to the session object, and a restarted process counts from zero again. The session counts the rows
     that each measurement generated (`generations`) and the candidates it recorded (`recorded`). Fits are not
@@ -175,7 +178,6 @@ class StudySession:
         self._open: tuple[str, ExitStack, Steered] | None = None
         self._held_out_counts: dict[str, int] = {}
         self._looks: dict[str, tuple[int, int, int]] = {}
-        self._rescoring = False
 
     def __enter__(self) -> StudySession:
         return self
@@ -196,8 +198,8 @@ class StudySession:
         5. One line per constraint is logged with its design variance, baseline variance, floor, block sizes, looks,
            band, and margin.
         6. On a store that already contains the study, `round_index` is the highest recorded round and the count of
-           candidates in it is the number of first result versions recorded with it. Otherwise the batches of round
-           0 are recorded.
+           candidates in it is the number of first result versions recorded with it, and a complete round is
+           followed by the next (`advance`). Otherwise the batches of round 0 are recorded.
 
         At steps 2 and 4, problems raise `StudyInfeasibleError`, unless `allow_infeasible` is True, in which case
         they are logged as a warning.
@@ -227,8 +229,7 @@ class StudySession:
         self.round_index = max(self._rounds)
         self._round_count = self.archive.first_versions(self.round_index)
         self._started_at = time.monotonic()
-        if self._round_count >= study.settings.round_candidates:
-            self._advance_round()
+        self.advance()
 
     def _check_feasibility(self, where: str, note: str = "") -> None:
         problems = evidence.feasibility(self.study, self.store)
@@ -504,19 +505,23 @@ class StudySession:
     def screen(self, candidate: Candidate, *, proposer: str = "", deadline: float | None = None) -> Partial:
         """Run stages 0 to 3 of a candidate.
 
-        A candidate with a recorded result returns it in `Partial.result` without model work. A candidate that does
-        not bind returns an `invalid` result that is not recorded. When the session is exhausted, a `budget` result
-        that is not recorded is returned. Otherwise the stages run, and a rejection in one of them is recorded.
+        The next round starts first when the current one is complete (`advance`), and the evaluation takes the round
+        that is then current. A candidate with a recorded result returns it in `Partial.result` without model work. A
+        candidate that does not bind returns an `invalid` result that is not recorded. When the session is exhausted,
+        a `budget` result that is not recorded is returned. Otherwise the stages run, and a rejection in one of them is
+        recorded.
 
         Args:
             candidate: The candidate.
             proposer: The name of the proposer.
-            deadline: A `time.monotonic()` deadline checked between measurements, or None.
+            deadline: A `time.monotonic()` deadline checked between measurements, or None. The re-scoring of
+                `advance` runs before it and is not limited by it.
 
         Returns:
             The partial evaluation; its `result` is set when the candidate is decided.
         """
         self._require_started()
+        self.advance()
         return evaluator.screen(self, candidate, proposer=proposer, deadline=deadline)
 
     def finish(self, partial: Partial, *, deadline: float | None = None) -> Result:
@@ -537,7 +542,9 @@ class StudySession:
         return self.finish(self.screen(candidate, proposer=proposer, deadline=deadline), deadline=deadline)
 
     def record(self, candidate: Candidate, result: Result, *, proposer: str) -> Result:
-        """Record a result in the archive and advance the round when it completes one.
+        """Record a result in the archive and count a first result version in the current round.
+
+        A round that the result completes is followed by the next at the next call of `advance`.
 
         Returns:
             The result.
@@ -547,11 +554,21 @@ class StudySession:
             self._recorded += 1
             if result.round_index == self.round_index:
                 self._round_count += 1
-                if self._round_count >= self.study.settings.round_candidates and not self._rescoring:
-                    self._advance_round()
         return result
 
-    def _advance_round(self) -> None:
+    def advance(self) -> None:
+        """Start the next round when the current one is complete, and do nothing otherwise.
+
+        A round is complete once `settings.round_candidates` candidates have their first result version recorded in
+        it. The next round's batches are recorded, and the best accepted results are re-scored on them (`rescore`),
+        within the session's limits and the active allowances. `screen` and `plan_finalists` call this method first.
+
+        Raises:
+            RuntimeError: If the session is not started.
+        """
+        self._require_started()
+        if self._round_count < self.study.settings.round_candidates:
+            return
         self.round_index += 1
         evidence.record_round(self.store, self.study, self.round_index, self._new_batches(self.round_index))
         self._rounds = evidence.load_rounds(self.store, self.study)
@@ -589,36 +606,34 @@ class StudySession:
         Re-scoring stops when a generation or time limit is reached.
         """
         self._require_started()
-        self._rescoring = True
-        try:
-            ranked = sorted(self.archive.points(), key=lambda result: (-result.fitness, result.candidate_id))
-            for result in ranked[:self.study.settings.rescore_top]:
-                try:
-                    new = evaluator.rescore_result(self, result)
-                except Stopped:
-                    break
-                except SteeringFailure:
-                    logger.warning("Re-scoring candidate %s failed.", result.candidate_id, exc_info=True)
-                    continue
-                if new is not None:
-                    self.archive.record(self.archive.candidate(result.candidate_id), new, proposer="rescore")
-        finally:
-            self._rescoring = False
+        ranked = sorted(self.archive.points(), key=lambda result: (-result.fitness, result.candidate_id))
+        for result in ranked[:self.study.settings.rescore_top]:
+            try:
+                new = evaluator.rescore_result(self, result)
+            except Stopped:
+                break
+            except SteeringFailure:
+                logger.warning("Re-scoring candidate %s failed.", result.candidate_id, exc_info=True)
+                continue
+            if new is not None:
+                self.archive.record(self.archive.candidate(result.candidate_id), new, proposer="rescore")
 
     def plan_finalists(self) -> list[dict]:
         """Select the finalists and, for each, the search items its level is measured on, without measuring.
 
-        The accepted results whose gain lower bound (`behavior.lower(fitness_alpha)`) is at least `min_gain` are taken,
-        and the envelope result is chosen at `settings.finalists` evenly spaced levels from their lowest to their
-        highest level, without repeated resolved ids. For each finalist, up to `looks(benchmark)[2]` usable search
-        items per constraint that it has no evidence row for are selected (in a seeded order). Its `fresh_items` are
-        empty when fewer than `looks(benchmark)[1]` such items exist on some constraint.
+        The next round starts first when the current one is complete (`advance`). The accepted results whose gain
+        lower bound (`behavior.lower(fitness_alpha)`) is at least `min_gain` are taken, and the envelope result is
+        chosen at `settings.finalists` evenly spaced levels from their lowest to their highest level, without repeated
+        resolved ids. For each finalist, up to `looks(benchmark)[2]` usable search items per constraint that it has no
+        evidence row for are selected (in a seeded order). Its `fresh_items` are empty when fewer than
+        `looks(benchmark)[1]` such items exist on some constraint.
 
         Returns:
             One record per finalist, `{"candidate_id", "version", "fresh_items", "level": None, "fresh": False}`,
             whose `fresh_items` map a constraint's benchmark id to its item ids.
         """
         self._require_started()
+        self.advance()
         settings = self.study.settings
         candidates = [
             result for result in self.archive.points()
