@@ -8,7 +8,8 @@ subpackages are layered:
 - `measurement`: pools, the statistics of paired differences, and the evidence decisions are made on.
 - `evaluation`: the plan, stages, calibration, and confirmation of a candidate, the archive of results, the
   `StudySession` (the one entry to evaluation), and the `EvaluationService` that serves a session over a socket.
-- `search`: proposers, `run_study`, and the OpenEvolve adapter (`run_openevolve`, with the `optimize` extra).
+- `search`: the search engines (the grid and random proposers, and `OpenEvolveEngine` with the `optimize` extra),
+  the initial population of an engine, and `run_study`, which runs a study's search phases on one session.
 - `release`: certification of the finalists on the held-out items and the bundles of certified points.
 """
 from steerability.optimization.measurement.pools import PoolSplit, split_items

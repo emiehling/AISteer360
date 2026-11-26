@@ -1,8 +1,8 @@
 """The interface of a search engine, i.e., anything that proposes a study's candidates and has a session evaluate them.
 
 An engine comes in one of two shapes. In the ask/tell shape (`BaseProposer`), the toolkit runs the loop and asks
-the engine for candidates. In the evaluator shape, an external tool runs its own loop and calls back for a score
-through an `EvaluationService` that the engine starts on the session. Either way, `run_study` hands each
+the engine for candidates. In the evaluator shape (`OpenEvolveEngine`), the tool runs its own loop and calls back for
+a score through an `EvaluationService` that the engine starts on the session. Either way, `run_study` hands each
 engine the started session of the run, and the engine stops when the session is exhausted.
 """
 from __future__ import annotations
