@@ -122,8 +122,12 @@ class TestFingerprintGrades:
         assert ScopedSession(_EngineSession(), "C", ModelAccess.FACTS).in_process is False
 
     def test_gate_readout_fingerprint_is_not_compared_on_a_config_grade_layout(self):
-        from steerability.algorithms.state_control.common.gating import Evidence, Gate, PerKeyThreshold
-        from steerability.algorithms.state_control.common.gating import ProjectedCosineReadout
+        from steerability.algorithms.state_control.common.gating import (
+            Evidence,
+            Gate,
+            PerKeyThreshold,
+            ProjectedCosineReadout,
+        )
         from steerability.algorithms.state_control.common.specs import Intervention
         from steerability.algorithms.state_control.common.transforms import AdditiveTransform
 

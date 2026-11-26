@@ -294,7 +294,7 @@ class TestGenerateConfigClassification:
 
     def test_upstream_fields_ignored(self):
         api = _api()
-        gen_kwargs, _, _ = _mapped(api, 
+        gen_kwargs, _, _ = _mapped(api,
             GenerateConfig(
                 max_retries=3, timeout=10, stream_idle_timeout=5, system_message="s", cache=True, batch=True
             )
@@ -303,7 +303,7 @@ class TestGenerateConfigClassification:
 
     def test_reserved_extra_body_key_stripped_before_policy(self):
         api = _api()
-        gen_kwargs, per_sample, _ = _mapped(api, 
+        gen_kwargs, per_sample, _ = _mapped(api,
             GenerateConfig(extra_body={"runtime_kwargs": {"spans": ["a"]}})
         )
         assert per_sample == {"spans": ["a"]}
@@ -318,14 +318,14 @@ class TestGenerateConfigClassification:
 class TestSamplingRule:
     def test_greedy_drops_sampling_knobs_and_seed(self):
         api = _api(base_seed=11)
-        gen_kwargs, _, _ = _mapped(api, 
+        gen_kwargs, _, _ = _mapped(api,
             GenerateConfig(temperature=0, top_p=0.9, top_k=40, seed=5)
         )
         assert gen_kwargs == {"do_sample": False}
 
     def test_sampling_forwards_knobs_and_prefers_config_seed(self):
         api = _api(base_seed=11)
-        gen_kwargs, _, _ = _mapped(api, 
+        gen_kwargs, _, _ = _mapped(api,
             GenerateConfig(temperature=0.7, top_p=0.9, top_k=40, seed=5)
         )
         assert gen_kwargs == {
