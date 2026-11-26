@@ -29,6 +29,7 @@ from steerability.algorithms.input_control.system_prompt.control import SystemPr
 from steerability.algorithms.state_control.caa.control import CAA
 from steerability.evaluation.items import ItemResult
 from steerability.optimization.measurement.pools import split_items
+from steerability.optimization.search.proposers import BaseProposer
 from steerability.optimization.study import Constraint, Settings, Study
 
 PAIRS = {"positives": ["the cat sat on", "the cat ran", "a cat"], "negatives": ["the dog sat", "dog ran", "a dog"]}
@@ -220,6 +221,24 @@ class StubFactory:
 
     def release(self) -> None:
         self.released = True
+
+
+class FixedProposer(BaseProposer):
+    """Proposes a fixed list of candidates in order, once, and records what it is told."""
+
+    name = "fixed"
+
+    def __init__(self, study: Study, candidates) -> None:
+        super().__init__(study=study)
+        self.candidates = list(candidates)
+        self.told: list = []
+
+    def ask(self, view, n):
+        batch, self.candidates = self.candidates[:n], self.candidates[n:]
+        return batch
+
+    def tell(self, candidate, result):
+        self.told.append((candidate, result))
 
 
 def caa_template(multiplier_range=None, *, layer_id: Any = 1, data: Any = None, **args) -> Template:

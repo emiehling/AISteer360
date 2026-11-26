@@ -1,7 +1,8 @@
 """The session of a running study, the one public entry to evaluation.
 
-`run_study`, the evaluation service, and certification are front-ends to a `StudySession`. The session keeps the
-round counter, the limits, and the re-scoring. Every front-end therefore advances rounds in the same way.
+Search engines (run by `run_study`, in process or through an `EvaluationService`) and certification evaluate through
+a `StudySession`. The session keeps the round counter, the limits, and the re-scoring. Every caller therefore advances
+rounds in the same way.
 """
 from __future__ import annotations
 

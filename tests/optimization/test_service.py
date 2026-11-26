@@ -9,11 +9,11 @@ pytest.importorskip("inspect_ai")
 from steerability.algorithms.core.store import Store
 from steerability.optimization.evaluation.service import EvaluationService, call
 from steerability.optimization.evaluation.session import StudySession
-from steerability.optimization.search.loop import run_study
+from steerability.optimization.search.loop import SearchPhase, run_study
 from steerability.optimization.search.openevolve import parse, program_text
-from steerability.optimization.search.proposers import BaseProposer
 from steerability.optimization.study import Candidate
 from tests.optimization.helpers import (
+    FixedProposer,
     StubFactory,
     Truth,
     argument,
@@ -123,24 +123,6 @@ def test_messages_over_the_socket_are_json(tmp_path, space):
         service.stop()
 
 
-class FixedProposer(BaseProposer):
-    """Proposes a fixed list of candidates in order, once."""
-
-    name = "fixed"
-
-    def __init__(self, study, candidates):
-        super().__init__(study)
-        self.candidates = list(candidates)
-        self.told = []
-
-    def ask(self, view, n):
-        batch, self.candidates = self.candidates[:n], self.candidates[n:]
-        return batch
-
-    def tell(self, candidate, result):
-        self.told.append((candidate, result))
-
-
 def _rounds(store):
     return store.execute("SELECT round_index, batches FROM rounds ORDER BY round_index").fetchall()
 
@@ -155,8 +137,13 @@ def test_run_study_and_the_service_advance_rounds_identically(tmp_path, space):
     candidates = [Candidate("prompt", {"prompt.text": text}) for text in TEXTS[:5]]
     looped = Store.open(tmp_path / "looped")
     study = build_study(looped, _truth, space=space)
-    proposer = FixedProposer(study, candidates)
-    run_study(study, proposer, store=looped, factory=StubFactory(study.protocol))
+    proposer = FixedProposer(study=study, candidates=candidates)
+    run_study(
+        study=study,
+        phases=[SearchPhase(engine=proposer)],
+        store=looped,
+        factory=StubFactory(protocol=study.protocol),
+    )
     assert len(proposer.told) == 5
     served = _session(Store.open(tmp_path / "served"), space=space)
     service = _service(served)

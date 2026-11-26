@@ -4,7 +4,7 @@ from __future__ import annotations
 import itertools
 import logging
 import random
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 from steerability.algorithms.core.identity import derive_seed
@@ -32,18 +32,21 @@ class RandomProposer(BaseProposer):
     Args:
         study: The study.
         seed: The proposer's seed.
+        structures: The structures to draw from, or None for every structure of the study.
+
+    Raises:
+        ValueError: If `structures` is empty or gives a structure that is not in the study's space.
     """
 
     name = "random"
 
-    def __init__(self, study: Study, seed: int) -> None:
-        super().__init__(study)
+    def __init__(self, study: Study, seed: int, *, structures: Sequence[str] | None = None) -> None:
+        super().__init__(study=study, structures=structures)
         self.seed = int(seed)
-        self._structures = list(study.space)
         self._axes: dict[str, dict[str, Any]] = {}
         self._fixed: dict[str, dict[str, Any]] = {}
-        for structure in self._structures:
-            axes = study.proposer_axes(structure)
+        for structure in self.structures:
+            axes = study.proposer_axes(structure=structure)
             self._axes[structure] = {key: axis for key, axis in axes.items() if not axis.has_text}
             self._fixed[structure] = {
                 path: "" for axis in axes.values() if axis.has_text for path in axis.members
@@ -61,7 +64,7 @@ class RandomProposer(BaseProposer):
             draw = self._draw
             self._draw += 1
             chooser = random.Random(derive_seed(self.seed, draw, "structure"))
-            structure = self._structures[chooser.randrange(len(self._structures))]
+            structure = self.structures[chooser.randrange(len(self.structures))]
             values = dict(self._fixed[structure])
             axes = self._axes[structure]
             if axes:

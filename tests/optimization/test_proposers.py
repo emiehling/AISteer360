@@ -8,6 +8,7 @@ pytest.importorskip("inspect_ai")
 from steerability.algorithms.core.recipe import Template, Text, entry
 from steerability.algorithms.core.store import Store
 from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
+from steerability.optimization.evaluation.archive import ArchiveView
 from steerability.optimization.evaluation.session import StudySession
 from steerability.optimization.search.proposers import GridProposer, RandomProposer
 from steerability.optimization.study import Candidate
@@ -80,3 +81,19 @@ def test_the_random_proposer_warns_about_text_axes(tmp_path, space, caplog):
     with caplog.at_level(logging.WARNING, logger="steerability.optimization.search.proposers.random"):
         RandomProposer(without_text, seed=0)
     assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+def test_structures_restrict_the_grid_and_the_random_proposer(tmp_path, space):
+    text_space = {**space, "text": Template(entries=(entry(SystemPrompt, name="free", text=Text(max_chars=200)),))}
+    study = build_study(store=Store.open(root=tmp_path / "store"), truth=_truth, space=text_space)
+    empty = ArchiveView(entries=())
+    with pytest.raises(ValueError, match="Text range"):
+        GridProposer(study=study)
+    grid = GridProposer(study=study, structures=["prompt", "caa"])
+    assert [candidate.structure for candidate in grid.ask(view=empty, n=100)] == ["caa"] + ["prompt"] * len(TEXTS)
+    draws = RandomProposer(study=study, seed=0, structures=["prompt"]).ask(view=empty, n=4)
+    assert len(draws) == 4 and {candidate.structure for candidate in draws} == {"prompt"}
+    with pytest.raises(ValueError, match="not in the study"):
+        GridProposer(study=study, structures=["missing"])
+    with pytest.raises(ValueError, match="empty"):
+        RandomProposer(study=study, seed=0, structures=[])
