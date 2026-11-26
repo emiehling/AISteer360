@@ -15,9 +15,9 @@ The study of a replay has one structure, the grid's CAA entry with `layer_id` as
 `multiplier` as an ordered `Choice`. The multiplier is in `study.monotone`, or in `study.searched` with
 `--searched`. The margin is 5 points, and the settings are `Settings(round_candidates=5)` unless
 `--round-candidates` is given (and `ladder_power` is `--ladder-power` when it is given). Each replay runs `run_study`
-on a new store and then `certify`. The proposer is a
-`GridProposer`, or a `RandomProposer` seeded with the replay's seed with `--proposer random`, which visits the layers
-in no fixed order when `--max-generations` stops a search early.
+on a new store, with one search phase, and then `certify`. The phase's engine is a `GridProposer`, or a
+`RandomProposer` seeded with the replay's seed with `--proposer random`, which visits the layers in no fixed order when
+`--max-generations` stops a search early.
 
 The report gives the following measures over the seeds:
 
@@ -88,7 +88,7 @@ from steerability.optimization.measurement.evidence import (
 )
 from steerability.optimization.measurement.stats import Paired, guard_band
 from steerability.optimization.release.certify import certify
-from steerability.optimization.search.loop import run_study
+from steerability.optimization.search.loop import SearchPhase, run_study
 from steerability.optimization.search.proposers import GridProposer, RandomProposer
 
 logger = logging.getLogger("replay")
@@ -360,11 +360,20 @@ def replay(seed: int, options: dict) -> dict:
     factory = world.factory
     with tempfile.TemporaryDirectory(dir=options["scratch"]) as scratch:
         store = Store.open(Path(scratch) / "store")
-        proposer = RandomProposer(study, seed=seed) if options["proposer"] == "random" else GridProposer(study)
-        archive = run_study(study, proposer, store=store, factory=factory, max_generations=options["max_generations"])
+        if options["proposer"] == "random":
+            proposer = RandomProposer(study=study, seed=seed)
+        else:
+            proposer = GridProposer(study=study)
+        archive = run_study(
+            study=study,
+            phases=[SearchPhase(engine=proposer)],
+            store=store,
+            factory=factory,
+            max_generations=options["max_generations"],
+        )
         generations = sum(version.generations for result in archive.results()
                           for version in archive.versions(result.candidate_id))
-        with StudySession(study, store=store, factory=factory) as session:
+        with StudySession(study=study, store=store, factory=factory) as session:
             session.start()
             capability = world.gsm8k
             variance = design_variance(study, store, capability)
@@ -373,7 +382,7 @@ def replay(seed: int, options: dict) -> dict:
             band = guard_band(math.sqrt(variance / last), math.sqrt(variance / n_held_out), alpha=study.settings.alpha,
                               power=study.settings.power)
             finalists = session.plan_finalists()
-            certification = certify(session, bundle_dir=Path(scratch) / "bundles")
+            certification = certify(session=session, bundle_dir=Path(scratch) / "bundles")
         points = archive.points()
         rejection_fields = None if options["searched"] else _rejection_fields(
             archive, settings_list, loss, gain, room=MARGIN - band, min_gain=study.settings.min_gain)

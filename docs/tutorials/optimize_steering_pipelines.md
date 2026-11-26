@@ -22,15 +22,15 @@ from steerability.algorithms.core.store import Store
 from steerability.evaluation.items import InspectBenchmark, PromptBenchmark
 from steerability.optimization import split_items
 
-store = Store.open("runs/formality/store")
-gsm8k = InspectBenchmark("examples/notebooks/optimization/formality_gsm8k/scripts/gsm8k_all.py@gsm8k_all")
-formality = PromptBenchmark("formality", prompts, formality_score)
+store = Store.open(root="runs/formality/store")
+gsm8k = InspectBenchmark(task="examples/notebooks/optimization/formality_gsm8k/scripts/gsm8k_all.py@gsm8k_all")
+formality = PromptBenchmark(name="formality", items=prompts, scorer=formality_score)
 for benchmark in (gsm8k, formality):
-    benchmark.prepare(store)
+    benchmark.prepare(store=store)
 
 pools = {
-    gsm8k.id: split_items(gsm8k, held_out=5000, seed=0),
-    formality.id: split_items(formality, held_out=500, seed=0),
+    gsm8k.id: split_items(benchmark=gsm8k, held_out=5000, seed=0),
+    formality.id: split_items(benchmark=formality, held_out=500, seed=0),
 }
 ```
 
@@ -48,36 +48,57 @@ both splits (8,792 items), and its prompts contain no other item.
 
 ## The search space
 
-The space of a study maps a structure name to a `Template`:
+The space of a study maps a structure name to a `Template`. We build it with the `structures` function from the
+controls a pipeline may contain, given as one slot per position of the pipeline:
 
 ```python
-from steerability.algorithms.core.recipe import Choice, Interval, Template, Text, entry
+from steerability.algorithms.core.recipe import Choice, Interval, Text, entry
 from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
 from steerability.algorithms.state_control.caa.control import CAA
+from steerability.optimization import optional, structures
 
-layers = Choice((10, 12, 14))
-space = {
-    "prompt": Template((entry(SystemPrompt, text=Text(max_chars=600)),)),
-    "caa": Template((entry(CAA, data=pairs, layer_id=layers, multiplier=Interval(0.25, 8.0, log=True)),)),
-    "both": Template((
-        entry(SystemPrompt, text=Text(max_chars=600)),
-        entry(CAA, data=pairs, layer_id=layers, multiplier=Interval(0.25, 8.0, log=True)),
-    )),
-}
+prompt = entry(
+    SystemPrompt,
+    name="prompt",
+    text=Text(max_chars=600),
+)
+caa = entry(
+    CAA,
+    data=pairs,
+    layer_id=Choice(values=(10, 12, 14)),
+    multiplier=Interval(low=0.25, high=8.0, log=True),
+)
+space = structures(optional(prompt), optional(caa))
 ```
+
+The `optional` function makes an entry optional, and `one_of` makes several entries exclusive. For instance,
+`optional(one_of(caa, act_add))` gives a position with the `CAA` vector, the `ActAdd` vector, or no control. A bare
+entry is part of every structure. The space contains every combination of the slots except the empty one, since the
+unsteered model is the baseline of the study rather than a structure. In this example, the structures are `prompt`,
+`caa`, and `prompt+caa`, and each is the `Template` of its entries. The name of a structure joins the names of its
+entries in category order (structural, input, state, output), and an entry without an explicit `name=` is named after
+its method. Two entries of one method therefore need explicit names. A space can also be written as a mapping from
+structure name to `Template`.
 
 Each template has at most one solved axis, i.e., an ordered axis (an `Interval`, an ordered `Choice`, or a shared
 axis) whose key is not listed in the study's `searched` set. The evaluator solves this axis for each candidate by
 finding the position with the best behavior among those inside the margin. Every other axis (unordered choices, text,
 and the ordered axes in `searched`) is a proposer axis. In this example, `caa.multiplier` is the solved axis of the
-`caa` and `both` structures, and the layer and the prompt text are proposer axes.
+`caa` and `prompt+caa` structures, and the layer and the prompt text are proposer axes. An axis has the same key in
+every structure that contains its entry (`caa.layer_id` in `caa` and in `prompt+caa`). The study refuses a
+combination with two free ordered axes. For such a combination, we list all but one of the axes in `searched` (which
+applies to the whole study) or give them a shared `axis=` name. Controls that exclude each other, such as two decoding
+drivers, belong in one `one_of` slot.
 
 A candidate is a structure and one value per proposer axis:
 
 ```python
 from steerability.optimization import Candidate
 
-candidate = Candidate("both", {"system_prompt.text": "Answer in a formal register.", "caa.layer_id": 12})
+candidate = Candidate(
+    structure="prompt+caa",
+    values={"prompt.text": "Answer in a formal register.", "caa.layer_id": 12},
+)
 ```
 
 The `Study.bind` method binds every proposer axis of a candidate's template and leaves the solved axis free. It raises
@@ -100,7 +121,7 @@ from steerability.algorithms.core.protocol import Protocol, ProviderOptions
 from steerability.optimization import Constraint, Study
 
 protocol = Protocol.create(
-    "Qwen/Qwen2.5-0.5B-Instruct",
+    model="Qwen/Qwen2.5-0.5B-Instruct",
     hf_model_kwargs={"dtype": "float32"},
     provider=ProviderOptions(max_batch_size=64),
     generate_defaults={"temperature": 0, "max_tokens": 512},
@@ -111,18 +132,18 @@ study = Study(
     protocol=protocol,
     space=space,
     objective=formality,
-    constraints=(Constraint(gsm8k, margin=0.05),),
+    constraints=(Constraint(benchmark=gsm8k, margin=0.05),),
     pools=pools,
     monotone=frozenset({"caa.multiplier"}),
 )
-study.validate(store)
+study.validate(store=store)
 ```
 
 The `validate` method checks the study before any model work. It refuses a protocol with empty `versions` (one built
 without `Protocol.create`) and any benchmark with an unset `temperature`, since the decoding mode decides which rules
-apply to the baseline. It also refuses structural entries, unversioned callables (see `versioned`), and overlapping
-pools (shared items or groups). The remaining checks refuse templates with more than one free ordered axis, solved
-axes that change a fit, and repeated benchmark names.
+apply to the baseline. It also refuses unversioned callables (see `versioned`) and overlapping pools (shared items or
+groups). The remaining checks refuse templates with more than one free ordered axis, solved axes that change a fit,
+repeated benchmark names, and trainings that leave no product to store (see [Weight changes](#weight-changes)).
 
 The `Settings` dataclass contains the statistical settings and the behavior block sizes. The certification error rate
 (`alpha`) and the design power (`power`) set the guard band. The ladder settings (`ladder_points`,
@@ -139,9 +160,9 @@ We evaluate candidates through a `StudySession`:
 ```python
 from steerability.optimization.evaluation.session import StudySession
 
-with StudySession(study, store=store, max_generations=200_000) as session:
+with StudySession(study=study, store=store, max_generations=200_000) as session:
     session.start()
-    result = session.evaluate(candidate)
+    result = session.evaluate(candidate=candidate)
 ```
 
 The `start` method validates the study and records it in the store. It then measures the unsteered baseline on every
@@ -218,48 +239,178 @@ baseline's evidence rows. This means that we can try another margin without gene
 
 ## Running a search
 
-A search is a loop of proposals and evaluations. The session groups candidates into rounds of
-`settings.round_candidates`. Each new round draws new item batches and re-scores the best accepted results on them.
-Re-scoring reduces the selection bias in the fitness values.
-
-The `run_study` function drives an in-process proposer:
+A search runs in phases on one session. Each phase gives a search engine an allowance of the session, and each
+engine reads what the earlier phases found from the archive. The `run_study` function evaluates the initial candidates
+first and then runs the phases in order:
 
 ```python
-from steerability.optimization.search.loop import run_study
-from steerability.optimization.search.proposers import RandomProposer
+from steerability.optimization.search.loop import SearchPhase, run_study
+from steerability.optimization.search.openevolve import OpenEvolveEngine
+from steerability.optimization.search.proposers import GridProposer
 
-archive = run_study(study, RandomProposer(study, seed=0), store=store, max_generations=200_000)
+archive = run_study(
+    study=study,
+    phases=[
+        SearchPhase(
+            engine=GridProposer(study=study, structures=["caa"]),
+        ),
+        SearchPhase(
+            engine=OpenEvolveEngine(
+                run_dir="runs/formality/openevolve",
+                llm={"models": [{"name": "gpt-4o-mini", "weight": 1.0}], "api_base": "https://api.openai.com/v1"},
+                iterations=400,
+                goal="The behavior score measures how formal the reply reads.",
+                structures=["prompt", "prompt+caa"],
+            ),
+            generations=150_000,
+        ),
+    ],
+    store=store,
+    initial_candidates=[
+        Candidate(structure="prompt", values={"prompt.text": "Respond in a formal register."}),
+    ],
+    max_generations=200_000,
+)
 best = archive.best()
 ```
 
-The `GridProposer` enumerates every combination of discrete proposer axes, and the `RandomProposer` draws a structure
-uniformly and then one value per proposer axis. The `RandomProposer` cannot draw text and logs a warning for each
-`Text` axis, which keeps its empty seed value. It searches prompts when the axis is a `Choice` of strings. A custom
-proposer subclasses `BaseProposer`, implements `ask(view, n)`, and overrides `tell(candidate, result)` when it learns
-from results. It sees only the `ArchiveView` of the archive, which contains each candidate's id, values, status,
-stage, reason, fitness, and summary (no item-level data).
+The initial candidates are recorded with the proposer name `"initial"`, and a candidate that is already in the archive
+costs nothing. A `SearchPhase` limits its engine by the number of recorded candidates (`candidates`), the generated
+rows (`generations`), the wall time (`seconds`), and the structural fits (`structural_fits`, see
+[Weight changes](#weight-changes)). These limits apply in addition to the limits of the run (`max_candidates`,
+`max_generations`, `max_seconds`, and `max_structural_fits`). A phase ends when its allowance or the limits of the run
+are spent, or when its engine has nothing new to propose. The session groups candidates into rounds of
+`settings.round_candidates`. Each new round draws new item batches and re-scores the best accepted results on them,
+which reduces the selection bias in the fitness values.
 
-The `run_openevolve` function (in `steerability.optimization.search.openevolve`, with the `optimize` extra) searches
-with [OpenEvolve](https://github.com/codelion/openevolve), which evolves the candidate programs with a language model:
+The terms of the toolkit correspond to those of other search tools as follows:
+
+| Toolkit | Bayesian tools (Optuna, Ax) | OpenEvolve | HyperAgents |
+| --- | --- | --- | --- |
+| space | search space of distributions | program format and system message | files the meta agent may edit |
+| candidate | trial | program | generation, stored as a patch |
+| structure | root choice with child parameters | text in the program; islands keep kinds apart | whatever the agent writes |
+| initial candidates, initial population | enqueued trials; trials added from earlier results | `initial_program`, `island_initial_programs`, checkpoint | initial node, `resume_from` |
+| evaluation | objective value or trial state | evaluator returning metrics and artifacts | domain harness |
+| stages 0 to 3 | pruning | cascade | staged evaluation |
+| archive | trial storage | program database | `archive.jsonl` with parent selection |
+
+### Proposers
+
+The `GridProposer` enumerates every combination of discrete proposer axes, and the `RandomProposer` draws a structure
+uniformly and then one value per proposer axis. Both take `structures=`, which restricts them to some of the study's
+structures. A grid therefore covers the discrete structures of a study whose other structures contain text. The
+`RandomProposer` cannot draw text and logs a warning for each `Text` axis, which keeps its empty default value. It
+searches prompts when the axis is a `Choice` of strings. The run asks a proposer for `settings.round_candidates`
+candidates at a time, prepares their fits together, and evaluates them in order. A custom proposer subclasses
+`BaseProposer`, implements `ask(view, n)`, and overrides `tell(candidate, result)` when it learns from results.
+
+### OpenEvolve
+
+The `OpenEvolveEngine` (in `steerability.optimization.search.openevolve`, with the `optimize` extra) searches with
+[OpenEvolve](https://github.com/codelion/openevolve), which evolves the candidate programs with a language model. Each
+program is one JSON object between OpenEvolve's block markers. OpenEvolve runs in a subprocess, and its evaluator calls
+an `EvaluationService` that serves the session over a local socket.
+
+Each island of the run begins from one member of the engine's initial population (`initial_population`) and stays on
+its structure. For each structure, the initial population contains the best accepted candidates in the archive, then
+the initial candidates of the structure, then one candidate composed from the best values of other structures, and
+then the structure's default candidate. This means that a later phase begins from what the earlier phases found. In
+this example, the island of `prompt+caa` begins from the best layer of the grid and the best prompt known at that
+point. The `islands_per_structure` argument gives a structure several islands, each beginning from another candidate.
+
+The system message of an island states the goal and describes the island's own structure only. The goal is written by
+the study's author, and it must not contain benchmark item text. An island admits only programs of its own structure
+whose candidates the archive accepted with a positive fitness. Each candidate is admitted once per island, and programs
+do not migrate between islands. The population of an island keeps one program per level bin (a point's level is its
+largest loss as a share of the margin), since certification spreads its finalists over levels. Re-scored results
+are consulted when a program is admitted and when two programs fall in the same bin. The replies of the evaluator also
+list the recent rejections of the candidate's structure and the programs that could not be evaluated, and the model
+sees them with the programs it is shown.
+
+A structure without proposer axes has one candidate, which the engine evaluates once without an island. A run
+directory with an OpenEvolve checkpoint resumes from it with its island assignment. The engine logs a warning for a
+structure whose discrete settings have fewer combinations than its share of the iterations, since a `GridProposer` in
+an earlier phase evaluates each of them once.
+
+### Custom engines
+
+A search engine subclasses `SearchEngine` and implements `run(session=..., initial_candidates=...)`. It evaluates
+candidates through the session (`screen`, `finish`, or `evaluate`, or an `EvaluationService` that it starts) with its
+`name` as the proposer name, and it returns when `session.exhausted()` is true. It sees only the `ArchiveView` of the
+archive, which contains each candidate's id, values, status, stage, reason, fitness, and summary (no item-level data).
+
+## Weight changes
+
+A study can search weight changes, i.e., structural controls that load an adapter or a checkpoint (`LoadLoRA`,
+`LoadCheckpoint`) or that train or merge (the TRL and MergeKit wrappers). For instance, we search a LoRA adapter
+trained with `SFT` together with the `CAA` vector:
 
 ```python
-from steerability.optimization.search.openevolve import run_openevolve
+from steerability.algorithms.structural_control.wrappers.trl.sfttrainer.control import SFT
+from steerability.optimization.search.proposers import RandomProposer
 
-archive = run_openevolve(
-    study,
+lora = entry(
+    SFT,
+    name="lora",
+    train_dataset=formal_text,
+    use_peft=True,
+    r=Choice(values=(8, 32)),
+    num_train_epochs=1,
+)
+weights_study = Study(
+    name="formality-weights",
+    protocol=protocol,
+    space=structures(optional(lora), optional(caa)),
+    objective=formality,
+    constraints=(Constraint(benchmark=gsm8k, margin=0.05),),
+    pools=pools,
+    monotone=frozenset({"caa.multiplier"}),
+)
+archive = run_study(
+    study=weights_study,
+    phases=[
+        SearchPhase(
+            engine=GridProposer(study=weights_study, structures=["lora"]),
+        ),
+        SearchPhase(
+            engine=RandomProposer(study=weights_study, seed=0),
+            structural_fits=0,
+        ),
+    ],
     store=store,
-    run_dir="runs/formality/openevolve",
-    llm={"models": [{"name": "gpt-4o-mini", "weight": 1.0}], "api_base": "https://api.openai.com/v1"},
-    iterations=400,
-    max_generations=200_000,
+    max_structural_fits=2,
 )
 ```
 
-Each program is one JSON object between OpenEvolve's block markers, and every island of the run searches one
-structure. OpenEvolve runs in a subprocess, and its evaluator calls an `EvaluationService` that serves the session
-over a local socket. The run's population strategy admits and replaces programs based on the archive's latest results
-instead of OpenEvolve's stored metrics. Re-scored results and timed-out evaluations are therefore reflected in the
-population.
+The product of a training or merge (an adapter or a checkpoint) is a fit that the store keeps. It is trained once per
+distinct set of training arguments and installed from the store at every later steer, also in later sessions. The
+structures `lora` and `lora+caa` contain the same training entry, and a candidate of each with the same `r` uses one
+product. Every measurement of a candidate runs on the stored product, and a certified bundle contains the trained
+weights.
+
+An ordered training argument cannot be a solved axis, since every position of a solved axis must share its fits. We
+list it in `study.searched` instead, and each proposed value is then trained once. A training is a structural fit.
+The `max_structural_fits` argument limits the distinct structural fits of a run, and the `structural_fits` of a phase
+limits those of the phase. A candidate that needs a training beyond the limits is returned with the reason `budget` and
+is not recorded, while candidates on stored products are evaluated as usual. In this example, the grid trains the two
+adapters, and the second phase searches on them without training (`structural_fits=0`).
+
+Note that an unmerged LoRA adapter is small, while a full fine-tune, a merge, or a merged LoRA stores a whole
+checkpoint per distinct training. We therefore recommend unmerged LoRA adapters. A merged LoRA run stores its product
+only in `merged_output_dir`, and the study refuses one without it. The output locations of a training (`output_dir`,
+`merged_output_dir`, and `resume_from_checkpoint`) are arguments of its entry, which means that they are part of the
+identity of its product. We therefore leave them unset in a study (except `merged_output_dir` for a merged product).
+
+Items of a study benchmark that are used as training data belong in the study's `fit_item_ids`, like the data of any
+other fit, since the study cannot see inside a dataset. A loader entry (`LoadLoRA`, `LoadCheckpoint`) is identified by
+its path. The study therefore assumes that an adapter or checkpoint directory given in a template does not change while
+its store is in use. A certificate records the content of the weights at certification, and the bundle of a loader
+refers to its path.
+
+A training runs inside an evaluation stage, and a deadline does not interrupt it. For an `OpenEvolveEngine` phase over a
+structure that trains, `stage_timeout_seconds` must therefore cover one training and the screening of the candidate.
+Alternatively, the phase runs with `structural_fits=0` on the products that an earlier phase trained.
 
 ## Certification
 
@@ -268,16 +419,15 @@ The `certify` function tests the finalists on the held-out items and writes a bu
 ```python
 from steerability.optimization.release.certify import certify
 
-with StudySession(study, store=store) as session:
+with StudySession(study=study, store=store) as session:
     session.start()
-    certification = certify(session, bundle_dir="runs/formality/bundles")
+    certification = certify(session=session, bundle_dir="runs/formality/bundles")
 certification.certified, certification.failed_at
 ```
 
-The finalists are spread over levels (a point's level is its largest loss as a share of the margin). Each finalist's
-level is measured again on previously unevaluated search items, and these items are recorded with the finalists before
-any of them is measured. An interrupted call then measures the same items. The finalists and their order (safest
-first) are fixed before any held-out item is read.
+The finalists are spread over levels. Each finalist's level is measured again on previously unevaluated search items,
+and these items are recorded with the finalists before any of them is measured. An interrupted call then measures the
+same items. The finalists and their order (safest first) are fixed before any held-out item is read.
 
 Each finalist is measured on every constraint's whole held-out pool, which is the request set of the baseline's held-out
 measurement. It is then tested at the full error rate `alpha`, and testing stops at the first failing finalist. Every
@@ -288,12 +438,13 @@ another study already used are refused unless `allow_reused_held_out=True` is pa
 
 Each certified point is written as a frozen bundle whose lock contains the study's protocol and the certificate. The
 certificate contains every constraint's held-out table with its tested lower bound, the behavior gain with a two-sided
-90% interval, and every benchmark's noise floor:
+90% interval, and every benchmark's noise floor. Its `weights` give the content id of the adapter or checkpoint of each
+structural control:
 
 ```python
 from steerability.spipe import SPipe
 
-bundle = SPipe.load(certification.bundles[certification.certified[0]])
+bundle = SPipe.load(path=certification.bundles[certification.certified[0]])
 certificate = bundle.manifest["lock"]["certificate"]
 pipeline = bundle.pipeline()
 pipeline.steer()

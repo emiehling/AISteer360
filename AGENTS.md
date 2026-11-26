@@ -46,8 +46,9 @@ steerability/
 ├── algorithms/
 │   ├── core/                    # SteeringPipeline, registry, BaseArgs, BaseControl, Output; recipe.py
 │   │   │                        # (Recipe, Template, ranges, expand); identity.py (content_id, derive_seed);
-│   │   │                        # protocol.py (Protocol, ProviderOptions); store.py (Store); fits.py (fit cache);
-│   │   │                        # sweeps.py (expansion, PipelineFactory, BackendPool); scoring.py (SampleScorer)
+│   │   │                        # protocol.py (Protocol, ProviderOptions); store.py (Store); fits.py (fit cache,
+│   │   │                        # fit sources and the products of structural controls); sweeps.py (expansion,
+│   │   │                        # PipelineFactory, BackendPool); scoring.py (SampleScorer)
 │   │   ├── execution/           # backend interface: spec, contracts, payloads, backend (sessions, Backend, backend
 │   │   │                        # registry), params, fanout; access (ModelAccess, SteerPlan); session_utils (scoped
 │   │   │                        # sessions, session_generate, session_generate_items); staging (stage freeing,
@@ -80,14 +81,18 @@ steerability/
 │   ├── runner.py                # SteeringEval (points x trials x benchmarks), samples_frame, runs_frame
 │   └── plotting.py              # summary-frame plots over runs_frame output (optional `eval` extra)
 ├── optimization/                # constrained search over steering pipelines; study.py (Study, Constraint, Settings,
-│   │                            # Candidate); layered: measurement <- evaluation <- search, release
+│   │                            # Candidate); space.py (structures, optional, one_of, Slot); layered:
+│   │                            # measurement <- evaluation <- search, release
 │   ├── measurement/             # pools.py (PoolSplit, split_items, check_pools, held-out ledger), stats.py (Paired,
 │   │                            # the decision rules, look sizes), evidence.py (baseline, design variance, sizes,
 │   │                            # feasibility, batches, point tables)
 │   ├── evaluation/              # plan.py, result.py, archive.py, evaluator.py and calibration.py (stages, not
 │   │                            # public), session.py (StudySession), service.py (EvaluationService)
-│   ├── search/                  # loop.py (run_study), proposers/ (BaseProposer, grid.py, random.py), openevolve.py
-│   │                            # and _openevolve_controller.py (the only modules that import openevolve)
+│   ├── search/                  # engine.py (SearchEngine), loop.py (SearchPhase, run_study), population.py
+│   │                            # (initial_population), description.py (candidate documents and descriptions for a
+│   │                            # language model), proposers/ (BaseProposer, grid.py, random.py), openevolve.py
+│   │                            # (OpenEvolveEngine) and _openevolve_controller.py (the only modules that import
+│   │                            # openevolve)
 │   └── release/                 # certify.py (certification on held-out items, certificates, bundles)
 └── utils/                       # tokenization, rendering, thinking, optional-dependency guard, verbosity
                                  # (opt-in package logging)
@@ -115,7 +120,7 @@ Optional extras, in three tiers:
 - backends: `vllm`, the vLLM backends plus the `vllm_hook_plugins` core; pulls in `trl[vllm]` so the resolved vLLM
   stays inside trl's supported vLLM range
 - workflows: `eval`, the Inspect AI evaluation stack plus matplotlib and seaborn for `evaluation/plotting.py`, and
-  `optimize` (OpenEvolve, for `run_openevolve`); the optimization package also needs `eval`
+  `optimize` (OpenEvolve, for `OpenEvolveEngine`); the optimization package also needs `eval`
 - method-specific: `merging` (MergeKit)
 - `all`: `eval` and `merging`
 
@@ -545,10 +550,15 @@ store's `benchmark_modes` table (`benchmark.mode(protocol)`). Under a sampling p
 The store (`algorithms/core/store.py`, `save_dir/store` unless `run(store=...)` shares one) is write-once SQLite plus
 the artifact store. It caches fits per fit source (`algorithms/core/fits.py`): intervention controls resolve sources
 through `resolve_source`, other fitting controls are replaced by their frozen form on a hit, and a recipe's resolved
-id (the key of its rollouts and evidence) combines its id with the stored fits it used. `PipelineFactory(protocol,
-store=...)` steers recipes in their fit cache, shares the base model, pools engine backends, and runs a batch's fits up
-front (`prepare`). `check()` runs over every point before any model or engine work (`on_unsupported="raise"` or
-`"skip"`). `save_dir/protocol.json` records the protocol and observed facts (a directory written under another protocol
+id (the key of its rollouts and evidence) combines its id with the stored fits it used. A structural control that
+trains or merges has one fit, its product (an adapter or a checkpoint copied into the store's artifacts), which it
+resolves through `resolve_product`. Two recipes share a product when their structural entries are equal. A stored
+product is installed rather than trained again, and the control then declares `ModelAccess.FACTS`.
+`PipelineFactory(protocol, store=...)` steers recipes in their fit cache, shares the base model, pools engine backends,
+and runs a batch's fits up front (`prepare`). It fits each pending product alone, in a pipeline of its own, before
+anything else of the recipe. Every pipeline it yields and every other fit of the recipe then runs on stored products.
+`check()` runs over every point before any model or engine work (`on_unsupported="raise"` or `"skip"`).
+`save_dir/protocol.json` records the protocol and observed facts (a directory written under another protocol
 is refused), and `save_dir/points.json` the points, selections, and trials; the module-level `samples_frame` and
 `runs_frame` read a finished run from it. A metric that is not a mean over items is computed from `samples_frame`.
 
@@ -588,40 +598,64 @@ the one that maximizes a behavior score while the accuracy on each capability be
 of the unsteered model, and certifies the result once on held-out items. A `Study` (`optimization/study.py`) fixes the
 protocol, the space (a `Template` per structure), the objective (a behavior benchmark), the `Constraint`s (a
 benchmark and a margin each), the split of every benchmark's items into a search pool and a held-out pool
-(`split_items`, which keeps groups whole), the seed, and the `Settings`. Per-item scores are in [0, 1], and higher is
-better. Each template's ordered axis that is not in `study.searched` is its solved axis (at most one), which the
-evaluator solves for each candidate. Every other axis is a proposer axis, and a `Candidate` is a structure with one
-value per proposer axis (`Study.bind` is the only way to turn one into a template). A solved axis must not change a
-fit (every ladder position has the same `fit_digests`), so an ordered input of a fit belongs in `searched`.
+(`split_items`, which keeps groups whole), the seed, and the `Settings`. `structures` (`optimization/space.py`)
+builds the space from slots, in which `optional` makes an entry or a slot optional and `one_of` makes entries
+exclusive. `structures(optional(prompt), optional(caa))` gives the structures `prompt`, `caa`, and `prompt+caa`, and
+each axis of an entry has the same key in every structure that contains it (`caa.layer_id`). Per-item scores are in
+[0, 1], and higher is better. Each template's ordered axis that is not in `study.searched` is its solved axis (at most
+one), which the evaluator solves for each candidate. Every other axis is a proposer axis, and a `Candidate` is a
+structure with one value per proposer axis (`Study.bind` is the only way to turn one into a template). A solved axis
+must not change a fit (every ladder position has the same `fit_digests`), so an ordered input of a fit belongs in
+`searched`.
 `study.monotone` lists the solved axes along which capability loss is assumed not to fall. `Study.validate(store)`
-checks the protocol's `versions` and every benchmark's `temperature`, the space, the versioning of callables, the
-pools, the axes, and the benchmark names before any model work.
+checks the protocol's `versions` and every benchmark's `temperature`, the versioning of callables, the pools, the
+axes, the benchmark names, and that every structural control that trains or merges leaves a product to store, before
+any model work.
 
 ```python
-from steerability.optimization import Constraint, Study, split_items
+from steerability.optimization import Constraint, Study, optional, split_items, structures
 from steerability.optimization.evaluation.session import StudySession
 from steerability.optimization.release.certify import certify
-from steerability.optimization.search.loop import run_study
-from steerability.optimization.search.proposers import RandomProposer
+from steerability.optimization.search.loop import SearchPhase, run_study
+from steerability.optimization.search.openevolve import OpenEvolveEngine
+from steerability.optimization.search.proposers import GridProposer
 
 for benchmark in (gsm8k, formality):
-    benchmark.prepare(store)
-protocol = Protocol.create(model, hf_model_kwargs={"dtype": "float32"}, generate_defaults={"temperature": 0}, seed=0)
+    benchmark.prepare(store=store)
+prompt = entry(SystemPrompt, name="prompt", text=Text(max_chars=600))
+caa = entry(CAA, data=pairs, layer_id=Choice(values=(10, 14)), multiplier=Interval(low=0.0, high=8.0))
 study = Study(
-    name="formality", protocol=protocol,
-    space={
-        "prompt": Template((entry(SystemPrompt, text=Choice(("Write formally.", "Use a formal register."))),)),
-        "caa": Template((entry(CAA, data=pairs, layer_id=Choice((10, 14)), multiplier=Interval(0.0, 8.0)),)),
+    name="formality",
+    protocol=Protocol.create(model=model, hf_model_kwargs={"dtype": "float32"}, generate_defaults={"temperature": 0}),
+    space=structures(optional(prompt), optional(caa)),
+    objective=formality,
+    constraints=(Constraint(benchmark=gsm8k, margin=0.05),),
+    pools={
+        gsm8k.id: split_items(benchmark=gsm8k, held_out=5000, seed=0),
+        formality.id: split_items(benchmark=formality, held_out=500, seed=0),
     },
-    objective=formality, constraints=(Constraint(gsm8k, margin=0.05),),
-    pools={gsm8k.id: split_items(gsm8k, held_out=5000, seed=0),
-           formality.id: split_items(formality, held_out=500, seed=0)},
     monotone=frozenset({"caa.multiplier"}),
 )
-archive = run_study(study, RandomProposer(study, seed=0), store=store, max_generations=200_000)
-with StudySession(study, store=store) as session:
+archive = run_study(
+    study=study,
+    phases=[
+        SearchPhase(engine=GridProposer(study=study, structures=["caa"])),
+        SearchPhase(
+            engine=OpenEvolveEngine(
+                run_dir="runs/formality",
+                llm=llm,
+                iterations=400,
+                goal="The behavior score measures how formal the reply reads.",
+                structures=["prompt", "prompt+caa"],
+            ),
+        ),
+    ],
+    store=store,
+    max_generations=200_000,
+)
+with StudySession(study=study, store=store) as session:
     session.start()
-    certification = certify(session, bundle_dir="bundles")
+    certification = certify(session=session, bundle_dir="bundles")
 ```
 
 Evaluation goes through one `StudySession` (`optimization/evaluation/session.py`). `start()` validates the study and
@@ -654,22 +688,38 @@ eligible operating point (confirmed on every constraint and within the cost and 
 the one-sided lower bound of its gain. Every estimate is a `Paired` table of per-item differences against the baseline
 (`measurement/stats.py`), with the per-item variance taken as at least `floor_variance(margin)`. A point's tables use
 only fresh-block items and exclude the ladder block its position was chosen on. Results are memoized by candidate id,
-and a `budget` or `timeout` rejection is not recorded (its evidence rows stay). Every `settings.round_candidates`
+and a `budget` or `timeout` rejection is not recorded (its evidence rows stay). A training or merge whose product the
+store does not contain is a structural fit, and `admit_fits` counts the distinct ones against `max_structural_fits` and
+an allowance's `structural_fits`. A candidate that needs a fit beyond them gets `budget` without exhausting the
+session. A phase with `structural_fits=0` therefore searches on stored products only. Every `settings.round_candidates`
 recorded candidates start a new round with new batches and re-score the best accepted results. `plan_finalists()`
 spreads the finalists over levels and selects previously unevaluated search items for each one, and `finalists(plan)`
 measures their levels again on exactly those items.
 
-Proposers see only the `ArchiveView` (per candidate the id, values, status, stage, reason, fitness, and a summary of
-search-pool aggregates). `run_study` drives an in-process `BaseProposer` (`GridProposer`, `RandomProposer`), and
-`run_openevolve` (`search/openevolve.py`, `optimize` extra) runs OpenEvolve in a subprocess. Its evaluator and its
-population strategy call an `EvaluationService` that serves the session over a local socket (JSON messages, one
-evaluation at a time, a deadline of 90% of the stage timeout). The strategy admits and replaces programs by the
-archive's latest results. `certify` (`release/certify.py`) records the finalist plan before it measures any finalist,
-and it records the ordered finalists before it reads any held-out item. It refuses held-out items that another study
-already used (unless `allow_reused_held_out`). Each finalist is evaluated on the whole held-out pool in pool order, and
-the finalists are tested in order at the full error rate until the first failure. Each certified point is written as a
-frozen bundle whose lock contains its `"certificate/2"` certificate, which includes the tested lower bound and every
-benchmark's noise floor. See `docs/tutorials/optimize_steering_pipelines.md` for the guide.
+A search engine (`SearchEngine`, `search/engine.py`) proposes candidates and sees only the `ArchiveView` (per
+candidate the id, values, status, stage, reason, fitness, and a summary of search-pool aggregates). `run_study`
+(`search/loop.py`) owns the session of a run. It evaluates the initial candidates first (recorded with the proposer
+name `"initial"`) and then runs each `SearchPhase` in order, each engine within its phase's allowance
+(`StudySession.allowance`). An ask/tell engine subclasses `BaseProposer` (`GridProposer` and `RandomProposer`, both
+restricted by `structures=`). An engine that runs its own loop starts an `EvaluationService`, which serves the session
+over a local socket (JSON messages, one evaluation at a time, a deadline of 90% of the stage timeout). The final
+replies of the service contain each result's level and the recent rejections of its structure. An engine that keeps a
+population begins from `initial_population` (`search/population.py`), i.e., per structure its best accepted
+candidates in the archive, then the initial candidates, then one candidate composed from the best values of other
+structures, then `Study.default_candidate`. A later phase therefore begins from what earlier phases found.
+`OpenEvolveEngine` (`search/openevolve.py`, `optimize` extra) runs OpenEvolve in a subprocess with one island per
+member of the initial population. An island's system message describes its own structure and the goal
+(`search/description.py`). Its population admits accepted candidates of that structure once each and keeps one per
+level bin, and programs do not migrate between islands.
+
+`certify` (`release/certify.py`) records the finalist plan before it measures any finalist, and it records the ordered
+finalists before it reads any held-out item. It refuses held-out items that another study already used (unless
+`allow_reused_held_out`). Each finalist is evaluated on the whole held-out pool in pool order, and the finalists are
+tested in order at the full error rate until the first failure. Each certified point is written as a frozen bundle
+whose lock contains its `"certificate/3"` certificate, which includes the tested lower bound, every benchmark's noise
+floor, and the content id of the weights of each structural control (`weights`). A bundle contains trained or merged
+weights, while a loader's bundle refers to its path. See `docs/tutorials/optimize_steering_pipelines.md` for the
+guide.
 
 ## Developer guide
 
@@ -793,6 +843,15 @@ methods:
 `InterventionControl` derives all four from its template, and the TRL and MergeKit wrappers freeze to `load_lora` /
 `load_checkpoint`. A control that produces state and overrides none of them raises `NotFreezableError` at freeze.
 Controls whose recipe is their frozen form need nothing.
+
+A structural control that trains or merges has one fit, its product, and must resolve it through the fit cache
+(`resolve_product` in `algorithms/core/fits.py`, with a `fit` callable that trains and returns `export_state()`). A
+`PipelineFactory` then trains it once per fit key and installs the stored product at every later steer. While the
+active cache contains the product (`product_is_stored`), the control's `steer_access()` is `FACTS` and its
+`steer_fits()` is empty. Its `export_artifact()` and `export_state()` report the stored product as an artifact object
+(`stored_product` reads it before `steer()`), which a bundle then contains by value. A control that installs an
+unmerged adapter implements `restore(model)`, which removes the adapter again, and its recipes then run on the
+factory's shared base model.
 
 `__init__.py` exports the discovery dict:
 
@@ -1022,6 +1081,12 @@ Rules that hold regardless of task:
     `Result.summary` and `ArchiveView` contain numbers and short enumerated strings computed from search-pool
     aggregates, no function in `optimization/search/` receives item text or item-level rows, and held-out items are
     read only by `certify`, after the finalists are recorded.
+20. Under a fit cache, the fit of a structural control runs once per fit key. Its product is stored in the store's
+    artifacts, and every later steer installs the stored product.
+21. `PipelineFactory.steered` yields only pipelines whose structural products were installed from the store. No
+    evidence is generated, and no other control is fitted, on weights that are not a stored product.
+22. A certified bundle of a candidate with trained or merged weights contains them, and it loads after the store is
+    deleted.
 
 ## Pointers
 

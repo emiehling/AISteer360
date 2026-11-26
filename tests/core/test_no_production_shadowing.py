@@ -42,7 +42,7 @@ PRODUCTION_CLASSES = {
     "Artifact", "ArtifactProvenance", "ModelArtifact", "CheckpointArtifact", "LoRAArtifact",
     "Study", "StudySession", "Archive", "ArchiveView", "EvaluationService", "Candidate", "Constraint", "PoolSplit",
     "Paired", "EvaluationPlan", "OperatingPoint", "LadderPoint", "Certification", "BaseProposer", "GridProposer",
-    "RandomProposer",
+    "RandomProposer", "SearchEngine", "SearchPhase", "OpenEvolveEngine", "Slot",
 }
 
 PRODUCTION_FUNCTIONS = {
@@ -52,8 +52,9 @@ PRODUCTION_FUNCTIONS = {
     "render_vllm_sampling_args", "truncate_at_stop_strings", "merge_lowered_params",
     "runtime_kwargs_schema", "expand_configurations", "preflight",
     "as_inspect_model", "sample_scorer_from_inspect", "runtime_kwargs_solver",
-    "steerability_provider", "run_study", "certify", "split_items", "make_plan", "ensure_baseline", "run_openevolve",
-    "design_variance", "feasibility",
+    "steerability_provider", "run_study", "certify", "split_items", "make_plan", "ensure_baseline",
+    "design_variance", "feasibility", "initial_population", "structures", "optional", "one_of", "select_structures",
+    "candidate_document", "parse_document", "describe_task", "describe_structure", "describe_axes", "check_limit",
 }
 
 

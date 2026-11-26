@@ -45,7 +45,8 @@ grouped in three tiers:
 - Backends: `vllm`, the vLLM execution backends (offline engine or server) plus the `vllm_hook_plugins` core. This
   extra pulls in `trl[vllm]` such that the resolved vLLM version stays inside TRL's supported range.
 - Workflows: `eval`, the Inspect AI evaluation stack and the plotting utilities in `evaluation/plotting.py`, and
-  `optimize`, OpenEvolve for `run_openevolve` in the optimization package (which also needs `eval`).
+  `optimize`, OpenEvolve for the `OpenEvolveEngine` search engine of the optimization package (which also needs
+  `eval`).
 - Method-specific: `merging`, the MergeKit structural control.
 
 Constrained decoding on the Hugging Face backend uses xgrammar, which is a core dependency; on vLLM backends the

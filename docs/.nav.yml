@@ -142,6 +142,7 @@ nav:
         - Plotting: reference/evaluation/plotting.md
     - Optimization:
         - Study: reference/optimization/study.md
+        - Space: reference/optimization/space.md
         - Measurement: reference/optimization/measurement.md
         - Evaluation: reference/optimization/evaluation.md
         - Search: reference/optimization/search.md

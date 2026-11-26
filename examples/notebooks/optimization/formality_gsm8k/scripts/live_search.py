@@ -3,11 +3,14 @@
 The study searches three structures (a system prompt, a CAA vector, and both) for formality on a prompt pool while
 GSM8K accuracy stays within a 5-point margin. The arms are:
 
-- `openevolve`: `run_openevolve` on the study, whose system prompts are free text (`Text(max_chars=600)`).
-- `random`: `run_study` with a `RandomProposer` on a study whose system prompts are drawn from a fixed pool (a
-  `Choice` of the pool's prompts in the `prompt` and `both` structures).
-- `naive`: `run_openevolve` on a study whose GSM8K search pool has 100 items, without a guard band and under
+- `openevolve`: an `OpenEvolveEngine` on the study, whose system prompts are free text (`Text(max_chars=600)`).
+- `random`: a `RandomProposer` on a study whose system prompts are drawn from a fixed pool (a `Choice` of the pool's
+  prompts in the `prompt` and `both` structures).
+- `naive`: an `OpenEvolveEngine` on a study whose GSM8K search pool has 100 items, without a guard band and under
   `allow_infeasible`. This study chooses and judges on the same 100 items.
+
+Each arm runs its engine in one phase of `run_study`. The OpenEvolve engine is told what the behavior score measures
+(`GOAL`).
 
 The random arm's pool is written by the OpenEvolve arm's model without any score. Each call sends the OpenEvolve
 arm's system message for the `prompt` structure and asks for one program. A reply becomes a prompt when it parses,
@@ -65,8 +68,8 @@ from steerability.optimization.evaluation.archive import Archive
 from steerability.optimization.evaluation.session import StudySession
 from steerability.optimization.measurement.evidence import ensure_baseline
 from steerability.optimization.release.certify import certify
-from steerability.optimization.search.loop import run_study
-from steerability.optimization.search.openevolve import parse, run_openevolve, system_message
+from steerability.optimization.search.loop import SearchPhase, run_study
+from steerability.optimization.search.openevolve import OpenEvolveEngine, parse, system_message
 from steerability.optimization.search.proposers import GridProposer, RandomProposer
 
 logger = logging.getLogger("live_search")
@@ -81,6 +84,7 @@ POOL_INSTRUCTION = (
     "in one fenced block."
 )
 CALLS_PER_PROMPT = 4
+GOAL = "The behavior score measures how formal the reply reads, as a formality classifier judges it."
 
 
 def load_grid_items(path: str | Path) -> dict[str, list[str]]:
@@ -199,7 +203,7 @@ def prompt_pool(run_dir: Path, *, size: int, llm: Mapping[str, Any] | None, mode
         study = build_study(store, arm="openevolve", model=model, grid=grid)
     finally:
         store.close()
-    system = system_message(study, POOL_STRUCTURE)
+    system = system_message(study=study, structure=POOL_STRUCTURE, goal=GOAL)
     config = Config.from_dict({"llm": json.loads(json.dumps(dict(llm)))})
     ensemble = LLMEnsemble(config.llm.models)
     previous_calls = int(record.get("calls", 0))
@@ -255,7 +259,7 @@ def budget_fields(study: Study, store: Store, max_generations: int, *, random_ar
     }
     fields["budget_spent"] = fields["shortfall"] <= fields["largest_candidate"]
     if random_arm:
-        fields["candidates_left"] = len(GridProposer(study).ask(archive.view(), 10**9))
+        fields["candidates_left"] = len(GridProposer(study=study).ask(view=archive.view(), n=10**9))
     return fields
 
 
@@ -321,13 +325,19 @@ def main() -> None:
             store.close()
             continue
         factory = PipelineFactory(study.protocol, store=store)
+        if arm == "random":
+            engine = RandomProposer(study=study, seed=0)
+        else:
+            engine = OpenEvolveEngine(run_dir=run_dir / arm, llm=llm, iterations=arguments.iterations, goal=GOAL)
         try:
-            if arm == "random":
-                run_study(study, RandomProposer(study, seed=0), store=store, factory=factory,
-                          max_generations=budget["shortfall"])
-            else:
-                run_openevolve(study, store=store, run_dir=run_dir / arm, llm=llm, iterations=arguments.iterations,
-                               max_generations=budget["shortfall"], factory=factory, allow_infeasible=arm == "naive")
+            run_study(
+                study=study,
+                phases=[SearchPhase(engine=engine)],
+                store=store,
+                factory=factory,
+                max_generations=budget["shortfall"],
+                allow_infeasible=arm == "naive",
+            )
         finally:
             factory.release()
             store.close()
@@ -358,9 +368,9 @@ def main() -> None:
         study = build_study(store, arm=arm, model=arguments.model, grid=grid, prompt_pool=pool)
         factory = PipelineFactory(study.protocol, store=store)
         try:
-            with StudySession(study, store=store, factory=factory, allow_infeasible=arm == "naive") as session:
+            with StudySession(study=study, store=store, factory=factory, allow_infeasible=arm == "naive") as session:
                 session.start()
-                certification = certify(session, bundle_dir=run_dir / arm / "bundles")
+                certification = certify(session=session, bundle_dir=run_dir / arm / "bundles")
                 searched = {result.operating.resolved_id: result.operating.gain for result in session.archive.points()}
         finally:
             factory.release()
