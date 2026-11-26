@@ -105,6 +105,74 @@ def test_the_candidate_limit_counts_recorded_candidates(store):
     assert session.evaluate(Candidate("prompt", {"prompt.text": "a"})).status == "accepted"
 
 
+def _prompt(text):
+    return Candidate(structure="prompt", values={"prompt.text": text})
+
+
+def test_an_allowance_of_candidates_stops_after_its_candidates_and_ends_with_its_block(store):
+    texts = ("a", "b", "c")
+    study = build_study(store=store, truth=_quadratic, space={"prompt": prompt_template(texts=texts)})
+    session = _started(study=study, store=store)
+    with session.allowance(candidates=2):
+        results = [session.evaluate(candidate=_prompt(text)) for text in texts]
+        assert session.exhausted()
+    assert [result.status for result in results[:2]] == ["accepted", "accepted"]
+    assert results[2].reason == "budget"
+    assert not session.exhausted()
+    assert session.evaluate(candidate=_prompt("c")).status == "accepted"
+    assert session.recorded == 3
+
+
+def test_a_generation_allowance_spent_during_an_evaluation_gives_a_budget_result_that_is_not_recorded(store):
+    session = _started(study=build_study(store=store, truth=_quadratic, monotone={"caa.multiplier"}), store=store)
+    with session.allowance(generations=100):
+        result = session.evaluate(candidate=CAA)
+        assert session.exhausted()
+    assert (result.status, result.reason) == ("rejected", "budget")
+    assert session.generations >= 100
+    assert _rows(store, "results") == 0 and _rows(store, "candidates") == 0
+    assert session.evaluate(candidate=CAA).status == "accepted"
+
+
+def test_nested_allowances_both_apply(store):
+    texts = ("a", "b", "c", "d")
+    study = build_study(store=store, truth=_quadratic, space={"prompt": prompt_template(texts=texts)})
+    session = _started(study=study, store=store)
+    with session.allowance(candidates=3):
+        assert session.evaluate(candidate=_prompt("a")).status == "accepted"
+        with session.allowance(candidates=1):
+            assert session.evaluate(candidate=_prompt("b")).status == "accepted"
+            assert session.exhausted()
+            assert session.evaluate(candidate=_prompt("c")).reason == "budget"
+        assert not session.exhausted()
+        assert session.evaluate(candidate=_prompt("c")).status == "accepted"
+        with session.allowance(candidates=5):
+            assert session.exhausted()
+            assert session.evaluate(candidate=_prompt("d")).reason == "budget"
+    assert session.evaluate(candidate=_prompt("d")).status == "accepted"
+
+
+def test_generations_are_counted_without_a_generation_limit(store):
+    session = _started(study=build_study(store=store, truth=_quadratic, monotone={"caa.multiplier"}), store=store)
+    assert session.generations == 0
+    result = session.evaluate(candidate=CAA)
+    assert result.status == "accepted"
+    assert session.generations == result.generations > 0
+
+
+def test_negative_limits_are_refused(store):
+    study = build_study(store=store, truth=_quadratic)
+    with pytest.raises(ValueError, match="max_generations"):
+        StudySession(study=study, store=store, factory=StubFactory(protocol=study.protocol), max_generations=-1)
+    session = _started(study=study, store=store)
+    with pytest.raises(ValueError, match="candidates"):
+        with session.allowance(candidates=-1):
+            pass
+    with pytest.raises(ValueError, match="seconds"):
+        with session.allowance(seconds=float("nan")):
+            pass
+
+
 def test_a_restarted_session_resumes_at_the_recorded_round(store):
     texts = tuple(f"text {index}" for index in range(8))
     study = build_study(store, _quadratic, space={"prompt": prompt_template(texts)})

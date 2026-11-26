@@ -9,15 +9,14 @@ import logging
 import math
 import random
 import time
-from collections.abc import Mapping, Sequence
-from contextlib import ExitStack
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from steerability.algorithms.core.identity import derive_seed
 from steerability.algorithms.core.recipe import Recipe, RecipeError
 from steerability.algorithms.core.sweeps import PipelineFactory
-from steerability.algorithms.input_control.common.budget import RolloutBudget
 from steerability.optimization.evaluation import evaluator
 from steerability.optimization.evaluation.archive import Archive
 from steerability.optimization.evaluation.evaluator import Partial, SteeringFailure, Stopped
@@ -36,6 +35,45 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _VARIANCE_RATIO_RANGE = (2.0 / 3.0, 1.5)
+
+
+def check_limit(*, name: str, value: float | None, count: bool) -> None:
+    """Check that a limit is None or a non-negative number.
+
+    Args:
+        name: The limit's name, used in the message.
+        value: The limit.
+        count: Whether the limit is a count, which must be an integer.
+
+    Raises:
+        ValueError: If the limit is neither None nor a non-negative number (an integer for a count).
+    """
+    if value is None:
+        return
+    kinds = int if count else (int, float)
+    if isinstance(value, bool) or not isinstance(value, kinds) or not value >= 0:
+        kind = "integer" if count else "number"
+        raise ValueError(f"{name} must be None or a non-negative {kind}; got {value!r}.")
+
+
+@dataclass(eq=False)
+class _Allowance:
+    """The limits of one active allowance and the session's counts when it began."""
+
+    candidates: int | None
+    generations: int | None
+    seconds: float | None
+    recorded_at: int
+    generations_at: int
+    started_at: float
+
+    def over(self, *, session: StudySession, candidates: bool) -> bool:
+        """Whether a limit of the allowance is spent; the candidate limit counts only when `candidates`."""
+        if candidates and self.candidates is not None and session.recorded - self.recorded_at >= self.candidates:
+            return True
+        if self.generations is not None and session.generations - self.generations_at >= self.generations:
+            return True
+        return self.seconds is not None and time.monotonic() - self.started_at >= self.seconds
 
 
 @dataclass(frozen=True)
@@ -61,11 +99,13 @@ class StudySession:
     model work. After every `settings.round_candidates` recorded candidates, the session starts a new round with new
     batches and re-scores the best accepted results on them (`rescore`).
 
-    Limits belong to the session object, and a restarted process gets a new allowance. Generations are counted after
-    each measurement with the rows that were generated, and fits are not counted (their own rollouts are bounded by
-    `max_seconds` only). `max_candidates` counts the candidates recorded by this session, and `max_seconds` runs from
-    `start`. Once a limit is reached, `exhausted()` is true and `screen` returns a rejected result with reason
-    `budget`. A candidate stopped by a limit or a deadline is not recorded.
+    Limits belong to the session object, and a restarted process counts from zero again. The session counts the rows
+    that each measurement generated (`generations`) and the candidates it recorded (`recorded`). Fits are not
+    counted, and their own rollouts are bounded by `max_seconds` only. `max_candidates` and `max_generations` cap the
+    two counts, and `max_seconds` runs from `start`. An `allowance` adds limits of its own for the span of a block
+    (one phase of a search, for instance), and every active allowance applies. Once a limit is reached, `exhausted()`
+    is true and `screen` returns a rejected result with reason `budget`. A candidate stopped by a limit or a deadline
+    is not recorded.
 
     Args:
         study: The study.
@@ -84,6 +124,9 @@ class StudySession:
         factory: The pipeline factory.
         archive: The study's archive.
         round_index: The current round.
+
+    Raises:
+        ValueError: If a limit is neither None nor a non-negative number (an integer for a count).
     """
 
     def __init__(
@@ -97,6 +140,9 @@ class StudySession:
         max_seconds: float | None = None,
         allow_infeasible: bool = False,
     ) -> None:
+        check_limit(name="max_candidates", value=max_candidates, count=True)
+        check_limit(name="max_generations", value=max_generations, count=True)
+        check_limit(name="max_seconds", value=max_seconds, count=False)
         self.study = study
         self.store = store
         self._owns_factory = factory is None
@@ -104,9 +150,11 @@ class StudySession:
         self.archive = Archive(study, store)
         self.round_index = 0
         self.max_candidates = max_candidates
+        self.max_generations = max_generations
         self.max_seconds = max_seconds
         self.allow_infeasible = allow_infeasible
-        self.budget = RolloutBudget(max_generations) if max_generations is not None else None
+        self._generations = 0
+        self._allowances: list[_Allowance] = []
         self._recorded = 0
         self._round_count = 0
         self._rounds: dict[int, dict[str, Batch]] = {}
@@ -230,21 +278,82 @@ class StudySession:
             self._looks[benchmark.id] = look_sizes(evidence.block_sizes(self.study, self.store, benchmark)[1])
         return self._looks[benchmark.id]
 
+    @property
+    def generations(self) -> int:
+        """The number of rows this session generated, counted by `measure`."""
+        return self._generations
+
+    @property
+    def recorded(self) -> int:
+        """The number of candidates this session recorded (their first result versions)."""
+        return self._recorded
+
+    @contextmanager
+    def allowance(
+        self,
+        *,
+        candidates: int | None = None,
+        generations: int | None = None,
+        seconds: float | None = None,
+    ) -> Iterator[None]:
+        """Limit the session further for the span of a block.
+
+        On entry the allowance notes `recorded`, `generations`, and the time. While the block runs, `exhausted()` is
+        also true once the block has recorded `candidates` candidates, generated `generations` rows, or run for
+        `seconds`, and a running evaluation is stopped with `budget` once the generations or the seconds are spent.
+        The candidate limit is checked between evaluations, as `max_candidates` is. Allowances nest, and every active
+        allowance applies. Measurements made with `limited=False` ignore allowances, as they ignore the session's own
+        limits.
+
+        Args:
+            candidates: The number of candidates the block may record, or None.
+            generations: The number of rows the block may generate, or None.
+            seconds: The wall time the block may run, or None.
+
+        Yields:
+            None.
+
+        Raises:
+            ValueError: If a limit is neither None nor a non-negative number (an integer for a count).
+        """
+        check_limit(name="candidates", value=candidates, count=True)
+        check_limit(name="generations", value=generations, count=True)
+        check_limit(name="seconds", value=seconds, count=False)
+        allowance = _Allowance(
+            candidates=candidates,
+            generations=generations,
+            seconds=seconds,
+            recorded_at=self._recorded,
+            generations_at=self._generations,
+            started_at=time.monotonic(),
+        )
+        self._allowances.append(allowance)
+        try:
+            yield
+        finally:
+            self._allowances = [active for active in self._allowances if active is not allowance]
+
     def _over_limits(self) -> bool:
-        if self.budget is not None and not self.budget:
+        if self.max_generations is not None and self._generations >= self.max_generations:
             return True
-        if self.max_seconds is not None and self._started_at is not None:
-            return time.monotonic() - self._started_at >= self.max_seconds
-        return False
+        started = self._started_at
+        if self.max_seconds is not None and started is not None and time.monotonic() - started >= self.max_seconds:
+            return True
+        return any(allowance.over(session=self, candidates=False) for allowance in self._allowances)
 
     def exhausted(self) -> bool:
-        """Whether a limit is reached (candidates recorded, generations, or wall time)."""
+        """Whether a limit of the session or of an active allowance is reached (candidates, generations, or time)."""
         if self.max_candidates is not None and self._recorded >= self.max_candidates:
+            return True
+        if any(allowance.over(session=self, candidates=True) for allowance in self._allowances):
             return True
         return self._over_limits()
 
     def check(self, deadline: float | None, *, limited: bool = True) -> None:
-        """Raise `Stopped` when the deadline has passed or, when `limited`, a generation or time limit is reached."""
+        """Raise `Stopped` when the deadline has passed or, when `limited`, a generation or time limit is reached.
+
+        The generation and time limits are those of the session and of every active allowance.
+        """
         if deadline is not None and time.monotonic() > deadline:
             raise Stopped("timeout")
         if limited and self._over_limits():
@@ -300,8 +409,7 @@ class StudySession:
         steered = self._steered(recipe)
         results = evaluate_items(steered, benchmark, list(item_ids), store=self.store, replicate=0)
         generated = sum(1 for result in results.values() if result.generated)
-        if self.budget is not None and generated:
-            self.budget.charge(generated)
+        self._generations += generated
         return steered.resolved_id, generated
 
     def fit(self, recipes: Sequence[Recipe]) -> None:
@@ -551,4 +659,4 @@ class StudySession:
             self.factory.release()
 
 
-__all__ = ["Finalist", "StudySession"]
+__all__ = ["Finalist", "StudySession", "check_limit"]
