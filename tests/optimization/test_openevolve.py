@@ -86,9 +86,11 @@ def test_the_run_files(study, tmp_path):
     assert database["feature_dimensions"] == ["complexity", "diversity"] and database["feature_bins"] == 6
     assert config["evaluator"] == {"timeout": 120, "cascade_evaluation": True, "cascade_thresholds": [0.5],
                                    "parallel_evaluations": 1}
-    assert parse(paths["initial_program"].read_text(encoding="utf-8")) == study.seed_candidate("prompt")
-    seed = Path(database["island_initial_programs"][1])
-    assert seed.is_absolute() and parse(seed.read_text(encoding="utf-8")) == study.seed_candidate("caa")
+    first = parse(program=paths["initial_program"].read_text(encoding="utf-8"))
+    assert first == study.default_candidate(structure="prompt")
+    island = Path(database["island_initial_programs"][1])
+    assert island.is_absolute()
+    assert parse(program=island.read_text(encoding="utf-8")) == study.default_candidate(structure="caa")
     assert config["prompt"]["suggest_simplification_after_chars"] is None
     template_dir = Path(config["prompt"]["template_dir"])
     assert template_dir.is_absolute() and paths["user_template"] == template_dir / "full_rewrite_user.txt"
@@ -122,7 +124,7 @@ def test_system_messages_describe_the_axes_and_contain_no_item_text(study):
     island = system_message(study, "prompt")
     assert "`prompt.text`" in island and "one of" in island and "System-prompt text set or merged" in island
     assert "exactly one JSON object" in island
-    assert program_text(study, study.seed_candidate("prompt")).rstrip("\n") in island
+    assert program_text(study=study, candidate=study.default_candidate(structure="prompt")).rstrip("\n") in island
     assert "the evaluator solves `caa.multiplier`" in system_message(study)
     assert "has no settings to propose" in system_message(study, "caa")
     for benchmark in study.benchmarks:

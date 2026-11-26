@@ -111,7 +111,7 @@ class TestValidate:
 
 
 class TestCandidates:
-    def test_seed_candidates_bind_for_every_structure(self, store):
+    def test_default_candidates_bind_for_every_structure(self, store):
         shared = caa_template(Interval(0.0, 2.0, axis="strength"),
                               layer_id=Choice((1, 2, 3), ordered=True, axis="strength"))
         space = {
@@ -123,11 +123,11 @@ class TestCandidates:
         }
         study = _with_space(store, space, searched={"caa.layer_id"})
         for structure in space:
-            plan = make_plan(study, study.seed_candidate(structure))
+            plan = make_plan(study=study, candidate=study.default_candidate(structure=structure))
             assert plan.recipes
-        assert study.seed_candidate("text").values == {"system_prompt.text": ""}
-        assert study.seed_candidate("prompt").values == {"prompt.text": "be brief"}
-        assert study.seed_candidate("caa").values == {}
+        assert study.default_candidate(structure="text").values == {"system_prompt.text": ""}
+        assert study.default_candidate(structure="prompt").values == {"prompt.text": "be brief"}
+        assert study.default_candidate(structure="caa").values == {}
         assert study.solved_axis("shared").key == "@strength"
 
     def test_candidates_that_bind_to_one_template_share_an_id(self, store):

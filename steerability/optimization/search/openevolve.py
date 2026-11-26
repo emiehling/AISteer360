@@ -12,8 +12,8 @@ OpenEvolve evolves program texts with a language model. Each program here is one
 Since the header line is outside the block, `enforce_evolve_blocks` keeps it fixed. OpenEvolve runs in a subprocess
 (`_openevolve_controller`), since it starts worker processes that must not be forked from a process holding a GPU
 model. Its evaluator calls an `EvaluationService` over the study's session, and its population strategy admits and
-replaces programs by the archive's latest results rather than by OpenEvolve's stored metrics. A seed is therefore
-always admitted, and a program whose evaluation timed out is kept out. Re-scored results replace the stale
+replaces programs by the archive's latest results rather than by OpenEvolve's stored metrics. An initial program is
+therefore always admitted, and a program whose evaluation timed out is kept out. Re-scored results replace the stale
 ones.
 
 This module and the controller are the only modules that import `openevolve` (the `optimize` extra).
@@ -232,7 +232,7 @@ def system_message(study: Study, structure: str | None = None) -> str:
     """The system message of the search, or of one island's structure.
 
     The message states the task, lists the structures, and, for an island, lists each proposer axis of its structure
-    with its path, its range, and the help text of its `Args` field, followed by the structure's seed program as an
+    with its path, its range, and the help text of its `Args` field, followed by the structure's default candidate as an
     example reply. It contains no benchmark item text.
 
     Args:
@@ -272,7 +272,7 @@ def system_message(study: Study, structure: str | None = None) -> str:
         "(an object with one entry per setting of the structure)."
     )
     if structure is not None:
-        example = program_text(study, study.seed_candidate(structure)).rstrip("\n")
+        example = program_text(study=study, candidate=study.default_candidate(structure=structure)).rstrip("\n")
         paragraphs.append(f"For instance, a valid reply for this structure is:\n\n```text\n{example}\n```")
     return "\n\n".join(paragraphs)
 
@@ -281,8 +281,8 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
                     stage_timeout_seconds: int) -> dict[str, Path]:
     """Write the programs, the evaluator, and the configuration of an OpenEvolve run.
 
-    The initial program is the seed candidate of the first structure, and every further structure gets an island
-    seeded with its own seed candidate. The configuration has one island per structure, OpenEvolve's built-in
+    The initial program is the default candidate of the first structure, and every further structure gets an island
+    that begins from its own default candidate. The configuration has one island per structure, OpenEvolve's built-in
     feature dimensions, full rewrites inside the enforced block, and a two-stage cascade with one evaluation at a
     time. Its user template (`USER_TEMPLATE`, in `<run_dir>/templates/full_rewrite_user.txt`) asks for a steering
     configuration rather than code, and the hint to simplify a long program is turned off
@@ -297,7 +297,7 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
 
     Returns:
         Mapping with the paths of `"initial_program"`, `"evaluator"`, `"config"`, `"user_template"`, and each
-        island seed (`"island_<i>"`).
+        further island's program (`"island_<i>"`).
     """
     import yaml
 
@@ -305,13 +305,15 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
     run_dir.mkdir(parents=True, exist_ok=True)
     structures = list(study.space)
     paths: dict[str, Path] = {"initial_program": run_dir / "initial_program.txt"}
-    paths["initial_program"].write_text(program_text(study, study.seed_candidate(structures[0])), encoding="utf-8")
-    seeds: list[str | None] = [None]
+    first = study.default_candidate(structure=structures[0])
+    paths["initial_program"].write_text(program_text(study=study, candidate=first), encoding="utf-8")
+    initial_programs: list[str | None] = [None]
     for index, structure in enumerate(structures[1:], start=1):
         path = run_dir / f"island_{index}_program.txt"
-        path.write_text(program_text(study, study.seed_candidate(structure)), encoding="utf-8")
+        candidate = study.default_candidate(structure=structure)
+        path.write_text(program_text(study=study, candidate=candidate), encoding="utf-8")
         paths[f"island_{index}"] = path
-        seeds.append(str(path.resolve()))
+        initial_programs.append(str(path.resolve()))
     paths["evaluator"] = run_dir / "evaluator.py"
     paths["evaluator"].write_text(EVALUATOR_SOURCE, encoding="utf-8")
     templates = run_dir / "templates"
@@ -333,7 +335,7 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
         },
         "database": {
             "num_islands": len(structures),
-            "island_initial_programs": seeds,
+            "island_initial_programs": initial_programs,
             "feature_dimensions": ["complexity", "diversity"],
             "feature_bins": 6,
         },

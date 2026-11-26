@@ -5,8 +5,8 @@ address in `STEERABILITY_EVAL_ADDRESS` and its authkey, in hex, in `STEERABILITY
 `openevolve.api.run_evolution` on the files in `run_dir`, with a population strategy that asks the service for the
 archive's estimates:
 
-- `admit` keeps a program without a parent (a seed, which OpenEvolve requires to be admitted) and otherwise keeps a
-  program only when the archive has accepted it with a positive fitness.
+- `admit` keeps a program without a parent (an initial program, which OpenEvolve requires to be admitted) and
+  otherwise keeps a program only when the archive has accepted it with a positive fitness.
 - `replace_cell` replaces an incumbent that the archive has not accepted, or one whose fitness is lower than the
   candidate's.
 """

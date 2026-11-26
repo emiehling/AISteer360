@@ -24,14 +24,14 @@ class RandomProposer(BaseProposer):
 
     Draw `i` uses `derive_seed(seed, i)` for the axes (one index per discrete axis and one fraction per continuous
     axis, as `assignments` draws them), and a structure chosen with `derive_seed(seed, i, "structure")`. `Text`
-    ranges cannot be drawn and keep the value of the structure's seed candidate (an empty string), and the
+    ranges cannot be drawn and keep the value of the structure's default candidate (an empty string), and the
     constructor logs a warning for each structure that has one. An unordered `Choice` of strings is drawn like any
     other discrete axis, which makes a text setting searchable. Candidates already in the archive are skipped, and
     at most `10 * n` draws are made per `ask`.
 
     Args:
         study: The study.
-        seed: The proposer's seed.
+        seed: The proposer's random seed.
         structures: The structures to draw from, or None for every structure of the study.
 
     Raises:
@@ -53,8 +53,9 @@ class RandomProposer(BaseProposer):
             }
             if self._fixed[structure]:
                 logger.warning(
-                    "RandomProposer cannot draw text; the Text axis paths %s of structure %r keep the empty seed "
-                    "value. A Choice of strings makes such an axis searchable.", sorted(self._fixed[structure]),
+                    "RandomProposer cannot draw text; the Text axis paths %s of structure %r keep the empty default "
+                    "value. A Choice of strings makes such an axis searchable.",
+                    sorted(self._fixed[structure]),
                     structure,
                 )
         self._draw = 0

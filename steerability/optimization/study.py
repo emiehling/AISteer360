@@ -395,8 +395,8 @@ class Study:
         """
         return content_id([candidate.structure, self.bind(candidate).id])
 
-    def seed_candidate(self, structure: str) -> Candidate:
-        """The fixed starting candidate of a structure.
+    def default_candidate(self, structure: str) -> Candidate:
+        """The default candidate of a structure.
 
         Every proposer axis is at its first position if it is discrete, at its midpoint if it is continuous, and an
         empty string for a `Text` range.
@@ -430,7 +430,7 @@ class Study:
            positions, every key in `searched` and `monotone` gives an axis of some template, and every key in
            `monotone` gives a solved axis.
         7. The objective and the constraints have distinct benchmark names.
-        8. `make_plan` succeeds for the seed candidate of every structure.
+        8. `make_plan` succeeds for the default candidate of every structure.
 
         A warning is logged for a template with a solved axis that contains a control whose fit has no identity,
         since such a control refits at every position. Whether the pools are large enough is checked by
@@ -509,7 +509,7 @@ class Study:
             raise ValueError(f"Benchmark names {repeated} repeat; the objective and constraints need distinct names.")
 
         for structure in self.space:
-            plan = make_plan(self, self.seed_candidate(structure))
+            plan = make_plan(study=self, candidate=self.default_candidate(structure=structure))
             if plan.solved is None:
                 continue
             for control in plan.recipes[0].instantiate():
