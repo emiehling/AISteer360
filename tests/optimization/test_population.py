@@ -3,11 +3,11 @@ import pytest
 
 pytest.importorskip("inspect_ai")
 
-from steerability.algorithms.core.recipe import Choice, Interval, Template, entry
+from steerability.algorithms.core.recipe import Choice, Interval, entry
 from steerability.algorithms.core.store import Store
 from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
 from steerability.algorithms.state_control.caa.control import CAA
-from steerability.optimization import Candidate
+from steerability.optimization import Candidate, optional, structures
 from steerability.optimization.evaluation.archive import ArchiveEntry, ArchiveView
 from steerability.optimization.search.population import initial_population
 from tests.optimization.helpers import PAIRS, RAW, Truth, build_study
@@ -27,11 +27,7 @@ def study(tmp_path):
     return build_study(
         store=Store.open(root=tmp_path / "store"),
         truth=lambda recipe, item_id: Truth(),
-        space={
-            "prompt": Template(entries=(PROMPT,)),
-            "caa": Template(entries=(CAA_ENTRY,)),
-            "prompt+caa": Template(entries=(PROMPT, CAA_ENTRY)),
-        },
+        space=structures(optional(PROMPT), optional(CAA_ENTRY)),
         monotone={"caa.multiplier"},
     )
 
