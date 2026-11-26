@@ -28,6 +28,7 @@ from steerability.optimization.search.openevolve import (
 from steerability.optimization.study import Candidate
 from tests.optimization.helpers import Truth, build_study, caa_template, prompt_template
 
+GOAL = "The behavior score measures how formal the reply reads."
 TEMPLATE_PLACEHOLDERS = ("metrics", "fitness_score", "feature_coords", "feature_dimensions", "improvement_areas",
                          "evolution_history", "current_program", "language", "artifacts")
 
@@ -47,11 +48,11 @@ def _block(body: str) -> str:
 
 
 def test_parse_reads_the_program_of_a_candidate(study):
-    candidate = Candidate("prompt", {"prompt.text": "be kind"})
-    program = program_text(study, candidate)
+    candidate = Candidate(structure="prompt", values={"prompt.text": "be kind"})
+    program = program_text(study=study, candidate=candidate)
     assert program.splitlines()[0] == f"# steerability-candidate/1 study={study.id}"
-    assert parse(program) == candidate
-    assert parse(_block('  {"structure": "caa", "values": {}}  ')) == Candidate("caa", {})
+    assert parse(program=program) == candidate
+    assert parse(program=_block('  {"structure": "caa", "values": {}}  ')) == Candidate(structure="caa", values={})
 
 
 @pytest.mark.parametrize("program, message", [
@@ -59,28 +60,32 @@ def test_parse_reads_the_program_of_a_candidate(study):
     (_block("{}") + _block("{}"), "exactly one block"),
     (f"{BLOCK_END}\n{BLOCK_START}\n", "exactly one block"),
     (_block("structure = caa"), "JSON object"),
-    (_block('{"structure": "caa", "values": {}} {"structure": "caa", "values": {}}'), "more than one"),
-    (_block("[1, 2]"), "not an object"),
     (_block('{"structure": "caa", "values": {}, "notes": "x"}'), "exactly the keys"),
-    (_block('{"structure": 1, "values": {}}'), "must be a string"),
 ])
 def test_parse_rejects_malformed_programs(program, message):
     with pytest.raises(ValueError, match=message):
-        parse(program)
+        parse(program=program)
 
 
 def test_the_run_files(study, tmp_path):
     llm = {"models": [{"name": "model", "api_base": "http://localhost:1"}], "temperature": 0.7}
-    paths = write_run_files(study, tmp_path / "run", llm=llm, iterations=7, stage_timeout_seconds=120)
+    paths = write_run_files(
+        study=study,
+        run_dir=tmp_path / "run",
+        goal=GOAL,
+        llm=llm,
+        iterations=7,
+        stage_timeout_seconds=120,
+    )
     config = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
     assert {key: config[key] for key in ("max_iterations", "random_seed", "language", "enforce_evolve_blocks",
                                          "diff_based_evolution", "llm")} == {
         "max_iterations": 7, "random_seed": study.seed, "language": "text", "enforce_evolve_blocks": True,
         "diff_based_evolution": False, "llm": llm,
     }
-    assert config["prompt"]["system_message"] == system_message(study)
-    assert config["prompt"]["island_system_messages"] == [system_message(study, "prompt"),
-                                                          system_message(study, "caa")]
+    messages = [system_message(study=study, structure=structure, goal=GOAL) for structure in ("prompt", "caa")]
+    assert config["prompt"]["island_system_messages"] == messages
+    assert config["prompt"]["system_message"] == messages[0]
     database = config["database"]
     assert database["num_islands"] == 2 and database["island_initial_programs"][0] is None
     assert database["feature_dimensions"] == ["complexity", "diversity"] and database["feature_bins"] == 6
@@ -105,7 +110,14 @@ def test_openevolve_builds_the_user_prompt_from_the_run_files(study, tmp_path):
     from openevolve.prompt.sampler import PromptSampler
 
     llm = {"models": [{"name": "model", "api_base": "http://localhost:1"}], "temperature": 0.7}
-    paths = write_run_files(study, tmp_path / "run", llm=llm, iterations=7, stage_timeout_seconds=120)
+    paths = write_run_files(
+        study=study,
+        run_dir=tmp_path / "run",
+        goal=GOAL,
+        llm=llm,
+        iterations=7,
+        stage_timeout_seconds=120,
+    )
     config = Config.from_yaml(paths["config"])
     assert config.prompt.suggest_simplification_after_chars is None
     assert Path(config.prompt.template_dir) == paths["user_template"].parent
@@ -120,22 +132,18 @@ def test_openevolve_builds_the_user_prompt_from_the_run_files(study, tmp_path):
     assert "Consider simplifying" not in prompt["user"]
 
 
-def test_system_messages_describe_the_axes_and_contain_no_item_text(study):
-    island = system_message(study, "prompt")
-    assert "`prompt.text`" in island and "one of" in island and "System-prompt text set or merged" in island
-    assert "exactly one JSON object" in island
-    assert program_text(study=study, candidate=study.default_candidate(structure="prompt")).rstrip("\n") in island
-    assert "the evaluator solves `caa.multiplier`" in system_message(study)
-    assert "has no settings to propose" in system_message(study, "caa")
+def test_a_system_message_describes_its_own_structure_only(study):
+    message = system_message(study=study, structure="prompt", goal=GOAL)
+    assert GOAL in message and "`prompt.text`" in message and "System-prompt text set or merged" in message
+    assert "exactly one JSON object" in message and '(always "prompt")' in message
+    example = program_text(study=study, candidate=study.default_candidate(structure="prompt")).rstrip("\n")
+    assert example in message
+    assert "`caa" not in message
+    assert "`prompt" not in system_message(study=study, structure="caa", goal=GOAL)
     for benchmark in study.benchmarks:
-        assert not any(item_id in island for item_id in benchmark.item_ids())
-
-
-def test_the_help_text_falls_back_to_the_args_docstring(tmp_path):
-    store = Store.open(tmp_path / "store")
-    searched = build_study(store, _quiet, space={"caa": caa_template()}, searched={"caa.multiplier"})
-    message = system_message(searched, "caa")
-    assert "a number from 0 to 3" in message and "Scaling factor for the steering vector" in message
+        assert not any(item_id in message for item_id in benchmark.item_ids())
+    with pytest.raises(ValueError, match="goal"):
+        system_message(study=study, structure="prompt", goal="")
 
 
 @dataclass
@@ -163,7 +171,14 @@ def test_the_generated_evaluator_returns_the_service_reply(study, tmp_path, monk
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
-    paths = write_run_files(study, tmp_path / "run", llm={}, iterations=1, stage_timeout_seconds=60)
+    paths = write_run_files(
+        study=study,
+        run_dir=tmp_path / "run",
+        goal=GOAL,
+        llm={},
+        iterations=1,
+        stage_timeout_seconds=60,
+    )
     monkeypatch.setenv("STEERABILITY_EVAL_ADDRESS", listener.address)
     monkeypatch.setenv("STEERABILITY_EVAL_KEY", authkey.hex())
     spec = importlib.util.spec_from_file_location("generated_evaluator", paths["evaluator"])

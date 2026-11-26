@@ -20,12 +20,10 @@ This module and the controller are the only modules that import `openevolve` (th
 """
 from __future__ import annotations
 
-import dataclasses
 import inspect
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 import time
@@ -33,16 +31,20 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from steerability.algorithms.core.recipe import Choice, Interval, Text
-from steerability.optimization.evaluation.result import jsonable
 from steerability.optimization.evaluation.service import EvaluationService
 from steerability.optimization.evaluation.session import StudySession
 from steerability.optimization.search._openevolve_controller import ADDRESS_ENV, KEY_ENV
+from steerability.optimization.search.description import (
+    candidate_document,
+    describe_axes,
+    describe_structure,
+    describe_task,
+    parse_document,
+)
 from steerability.optimization.study import Candidate
 from steerability.utils.optional import require
 
 if TYPE_CHECKING:
-    from steerability.algorithms.core.recipe import Axis
     from steerability.algorithms.core.store import Store
     from steerability.algorithms.core.sweeps import PipelineFactory
     from steerability.optimization.evaluation.archive import Archive
@@ -122,13 +124,13 @@ Reply with the complete program in one fenced block:
 
 
 def program_text(study: Study, candidate: Candidate) -> str:
-    """The program text of a candidate."""
-    body = json.dumps({"structure": candidate.structure, "values": jsonable(dict(candidate.values))}, sort_keys=True)
-    return f"# {PROGRAM_SCHEMA} study={study.id}\n{BLOCK_START}\n{body}\n{BLOCK_END}\n"
+    """The program text of a candidate: the header line and the candidate's document between the block markers."""
+    document = candidate_document(candidate=candidate)
+    return f"# {PROGRAM_SCHEMA} study={study.id}\n{BLOCK_START}\n{document}\n{BLOCK_END}\n"
 
 
 def parse(program: str) -> Candidate:
-    """The candidate of a program: the single JSON object between the block markers.
+    """The candidate of a program: the single JSON document between the block markers (`parse_document`).
 
     Whether the candidate is valid is `Study.bind`'s decision.
 
@@ -139,158 +141,72 @@ def parse(program: str) -> Candidate:
         The candidate.
 
     Raises:
-        ValueError: If the program does not have exactly one block, the block is not exactly one JSON object, or
-            the object has keys other than `"structure"` and `"values"` (or values of the wrong type).
+        ValueError: If the program does not have exactly one block, or the block is not one candidate document.
     """
     lines = program.splitlines()
     starts = [index for index, line in enumerate(lines) if line.strip() == BLOCK_START]
     ends = [index for index, line in enumerate(lines) if line.strip() == BLOCK_END]
     if len(starts) != 1 or len(ends) != 1 or ends[0] < starts[0]:
         raise ValueError(f"A program needs exactly one block between {BLOCK_START!r} and {BLOCK_END!r}.")
-    text = "\n".join(lines[starts[0] + 1:ends[0]]).strip()
-    try:
-        value, end = json.JSONDecoder().raw_decode(text)
-    except json.JSONDecodeError as error:
-        raise ValueError(f"The block does not start with a JSON object ({error}).") from error
-    if text[end:].strip():
-        raise ValueError("The block contains more than one JSON value.")
-    if not isinstance(value, dict):
-        raise ValueError(f"The block's JSON value is a {type(value).__name__}, not an object.")
-    if set(value) != {"structure", "values"}:
-        raise ValueError(
-            f"The block's object must have exactly the keys 'structure' and 'values'; got {sorted(value)}."
-        )
-    if not isinstance(value["structure"], str) or not isinstance(value["values"], dict):
-        raise ValueError("'structure' must be a string and 'values' an object.")
-    return Candidate(value["structure"], value["values"])
+    return parse_document(text="\n".join(lines[starts[0] + 1:ends[0]]))
 
 
-def _field_help(method: str, argument: str) -> str:
-    """The help text of an argument of a registered method, from its `Args` field or its docstring."""
-    from steerability.algorithms.core.registry import resolve_method_key
+def system_message(*, study: Study, structure: str, goal: str) -> str:
+    """The system message of an island that searches one structure.
 
-    try:
-        args_cls = resolve_method_key(method).control_cls.Args
-    except Exception:
-        return ""
-    if args_cls is None:
-        return ""
-    for item in dataclasses.fields(args_cls):
-        if item.name == argument and item.metadata.get("help"):
-            return " ".join(str(item.metadata["help"]).split())
-    docstring = inspect.getdoc(args_cls) or ""
-    match = re.search(r"^Attributes:\s*$(.*?)(?=^\S|\Z)", docstring, re.M | re.S)
-    if match is None:
-        return ""
-    lines: list[str] = []
-    for line in match.group(1).splitlines():
-        found = re.match(r"^\s{4}(\w+):\s*(.*)$", line)
-        if found is not None:
-            if lines:
-                break
-            if found.group(1) == argument:
-                lines.append(found.group(2))
-        elif lines and line.strip():
-            lines.append(line.strip())
-    return " ".join(" ".join(lines).split())
-
-
-def _describe_range(member: Any) -> str:
-    if isinstance(member, Choice):
-        return "one of " + ", ".join(json.dumps(jsonable(value)) for value in member.values)
-    if isinstance(member, Interval):
-        kind = "an integer" if member.integer else "a number"
-        scale = " (log scale)" if member.log else ""
-        return f"{kind} from {member.low:g} to {member.high:g}{scale}"
-    if isinstance(member, Text):
-        return f"a string of at most {member.max_chars} characters"
-    return repr(member)
-
-
-def _describe_axis(study: Study, structure: str, axis: Axis) -> list[str]:
-    template = study.space[structure]
-    methods = dict(zip(template.names, (item.method for item in template.entries)))
-    lines = []
-    if axis.key.startswith("@"):
-        members = ", ".join(f"`{path}`" for path in axis.members)
-        if axis.continuous:
-            lines.append(f"- `{axis.key}`: a fraction from 0 to 1 that moves {members} together.")
-        else:
-            lines.append(f"- `{axis.key}`: a position index from 0 to {axis.count - 1} that moves {members} together.")
-    for path, member in axis.members.items():
-        name, _, rest = path.partition(".")
-        argument = re.split(r"[.\[]", rest, maxsplit=1)[0]
-        help_text = _field_help(methods.get(name, ""), argument)
-        line = f"- `{path}`: {_describe_range(member)}."
-        if axis.key.startswith("@"):
-            line = f"  - `{path}` (member of `{axis.key}`): {_describe_range(member)}."
-        lines.append(line + (f" {help_text}" if help_text else ""))
-    return lines
-
-
-def system_message(study: Study, structure: str | None = None) -> str:
-    """The system message of the search, or of one island's structure.
-
-    The message states the task, lists the structures, and, for an island, lists each proposer axis of its structure
-    with its path, its range, and the help text of its `Args` field, followed by the structure's default candidate as an
-    example reply. It contains no benchmark item text.
+    The message states the task and its goal (`describe_task`), the structure's controls and solved setting
+    (`describe_structure`), and each of its proposer axes (`describe_axes`). It ends with the reply format and the
+    structure's default candidate as an example reply. It describes no other structure, since a model that is told
+    about the other structures proposes them, and an island admits its own structure only. It contains no benchmark
+    item text.
 
     Args:
         study: The study.
-        structure: The island's structure, or None for the message shared by every island.
+        structure: The island's structure.
+        goal: What the behavior score measures (see `describe_task`).
 
     Returns:
         The message.
+
+    Raises:
+        ValueError: If `goal` is not a non-empty string.
+        RecipeError: If the structure is unknown.
     """
-    paragraphs = [
-        "You propose steering configurations for a language model. Each program is one candidate: a structure (a "
-        "fixed arrangement of steering controls) and a value for each of the structure's free settings. A candidate "
-        "is scored by how much it raises a behavior score above the unsteered model while the model's accuracy on "
-        "capability benchmarks stays within a fixed margin of the unsteered model's; a candidate outside the margin "
-        "scores 0. Each structure may also have one setting that the evaluator solves for each candidate, which a "
-        "program does not set.",
-    ]
-    lines = ["The structures are:"]
-    for name, template in study.space.items():
-        controls = ", ".join(item.method.partition("/")[2] for item in template.entries if item.enabled)
-        solved = study.solved_axis(name)
-        solved_note = f"; the evaluator solves `{solved.key}`" if solved is not None else ""
-        lines.append(f"- `{name}`: {controls or 'no controls'}{solved_note}.")
-    paragraphs.append("\n".join(lines))
-    if structure is not None:
-        axes = study.proposer_axes(structure)
-        if axes:
-            lines = [f"This island searches the structure `{structure}`. Its settings, keyed by path, are:"]
-            for axis in axes.values():
-                lines.extend(_describe_axis(study, structure, axis))
-        else:
-            lines = [f"This island searches the structure `{structure}`, which has no settings to propose."]
-        paragraphs.append("\n".join(lines))
+    paragraphs = [describe_task(goal=goal), describe_structure(study=study, structure=structure)]
+    axes = describe_axes(study=study, structure=structure)
+    paragraphs.append(f"Its settings, keyed by path, are:\n{axes}" if axes else "It has no settings to propose.")
     paragraphs.append(
         f"Reply with the complete program. Keep the header line and the `{BLOCK_START}` and `{BLOCK_END}` lines "
-        "unchanged, and put exactly one JSON object between them, with the keys \"structure\" and \"values\" "
-        "(an object with one entry per setting of the structure)."
+        f"unchanged, and put exactly one JSON object between them, with the keys \"structure\" (always "
+        f"\"{structure}\") and \"values\" (an object with one entry per setting of the structure)."
     )
-    if structure is not None:
-        example = program_text(study=study, candidate=study.default_candidate(structure=structure)).rstrip("\n")
-        paragraphs.append(f"For instance, a valid reply for this structure is:\n\n```text\n{example}\n```")
+    example = program_text(study=study, candidate=study.default_candidate(structure=structure)).rstrip("\n")
+    paragraphs.append(f"For instance, a valid reply for this structure is:\n\n```text\n{example}\n```")
     return "\n\n".join(paragraphs)
 
 
-def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any], iterations: int,
-                    stage_timeout_seconds: int) -> dict[str, Path]:
+def write_run_files(
+    *,
+    study: Study,
+    run_dir: str | Path,
+    goal: str,
+    llm: Mapping[str, Any],
+    iterations: int,
+    stage_timeout_seconds: int,
+) -> dict[str, Path]:
     """Write the programs, the evaluator, and the configuration of an OpenEvolve run.
 
     The initial program is the default candidate of the first structure, and every further structure gets an island
-    that begins from its own default candidate. The configuration has one island per structure, OpenEvolve's built-in
-    feature dimensions, full rewrites inside the enforced block, and a two-stage cascade with one evaluation at a
-    time. Its user template (`USER_TEMPLATE`, in `<run_dir>/templates/full_rewrite_user.txt`) asks for a steering
-    configuration rather than code, and the hint to simplify a long program is turned off
-    (`suggest_simplification_after_chars: null`).
+    that begins from its own default candidate. The configuration has one island per structure with the island's own
+    system message (`system_message`), OpenEvolve's built-in feature dimensions, full rewrites inside the enforced
+    block, and a two-stage cascade with one evaluation at a time. Its user template (`USER_TEMPLATE`, in
+    `<run_dir>/templates/full_rewrite_user.txt`) asks for a steering configuration rather than code, and the hint to
+    simplify a long program is turned off (`suggest_simplification_after_chars: null`).
 
     Args:
         study: The study.
         run_dir: The run directory.
+        goal: What the behavior score measures (see `describe_task`).
         llm: OpenEvolve's `llm` configuration, written unchanged.
         iterations: The number of iterations.
         stage_timeout_seconds: OpenEvolve's timeout of each evaluation stage.
@@ -298,6 +214,9 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
     Returns:
         Mapping with the paths of `"initial_program"`, `"evaluator"`, `"config"`, `"user_template"`, and each
         further island's program (`"island_<i>"`).
+
+    Raises:
+        ValueError: If `goal` is not a non-empty string.
     """
     import yaml
 
@@ -320,6 +239,7 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
     templates.mkdir(exist_ok=True)
     paths["user_template"] = templates / "full_rewrite_user.txt"
     paths["user_template"].write_text(USER_TEMPLATE, encoding="utf-8")
+    messages = [system_message(study=study, structure=structure, goal=goal) for structure in structures]
     config = {
         "max_iterations": int(iterations),
         "random_seed": study.seed,
@@ -328,8 +248,8 @@ def write_run_files(study: Study, run_dir: str | Path, *, llm: Mapping[str, Any]
         "diff_based_evolution": False,
         "llm": json.loads(json.dumps(dict(llm))),
         "prompt": {
-            "system_message": system_message(study),
-            "island_system_messages": [system_message(study, structure) for structure in structures],
+            "system_message": messages[0],
+            "island_system_messages": messages,
             "template_dir": str(templates.resolve()),
             "suggest_simplification_after_chars": None,
         },
@@ -373,6 +293,7 @@ def run_openevolve(
     *,
     store: Store,
     run_dir: str | Path,
+    goal: str,
     llm: Mapping[str, Any],
     iterations: int,
     max_generations: int | None = None,
@@ -391,6 +312,7 @@ def run_openevolve(
         study: The study.
         store: The store.
         run_dir: The run directory.
+        goal: What the behavior score measures (see `describe_task`).
         llm: OpenEvolve's `llm` configuration (models, API base, and so on), written unchanged.
         iterations: The number of OpenEvolve iterations.
         max_generations: The number of generations the session may run, or None.
@@ -404,10 +326,18 @@ def run_openevolve(
     Raises:
         ModuleNotFoundError: If OpenEvolve is not installed.
         RuntimeError: If the installed OpenEvolve has no population strategy hooks.
+        ValueError: If `goal` is not a non-empty string.
     """
     require_openevolve()
     run_dir = Path(run_dir)
-    write_run_files(study, run_dir, llm=llm, iterations=iterations, stage_timeout_seconds=stage_timeout_seconds)
+    write_run_files(
+        study=study,
+        run_dir=run_dir,
+        goal=goal,
+        llm=llm,
+        iterations=iterations,
+        stage_timeout_seconds=stage_timeout_seconds,
+    )
     session = StudySession(study, store=store, factory=factory, max_generations=max_generations,
                            allow_infeasible=allow_infeasible)
     service: EvaluationService | None = None
