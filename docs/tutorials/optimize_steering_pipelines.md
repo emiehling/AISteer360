@@ -354,6 +354,41 @@ directory with an OpenEvolve checkpoint resumes from it with its island assignme
 structure whose discrete settings have fewer combinations than its share of the iterations, since a `GridProposer` in
 an earlier phase evaluates each of them once.
 
+### Agent
+
+The `AgentProposer` (in `steerability.optimization.search.proposers`) asks a language model with tools for each batch
+of candidates. Each batch is one episode, i.e., a conversation in which the model reads the archive through its tools
+and ends with a proposal:
+
+```python
+from steerability.optimization.search.proposers import AgentProposer
+
+agent = AgentProposer(
+    study=study,
+    run_dir="runs/formality-agent",
+    llm={"api_base": "http://localhost:8000/v1", "name": "Qwen/Qwen2.5-7B-Instruct"},
+    goal="The behavior score measures how formal the reply reads.",
+    structures=["prompt", "prompt+caa"],
+)
+archive = run_study(study=study, phases=[SearchPhase(engine=agent, generations=150_000)], store=store)
+```
+
+The `llm` argument configures an OpenAI-compatible endpoint (with the `openai` package of the `optimize` extra), or it
+is a callable that receives the messages and the tool schemas and returns the model's reply. The model has five tools:
+
+- **describe**: a structure's controls and settings, and the trained values of its trainings when no new training may
+  run.
+- **archive**: the best accepted candidates and the latest rejections of a structure.
+- **lookup**: the result of one candidate.
+- **note**: a note appended to `<run_dir>/notes.md`.
+- **propose**: the candidates of the batch, at most `settings.round_candidates`.
+
+A proposed candidate of another structure, one that does not bind, or one that has been evaluated is refused with the
+reason, and the episode goes on until the model proposes a new candidate or reaches `max_steps` replies. An episode
+begins from the notes file and the archive's view only, and the first episode also lists the initial population as
+starting points. This means that the notes are what the model keeps from one episode to the next, and a run resumes from
+its run directory and its store. Note that the model's tool calls are data, and nothing it writes is executed.
+
 ### Custom engines
 
 A search engine subclasses `SearchEngine` and implements `run(session=..., initial_candidates=...)`. It evaluates

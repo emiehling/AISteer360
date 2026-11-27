@@ -236,7 +236,7 @@ class VLLMOfflineSession(_RequestSessionBase):
         lora_request: The vLLM `LoRARequest` of the session's adapter (`VLLMBackend.lora_request`), or None.
     """
 
-    def __init__(self, backend, *, lora_request: Any = None) -> None:
+    def __init__(self, backend: "VLLMBackend", *, lora_request: Any = None) -> None:
         super().__init__(backend=backend)
         self._lora_request = lora_request
 
@@ -567,7 +567,7 @@ class VLLMServeSession(_RequestSessionBase):
         adapter: The LoRA adapter the session's requests are served under, or None.
     """
 
-    def __init__(self, backend, *, adapter: LoRAArtifact | None = None) -> None:
+    def __init__(self, backend: "VLLMServeBackend", *, adapter: LoRAArtifact | None = None) -> None:
         super().__init__(backend=backend)
         self._adapter = adapter
         self._model: str | None = None

@@ -3,8 +3,9 @@
 Such an engine needs the JSON form of a candidate (`candidate_document`, `parse_document`), a statement of the task
 and its goal (`describe_task`), a description of a structure and its axes (`describe_structure`, `describe_axes`),
 and, when no new training may run, the values its trainings have been trained with (`describe_trained_values`). The
-descriptions contain the study's structures, the ranges and help texts of their arguments, and the goal its author
-wrote, and no benchmark item text.
+recent rejections of a structure are read from the archive's view (`rejection_digest`). The descriptions contain the
+study's structures, the ranges and help texts of their arguments, the goal its author wrote, candidate values, reason
+names, and search-pool aggregates, and no benchmark item text.
 """
 from __future__ import annotations
 
@@ -16,12 +17,15 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from steerability.algorithms.core.recipe import Choice, Interval, Text
-from steerability.optimization.evaluation.result import jsonable
+from steerability.optimization.evaluation.result import compact, jsonable
 from steerability.optimization.study import Candidate
 
 if TYPE_CHECKING:
     from steerability.algorithms.core.recipe import Axis
+    from steerability.optimization.evaluation.archive import ArchiveEntry, ArchiveView
     from steerability.optimization.study import Study
+
+VALUES_CHARS = 300  # the longest candidate values a line of the rejection digest shows
 
 
 def candidate_document(*, candidate: Candidate) -> str:
@@ -87,8 +91,8 @@ def describe_task(*, goal: str) -> str:
     if not isinstance(goal, str) or not goal.strip():
         raise ValueError("goal must be a non-empty string that states what the behavior score measures.")
     return (
-        "You propose steering configurations for a language model. Each program is one candidate, i.e., a structure "
-        "(a fixed arrangement of steering controls) and a value for each of the structure's free settings. A "
+        "You propose steering configurations for a language model. Each candidate is a structure (a fixed "
+        "arrangement of steering controls) and a value for each of the structure's free settings. A "
         "candidate is scored by how much it raises a behavior score above the unsteered model while the model's "
         "accuracy on capability benchmarks stays within a fixed margin of the unsteered model's, and a candidate "
         f"outside the margin scores 0. {goal.strip()}"
@@ -169,6 +173,44 @@ def describe_trained_values(*, trained: Mapping[str, Sequence[Mapping[str, Any]]
     return "\n".join(lines)
 
 
+def rejection_digest(*, view: ArchiveView, structure: str, limit: int) -> str:
+    """The latest recorded rejections of a structure, newest first, one line each.
+
+    Each line gives the candidate's values (cut at `VALUES_CHARS` characters), the reason, and the level and gain
+    when the result's summary has them.
+
+    Args:
+        view: The archive's view.
+        structure: A key of the study's space.
+        limit: The largest number of lines; 0 lists none.
+
+    Returns:
+        The lines, joined by newlines, or an empty string when there is no rejection to list.
+    """
+    lines: list[str] = []
+    for entry in reversed(view.entries):
+        if len(lines) >= limit:
+            break
+        if entry.status == "rejected" and entry.structure == structure:
+            lines.append(_rejection_line(entry=entry))
+    return "\n".join(lines)
+
+
+def shorten(*, text: str, limit: int) -> str:
+    """The text, cut to `limit` characters with a trailing `...` when it is longer."""
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def _rejection_line(*, entry: ArchiveEntry) -> str:
+    """One line on a rejected archive entry: its values, reason, level, and gain."""
+    line = f"{shorten(text=compact(value=dict(entry.values)), limit=VALUES_CHARS)} -> {entry.reason}"
+    for key in ("level", "gain"):
+        value = entry.summary.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            line += f", {key} {value:.3g}"
+    return line
+
+
 def _control(*, name: str, method: str) -> str:
     short = method.partition("/")[2]
     return f"`{name}`" if name == short else f"`{name}` ({short})"
@@ -244,4 +286,6 @@ __all__ = [
     "describe_task",
     "describe_trained_values",
     "parse_document",
+    "rejection_digest",
+    "shorten",
 ]

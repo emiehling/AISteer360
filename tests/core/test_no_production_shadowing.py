@@ -43,6 +43,7 @@ PRODUCTION_CLASSES = {
     "Study", "StudySession", "Archive", "ArchiveView", "EvaluationService", "Candidate", "Constraint", "PoolSplit",
     "Paired", "EvaluationPlan", "OperatingPoint", "LadderPoint", "Certification", "BaseProposer", "GridProposer",
     "RandomProposer", "SearchEngine", "SearchPhase", "OpenEvolveEngine", "Slot", "ProductFitTimeout",
+    "AgentProposer",
 }
 
 PRODUCTION_FUNCTIONS = {
@@ -56,7 +57,8 @@ PRODUCTION_FUNCTIONS = {
     "design_variance", "feasibility", "initial_population", "structures", "optional", "one_of", "select_structures",
     "candidate_document", "parse_document", "describe_task", "describe_structure", "describe_axes", "check_limit",
     "check_space", "fit_in_child", "transport_problems", "lora_capacity", "adapter_identity", "adapter_rank",
-    "materialized_dataset",
+    "materialized_dataset", "trained_values", "is_trained", "describe_trained_values", "rejection_digest", "shorten",
+    "chat_model",
 }
 
 

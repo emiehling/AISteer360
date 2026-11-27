@@ -26,7 +26,7 @@ reason, and the entries of the result's summary, as text. Every final reply (and
 not parse or bind) also lists what failed before, since OpenEvolve stores the artifacts of admitted programs only:
 
 - `recent_rejections`: the latest recorded rejections of the candidate's structure, newest first, one line each
-  with the candidate's values, the reason, and the level and gain when the summary has them.
+  with the candidate's values, the reason, and the level and gain when the summary has them (`rejection_digest`).
 - `recent_unevaluated`: the messages of the latest programs that could not be evaluated, newest first, i.e.,
   programs that did not parse or bind and candidates that needed a structural fit beyond the limits.
 
@@ -47,9 +47,9 @@ from typing import TYPE_CHECKING, Any
 
 from steerability.algorithms.core.recipe import RecipeError
 from steerability.optimization.evaluation.result import compact
+from steerability.optimization.search.description import rejection_digest, shorten
 
 if TYPE_CHECKING:
-    from steerability.optimization.evaluation.archive import ArchiveEntry
     from steerability.optimization.evaluation.evaluator import Partial
     from steerability.optimization.evaluation.result import Result
     from steerability.optimization.evaluation.session import StudySession
@@ -60,7 +60,6 @@ logger = logging.getLogger(__name__)
 HANDLER_THREADS = 4
 EVALUATIONS = ("stage1", "stage2", "full")
 UNEVALUATED_MESSAGES = 3
-VALUES_CHARS = 300
 MESSAGE_CHARS = 200
 
 
@@ -110,23 +109,9 @@ def result_artifacts(result: Result, error: str | None = None) -> dict[str, str]
     return artifacts
 
 
-def _cut(*, text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit - 3] + "..."
-
-
 def _failure(*, error: Exception) -> dict:
     """The reply to a request that could not be answered."""
     return {"error": f"{type(error).__name__}: {error}"}
-
-
-def _rejection_line(*, entry: ArchiveEntry) -> str:
-    """One line on a rejected archive entry: its values (at most 300 characters), reason, level, and gain."""
-    line = f"{_cut(text=compact(value=dict(entry.values)), limit=VALUES_CHARS)} -> {entry.reason}"
-    for key in ("level", "gain"):
-        value = entry.summary.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            line += f", {key} {value:.3g}"
-    return line
 
 
 class EvaluationService:
@@ -309,21 +294,16 @@ class EvaluationService:
     def _history(self, *, structure: str | None) -> dict[str, str]:
         """The `recent_rejections` of a structure (left out when it is unknown) and the `recent_unevaluated`."""
         artifacts: dict[str, str] = {}
-        if structure is not None and self.digest:
-            lines = []
-            for entry in reversed(self.session.view().entries):
-                if entry.status == "rejected" and entry.structure == structure:
-                    lines.append(_rejection_line(entry=entry))
-                    if len(lines) >= self.digest:
-                        break
-            if lines:
-                artifacts["recent_rejections"] = "\n".join(lines)
+        if structure is not None:
+            rejections = rejection_digest(view=self.session.view(), structure=structure, limit=self.digest)
+            if rejections:
+                artifacts["recent_rejections"] = rejections
         if self._unevaluated:
             artifacts["recent_unevaluated"] = "\n".join(reversed(self._unevaluated))
         return artifacts
 
     def _invalid(self, *, message: str, stage1: bool, structure: str | None) -> dict:
-        self._unevaluated.append(_cut(text=" ".join(message.split()), limit=MESSAGE_CHARS))
+        self._unevaluated.append(shorten(text=" ".join(message.split()), limit=MESSAGE_CHARS))
         metrics = {"combined_score": 0.0, "gain": 0.0, "accepted": 0.0, "level": 0.0}
         if stage1:
             metrics = {"stage1_passed": 0.0, **metrics}
@@ -338,7 +318,7 @@ class EvaluationService:
                 f"{values} of structure {candidate.structure!r} was not evaluated, since it needs a training or merge "
                 "beyond the limits of this search"
             )
-            self._unevaluated.append(_cut(text=message, limit=MESSAGE_CHARS))
+            self._unevaluated.append(shorten(text=message, limit=MESSAGE_CHARS))
         metrics = final_metrics(result=result)
         if stage1:
             metrics = {"stage1_passed": 0.0, **metrics}

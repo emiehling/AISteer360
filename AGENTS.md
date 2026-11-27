@@ -90,10 +90,10 @@ steerability/
 │   ├── evaluation/              # plan.py, result.py, archive.py, evaluator.py and calibration.py (stages, not
 │   │                            # public), session.py (StudySession), service.py (EvaluationService)
 │   ├── search/                  # engine.py (SearchEngine), loop.py (SearchPhase, run_study), population.py
-│   │                            # (initial_population), description.py (candidate documents and descriptions for a
-│   │                            # language model), proposers/ (BaseProposer, grid.py, random.py), openevolve.py
-│   │                            # (OpenEvolveEngine) and _openevolve_controller.py (the only modules that import
-│   │                            # openevolve)
+│   │                            # (initial_population, trained_values), description.py (candidate documents,
+│   │                            # descriptions for a language model, the rejection digest), proposers/
+│   │                            # (BaseProposer, grid.py, random.py, agent.py), openevolve.py (OpenEvolveEngine) and
+│   │                            # _openevolve_controller.py (the only modules that import openevolve)
 │   └── release/                 # certify.py (certification on held-out items, certificates, bundles)
 └── utils/                       # tokenization, rendering, thinking, optional-dependency guard, verbosity
                                  # (opt-in package logging)
@@ -743,7 +743,11 @@ archive, then the initial candidates, then one candidate composed from the best 
 (`search/openevolve.py`, `optimize` extra) runs OpenEvolve in a subprocess with one island per member of the initial
 population. An island's system message describes its own structure and the goal (`search/description.py`). Its
 population admits accepted candidates of that structure once each and keeps one per level bin, and programs do not
-migrate between islands.
+migrate between islands. `AgentProposer` (`search/proposers/agent.py`) asks a language model with tools (`describe`,
+`archive`, `lookup`, `note`, and `propose`) for each batch, i.e., one episode per `ask`. An episode begins from
+`<run_dir>/notes.md` and the view only. A run therefore resumes from its run directory and store, and the model's tool
+calls are data that nothing executes. The service's replies and the agent's `archive` tool list rejections with the same
+function (`rejection_digest`).
 
 `certify` (`release/certify.py`) records the finalist plan before it measures any finalist, and it records the ordered
 finalists before it reads any held-out item. It refuses held-out items that another study already used (unless
