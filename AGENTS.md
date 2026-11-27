@@ -715,7 +715,8 @@ chosen on. Results are memoized by candidate id, and a `budget` or `timeout` rej
 rows stay). A training or merge whose product the store does not contain is a structural fit, and `admit_fits` counts
 the distinct ones against `max_structural_fits` and an allowance's `structural_fits`. A candidate that needs a fit
 beyond them gets `budget` without exhausting the session. A phase with `structural_fits=0` therefore searches on stored
-products only. `max_fit_seconds` (of `StudySession` and `run_study`) limits each training in a child process, and a
+products only. `StudySession.view()` is the archive's view with `fits_open`, i.e., whether one more structural fit is
+within the limits. `max_fit_seconds` (of `StudySession` and `run_study`) limits each training in a child process, and a
 training stopped at the limit records its candidate as `fit_failed`. A later candidate with the same training then fails
 at once. Once `settings.round_candidates` candidates are recorded in a round, `StudySession.advance` starts a new round
 with new batches and re-scores the best accepted results. The session calls it at the start of `screen` and
@@ -724,21 +725,25 @@ sent the reply of an evaluation. The call whose result completed a round therefo
 `plan_finalists()` spreads the finalists over levels and selects previously unevaluated search items for each one, and
 `finalists(plan)` measures their levels again on exactly those items.
 
-A search engine (`SearchEngine`, `search/engine.py`) proposes candidates and sees only the `ArchiveView` (per
-candidate the id, values, status, stage, reason, fitness, and a summary of search-pool aggregates). `run_study`
-(`search/loop.py`) owns the session of a run. It evaluates the initial candidates first (recorded with the proposer
-name `"initial"`) and then runs each `SearchPhase` in order, each engine within its phase's allowance
+A search engine (`SearchEngine`, `search/engine.py`) proposes candidates and sees only the `ArchiveView` of
+`session.view()` (per candidate the id, values, status, stage, reason, fitness, and a summary of search-pool aggregates,
+and `fits_open`). With `fits_open` false, an engine proposes only the trained values of each training entry
+(`Study.training_entries`), i.e., the combinations of its axes in the recorded candidates with the same entry that were
+decided after stage 1 (`trained_values`). `RandomProposer` draws them, `GridProposer` holds back the other grid points
+until fits are open again, and an OpenEvolve island whose phase starts closed is told them in its system message.
+`run_study` (`search/loop.py`) owns the session of a run. It evaluates the initial candidates first (recorded with the
+proposer name `"initial"`) and then runs each `SearchPhase` in order, each engine within its phase's allowance
 (`StudySession.allowance`). An ask/tell engine subclasses `BaseProposer` (`GridProposer` and `RandomProposer`, both
 restricted by `structures=`). An engine that runs its own loop starts an `EvaluationService`, which serves the session
-over a local socket (JSON messages, one evaluation at a time, a deadline of 90% of the stage timeout). The final
-replies of the service contain each result's level and the recent rejections of its structure. An engine that keeps a
-population begins from `initial_population` (`search/population.py`), i.e., per structure its best accepted
-candidates in the archive, then the initial candidates, then one candidate composed from the best values of other
-structures, then `Study.default_candidate`. A later phase therefore begins from what earlier phases found.
-`OpenEvolveEngine` (`search/openevolve.py`, `optimize` extra) runs OpenEvolve in a subprocess with one island per
-member of the initial population. An island's system message describes its own structure and the goal
-(`search/description.py`). Its population admits accepted candidates of that structure once each and keeps one per
-level bin, and programs do not migrate between islands.
+over a local socket (JSON messages, one evaluation at a time, a deadline of 90% of the stage timeout). The final replies
+of the service contain each result's level and the recent rejections of its structure. An engine that keeps a population
+begins from `initial_population` (`search/population.py`), i.e., per structure its best accepted candidates in the
+archive, then the initial candidates, then one candidate composed from the best values of other structures, then
+`Study.default_candidate`. A later phase therefore begins from what earlier phases found. `OpenEvolveEngine`
+(`search/openevolve.py`, `optimize` extra) runs OpenEvolve in a subprocess with one island per member of the initial
+population. An island's system message describes its own structure and the goal (`search/description.py`). Its
+population admits accepted candidates of that structure once each and keeps one per level bin, and programs do not
+migrate between islands.
 
 `certify` (`release/certify.py`) records the finalist plan before it measures any finalist, and it records the ordered
 finalists before it reads any held-out item. It refuses held-out items that another study already used (unless

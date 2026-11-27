@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from steerability.algorithms.core.identity import derive_seed
 from steerability.algorithms.core.recipe import assignments
+from steerability.optimization.search.population import trained_values
 from steerability.optimization.search.proposers.base import BaseProposer
 from steerability.optimization.study import Candidate
 
@@ -28,6 +29,10 @@ class RandomProposer(BaseProposer):
     constructor logs a warning for each structure that has one. An unordered `Choice` of strings is drawn like any
     other discrete axis, which makes a text setting searchable. Candidates already in the archive are skipped, and
     at most `10 * n` draws are made per `ask`.
+
+    When no new structural fit may run (`ArchiveView.fits_open` is false), the axes of each training entry take one
+    of the entry's trained combinations (`trained_values`), chosen with `derive_seed(seed, i, "trained")`, and a
+    draw of a structure with a training entry that has none is skipped.
 
     Args:
         study: The study.
@@ -60,7 +65,8 @@ class RandomProposer(BaseProposer):
                 )
         self._draw = 0
 
-    def _draws(self) -> Iterator[Candidate]:
+    def _draws(self, *, trained: dict[str, dict[str, list[dict[str, Any]]]] | None) -> Iterator[Candidate | None]:
+        """One candidate per draw, or None for a draw whose training has no trained combination."""
         while True:
             draw = self._draw
             self._draw += 1
@@ -70,11 +76,26 @@ class RandomProposer(BaseProposer):
             axes = self._axes[structure]
             if axes:
                 values.update(next(assignments(axes, strategy="random", samples=1, seed=derive_seed(self.seed, draw))))
+            if trained is not None:
+                combinations = trained[structure]
+                if any(not listed for listed in combinations.values()):
+                    yield None
+                    continue
+                picker = random.Random(derive_seed(self.seed, draw, "trained"))
+                for listed in combinations.values():
+                    values.update(listed[picker.randrange(len(listed))])
             yield Candidate(structure, values)
 
     def ask(self, view: ArchiveView, n: int) -> list[Candidate]:
-        """Up to `n` new random candidates."""
-        return self._take_new(itertools.islice(self._draws(), 10 * n), view, n)
+        """Up to `n` new random candidates, drawn on trained values when no new structural fit may run."""
+        trained = None
+        if not view.fits_open:
+            trained = {
+                structure: trained_values(study=self.study, view=view, structure=structure)
+                for structure in self.structures
+            }
+        draws = (candidate for candidate in itertools.islice(self._draws(trained=trained), 10 * n) if candidate)
+        return self._take_new(candidates=draws, view=view, n=n)
 
 
 __all__ = ["RandomProposer"]

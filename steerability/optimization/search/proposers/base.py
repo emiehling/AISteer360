@@ -59,7 +59,8 @@ class BaseProposer(SearchEngine):
 
         Each batch has `settings.round_candidates` candidates. Their fits are prepared together, and each is
         evaluated in order and told to the proposer. Before each `ask`, a round that is complete is followed by the
-        next (`StudySession.advance`), and `ask` reads the re-scored view. The run stops when the session is
+        next (`StudySession.advance`), and `ask` reads the re-scored view (`StudySession.view`), which says whether a
+        new structural fit may run. The run stops when the session is
         exhausted, when `ask` returns no candidate, or when a batch records no new result (every candidate was already
         recorded, did not bind, or was stopped). The initial candidates are in the archive already, which `ask` reads.
 
@@ -79,7 +80,7 @@ class BaseProposer(SearchEngine):
             session.advance()
             if session.exhausted():
                 break
-            candidates = self.ask(view=session.archive.view(), n=self.study.settings.round_candidates)
+            candidates = self.ask(view=session.view(), n=self.study.settings.round_candidates)
             if not candidates:
                 break
             session.prepare(candidates=candidates)

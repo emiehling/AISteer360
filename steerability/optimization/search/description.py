@@ -1,9 +1,10 @@
 """The description of a study's search for an engine that asks a language model for candidates.
 
 Such an engine needs the JSON form of a candidate (`candidate_document`, `parse_document`), a statement of the task
-and its goal (`describe_task`), and a description of a structure and its axes (`describe_structure`,
-`describe_axes`). The descriptions contain the study's structures, the ranges and help texts of their arguments, and
-the goal its author wrote, and no benchmark item text.
+and its goal (`describe_task`), a description of a structure and its axes (`describe_structure`, `describe_axes`),
+and, when no new training may run, the values its trainings have been trained with (`describe_trained_values`). The
+descriptions contain the study's structures, the ranges and help texts of their arguments, and the goal its author
+wrote, and no benchmark item text.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import dataclasses
 import inspect
 import json
 import re
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from steerability.algorithms.core.recipe import Choice, Interval, Text
@@ -139,6 +141,34 @@ def describe_axes(*, study: Study, structure: str) -> str:
     return "\n".join(lines)
 
 
+def describe_trained_values(*, trained: Mapping[str, Sequence[Mapping[str, Any]]]) -> str:
+    """The lines that state the only values the training entries of a structure may take.
+
+    Each line gives a training entry and the combinations of its settings that have been trained, as JSON objects.
+    An entry without a trained combination is stated as such, since no candidate of the structure can then be
+    evaluated.
+
+    Args:
+        trained: The `trained_values` of a structure.
+
+    Returns:
+        The lines, joined by newlines, or an empty string for a structure without training entries.
+    """
+    if not trained:
+        return ""
+    lines = [
+        "No new training or merge may run, and the settings of each training entry take only the combinations it "
+        "has been trained with:"
+    ]
+    for name, combinations in trained.items():
+        if combinations:
+            listed = "; ".join(json.dumps(jsonable(value=dict(combination))) for combination in combinations)
+            lines.append(f"- `{name}`: {listed}")
+        else:
+            lines.append(f"- `{name}`: none has been trained, so no candidate of this structure can be evaluated")
+    return "\n".join(lines)
+
+
 def _control(*, name: str, method: str) -> str:
     short = method.partition("/")[2]
     return f"`{name}`" if name == short else f"`{name}` ({short})"
@@ -207,4 +237,11 @@ def _describe_axis(*, study: Study, structure: str, axis: Axis) -> list[str]:
     return lines
 
 
-__all__ = ["candidate_document", "describe_axes", "describe_structure", "describe_task", "parse_document"]
+__all__ = [
+    "candidate_document",
+    "describe_axes",
+    "describe_structure",
+    "describe_task",
+    "describe_trained_values",
+    "parse_document",
+]

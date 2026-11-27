@@ -39,10 +39,11 @@ from steerability.optimization.search.description import (
     describe_axes,
     describe_structure,
     describe_task,
+    describe_trained_values,
     parse_document,
 )
 from steerability.optimization.search.engine import SearchEngine, select_structures
-from steerability.optimization.search.population import initial_population
+from steerability.optimization.search.population import initial_population, trained_values
 from steerability.optimization.study import Candidate
 from steerability.utils.optional import require
 
@@ -154,19 +155,27 @@ def parse(program: str) -> Candidate:
     return parse_document(text="\n".join(lines[starts[0] + 1:ends[0]]))
 
 
-def system_message(*, study: Study, structure: str, goal: str) -> str:
+def system_message(
+    *,
+    study: Study,
+    structure: str,
+    goal: str,
+    trained: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+) -> str:
     """The system message of an island that searches one structure.
 
     The message states the task and its goal (`describe_task`), the structure's controls and solved setting
-    (`describe_structure`), and each of its proposer axes (`describe_axes`). It ends with the reply format and the
-    structure's default candidate as an example reply. It describes no other structure, since a model that is told
-    about the other structures proposes them, and an island admits its own structure only. It contains no benchmark
-    item text.
+    (`describe_structure`), and each of its proposer axes (`describe_axes`). Given `trained`, it then lists the
+    trained values as the only values of the structure's training entries (`describe_trained_values`). It ends with
+    the reply format and the structure's default candidate as an example reply. It describes no other structure,
+    since a model that is told about the other structures proposes them, and an island admits its own structure only.
+    It contains no benchmark item text.
 
     Args:
         study: The study.
         structure: The island's structure.
         goal: What the behavior score measures (see `describe_task`).
+        trained: The structure's `trained_values` when no new structural fit may run, or None.
 
     Returns:
         The message.
@@ -178,6 +187,8 @@ def system_message(*, study: Study, structure: str, goal: str) -> str:
     paragraphs = [describe_task(goal=goal), describe_structure(study=study, structure=structure)]
     axes = describe_axes(study=study, structure=structure)
     paragraphs.append(f"Its settings, keyed by path, are:\n{axes}" if axes else "It has no settings to propose.")
+    if trained is not None and trained:
+        paragraphs.append(describe_trained_values(trained=trained))
     paragraphs.append(
         f"Reply with the complete program. Keep the header line and the `{BLOCK_START}` and `{BLOCK_END}` lines "
         f"unchanged, and put exactly one JSON object between them, with the keys \"structure\" (always "
@@ -200,6 +211,7 @@ def write_run_files(
     level_bins: int,
     elite_size: int,
     checkpoint_interval: int,
+    trained: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]] | None = None,
 ) -> dict[str, Path]:
     """Write the programs, the island assignment, the evaluator, and the configuration of an OpenEvolve run.
 
@@ -224,6 +236,7 @@ def write_run_files(
         level_bins: The number of level bins of an island's population.
         elite_size: The size of OpenEvolve's elite archive (`database.archive_size`).
         checkpoint_interval: The number of iterations between checkpoints.
+        trained: The `trained_values` of each island's structure when no new structural fit may run, or None.
 
     Returns:
         Mapping with the paths of `"initial_program"`, each further island's program (`"island_<i>"`),
@@ -256,7 +269,15 @@ def write_run_files(
     templates.mkdir(exist_ok=True)
     paths["user_template"] = templates / "full_rewrite_user.txt"
     paths["user_template"].write_text(USER_TEMPLATE, encoding="utf-8")
-    messages = [system_message(study=study, structure=candidate.structure, goal=goal) for candidate in islands]
+    messages = [
+        system_message(
+            study=study,
+            structure=candidate.structure,
+            goal=goal,
+            trained=None if trained is None else trained.get(candidate.structure),
+        )
+        for candidate in islands
+    ]
     config = {
         "max_iterations": int(iterations),
         "checkpoint_interval": int(checkpoint_interval),
@@ -419,7 +440,9 @@ class OpenEvolveEngine(SearchEngine):
         4. A warning is logged for each structure in scope whose discrete proposer axes have fewer combinations than
            its share of the iterations, since a grid in an earlier phase covers it.
         5. The run files are written, an `EvaluationService` serves the session, and the controller runs OpenEvolve
-           in a subprocess, which is terminated once the session is exhausted. The service is stopped and its
+           in a subprocess, which is terminated once the session is exhausted. When no new structural fit may run at
+           this point (`ArchiveView.fits_open`), each island's system message gives the trained values of its
+           structure's training entries as their only values. The service is stopped and its
            counters are logged, also when a step raises an error.
 
         Args:
@@ -448,7 +471,7 @@ class OpenEvolveEngine(SearchEngine):
         if islands is None:
             population = initial_population(
                 study=study,
-                view=session.archive.view(),
+                view=session.view(),
                 initial_candidates=initial_candidates,
                 per_structure=self.islands_per_structure,
                 structures=in_scope,
@@ -458,6 +481,10 @@ class OpenEvolveEngine(SearchEngine):
             if session.exhausted():
                 return
         self._warn_small_structures(study=study, structures=in_scope, islands=len(islands))
+        view = session.view()
+        trained = None
+        if not view.fits_open:
+            trained = {structure: trained_values(study=study, view=view, structure=structure) for structure in in_scope}
         write_run_files(
             study=study,
             run_dir=self.run_dir,
@@ -469,6 +496,7 @@ class OpenEvolveEngine(SearchEngine):
             level_bins=self.level_bins,
             elite_size=self.elite_size,
             checkpoint_interval=self.checkpoint_interval,
+            trained=trained,
         )
         self._search(session=session)
 

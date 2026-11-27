@@ -6,6 +6,7 @@ complete before the next evaluation takes its round, and every caller therefore 
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import random
@@ -20,7 +21,7 @@ from steerability.algorithms.core.product_fit import ProductFitTimeout
 from steerability.algorithms.core.recipe import Recipe, RecipeError
 from steerability.algorithms.core.sweeps import PipelineFactory
 from steerability.optimization.evaluation import evaluator
-from steerability.optimization.evaluation.archive import Archive
+from steerability.optimization.evaluation.archive import Archive, ArchiveView
 from steerability.optimization.evaluation.evaluator import Partial, SteeringFailure, Stopped
 from steerability.optimization.evaluation.plan import make_plan
 from steerability.optimization.evaluation.result import Result, level_of
@@ -317,6 +318,22 @@ class StudySession:
     def structural_fits(self) -> int:
         """The number of distinct structural fits this session let through (`admit_fits`)."""
         return len(self._structural_fits)
+
+    def view(self) -> ArchiveView:
+        """The proposer's view of the archive, with whether a new structural fit may run now.
+
+        A new structural fit may run (`ArchiveView.fits_open`) when `max_structural_fits` and the `structural_fits`
+        of every active allowance each leave room for one more.
+
+        Returns:
+            The view.
+        """
+        fits_open = self.max_structural_fits is None or self.structural_fits < self.max_structural_fits
+        for allowance in self._allowances:
+            limit = allowance.structural_fits
+            if limit is not None and self.structural_fits - allowance.structural_fits_at >= limit:
+                fits_open = False
+        return dataclasses.replace(self.archive.view(), fits_open=fits_open)
 
     @contextmanager
     def allowance(

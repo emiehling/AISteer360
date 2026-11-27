@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from steerability.algorithms.core.identity import content_id
+from steerability.algorithms.core.identity import content_id, json_id
 from steerability.algorithms.core.protocol import Protocol
 from steerability.algorithms.core.recipe import Axis, Recipe, RecipeError, Template
 from steerability.optimization.measurement.pools import PoolSplit, check_pools
@@ -248,6 +248,7 @@ class Study:
         object.__setattr__(self, "_definition", None)
         object.__setattr__(self, "_id", None)
         object.__setattr__(self, "_classified", {})
+        object.__setattr__(self, "_training", {})
 
     def __hash__(self) -> int:
         return hash(self.id)
@@ -340,6 +341,39 @@ class Study:
         """The proposer axes of a structure, by key."""
         return self.classify(structure)[1]
 
+    def training_entries(self, structure: str) -> dict[str, str]:
+        """The entries of a structure that train or merge, each with the content id of its template entry.
+
+        An entry trains when it is an enabled structural control that declares a fit (`steer_fits()`), as read from
+        the first recipe of the structure's default candidate. Two structures share a training entry when their
+        entries of that name have the same content id, i.e., the same method and arguments (ranges included).
+
+        Args:
+            structure: A key of `space`.
+
+        Returns:
+            Mapping from entry name to the content id of the entry, in entry order.
+
+        Raises:
+            RecipeError: If the structure is unknown or its default candidate cannot be planned.
+        """
+        if structure not in self._training:
+            from steerability.algorithms.structural_control.base import StructuralControl
+            from steerability.optimization.evaluation.plan import make_plan
+
+            self.classify(structure=structure)
+            recipe = make_plan(study=self, candidate=self.default_candidate(structure=structure)).recipes[0]
+            names = [name for item, name in zip(recipe.entries, recipe.names) if item.enabled]
+            trains = {
+                name for name, control in zip(names, recipe.instantiate())
+                if isinstance(control, StructuralControl) and control.steer_fits()
+            }
+            template = self.space[structure]
+            enabled = [name for item, name in zip(template.entries, template.names) if item.enabled]
+            forms = dict(zip(enabled, template.canonical()["entries"]))
+            self._training[structure] = {name: json_id(encoded=forms[name]) for name in enabled if name in trains}
+        return dict(self._training[structure])
+
     def bind(self, candidate: Candidate) -> Template:
         """The template of a candidate: its structure's template with every proposer axis bound.
 
@@ -422,7 +456,9 @@ class Study:
         8. The protocol's backend can run every structure (`check_space`).
 
         A warning is logged for a template with a solved axis that contains a control whose fit has no identity,
-        since such a control refits at every position. Whether the pools are large enough is checked by
+        since such a control refits at every position. A warning is also logged for a continuous proposer axis of a
+        training entry (`training_entries`), since every draw of it is a training of its own. Whether the pools are
+        large enough is checked by
         `StudySession.start` (`evidence.feasibility`), before and after the baseline is measured.
 
         Args:
@@ -495,6 +531,15 @@ class Study:
                         f"Structure {structure!r}: {type(control).__name__} trains and leaves no product to store, "
                         "since a merged LoRA run writes its weights only to merged_output_dir; set merged_output_dir, "
                         "or leave the adapter unmerged."
+                    )
+            training = self.training_entries(structure=structure)
+            for key, axis in self.proposer_axes(structure=structure).items():
+                if axis.continuous and any(path.partition(".")[0] in training for path in axis.members):
+                    logger.warning(
+                        "Structure %r: the proposer axis %r is continuous and changes a training, so every value drawn "
+                        "from it is a training of its own; a Choice trains each of its values once.",
+                        structure,
+                        key,
                     )
             if plan.solved is None:
                 continue

@@ -358,8 +358,9 @@ an earlier phase evaluates each of them once.
 
 A search engine subclasses `SearchEngine` and implements `run(session=..., initial_candidates=...)`. It evaluates
 candidates through the session (`screen`, `finish`, or `evaluate`, or an `EvaluationService` that it starts) with its
-`name` as the proposer name, and it returns when `session.exhausted()` is true. It sees only the `ArchiveView` of the
-archive, which contains each candidate's id, values, status, stage, reason, fitness, and summary (no item-level data).
+`name` as the proposer name, and it returns when `session.exhausted()` is true. It sees only the session's view of the
+archive (`session.view()`), which contains each candidate's id, values, status, stage, reason, fitness, and summary (no
+item-level data), and whether a new training may run (`fits_open`).
 
 ## Weight changes
 
@@ -415,6 +416,13 @@ The `max_structural_fits` argument limits the distinct structural fits of a run,
 limits those of the phase. A candidate that needs a training beyond the limits is returned with the reason `budget` and
 is not recorded, while candidates on stored products are evaluated as usual. In this example, the grid trains the two
 adapters, and the second phase searches on them without training (`structural_fits=0`).
+
+When no new training may run, the view says so (`ArchiveView.fits_open`), and the proposers take the arguments of a
+training only from the values that have been trained (`trained_values` in `search/population.py`). The random proposer
+of the second phase therefore draws `r` from the two trained values, and an OpenEvolve island whose phase starts this
+way is told the trained values in its system message. Note that every value drawn from a continuous training argument
+is a training of its own, and `Study.validate` logs a warning for one, whereas a `Choice` trains each of its values
+once.
 
 Note that an unmerged LoRA adapter is small, while a full fine-tune, a merge, or a merged LoRA stores a whole
 checkpoint per distinct training. We therefore recommend unmerged LoRA adapters. A merged LoRA run stores its product

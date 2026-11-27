@@ -25,8 +25,9 @@ class SearchEngine(ABC):
     - Every evaluation goes through `session.screen`, `session.finish`, or `session.evaluate`, either directly or
       through an `EvaluationService` that the engine starts and stops. The engine passes its `name` as the proposer
       name, which the archive records with each candidate.
-    - The engine learns what is known from `session.archive.view()` and from nothing else. No item-level data
-      reaches it.
+    - The engine learns what is known from `session.view()` and from nothing else. No item-level data reaches it.
+      The view also says whether a new structural fit may run (`ArchiveView.fits_open`), and an engine whose view
+      says it may not proposes the trained values of a training entry only (`trained_values`).
     - The engine returns when `session.exhausted()` is true. It releases whatever it started (processes, the
       service) even when it raises an error.
     - The engine may keep a private working copy of what it has learned (a population, a surrogate model), and the

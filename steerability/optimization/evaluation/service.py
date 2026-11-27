@@ -311,7 +311,7 @@ class EvaluationService:
         artifacts: dict[str, str] = {}
         if structure is not None and self.digest:
             lines = []
-            for entry in reversed(self.session.archive.view().entries):
+            for entry in reversed(self.session.view().entries):
                 if entry.status == "rejected" and entry.structure == structure:
                     lines.append(_rejection_line(entry=entry))
                     if len(lines) >= self.digest:

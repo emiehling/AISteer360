@@ -3,7 +3,8 @@
 The archive stores candidates and their results in the store (`candidates` and `results` tables) and answers queries
 on them. It generates nothing. Results are append-only versions, and a search engine's population is a working copy
 of the archive, which is authoritative. `ArchiveView` is the part a proposer may see, i.e., per candidate its id,
-structure, values, status, stage, reason, fitness, and summary, and nothing item-level.
+structure, values, status, stage, reason, fitness, and summary, and nothing item-level, together with whether a new
+structural fit may run (`fits_open`).
 """
 from __future__ import annotations
 
@@ -52,9 +53,13 @@ class ArchiveView:
 
     Attributes:
         entries: The entries.
+        fits_open: Whether a new structural fit (a training or a merge) may run now. A view from
+            `StudySession.view` sets it from the session's limits on structural fits. When it is false, a candidate
+            that needs a new structural fit comes back with the reason `budget` and is not recorded.
     """
 
     entries: tuple[ArchiveEntry, ...]
+    fits_open: bool = True
 
     def __iter__(self) -> Iterator[ArchiveEntry]:
         return iter(self.entries)

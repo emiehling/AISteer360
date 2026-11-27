@@ -97,7 +97,13 @@ def make_plan(study: Study, candidate: Candidate) -> EvaluationPlan:
         recipe = template.recipe()
         _ = recipe.id
         _check_products(structure=candidate.structure, recipe=recipe)
-        return EvaluationPlan(candidate_id=candidate_id, template=template, solved=None, ladder=({},), recipes=(recipe,))
+        return EvaluationPlan(
+            candidate_id=candidate_id,
+            template=template,
+            solved=None,
+            ladder=({},),
+            recipes=(recipe,),
+        )
     solved = remaining[expected.key]
     fractions = None
     if solved.continuous:
