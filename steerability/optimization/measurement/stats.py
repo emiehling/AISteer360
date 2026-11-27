@@ -14,13 +14,13 @@ understate its variance. The decision rules are the following:
 - **Guard band (`guard_band`, `release_band`)**: how far inside the margin a search estimate must sit so that the
   held-out test passes with probability `power`, covering the noise of both the search estimate and the held-out test.
 - **Confirmation (`confirm_step`)**: one look of a sequential check that accepts a point whose loss is inside the
-  margin by the band (`feasible`) and rejects a point whose loss is above the margin (`clearly_over`).
-- **Ladder decisions (`provisional_positions`, `rank_positions`)**: which positions of a solved axis outside
-  `study.monotone` are worth confirming, and the order in which the positions of a solved axis are confirmed.
+  margin by the band (`feasible`) and rejects a point whose loss is above the margin (`clearly_over`, or at the
+  second look an estimated loss above the margin).
+- **Ranking (`rank_positions`)**: the order in which the positions of a solved axis are confirmed.
 
 The sizes of a confirmation follow from the margin and the per-item variance a study is designed for. The last look
 (`last_look`) gives the estimate a standard error of `margin / sqrt(LOOK_PRECISION)`, and the earlier looks
-(`look_sizes`) and the ladder block (`ladder_size`) are set from it.
+(`look_sizes`) are set from it.
 """
 from __future__ import annotations
 
@@ -194,11 +194,6 @@ def look_sizes(last: int) -> tuple[int, int, int]:
     return first, middle, last
 
 
-def ladder_size(last: int) -> int:
-    """The capability items per ladder position, a quarter of the last look and at least 32."""
-    return max(32, last // 4)
-
-
 def guard_band(se_search: float, se_held_out: float, *, alpha: float, power: float, benchmarks: int = 1) -> float:
     """How far inside the margin a search estimate must sit to pass the held-out test with the given power.
 
@@ -227,13 +222,12 @@ def release_band(
     alpha: float,
     power: float,
     benchmarks: int = 1,
-    n_search: int | None = None,
     guard: bool = True,
 ) -> float:
     """The guard band of a table.
 
-    The per-item variance is the table's own, and at least `floor_variance(margin)`. The search estimate's standard
-    error uses the larger of the table's size and `n_search`, which plans for a later confirmation of that size.
+    The per-item variance is the table's own, and at least `floor_variance(margin)`, and the search estimate's
+    standard error is that of the table's size.
 
     Args:
         paired: The table.
@@ -242,7 +236,6 @@ def release_band(
         alpha: The error rate of the held-out test.
         power: The probability that the point passes the held-out test.
         benchmarks: The number of constraint benchmarks.
-        n_search: The size of a planned confirmation, or None.
         guard: Whether the band applies; False gives a band of 0.
 
     Returns:
@@ -251,9 +244,13 @@ def release_band(
     if not guard:
         return 0.0
     per_item_sd = math.sqrt(max(paired.variance, floor_variance(margin)))
-    n = max(paired.n, n_search or 0)
-    return guard_band(per_item_sd / math.sqrt(n), per_item_sd / math.sqrt(n_held_out), alpha=alpha, power=power,
-                      benchmarks=benchmarks)
+    return guard_band(
+        se_search=per_item_sd / math.sqrt(paired.n),
+        se_held_out=per_item_sd / math.sqrt(n_held_out),
+        alpha=alpha,
+        power=power,
+        benchmarks=benchmarks,
+    )
 
 
 def feasible(
@@ -304,7 +301,9 @@ def confirm_step(
     """One look of the confirmation of a point on one constraint.
 
     A table that is `clearly_over` the margin is rejected at any look. From the second look (`look >= 1`) on, a
-    `feasible` table is accepted. `"continue"` after the last look means the point is not confirmed.
+    `feasible` table is accepted. At the second look, a table that is not accepted and whose estimated loss is above
+    the margin is rejected, which ends early the confirmation of a point that is unlikely to pass its last look.
+    `"continue"` after the last look means the point is not confirmed.
 
     Args:
         paired: The point's table after this look.
@@ -324,6 +323,8 @@ def confirm_step(
     if look >= 1 and feasible(paired, margin, n_held_out=n_held_out, alpha=alpha, power=power, benchmarks=benchmarks,
                               guard=guard):
         return "accept"
+    if look == 1 and -paired.mean > margin:
+        return "reject"
     return "continue"
 
 
@@ -344,43 +345,6 @@ def certify_fixed_order(finalists: Sequence[Sequence[Paired]], margins: Sequence
         if not all(table.passes(margin, alpha) for table, margin in zip(tables, margins, strict=True)):
             return index
     return len(finalists)
-
-
-def provisional_positions(
-    losses: Sequence[Paired],
-    margin: float,
-    *,
-    n_target: int,
-    n_held_out: int,
-    alpha: float,
-    power: float,
-    benchmarks: int = 1,
-    guard: bool = True,
-) -> list[int]:
-    """The ladder positions worth confirming on one constraint, judged on ladder-block tables.
-
-    Each position is kept when its own loss is inside the margin by its band.
-
-    Args:
-        losses: One capability table per position, in order.
-        margin: The margin.
-        n_target: The size of the planned confirmation.
-        n_held_out: The number of held-out items.
-        alpha: The error rate.
-        power: The power of the band.
-        benchmarks: The number of constraint benchmarks.
-        guard: Whether the band applies.
-
-    Returns:
-        The kept position indices, in increasing order.
-    """
-    kept = []
-    for index, paired in enumerate(losses):
-        band = release_band(paired, margin, n_held_out=n_held_out, alpha=alpha, power=power, benchmarks=benchmarks,
-                            n_search=n_target, guard=guard)
-        if -paired.mean <= margin - band:
-            kept.append(index)
-    return kept
 
 
 def rank_positions(positions: Sequence[int], gains: Sequence[Paired], alpha: float) -> list[int]:
@@ -408,10 +372,8 @@ __all__ = [
     "feasible",
     "floor_variance",
     "guard_band",
-    "ladder_size",
     "last_look",
     "look_sizes",
-    "provisional_positions",
     "rank_positions",
     "release_band",
 ]

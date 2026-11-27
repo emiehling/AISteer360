@@ -10,10 +10,10 @@ fit of the stub factory is a weights context other than `"base"` (e.g., of a `Lo
 or steered yet.
 
 With the default pools (1,000 search and 2,000 held-out capability items, 200 behavior search items) and the 5-point
-margin, a constraint has blocks of (100, 400) items and looks of (32, 128, 400). A candidate that shifts every item
-equally is confirmed when its loss is at most 0.0253 (second look) or 0.0319 (third look), a ladder position of a
-solved axis outside `study.monotone` is kept when its loss is at most 0.0420, and the held-out test passes up to a loss
-of 0.0420.
+margin, a constraint has blocks of (32, 400) items and looks of (32, 128, 400). A candidate that shifts every item
+equally is confirmed when its loss is at most 0.0253 (second look) or 0.0319 (third look), a position of a solved axis
+is clearly over the margin at its first look when its loss is above 0.05, and the held-out test passes up to a loss of
+0.0420.
 """
 import hashlib
 from collections.abc import Callable, Mapping
@@ -293,7 +293,7 @@ def benchmarks(truth: TruthFunction, *, capability_omit=None, behavior_omit=None
 
 def build_study(store: Store, truth: TruthFunction, *, space: Mapping[str, Template] | None = None,
                 settings: Settings = SMALL, margin: float = MARGIN, name: str = "synthetic",
-                monotone=frozenset(), searched=frozenset(), capability=None, behavior=None,
+                searched=frozenset(), capability=None, behavior=None,
                 capability_held_out: int = CAPABILITY_HELD_OUT, behavior_held_out: int = BEHAVIOR_HELD_OUT,
                 fit_item_ids=None) -> Study:
     """A study over a synthetic capability constraint and a synthetic behavior objective."""
@@ -306,7 +306,13 @@ def build_study(store: Store, truth: TruthFunction, *, space: Mapping[str, Templ
         behavior.id: split_items(behavior, held_out=behavior_held_out, seed=0),
     }
     return Study(
-        name=name, protocol=protocol(), space=space if space is not None else {"caa": caa_template()},
-        objective=behavior, constraints=(Constraint(capability, margin),), pools=pools, settings=settings,
-        monotone=frozenset(monotone), searched=frozenset(searched), fit_item_ids=fit_item_ids or {},
+        name=name,
+        protocol=protocol(),
+        space=space if space is not None else {"caa": caa_template()},
+        objective=behavior,
+        constraints=(Constraint(benchmark=capability, margin=margin),),
+        pools=pools,
+        settings=settings,
+        searched=frozenset(searched),
+        fit_item_ids=fit_item_ids or {},
     )

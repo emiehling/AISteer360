@@ -114,7 +114,7 @@ def test_the_operands_are_positional_entries_and_slots():
 def test_a_study_on_an_expanded_space_validates_and_its_axes_keep_their_keys(tmp_path):
     store = Store.open(root=tmp_path / "store")
     space = structures(optional(PROMPT), optional(CAA_ENTRY))
-    study = build_study(store=store, truth=lambda recipe, item_id: Truth(), space=space, monotone={"caa.multiplier"})
+    study = build_study(store=store, truth=lambda recipe, item_id: Truth(), space=space)
     study.validate(store=store)
     keys = {structure: set(study.proposer_axes(structure=structure)) for structure in space}
     assert keys["prompt+caa"] == keys["prompt"] | keys["caa"] == {"prompt.text", "caa.layer_id"}

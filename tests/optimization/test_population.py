@@ -28,7 +28,6 @@ def study(tmp_path):
         store=Store.open(root=tmp_path / "store"),
         truth=lambda recipe, item_id: Truth(),
         space=structures(optional(PROMPT), optional(CAA_ENTRY)),
-        monotone={"caa.multiplier"},
     )
 
 

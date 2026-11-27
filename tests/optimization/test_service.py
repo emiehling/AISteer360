@@ -59,8 +59,8 @@ def space():
 
 
 def test_stage_one_then_stage_two_equals_full(tmp_path, space):
-    staged = _session(Store.open(tmp_path / "staged"), space=space, monotone={"caa.multiplier"})
-    full = _session(Store.open(tmp_path / "full"), space=space, monotone={"caa.multiplier"})
+    staged = _session(Store.open(tmp_path / "staged"), space=space)
+    full = _session(Store.open(tmp_path / "full"), space=space)
     for candidate in (Candidate("caa", {}), Candidate("prompt", {"prompt.text": "text 2"})):
         program = program_text(staged.study, candidate)
         service = _service(staged)
@@ -141,7 +141,7 @@ def test_final_and_invalid_replies_have_a_level_clipped_to_the_unit_interval(tmp
 
 
 def test_final_replies_list_the_recent_rejections_of_their_structure_newest_first(tmp_path, space):
-    session = _session(Store.open(root=tmp_path / "store"), space=space, monotone={"caa.multiplier"})
+    session = _session(Store.open(root=tmp_path / "store"), space=space)
     service = EvaluationService(
         session=session,
         proposer="service",

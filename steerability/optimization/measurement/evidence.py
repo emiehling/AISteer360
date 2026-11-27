@@ -31,8 +31,8 @@ from steerability.optimization.measurement.stats import (
     Paired,
     floor_variance,
     guard_band,
-    ladder_size,
     last_look,
+    look_sizes,
 )
 from steerability.optimization.study import StudyError, dumps, ensure_tables
 
@@ -475,7 +475,8 @@ def block_sizes(study: Study, store: Store, benchmark: Benchmark) -> tuple[int, 
     """The ladder and fresh block sizes of a benchmark of the study.
 
     A constraint's fresh block is the last look at its design variance, `last_look(margin=margin,
-    variance=design_variance(...))`, and its ladder block is `ladder_size` of that. The objective uses
+    variance=design_variance(...))`, and its ladder block is the first look of a confirmation of that size
+    (`look_sizes`), the items each position of a solved axis is first judged on. The objective uses
     `settings.behavior_ladder_items` and `settings.behavior_items`.
 
     Raises:
@@ -484,7 +485,7 @@ def block_sizes(study: Study, store: Store, benchmark: Benchmark) -> tuple[int, 
     constraint = study.constraint_for(benchmark)
     if constraint is not None:
         last = last_look(margin=constraint.margin, variance=design_variance(study, store, benchmark))
-        return ladder_size(last), last
+        return look_sizes(last=last)[0], last
     if benchmark.id == study.objective.id:
         return study.settings.behavior_ladder_items, study.settings.behavior_items
     raise ValueError(f"Benchmark {benchmark.name!r} is not part of study {study.name!r}.")
@@ -594,7 +595,7 @@ def _size_problems(name: str, margin: float, variance: float, n_search: int, n_h
                    constraints: int) -> list[str]:
     """The room and band rules of one constraint at a margin and design variance."""
     last = last_look(margin=margin, variance=variance)
-    ladder = ladder_size(last)
+    ladder = look_sizes(last=last)[0]
     problems = []
     if 2 * (ladder + last) > n_search:
         problems.append(

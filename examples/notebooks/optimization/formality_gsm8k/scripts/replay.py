@@ -12,9 +12,9 @@ one was degenerate), and the factory steers nothing. The notebook `formality_gsm
 `load_export` and the truth with `truth`, and builds the world of one replay with `build_world`.
 
 The study of a replay has one structure, the grid's CAA entry with `layer_id` as an unordered `Choice` and
-`multiplier` as an ordered `Choice`. The multiplier is in `study.monotone`, or in `study.searched` with
-`--searched`. The margin is 5 points, and the settings are `Settings(round_candidates=5)` unless
-`--round-candidates` is given (and `ladder_power` is `--ladder-power` when it is given). Each replay runs `run_study`
+`multiplier` as an ordered `Choice`. The multiplier is the solved axis, or in `study.searched` with `--searched`. The
+margin is 5 points, and the settings are `Settings(round_candidates=5)` unless `--round-candidates` is given. Each
+replay runs `run_study`
 on a new store, with one search phase, and then `certify`. The phase's engine is a `GridProposer`, or a
 `RandomProposer` seeded with the replay's seed with `--proposer random`, which visits the layers in no fixed order when
 `--max-generations` stops a search early.
@@ -50,12 +50,11 @@ usage:
     python examples/notebooks/optimization/formality_gsm8k/scripts/replay.py export \
         <store> [<store> ...] --output grid.json
     python examples/notebooks/optimization/formality_gsm8k/scripts/replay.py run \
-        grid.json --seeds 200 [--workers 8] [--searched] [--ladder-power P]
+        grid.json --seeds 200 [--workers 8] [--searched]
     python examples/notebooks/optimization/formality_gsm8k/scripts/replay.py compare \
         today.json challenger.json [challenger.json ...]
 """
 import argparse
-import dataclasses
 import json
 import logging
 import math
@@ -204,6 +203,8 @@ class _Bundle:
 
 
 class _Pipeline:
+    structural_controls: list = []
+
     def to_spipe(self, **options) -> _Bundle:
         return _Bundle()
 
@@ -213,6 +214,9 @@ class ReplayFactory:
 
     def __init__(self, protocol: Protocol) -> None:
         self.protocol = protocol
+
+    def pending_structural_fits(self, *, recipes) -> frozenset[str]:
+        return frozenset()
 
     def prepare(self, recipes) -> None:
         pass
@@ -349,12 +353,9 @@ def replay(seed: int, options: dict) -> dict:
     recipes = world.recipes
     searched = frozenset({"caa.multiplier"}) if options["searched"] else frozenset()
     settings = Settings(round_candidates=options["round_candidates"])
-    if options["ladder_power"] is not None:
-        settings = dataclasses.replace(settings, ladder_power=options["ladder_power"])
     study = Study(
         name=f"replay-{seed}", protocol=world.protocol, space={"caa": world.template}, objective=world.formality,
         constraints=(Constraint(world.gsm8k, MARGIN),), pools=world.pools, settings=settings, searched=searched,
-        monotone=frozenset() if options["searched"] else frozenset({"caa.multiplier"}),
     )
     loss, gain = -_differences(data, "capability"), _differences(data, "behavior")
     factory = world.factory
@@ -437,7 +438,7 @@ def run(arguments) -> None:
     data = _DATA
     options = {"searched": arguments.searched, "round_candidates": arguments.round_candidates,
                "max_generations": arguments.max_generations, "proposer": arguments.proposer,
-               "ladder_power": arguments.ladder_power, "scratch": arguments.scratch}
+               "scratch": arguments.scratch}
     seeds = range(arguments.start_seed, arguments.start_seed + arguments.seeds)
     with ProcessPoolExecutor(max_workers=arguments.workers, initializer=_load, initargs=(arguments.data,)) as executor:
         outcomes = list(executor.map(replay, seeds, [options] * len(seeds)))
@@ -607,7 +608,6 @@ def main() -> None:
     running.add_argument("--round-candidates", type=int, default=5)
     running.add_argument("--max-generations", type=int, default=None)
     running.add_argument("--proposer", default="grid", choices=("grid", "random"))
-    running.add_argument("--ladder-power", type=float, default=None, help="The settings' ladder_power.")
     running.add_argument("--scratch", default=None, help="The directory of the replays' temporary stores.")
     running.add_argument("--output", default="replay_report.json")
     comparing = commands.add_parser("compare")

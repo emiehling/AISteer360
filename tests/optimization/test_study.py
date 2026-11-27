@@ -96,6 +96,12 @@ class TestValidate:
         )
         _with_space(store, {"merged": stored}).validate(store=store)
 
+    def test_a_template_that_contains_one_training_twice_is_refused(self, store):
+        first = entry(SFT, name="first", train_dataset=DATASET, use_peft=True)
+        second = entry(SFT, name="second", train_dataset=DATASET, use_peft=True)
+        with pytest.raises(RecipeError, match="twice"):
+            _with_space(store, {"twice": Template(entries=(first, second))}).validate(store=store)
+
     def test_an_unversioned_callable_is_refused(self, store):
         unversioned = Template((entry(BestOfN, scorer=unversioned_scorer, n=Choice((2, 4))),))
         with pytest.raises(ValueError, match="version"):
@@ -115,12 +121,10 @@ class TestValidate:
             _with_space(store, {"caa": template}).validate(store)
         _with_space(store, {"caa": template}, searched={"caa.data"}).validate(store)
 
-    def test_searched_and_monotone_keys_must_be_axes(self, store):
+    def test_searched_keys_must_be_axes(self, store):
         with pytest.raises(ValueError, match="searched"):
             build_study(store, _quiet, searched={"caa.unknown"}).validate(store)
-        with pytest.raises(ValueError, match="monotone"):
-            _with_space(store, {"prompt": prompt_template()}, monotone={"prompt.text"}).validate(store)
-        build_study(store, _quiet, monotone={"caa.multiplier"}).validate(store)
+        build_study(store=store, truth=_quiet, searched={"caa.multiplier"}).validate(store=store)
 
     def test_a_discrete_solved_axis_has_at_most_twice_the_ladder_points(self, store):
         template = caa_template(Choice(tuple(float(value) for value in range(9)), ordered=True))

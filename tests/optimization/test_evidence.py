@@ -238,7 +238,7 @@ class TestDesignVariance:
         ensure_baseline(study, StubFactory(study.protocol), store)
         assert baseline_variance(study, store, capability) == pytest.approx(0.0, abs=1e-12)
         assert design_variance(study, store, capability) == pytest.approx(floor_variance(0.05))
-        assert block_sizes(study, store, capability) == (50, 200)
+        assert block_sizes(study=study, store=store, benchmark=capability) == (32, 200)
 
     def test_errored_items_are_left_out(self, store):
         base = two_level("capability", 3000, high=1.0, low=0.0)
@@ -263,7 +263,7 @@ class TestDesignVariance:
         study, _ = _started(store)
         capability = study.constraints[0].benchmark
         assert design_variance(study, store, capability) == pytest.approx(0.09, abs=0.002)
-        assert block_sizes(study, store, capability) == (100, 400)
+        assert block_sizes(study=study, store=store, benchmark=capability) == (32, 400)
         assert block_sizes(study, store, study.objective) == (32, 64)
 
 
@@ -294,9 +294,9 @@ class TestFeasibility:
         at_three = feasibility(study(0.03), store)
         assert len(at_three) == 3
         room, band, alternative = at_three
-        assert "6,750" in room and "3,792" in room and "2,700" in room and "675" in room
+        assert "5,656" in room and "3,792" in room and "2,700" in room and "ladder block 128" in room
         assert "2.16 points" in band and "3-point margin" in band
-        assert "4.0 points" in alternative and "0.14" in alternative
+        assert "4.0 points" in alternative and "0.143" in alternative
         assert feasibility(study(0.04), store) == []
         assert feasibility(study(0.05), store) == []
 
@@ -307,9 +307,9 @@ class TestFeasibility:
         assert not any("two rounds" in problem for problem in problems)
 
     def test_the_room_rule_alone(self, store):
-        study, _ = _started(store, capability_held_out=2100)
+        study, _ = _started(store, capability_held_out=2200)
         problems = feasibility(study, store)
-        assert any("two rounds of blocks need 1,000 search items" in problem for problem in problems)
+        assert any("two rounds of blocks need 864 search items" in problem for problem in problems)
         assert not any("guard band" in problem for problem in problems)
 
     def test_the_objective_rule(self, store):
@@ -321,7 +321,7 @@ class TestFeasibility:
     def test_before_the_baseline_the_floor_and_raw_sizes_are_used(self, store):
         study = build_study(store, _quiet, margin=0.005)
         problems = feasibility(study, store)
-        assert "two rounds of blocks need 5,000 search items" in problems[0]
+        assert "two rounds of blocks need 4,256 search items" in problems[0]
 
 
 class TestBatches:
@@ -329,10 +329,10 @@ class TestBatches:
         study, _ = _started(store)
         capability = study.constraints[0].benchmark
         drawn = batch(study, store, capability, 0)
-        assert (len(drawn.ladder), len(drawn.fresh)) == (100, 400)
+        assert (len(drawn.ladder), len(drawn.fresh)) == (32, 400)
         assert not set(drawn.ladder) & set(drawn.fresh)
-        expected = random.Random(derive_seed(study.seed, "batch", capability.id, 0)).sample(
-            sorted(usable(study, store, capability, "search")), 500)
+        pool = sorted(usable(study=study, store=store, benchmark=capability, role="search"))
+        expected = random.Random(derive_seed(study.seed, "batch", capability.id, 0)).sample(pool, 432)
         assert list(drawn.ladder + drawn.fresh) == expected
         assert batch(study, store, capability, 0) == drawn
         assert batch(study, store, capability, 1) != drawn
@@ -345,7 +345,7 @@ class TestBatches:
             drawn = batch(study, store, capability, 0)
         assert "chooses and judges on the same items" in caplog.text
         assert drawn.overlapping
-        assert drawn.ladder == drawn.fresh[:100]
+        assert drawn.ladder == drawn.fresh[:32]
         assert sorted(drawn.fresh) == sorted(usable(study, store, capability, "search"))
 
 

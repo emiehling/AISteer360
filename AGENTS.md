@@ -608,13 +608,11 @@ each axis of an entry has the same key in every structure that contains it (`caa
 one), which the evaluator solves for each candidate. Every other axis is a proposer axis, and a `Candidate` is a
 structure with one value per proposer axis (`Study.bind` is the only way to turn one into a template). A solved axis
 must not change a fit (every ladder position has the same `fit_digests`), so an ordered input of a fit belongs in
-`searched`.
-`study.monotone` lists the solved axes along which capability loss is assumed not to fall. `Study.validate(store)`
-checks the protocol's `versions` and every benchmark's `temperature`, the versioning of callables, the pools, the
-axes, the benchmark names, that every structural control that trains or merges leaves a product to store, and that
-the protocol's backend can run every structure, before any model work. `check_space(space=..., protocol=...)`
-(`optimization/space.py`) gives the structures a backend cannot run, with the messages of `preflight`, so that a study
-can be built from the others.
+`searched`. `Study.validate(store)` checks the protocol's `versions` and every benchmark's `temperature`, the versioning
+of callables, the pools, the axes, the benchmark names, that every structural control that trains or merges leaves a
+product to store, and that the protocol's backend can run every structure, before any model work.
+`check_space(space=..., protocol=...)` (`optimization/space.py`) gives the structures a backend cannot run, with the
+messages of `preflight`, so that a study can be built from the others.
 
 ```python
 from steerability.optimization import Constraint, Study, optional, split_items, structures
@@ -638,7 +636,6 @@ study = Study(
         gsm8k.id: split_items(benchmark=gsm8k, held_out=5000, seed=0),
         formality.id: split_items(benchmark=formality, held_out=500, seed=0),
     },
-    monotone=frozenset({"caa.multiplier"}),
 )
 archive = run_study(
     study=study,
@@ -676,32 +673,35 @@ with a baseline error row is excluded from its pool for the whole study.
 
 A constraint's sizes follow from its margin and its design variance (`design_variance`), which is the baseline's
 search-pool score variance and at least `floor_variance(margin) = margin * (1 - margin)`. The last look is
-`last_look(margin=, variance=)`, and the ladder block is `ladder_size(last)` (a quarter of the last look), of which a
-solved axis in `study.monotone` reads only the first look. The looks are
-`look_sizes(last)`, which `StudySession.looks` caches. A feasible study has room for two rounds of blocks in each search
-pool, and each guard band is at most `BAND_SHARE` (60%) of its margin. `allow_infeasible=True` runs an infeasible study
-at low power and waives no baseline check.
+`last_look(margin=, variance=)`, the looks are `look_sizes(last)` (which `StudySession.looks` caches), and the ladder
+block is as large as the first look. A feasible study has room for two rounds of blocks in each search pool, and each
+guard band is at most `BAND_SHARE` (60%) of its margin. `allow_infeasible=True` runs an infeasible study at low power
+and waives no baseline check.
 
-`screen` runs stages 0 to 3 (plan and support check, fits, a behavior quick look, a capability smoke test). `finish`
+`screen` runs stages 0 to 3 (plan and support check, fits, a behavior quick look, a capability first look). `finish`
 runs stage 4 (calibration of the solved axis, then confirmation of the chosen position in up to three looks on fresh
-blocks) and stage 5 (the `Result`, recorded in the `Archive`). A solved axis in `study.monotone` gets a first look on
-its ladder blocks, and a bisection with the looks of a confirmation (`confirm_constraints`) finds its strongest
-confirmable position, which means that a ladder estimate alone never rejects the candidate. Any other solved axis is
-ranked on its whole ladder blocks (`provisional_positions`). A candidate is accepted only with an
-eligible operating point (confirmed on every constraint and within the cost and degeneracy limits), and its fitness is
-the one-sided lower bound of its gain. Every estimate is a `Paired` table of per-item differences against the baseline
-(`measurement/stats.py`), with the per-item variance taken as at least `floor_variance(margin)`. A point's tables use
-only fresh-block items and exclude the ladder block its position was chosen on. Results are memoized by candidate id,
-and a `budget` or `timeout` rejection is not recorded (its evidence rows stay). A training or merge whose product the
-store does not contain is a structural fit, and `admit_fits` counts the distinct ones against `max_structural_fits` and
-an allowance's `structural_fits`. A candidate that needs a fit beyond them gets `budget` without exhausting the
-session. A phase with `structural_fits=0` therefore searches on stored products only. Once `settings.round_candidates`
-candidates are recorded in a round, `StudySession.advance` starts a new round with new batches and re-scores the best
-accepted results. The session calls it at the start of `screen` and `plan_finalists`, `run_study` after the initial
-candidates and after each phase, and `EvaluationService` once it has sent the reply of an evaluation. The call whose
-result completed a round therefore returns before the re-scoring starts. `plan_finalists()`
-spreads the finalists over levels and selects previously unevaluated search items for each one, and `finalists(plan)`
-measures their levels again on exactly those items.
+blocks, where a look rejects a position clearly over a margin and the second look one whose estimated loss is above it)
+and stage 5 (the `Result`, recorded in the `Archive`). Every position of a solved axis is judged on its own evidence,
+with no assumption about the shape of loss or behavior along the axis. Stages 2 and 3 look at the positions in the order
+first, last, middle, then the others (`probe_order`), and reject only when no position shows a gain or every position is
+clearly over a margin. Calibration drops a position whose first look (its ladder block) is clearly over a margin or
+whose ladder blocks are over the cost or degeneracy limit, and confirms the others in the order of their gain bound. The
+first one that passes is the operating point, and on a continuous axis a refinement may insert a position between it and
+a neighbor that was dropped or failed. A ladder estimate alone therefore drops a position only when it is clearly over a
+margin. A candidate is accepted only with an eligible operating point (confirmed on every constraint and within the cost
+and degeneracy limits), and its fitness is the one-sided lower bound of its gain. Every estimate is a `Paired` table of
+per-item differences against the baseline (`measurement/stats.py`), with the per-item variance taken as at least
+`floor_variance(margin)`. A point's tables use only fresh-block items and exclude the ladder block its position was
+chosen on. Results are memoized by candidate id, and a `budget` or `timeout` rejection is not recorded (its evidence
+rows stay). A training or merge whose product the store does not contain is a structural fit, and `admit_fits` counts
+the distinct ones against `max_structural_fits` and an allowance's `structural_fits`. A candidate that needs a fit
+beyond them gets `budget` without exhausting the session. A phase with `structural_fits=0` therefore searches on stored
+products only. Once `settings.round_candidates` candidates are recorded in a round, `StudySession.advance` starts a new
+round with new batches and re-scores the best accepted results. The session calls it at the start of `screen` and
+`plan_finalists`, `run_study` after the initial candidates and after each phase, and `EvaluationService` once it has
+sent the reply of an evaluation. The call whose result completed a round therefore returns before the re-scoring starts.
+`plan_finalists()` spreads the finalists over levels and selects previously unevaluated search items for each one, and
+`finalists(plan)` measures their levels again on exactly those items.
 
 A search engine (`SearchEngine`, `search/engine.py`) proposes candidates and sees only the `ArchiveView` (per
 candidate the id, values, status, stage, reason, fitness, and a summary of search-pool aggregates). `run_study`

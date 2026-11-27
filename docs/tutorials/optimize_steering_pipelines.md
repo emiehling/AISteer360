@@ -108,9 +108,9 @@ same template have the same id.
 A solved axis must not change a fit, which means that every position of the axis has the same fit digests. The
 multiplier of a fitted vector meets this requirement, since the fit stores the direction and the multiplier scales it
 at generation time. The size of the training data changes the fit and cannot be a solved axis. An ordered fit input
-belongs in `searched`, where each proposed value is fitted once and then cached. The study's
-`monotone` set lists the solved axes along which capability loss is assumed not to fall as the position rises. The
-set makes no assumption about behavior, which often rises and then falls at strong settings.
+belongs in `searched`, where each proposed value is fitted once and then cached. The evaluator assumes nothing about
+how capability loss or behavior changes along a solved axis (behavior often rises and then falls at strong settings),
+and it judges each position on its own evidence.
 
 ## The study
 
@@ -134,7 +134,6 @@ study = Study(
     objective=formality,
     constraints=(Constraint(benchmark=gsm8k, margin=0.05),),
     pools=pools,
-    monotone=frozenset({"caa.multiplier"}),
 )
 study.validate(store=store)
 ```
@@ -163,11 +162,11 @@ and the evaluation of each candidate checks it again (a rejection with the reaso
 
 The `Settings` dataclass contains the statistical settings and the behavior block sizes. The certification error rate
 (`alpha`) and the design power (`power`) set the guard band. The ladder settings (`ladder_points`,
-`behavior_ladder_items`, `ladder_refinements`, and `ladder_power` for a solved axis outside `monotone`) control how the
-solved axis is calibrated, and the reporting settings (`behavior_items`, `fitness_alpha`, `min_gain`) control how a
-point's gain is reported. Relative to the baseline, `max_cost_ratio` and `max_degenerate_increase` limit the generated
-tokens and the share of degenerate completions. Note that a constraint's block sizes are not settings, since they follow
-from its margin and its baseline (see [Sizes and feasibility](#sizes-and-feasibility)).
+`behavior_ladder_items`, and `ladder_refinements`) control how the solved axis is calibrated, and the reporting settings
+(`behavior_items`, `fitness_alpha`, `min_gain`) control how a point's gain is reported. Relative to the baseline,
+`max_cost_ratio` and `max_degenerate_increase` limit the generated tokens and the share of degenerate completions. Note
+that a constraint's block sizes are not settings, since they follow from its margin and its baseline (see [Sizes and
+feasibility](#sizes-and-feasibility)).
 
 ## Evaluating candidates
 
@@ -200,18 +199,22 @@ effect. Additionally note that a constraint whose baseline mean is at most its m
 candidate can lose more than the margin.
 
 Each evaluation runs in stages, and an early stage rejects a candidate cheaply. Stage 0 binds the candidate and checks
-that the protocol's backend supports it, and stage 1 runs its fits. Stage 2 is a quick behavior check of a few
-solved-axis positions on a few items, and stage 3 checks whether every probed position is clearly over the margin on a
-capability benchmark. Stage 4 finds the operating point. For a solved axis in `monotone`, calibration gives each
-position a first look on the start of a ladder block of items, from the weakest position up, and stops at the first
-position whose loss is clearly over the margin. The behavior of the remaining positions is measured on the
-objective's ladder block. Among the positions up to the one with the best lower bound of its gain, a bisection finds
-the strongest position that passes the looks of a confirmation (checks after a growing number of items) on a fresh
-block of items. The positions at or below it are then confirmed in the order of their gain bound, and the first one
-confirmed is the operating point. This means that a ladder estimate alone never rejects a candidate. For any other
-solved axis, calibration measures every position on the ladder block and keeps the positions whose loss is inside
-the margin. The kept positions are confirmed in the order of the lower bound of their behavior gain. Without a
-solved axis, the single recipe is confirmed. Stage 5 records the result.
+that the protocol's backend supports it, and stage 1 runs its fits. Stage 2 is a quick behavior check of the
+solved-axis positions on a few items, which rejects the candidate when no position shows a gain. Stage 3 rejects it
+when every position is clearly over the margin on a capability benchmark. Both stages look at the positions in a fixed
+order (the first, the last, the middle, then the others) and stop at the first position that passes, since the order
+changes what a candidate costs and not what is decided.
+
+Stage 4 finds the operating point, and calibration judges each position of the solved axis on its own evidence. Every
+position gets a first look on a ladder block of items, and a position whose loss is clearly over the margin is dropped.
+The behavior of the remaining positions is measured on the objective's ladder block. They are then confirmed in the
+order of the lower bound of their gain, each with the looks of a confirmation (checks after a growing number of items)
+on a fresh block of items, and the first position confirmed is the operating point. A look rejects a position whose loss
+is clearly over the margin, and the second look also one whose estimated loss is above the margin. On a continuous axis,
+calibration then inserts a position halfway between the operating point and a neighbor that was dropped or failed its
+confirmation. The inserted position becomes the operating point when its gain bound is higher and it is confirmed. This
+means that a ladder estimate alone drops a position only when it is clearly over the margin. Without a solved axis, the
+single recipe is confirmed. Stage 5 records the result.
 
 A candidate is accepted only when it has an eligible operating point, i.e., one that was confirmed on every
 constraint and is within the cost and degeneracy limits. Its fitness is the one-sided lower bound of its gain at
@@ -231,10 +234,9 @@ session resumes from them.
 A study sizes each constraint from its baseline. The design variance is the variance of the baseline's search-pool
 scores (`p * (1 - p)` for 0/1 scores with accuracy `p`), and it is at least the floor `margin * (1 - margin)`. At the
 design variance, a confirmation's last look is the smallest multiple of 100 items that gives the estimate a standard
-error of at most `margin / sqrt(9.6)`. The ladder block is a quarter of the last look, and the calibration of a solved
-axis in `monotone` reads only its first look (as many items as a confirmation's first look). For instance, at a 5-point
-margin, GSM8K with a baseline accuracy of 0.457 (design variance 0.248) has a 1,000-item last look and a 250-item ladder
-block.
+error of at most `margin / sqrt(9.6)`. The ladder block is as large as a confirmation's first look. For instance, at a
+5-point margin, GSM8K with a baseline accuracy of 0.457 (design variance 0.248) has a 1,000-item last look and a
+64-item ladder block.
 
 The design variance is used only to size the looks and to decide feasibility. Acceptance and the held-out test use each
 table's own variance (at least the floor). This means that an inaccurate design variance changes a study's power and
@@ -245,7 +247,7 @@ after it (with the design variance and the usable pool sizes). Each constraint's
 of blocks. The constraint's guard band (how far inside the margin a search estimate must sit to pass the held-out test
 with the design power) must also be at most 60% of the margin. The objective needs room for two rounds of behavior
 blocks. For instance, with the model above and GSM8K pools of 3,792 search and 5,000 held-out items, a 3-point margin is
-infeasible. Its 2,700-item last look needs 6,750 search items for two rounds, and its 2.16-point band is above the
+infeasible. Its 2,700-item last look needs 5,656 search items for two rounds, and its 2.16-point band is above the
 1.80-point limit. The same pools are feasible at a 4-point margin.
 
 An infeasible study raises `StudyInfeasibleError`, whose message gives the numbers and, for its pools, the smallest
@@ -384,7 +386,6 @@ weights_study = Study(
     objective=formality,
     constraints=(Constraint(benchmark=gsm8k, margin=0.05),),
     pools=pools,
-    monotone=frozenset({"caa.multiplier"}),
 )
 archive = run_study(
     study=weights_study,

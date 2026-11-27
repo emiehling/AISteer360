@@ -112,7 +112,7 @@ def model():
 def test_an_openevolve_run_keeps_each_island_on_its_structure_with_accepted_programs_once(tmp_path, model):
     store = Store.open(root=tmp_path / "store")
     space = {"prompt": prompt_template(texts=TEXTS), "caa": caa_template(layer_id=Choice(values=(1, 2, 3)))}
-    study = build_study(store=store, truth=_truth, space=space, monotone={"caa.multiplier"})
+    study = build_study(store=store, truth=_truth, space=space)
 
     def text(candidate):
         return program_text(study=study, candidate=candidate)

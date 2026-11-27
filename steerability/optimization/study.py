@@ -57,7 +57,7 @@ TABLES = (
 )
 
 _FLOAT_SETTINGS = (
-    "alpha", "power", "ladder_power", "min_gain", "fitness_alpha", "max_cost_ratio", "max_degenerate_increase",
+    "alpha", "power", "min_gain", "fitness_alpha", "max_cost_ratio", "max_degenerate_increase",
 )
 _INT_SETTINGS = (
     "round_candidates", "ladder_points", "ladder_refinements", "behavior_ladder_items", "behavior_items",
@@ -111,16 +111,15 @@ class Settings:
     """The statistical and budget settings of a study.
 
     The capability block sizes are not settings. They follow from each constraint's margin and the variance of its
-    baseline (`evidence.block_sizes`). The whole ladder block (`ladder_size`) and `ladder_power` serve the calibration
-    of a solved axis outside `study.monotone`, and a monotone solved axis reads the first look of its ladder block.
+    baseline (`evidence.block_sizes`).
 
     Attributes:
         alpha: The one-sided error rate of certification.
         power: The design probability that one confirmed point passes certification.
         round_candidates: The number of new candidates per round.
         ladder_points: The number of positions of a continuous solved axis.
-        ladder_power: The power of the provisional check on the ladder of a solved axis outside `study.monotone`.
-        ladder_refinements: The number of positions calibration may insert on a monotone continuous axis.
+        ladder_refinements: The number of positions calibration may insert next to the operating point of a
+            continuous solved axis.
         behavior_ladder_items: The behavior items per ladder position.
         behavior_items: The behavior items a point is reported on.
         quick_behavior_items: The behavior items of the quick look (stage 2).
@@ -137,7 +136,6 @@ class Settings:
     power: float = 0.80
     round_candidates: int = 16
     ladder_points: int = 6
-    ladder_power: float = 0.50
     ladder_refinements: int = 1
     behavior_ladder_items: int = 128
     behavior_items: int = 256
@@ -160,7 +158,7 @@ class Settings:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"Settings.{name} must be a non-negative integer; got {value!r}.")
-        for name in ("alpha", "power", "ladder_power", "fitness_alpha"):
+        for name in ("alpha", "power", "fitness_alpha"):
             if not 0 < getattr(self, name) < 1:
                 raise ValueError(f"Settings.{name} must be in (0, 1); got {getattr(self, name)}.")
         for name in ("round_candidates", "ladder_points", "behavior_ladder_items", "behavior_items", "finalists"):
@@ -192,14 +190,13 @@ class Study:
     """A search over steering pipelines under accuracy constraints, with its items, settings, and identity.
 
     Each template of `space` has at most one solved axis, i.e., an ordered axis whose key is not in `searched`. The
-    evaluator finds, for each candidate, the position of the solved axis with the best behavior among those inside
-    the margin. A solved axis must not change a fit (every position has the same fit digests). An ordered argument that
-    is an input of a fit therefore belongs in `searched`. Every other axis (unordered choices, text, and the axes in
-    `searched`) is a proposer axis, which a candidate binds.
+    evaluator finds, for each candidate, the position of the solved axis with the best behavior among those that pass
+    their own confirmation, and it judges each position on its own evidence. A solved axis must not change a fit
+    (every position has the same fit digests). An ordered argument that is an input of a fit therefore belongs in
+    `searched`. Every other axis (unordered choices, text, and the axes in `searched`) is a proposer axis, which a
+    candidate binds.
 
-    `monotone` gives the solved axes along which capability loss is assumed not to fall as the position rises. It
-    says nothing about behavior. The study's id covers every field, with benchmarks given by their ids and the
-    protocol and templates by theirs.
+    The study's id covers every field, with benchmarks given by their ids and the protocol and templates by theirs.
 
     Attributes:
         name: The study's name.
@@ -211,7 +208,6 @@ class Study:
         seed: The base seed of every draw (pools, batches, proposers).
         settings: The study's settings.
         searched: The keys of ordered axes that the proposer searches.
-        monotone: The keys of solved axes along which capability loss is assumed not to fall.
         fit_item_ids: Mapping from benchmark id to the items used as fit data, which must be in neither pool.
     """
 
@@ -224,7 +220,6 @@ class Study:
     seed: int = 0
     settings: Settings = Settings()
     searched: frozenset[str] = frozenset()
-    monotone: frozenset[str] = frozenset()
     fit_item_ids: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -247,7 +242,6 @@ class Study:
         object.__setattr__(self, "pools", dict(self.pools))
         object.__setattr__(self, "seed", int(self.seed))
         object.__setattr__(self, "searched", frozenset(self.searched))
-        object.__setattr__(self, "monotone", frozenset(self.monotone))
         object.__setattr__(self, "fit_item_ids", {
             str(key): frozenset(str(item) for item in items) for key, items in dict(self.fit_item_ids).items()
         })
@@ -269,7 +263,7 @@ class Study:
         Returns:
             A mapping with the name, the protocol id, the template id of each structure, the objective and the
             constraints (benchmark ids, names, and margins), the pools by benchmark id, the seed, the settings, the
-            searched and monotone axis keys, and the fit items.
+            searched axis keys, and the fit items.
         """
         if self._definition is None:
             definition = {
@@ -289,7 +283,6 @@ class Study:
                 "seed": self.seed,
                 "settings": dataclasses.asdict(self.settings),
                 "searched": sorted(self.searched),
-                "monotone": sorted(self.monotone),
                 "fit_item_ids": {key: sorted(items) for key, items in self.fit_item_ids.items()},
             }
             object.__setattr__(self, "_definition", definition)
@@ -421,8 +414,7 @@ class Study:
         3. Every callable reachable from a template or a benchmark is versioned (`versioned`).
         4. The pools pass `check_pools` (the benchmarks are prepared on `store` first).
         5. Each template has at most one solved axis, a discrete solved axis has at most `2 * settings.ladder_points`
-           positions, every key in `searched` and `monotone` gives an axis of some template, and every key in
-           `monotone` gives a solved axis.
+           positions, and every key in `searched` gives an axis of some template.
         6. The objective and the constraints have distinct benchmark names.
         7. `make_plan` succeeds for the default candidate of every structure, and every enabled structural control of
            its first recipe that declares a fit (a training or a merge) reports an `artifact_capability()`, i.e., it
@@ -473,13 +465,11 @@ class Study:
         check_pools(self)
 
         all_keys: set[str] = set()
-        solved_keys: set[str] = set()
         for structure, template in self.space.items():
             all_keys.update(template.axes())
             solved, _ = self.classify(structure)
             if solved is None:
                 continue
-            solved_keys.add(solved.key)
             if not solved.continuous and solved.count is not None and solved.count > 2 * self.settings.ladder_points:
                 raise ValueError(
                     f"Structure {structure!r}: the solved axis {solved.key!r} has {solved.count} positions, more than "
@@ -489,9 +479,6 @@ class Study:
         unknown_searched = sorted(self.searched - all_keys)
         if unknown_searched:
             raise ValueError(f"study.searched gives keys {unknown_searched} that are axes of no template.")
-        not_solved = sorted(self.monotone - solved_keys)
-        if not_solved:
-            raise ValueError(f"study.monotone gives keys {not_solved} that are not solved axes of any template.")
 
         names = [benchmark.name for benchmark in self.benchmarks]
         repeated = sorted({name for name in names if names.count(name) > 1})

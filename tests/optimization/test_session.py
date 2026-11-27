@@ -65,11 +65,11 @@ def test_start_logs_the_sizes_of_each_constraint(store, caplog):
     with caplog.at_level(logging.INFO):
         session = _started(study, store)
     assert session.looks(study.constraints[0].benchmark) == (32, 128, 400)
-    assert "last look 400, ladder block 100, looks (32, 128, 400)" in caplog.text
+    assert "last look 400, ladder block 32, looks (32, 128, 400)" in caplog.text
 
 
 def test_a_budget_rejection_writes_no_row_and_a_later_session_evaluates_in_full(store):
-    study = build_study(store, _quadratic, monotone={"caa.multiplier"})
+    study = build_study(store, _quadratic)
     session = _started(study, store, max_generations=100)
     result = session.evaluate(CAA)
     assert (result.status, result.reason) == ("rejected", "budget")
@@ -88,7 +88,7 @@ def test_a_budget_rejection_writes_no_row_and_a_later_session_evaluates_in_full(
 
 
 def test_a_timeout_rejection_writes_no_row(store):
-    session = _started(build_study(store, _quadratic, monotone={"caa.multiplier"}), store)
+    session = _started(build_study(store, _quadratic), store)
     result = session.evaluate(CAA, deadline=time.monotonic() - 1)
     assert (result.status, result.reason, result.stage) == ("rejected", "timeout", 1)
     assert _rows(store, "results") == 0
@@ -124,7 +124,7 @@ def test_an_allowance_of_candidates_stops_after_its_candidates_and_ends_with_its
 
 
 def test_a_generation_allowance_spent_during_an_evaluation_gives_a_budget_result_that_is_not_recorded(store):
-    session = _started(study=build_study(store=store, truth=_quadratic, monotone={"caa.multiplier"}), store=store)
+    session = _started(study=build_study(store=store, truth=_quadratic), store=store)
     with session.allowance(generations=100):
         result = session.evaluate(candidate=CAA)
         assert session.exhausted()
@@ -153,7 +153,7 @@ def test_nested_allowances_both_apply(store):
 
 
 def test_generations_are_counted_without_a_generation_limit(store):
-    session = _started(study=build_study(store=store, truth=_quadratic, monotone={"caa.multiplier"}), store=store)
+    session = _started(study=build_study(store=store, truth=_quadratic), store=store)
     assert session.generations == 0
     result = session.evaluate(candidate=CAA)
     assert result.status == "accepted"

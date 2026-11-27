@@ -11,10 +11,8 @@ from steerability.optimization.measurement.stats import (
     feasible,
     floor_variance,
     guard_band,
-    ladder_size,
     last_look,
     look_sizes,
-    provisional_positions,
     rank_positions,
     release_band,
 )
@@ -95,9 +93,6 @@ class TestReferenceValues:
         with pytest.raises(ValueError, match="at least one item"):
             look_sizes(0)
 
-    def test_ladder_size(self):
-        assert (ladder_size(1000), ladder_size(100)) == (250, 32)
-
     def test_the_floor_in_the_held_out_test(self):
         assert not Paired(65, 0.0, 0.0, 0).passes(0.03, ALPHA)
         bound = Paired(200, 0.0, 0.0, 0).lower(ALPHA, floor=floor_variance(0.03))
@@ -136,12 +131,6 @@ class TestBands:
         assert feasible(table, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER, guard=False)
         assert not feasible(table, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER)
 
-    def test_the_band_plans_for_a_larger_confirmation(self):
-        table = Paired.from_diffs([-1.0] * 5 + [0.0] * 95)
-        small = release_band(table, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER)
-        planned = release_band(table, 0.05, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER, n_search=1000)
-        assert planned < small
-
     def test_the_band_takes_the_variance_as_at_least_the_floor(self):
         constant = Paired.from_diffs([-0.01] * 400)
         at_floor = guard_band(math.sqrt(0.0475 / 400), math.sqrt(0.0475 / HELD_OUT), alpha=ALPHA, power=POWER)
@@ -157,20 +146,15 @@ class TestBands:
         assert confirm_step(over, 0, 0.03, n_held_out=HELD_OUT, alpha=ALPHA, power=POWER) == "reject"
 
 
-class TestLadderDecisions:
-    def test_each_position_is_judged_on_its_own(self):
-        losses = [Paired.from_diffs([-x] * 256) for x in (0.0, 0.01, 0.02, 0.09, 0.03)]
-        kept = provisional_positions(losses, 0.05, n_target=400, n_held_out=HELD_OUT, alpha=ALPHA, power=0.5)
-        assert kept == [0, 1, 2, 4]
-
+class TestRanking:
     def test_ranking_orders_by_the_gain_lower_bound(self):
         gains = [Paired.from_diffs([value] * 64) for value in (0.1, 0.3, 0.2)]
         assert rank_positions([0, 1, 2], gains, 0.10) == [1, 2, 0]
 
 
 @pytest.mark.parametrize("margin, variance, expected", [
-    (0.03, 0.10, (0.94, 0.55, 0.11)),
-    (0.05, 0.25, (0.95, 0.56, 0.13)),
+    (0.03, 0.10, (0.94, 0.53, 0.11)),
+    (0.05, 0.25, (0.90, 0.52, 0.13)),
 ])
 def test_confirmation_simulation(margin, variance, expected):
     shares = [_confirmed_share(margin, variance, loss, seed=index)

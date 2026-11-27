@@ -2,9 +2,9 @@
 
 Differences against the baseline are exact in the synthetic world. With a margin of 0.05, 2,000 held-out items, the
 two-level capability baseline (design variance close to 0.09), and the default power settings, the looks are
-(32, 128, 400), and a point is confirmed when its loss is at most 0.0253 (second look) or 0.0319 (third look). On a
-solved axis outside `study.monotone`, a ladder position is kept when its loss is at most 0.0420. The quadratic truth
-puts the refined position 2.5 at a loss of 0.03125 and the position 3 at 0.045.
+(32, 128, 400), a ladder block has 32 items, and a point is confirmed when its loss is at most 0.0253 (second look) or
+0.0319 (third look). A position is clearly over the margin at its first look when its loss is above 0.05. The quadratic
+truth puts the refined position 2.5 at a loss of 0.03125 and the position 3 at 0.045.
 """
 import pytest
 
@@ -12,6 +12,7 @@ pytest.importorskip("inspect_ai")
 
 from steerability.algorithms.core.recipe import Choice
 from steerability.algorithms.core.store import Store
+from steerability.optimization.evaluation.evaluator import probe_order
 from steerability.optimization.evaluation.session import StudySession
 from steerability.optimization.measurement.evidence import batch, point_items
 from steerability.optimization.study import Candidate
@@ -26,6 +27,12 @@ def _quadratic(recipe, item_id):
     if value is None:
         return Truth(gain=0.1)
     return Truth(loss=0.005 * value * value, gain=0.05 * value)
+
+
+def _reversed(recipe, item_id):
+    """The quadratic truth mirrored, i.e., loss and gain fall as the multiplier rises."""
+    value = multiplier(recipe)
+    return Truth(loss=0.005 * (3.0 - value) ** 2, gain=0.05 * (3.0 - value))
 
 
 def _by_position(losses, gains, tokens=None):
@@ -61,6 +68,10 @@ def _session(store, truth, **kwargs) -> StudySession:
     return session
 
 
+def _ranks(result):
+    return {point.position["caa.multiplier"]: point.rank for point in result.ladder}
+
+
 @pytest.fixture()
 def store(tmp_path):
     return Store.open(tmp_path / "store")
@@ -68,6 +79,11 @@ def store(tmp_path):
 
 def _rows(store, table):
     return store.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+
+def test_stages_two_and_three_look_at_the_ends_then_the_middle_then_the_others():
+    assert [probe_order(size=size) for size in range(5)] == [[], [0], [0, 1], [0, 2, 1], [0, 3, 2, 1]]
+    assert probe_order(size=6) == [0, 5, 3, 1, 2, 4]
 
 
 class TestStages:
@@ -82,22 +98,39 @@ class TestStages:
         assert result.generations > 0
         assert _rows(store, "results") == 1
 
-    def test_no_gain_at_any_probe_is_rejected_at_stage_two(self, store):
+    def test_no_gain_at_any_position_is_rejected_at_stage_two(self, store):
         session = _session(store, _by_position([0.0] * 4, [0.0] * 4), space={"caa": caa_template(DISCRETE)})
         result = session.evaluate(CAA)
         assert (result.status, result.stage, result.reason, result.fitness) == ("rejected", 2, "no_behavior_gain", 0.0)
         assert _rows(store, "results") == 1
+        behavior = session.study.objective
+        assert all(behavior.measured(_resolved(float(value))) for value in range(4))
+
+    def test_a_gain_at_one_inner_position_passes_stage_two(self, store):
+        truth = _by_position([0.0] * 4, [0.0, 0.1, 0.0, 0.0])
+        result = _session(store, truth, space={"caa": caa_template(DISCRETE)}).evaluate(candidate=CAA)
+        assert (result.status, result.stage) == ("accepted", 5)
+        assert result.operating.position == {"caa.multiplier": 1.0}
 
     def test_a_gain_that_collapses_only_at_the_strongest_position_passes_stage_two(self, store):
         truth = _by_position([0.0] * 4, [0.1, 0.1, 0.1, 0.0])
         result = _session(store, truth, space={"caa": caa_template(DISCRETE)}).evaluate(CAA)
         assert result.status == "accepted" and result.stage == 5
 
-    def test_every_probe_clearly_over_the_margin_is_rejected_at_stage_three(self, store):
+    def test_every_position_clearly_over_the_margin_is_rejected_at_stage_three(self, store):
         session = _session(store, _by_position([0.2] * 4, [0.1] * 4), space={"caa": caa_template(DISCRETE)})
         result = session.evaluate(CAA)
         assert (result.status, result.stage, result.reason) == ("rejected", 3, "capability_fail")
         assert result.summary["loss.capability"] == pytest.approx(0.2)
+        capability = session.study.constraints[0].benchmark
+        assert all(capability.measured(_resolved(float(value))) for value in range(4))
+
+    def test_a_first_position_over_the_margin_is_accepted_at_a_later_position(self, store):
+        truth = _by_position([0.2, 0.07, 0.01, 0.0], [0.3, 0.2, 0.1, 0.05])
+        result = _session(store, truth, space={"caa": caa_template(DISCRETE)}).evaluate(candidate=CAA)
+        assert (result.status, result.stage) == ("accepted", 5)
+        assert result.operating.position == {"caa.multiplier": 2.0}
+        assert _ranks(result) == {0.0: None, 1.0: None, 2.0: 0, 3.0: 1}
 
     def test_inside_the_margin_but_outside_the_band_is_rejected_with_fitness_zero(self, store):
         session = _session(store, lambda recipe, item_id: Truth(loss=0.04, gain=0.2),
@@ -121,7 +154,7 @@ class TestStages:
         assert _rows(store, "results") == 0 and _rows(store, "candidates") == 0
 
     def test_a_second_evaluation_does_no_work(self, store):
-        session = _session(store, _quadratic, monotone={"caa.multiplier"})
+        session = _session(store, _quadratic)
         first = session.evaluate(CAA)
         capability = session.study.constraints[0].benchmark
         calls, steered = len(capability.calls), len(session.factory.steered_recipes)
@@ -130,39 +163,40 @@ class TestStages:
 
 
 class TestCalibration:
-    def test_a_monotone_axis_is_refined_and_the_strongest_confirmable_position_is_picked(self, store):
-        result = _session(store, _quadratic, monotone={"caa.multiplier"}).evaluate(CAA)
+    def test_a_continuous_axis_is_refined_toward_the_neighbor_that_failed(self, store):
+        result = _session(store, _quadratic).evaluate(candidate=CAA)
         assert result.status == "accepted"
         assert result.operating.position["caa.multiplier"] == pytest.approx(2.5)
         assert [point.position["caa.multiplier"] for point in result.ladder] == pytest.approx([0, 1, 2, 2.5, 3])
-        ranks = {point.position["caa.multiplier"]: point.rank for point in result.ladder}
-        assert ranks[2.5] == 0 and ranks[3.0] is None
+        assert _ranks(result) == {0.0: 4, 1.0: 3, 2.0: 2, 2.5: 1, 3.0: 0}
         assert result.fitness == pytest.approx(0.125)
 
-    def test_without_monotone_each_position_is_judged_on_its_own(self, store, tmp_path):
+    def test_a_refinement_goes_toward_a_weaker_neighbor_when_that_one_failed(self, store):
+        result = _session(store, _reversed).evaluate(candidate=CAA)
+        assert result.operating.position["caa.multiplier"] == pytest.approx(0.5)
+        assert [point.position["caa.multiplier"] for point in result.ladder] == pytest.approx([0, 0.5, 1, 2, 3])
+        assert result.fitness == pytest.approx(0.125)
+
+    def test_a_truth_that_is_not_monotone_ends_at_its_best_confirmable_position(self, store):
         truth = _by_position([0.0, 0.09, 0.09, 0.0], [0.0, 0.1, 0.2, 0.3])
         result = _session(store, truth, space={"caa": caa_template(DISCRETE)}).evaluate(CAA)
         assert result.operating.position == {"caa.multiplier": 3.0}
-        monotone = _session(Store.open(tmp_path / "monotone"), truth, space={"caa": caa_template(DISCRETE)},
-                            monotone={"caa.multiplier"})
-        assert monotone.evaluate(CAA).operating.position == {"caa.multiplier": 0.0}
 
     def test_the_best_confirmable_position_is_picked(self, store):
         truth = _by_position([0.0, 0.09, 0.04, 0.0], [0.0, 0.1, 0.4, 0.3])
         result = _session(store, truth, space={"caa": caa_template(DISCRETE)}).evaluate(CAA)
         assert result.operating.position == {"caa.multiplier": 3.0}
-        ranks = {point.position["caa.multiplier"]: point.rank for point in result.ladder}
-        assert (ranks[2.0], ranks[3.0], ranks[1.0]) == (0, 1, None)
+        assert _ranks(result) == {0.0: 2, 1.0: None, 2.0: 0, 3.0: 1}
 
     def test_a_position_over_the_cost_limit_is_skipped_for_the_next_ranked_one(self, store):
         truth = _by_position([0.0] * 4, [0.0, 0.1, 0.2, 0.3], tokens={3: 30})
         result = _session(store, truth, space={"caa": caa_template(DISCRETE)}).evaluate(CAA)
         assert result.operating.position == {"caa.multiplier": 2.0}
-        assert {point.position["caa.multiplier"]: point.rank for point in result.ladder}[3.0] is None
+        assert _ranks(result)[3.0] is None
         assert result.operating.cost_ratio == pytest.approx(1.0)
 
     def test_smaller_samples_are_prefixes_of_their_block(self, store):
-        session = _session(store, _quadratic, monotone={"caa.multiplier"})
+        session = _session(store, _quadratic)
         session.evaluate(CAA)
         behavior = session.study.objective
         ladder = session.batches(0)[behavior.id].ladder
@@ -170,71 +204,53 @@ class TestCalibration:
         calls = [items for resolved, items, _ in behavior.calls if resolved == f"resolved-{first.id}"]
         assert calls[:2] == [ladder[:SMALL.quick_behavior_items], ladder[SMALL.quick_behavior_items:]]
 
-    def test_no_kept_position_is_rejected_with_its_ladder(self, store):
+    def test_a_candidate_whose_positions_all_fail_their_confirmation_is_rejected_with_its_ladder(self, store):
         truth = _by_position([0.046] * 4, [0.1] * 4)
         result = _session(store, truth, space={"caa": caa_template(DISCRETE)}).evaluate(CAA)
         assert (result.status, result.stage, result.reason) == ("rejected", 4, "no_feasible_point")
+        assert [point.rank for point in result.ladder] == [0, 1, 2, 3]
+
+    def test_a_candidate_whose_positions_are_all_dropped_is_rejected_with_the_closest_one(self, store):
+        truth = _by_position([0.0, 0.01, 0.02, 0.03], [0.1] * 4, tokens={index: 30 for index in range(4)})
+        result = _session(store, truth, space={"caa": caa_template(DISCRETE)}).evaluate(candidate=CAA)
+        assert (result.status, result.stage, result.reason) == ("rejected", 4, "no_feasible_point")
         assert len(result.ladder) == 4 and all(point.rank is None for point in result.ladder)
+        assert result.summary["loss.capability"] == pytest.approx(0.0, abs=1e-12)
 
-
-
-class TestMonotoneCalibration:
-    def test_a_ladder_estimate_alone_does_not_reject_a_candidate(self, tmp_path):
+    def test_a_ladder_estimate_alone_does_not_reject_a_candidate(self, store):
         gains = [0.1, 0.2, 0.3, 0.4]
-        results, sessions = {}, {}
-        for name, monotone in (("ladder", frozenset()), ("monotone", frozenset({"caa.multiplier"}))):
-            session = _session(Store.open(tmp_path / name), _by_position([0.0] * 4, gains),
-                               space={"caa": caa_template(DISCRETE)}, monotone=monotone)
-            capability = session.study.constraints[0].benchmark
-            ladder = set(session.batches(0)[capability.id].ladder)
-            truth = _item_truth(gains, lambda index, item_id: 0.046 if item_id in ladder else 0.0)
-            capability.set_truth(truth)
-            session.study.objective.set_truth(truth)
-            results[name], sessions[name] = session.evaluate(CAA), session
-        assert (results["ladder"].status, results["ladder"].reason) == ("rejected", "no_feasible_point")
-        session = sessions["ladder"]
-        fresh = {item for benchmark in session.study.benchmarks for item in session.batches(0)[benchmark.id].fresh}
-        for benchmark in session.study.benchmarks:
-            assert not any(benchmark.measured(_resolved(float(value))) & fresh for value in range(4))
-        assert results["monotone"].status == "accepted"
-        assert results["monotone"].operating.position == {"caa.multiplier": 3.0}
+        session = _session(store, _by_position([0.0] * 4, gains), space={"caa": caa_template(DISCRETE)})
+        capability = session.study.constraints[0].benchmark
+        ladder = set(session.batches(round_index=0)[capability.id].ladder)
+        truth = _item_truth(gains, lambda index, item_id: 0.046 if item_id in ladder else 0.0)
+        capability.set_truth(truth)
+        session.study.objective.set_truth(truth)
+        result = session.evaluate(candidate=CAA)
+        assert result.status == "accepted"
+        assert result.operating.position == {"caa.multiplier": 3.0}
+        assert result.ladder[-1].capability["capability"].mean == pytest.approx(-0.046)
 
-    def test_positions_above_a_clearly_over_one_are_not_measured(self, store):
-        session = _session(store, _by_position([0.0, 0.0, 0.2, 0.2], [0.1, 0.2, 0.3, 0.4]),
-                           space={"caa": caa_template(DISCRETE)}, monotone={"caa.multiplier"})
+    def test_a_position_is_measured_beyond_its_first_look_only_when_that_look_was_not_clearly_over(self, store):
+        session = _session(
+            store,
+            _by_position([0.0, 0.0, 0.2, 0.2], [0.1, 0.2, 0.3, 0.4]),
+            space={"caa": caa_template(DISCRETE)},
+        )
         result = session.evaluate(CAA)
         capability, behavior = session.study.constraints[0].benchmark, session.study.objective
-        first_look = set(session.batches(0)[capability.id].ladder[:session.looks(capability)[0]])
-        assert not capability.measured(_resolved(3.0)) and not behavior.measured(_resolved(3.0))
-        assert capability.measured(_resolved(2.0)) == first_look and not behavior.measured(_resolved(2.0))
-        assert len(result.ladder) == 3
-        assert result.status == "accepted" and result.operating.position == {"caa.multiplier": 1.0}
-
-    def test_bisection_finds_the_strongest_confirmable_position(self, store):
-        positions = Choice(tuple(float(index) for index in range(8)), ordered=True)
-        truth = _by_position([0.006 * index for index in range(8)], [0.05 * (index + 1) for index in range(8)])
-        session = _session(store, truth, space={"caa": caa_template(positions)}, monotone={"caa.multiplier"})
-        result = session.evaluate(CAA)
-        assert result.operating.position == {"caa.multiplier": 5.0}
-        capability = session.study.constraints[0].benchmark
-        fresh = set(session.batches(0)[capability.id].fresh)
-        for value in (0, 1, 2, 4, 7):
-            assert not capability.measured(_resolved(float(value), positions)) & fresh
-
-    def test_the_search_stops_at_the_best_gain(self, store):
-        session = _session(store, _by_position([0.0] * 4, [0.1, 0.4, 0.2, 0.3]),
-                           space={"caa": caa_template(DISCRETE)}, monotone={"caa.multiplier"})
-        result = session.evaluate(CAA)
-        assert result.operating.position == {"caa.multiplier": 1.0}
-        capability = session.study.constraints[0].benchmark
-        fresh = set(session.batches(0)[capability.id].fresh)
+        first_look = set(session.batches(round_index=0)[capability.id].ladder)
+        assert len(first_look) == session.looks(benchmark=capability)[0]
         for value in (2.0, 3.0):
-            assert not capability.measured(_resolved(value)) & fresh
+            assert capability.measured(_resolved(value)) == first_look
+            assert not behavior.measured(_resolved(value))
+        for value in (0.0, 1.0):
+            assert behavior.measured(_resolved(value))
+        assert result.status == "accepted" and result.operating.position == {"caa.multiplier": 1.0}
+        assert _ranks(result) == {0.0: 1, 1.0: 0, 2.0: None, 3.0: None}
 
     def test_a_position_confirmed_on_the_second_look_is_picked(self, store):
         gains = [0.1, 0.2, 0.3, 0.4]
-        session = _session(store, _by_position([0.0] * 4, gains), space={"caa": caa_template(DISCRETE)},
-                           monotone={"caa.multiplier"})
+        session = _session(store, _by_position([0.0] * 4, gains), space={"caa": caa_template(DISCRETE)})
         capability = session.study.constraints[0].benchmark
         second_look = session.looks(capability)[1]
         late = set(session.batches(0)[capability.id].fresh[second_look:])
@@ -245,17 +261,16 @@ class TestMonotoneCalibration:
         assert result.operating.position == {"caa.multiplier": 3.0}
         assert result.operating.capability["capability"].n == second_look
 
+
 class TestReporting:
     def test_fitness_is_reported_on_the_same_number_of_items_with_and_without_a_solved_axis(self, store):
-        session = _session(store, _quadratic, space={"caa": caa_template(), "prompt": prompt_template()},
-                           monotone={"caa.multiplier"})
+        session = _session(store, _quadratic, space={"caa": caa_template(), "prompt": prompt_template()})
         solved = session.evaluate(CAA)
         plain = session.evaluate(Candidate("prompt", {"prompt.text": "be kind"}))
         assert solved.operating.behavior.n == plain.operating.behavior.n == SMALL.behavior_items
 
     def test_operating_tables_use_no_ladder_item_also_after_a_rescore(self, store):
-        session = _session(store, _quadratic, space={"caa": caa_template(), "prompt": prompt_template("abc")},
-                           monotone={"caa.multiplier"})
+        session = _session(store, _quadratic, space={"caa": caa_template(), "prompt": prompt_template("abc")})
         for candidate in (CAA, *(Candidate("prompt", {"prompt.text": text}) for text in "abc")):
             session.evaluate(candidate)
         session.advance()
@@ -273,8 +288,7 @@ class TestReporting:
         assert latest.operating.behavior.n > SMALL.behavior_items
 
     def test_rescore_falls_to_the_next_ranked_position(self, store):
-        session = _session(store, _quadratic, space={"caa": caa_template(), "prompt": prompt_template("abc")},
-                           monotone={"caa.multiplier"})
+        session = _session(store, _quadratic, space={"caa": caa_template(), "prompt": prompt_template("abc")})
         study = session.study
         capability, behavior = study.constraints[0].benchmark, study.objective
         first, second = session.batches(0)[capability.id], batch(study, store, capability, 1)

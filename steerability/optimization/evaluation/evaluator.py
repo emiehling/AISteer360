@@ -6,12 +6,16 @@ it rejects with are:
 - **0. Static**: `make_plan`, and `preflight` on the plan's first recipe (`invalid`, `unsupported`).
 - **1. Fits**: the limits on structural fits (`StudySession.admit_fits`), then `factory.prepare(plan.recipes)`
   (`fit_failed`).
-- **2. Behavior quick look**: probe recipes on the start of the objective's ladder block (`no_behavior_gain`).
-- **3. Capability smoke test**: with a solved axis, probe recipes on the start of each constraint's ladder block
-  (`capability_fail`).
+- **2. Behavior quick look**: the positions of the solved axis in the order of `probe_order` (or the single recipe)
+  on the start of the objective's ladder block, until one shows a possible gain (`no_behavior_gain` when none does).
+- **3. Capability first look**: with a solved axis, the positions in the same order on each constraint's ladder
+  block, until one is not clearly over a margin (`capability_fail` when every position is).
 - **4. Operating point**: calibration with a solved axis, else confirmation of the single recipe
   (`no_feasible_point`, `not_confirmed`, `over_cost`, `degenerate`).
 - **5. Report**: the `Result`, recorded in the archive.
+
+The order of stages 2 and 3 changes what a candidate costs, and not what is decided, since a stage rejects only when
+every position fails it.
 
 Confirmation (`confirm`) is the one routine that judges a point, and every candidate ends in it. A rejection is
 recorded with its stage, reason, and summary, except for a candidate that does not bind (it has no id) and a candidate
@@ -157,11 +161,20 @@ def measure(session: StudySession, partial: Partial, recipe: Recipe, benchmark: 
     return resolved
 
 
-def probe_indices(size: int) -> list[int]:
-    """The first, middle, and last of `size` ladder positions, or all of them when there are fewer than three."""
-    if size < 3:
-        return list(range(size))
-    return sorted({0, size // 2, size - 1})
+def probe_order(size: int) -> list[int]:
+    """The order in which stages 2 and 3 look at `size` ladder positions: first, last, middle, then the others in order.
+
+    The two ends come first because one of them is the likely answer on an axis with a direction, e.g., the weak end
+    of a strength for its capability and the strong end for its gain.
+
+    Args:
+        size: The number of positions.
+
+    Returns:
+        Every index from 0 to `size - 1` once.
+    """
+    order = list(dict.fromkeys((0, size - 1, size // 2))) if size else []
+    return order + [index for index in range(size) if index not in order]
 
 
 def _rejected(session: StudySession, partial: Partial, *, stage: int, reason: str,
@@ -241,18 +254,18 @@ def _screen_stages(session: StudySession, partial: Partial, progress: _Progress,
         raise Rejection(1, "fit_failed", message=f"{type(error).__name__}: {error}") from error
 
     progress.stage = 2
-    probes = probe_indices(len(plan.recipes))
+    order = probe_order(size=len(plan.recipes))
     batches = session.batches(partial.round_index)
     objective = study.objective
     items = batches[objective.id].ladder[:settings.quick_behavior_items]
     gains: dict[int, Paired] = {}
-    for index in probes:
+    for index in order:
         resolved = measure(session, partial, plan.recipes[index], objective, items, deadline)
         gains[index] = paired(study, session.store, resolved, objective, items)
         if gains[index].upper(settings.alpha) >= settings.min_gain:
             break
     else:
-        best = max(probes, key=lambda index: gains[index].mean)
+        best = max(order, key=lambda index: gains[index].mean)
         raise Rejection(2, "no_behavior_gain", summarize(
             behavior=gains[best], margins=margins(session), fitness_alpha=settings.fitness_alpha,
             position=plan.ladder[best],
@@ -261,14 +274,13 @@ def _screen_stages(session: StudySession, partial: Partial, progress: _Progress,
     progress.stage = 3
     if plan.solved is None or not study.constraints:
         return
-    smoke = [0] if plan.monotone else probes
     tables: dict[int, dict[str, Paired]] = {}
-    for index in smoke:
+    for index in order:
         tables[index] = {}
         over = False
         for constraint in study.constraints:
             benchmark = constraint.benchmark
-            items = batches[benchmark.id].ladder[:session.looks(benchmark)[0]]
+            items = batches[benchmark.id].ladder
             resolved = measure(session, partial, plan.recipes[index], benchmark, items, deadline)
             table = paired(study, session.store, resolved, benchmark, items)
             tables[index][benchmark.name] = table
@@ -277,7 +289,7 @@ def _screen_stages(session: StudySession, partial: Partial, progress: _Progress,
                 break
         if not over:
             return
-    best = min(smoke, key=lambda index: max(-table.mean for table in tables[index].values()))
+    best = min(order, key=lambda index: max(-table.mean for table in tables[index].values()))
     raise Rejection(3, "capability_fail", summarize(
         capability=tables[best], margins=margins(session), fitness_alpha=settings.fitness_alpha,
         position=plan.ladder[best],
@@ -580,7 +592,7 @@ __all__ = [
     "finish",
     "judge",
     "measure",
-    "probe_indices",
+    "probe_order",
     "recipe_at",
     "rescore_result",
     "screen",

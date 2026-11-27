@@ -70,8 +70,9 @@ class LadderPoint:
         position: Mapping from member path to value.
         recipe_id: The position's recipe id.
         resolved_id: Its resolved id.
-        capability: Mapping from constraint benchmark name to the differences, candidate minus baseline (on the
-            first look of the ladder block for a solved axis in `study.monotone`).
+        capability: Mapping from constraint benchmark name to the differences, candidate minus baseline, on the
+            constraint's ladder block (as far as measured, since a position clearly over a margin on one constraint
+            is not measured on the next).
         behavior: The behavior differences on the objective's ladder block, or an empty table for a position
             pruned at its first look.
         rank: The position's place in the confirmation order, or None when it was not ranked.

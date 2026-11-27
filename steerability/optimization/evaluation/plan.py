@@ -21,7 +21,6 @@ class EvaluationPlan:
         candidate_id: The candidate's id.
         template: The bound candidate, with only the solved axis (if any) free.
         solved: The solved axis, or None.
-        monotone: Whether the solved axis is in `study.monotone`.
         ladder: The positions of the solved axis in order (one empty mapping without a solved axis).
         recipes: The recipe of each ladder position, `template.bind(position).recipe()`.
         fractions: The fraction of each ladder position on a continuous solved axis, or None.
@@ -30,7 +29,6 @@ class EvaluationPlan:
     candidate_id: str
     template: Template
     solved: Axis | None
-    monotone: bool
     ladder: tuple[Mapping[str, Any], ...]
     recipes: tuple[Recipe, ...]
     fractions: tuple[float, ...] | None = None
@@ -99,7 +97,7 @@ def make_plan(study: Study, candidate: Candidate) -> EvaluationPlan:
         recipe = template.recipe()
         _ = recipe.id
         _check_products(structure=candidate.structure, recipe=recipe)
-        return EvaluationPlan(candidate_id, template, None, False, ({},), (recipe,))
+        return EvaluationPlan(candidate_id=candidate_id, template=template, solved=None, ladder=({},), recipes=(recipe,))
     solved = remaining[expected.key]
     fractions = None
     if solved.continuous:
@@ -123,7 +121,12 @@ def make_plan(study: Study, candidate: Candidate) -> EvaluationPlan:
         )
     _check_products(structure=candidate.structure, recipe=recipes[0])
     return EvaluationPlan(
-        candidate_id, template, solved, solved.key in study.monotone, tuple(positions), recipes, fractions,
+        candidate_id=candidate_id,
+        template=template,
+        solved=solved,
+        ladder=tuple(positions),
+        recipes=recipes,
+        fractions=fractions,
     )
 
 

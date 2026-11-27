@@ -143,7 +143,6 @@ def build_study(store: Store, *, arm: str, model: str, grid: Mapping[str, Sequen
         name=f"live-search-{arm}", protocol=protocol(model), space=space, objective=formality,
         constraints=(Constraint(gsm8k, MARGIN),), pools=pools,
         settings=Settings(guard_band=False) if arm == "naive" else Settings(),
-        monotone=frozenset({"caa.multiplier"}),
     )
 
 
