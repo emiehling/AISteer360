@@ -27,6 +27,7 @@ from steerability.algorithms.core.execution.payloads import (
     CaptureResult,
     GenerationItem,
     ItemResult,
+    LoRAArtifact,
     ModelFacts,
     PreparedPrompt,
     ScoringItem,
@@ -188,8 +189,14 @@ class Backend(ABC):
         constructed backend."""
 
     @abstractmethod
-    def open_session(self) -> SteeringSession:
-        """Open a session for one logical operation."""
+    def open_session(self, *, adapter: LoRAArtifact | None = None) -> SteeringSession:
+        """Open a session for one logical operation.
+
+        Args:
+            adapter: The LoRA adapter that the session's requests are served under, or None for the backend's model
+                alone. An engine backend selects the adapter per request, so one engine serves the pipelines of
+                several adapters.
+        """
 
     def negotiated_capabilities(self) -> BackendCapabilities:
         """The capability advertisement of this constructed backend.

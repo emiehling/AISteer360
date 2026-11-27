@@ -23,6 +23,7 @@ from steerability.algorithms.core.execution.payloads import (
     GenerationItem,
     InterventionSpec,
     ItemResult,
+    LoRAArtifact,
     ModelFacts,
     PreparedPrompt,
     ScoringItem,
@@ -227,8 +228,17 @@ class VLLMOfflineSession(_RequestSessionBase):
     Each item submits as one `TokensPrompt` engine request with its own sampling parameters,
     through the backend's engine thread. The engine's scheduler admits each request as it arrives,
     so the items of one call and the items of concurrent calls on any thread share one running
-    batch, and each request finishes independently.
+    batch, and each request finishes independently. Every request of the session (generation,
+    scoring, and capture) is served under the session's LoRA request, when it has one.
+
+    Args:
+        backend: The offline backend.
+        lora_request: The vLLM `LoRARequest` of the session's adapter (`VLLMBackend.lora_request`), or None.
     """
+
+    def __init__(self, backend, *, lora_request: Any = None) -> None:
+        super().__init__(backend=backend)
+        self._lora_request = lora_request
 
     def _submit_all(self, requests, lora_request=None) -> list["RequestHandle"]:
         """Submit `(prompt, sampling_params)` pairs in order, cancelling the submitted requests when
@@ -340,7 +350,10 @@ class VLLMOfflineSession(_RequestSessionBase):
             engine_prompt["cache_salt"] = uuid.uuid4().hex
             requests.append((engine_prompt, SamplingParams(max_tokens=1, temperature=0.0, extra_args=dict(extra_args))))
 
-        request_outputs = self._await_handles(self._submit_all(requests), None)
+        request_outputs = self._await_handles(
+            handles=self._submit_all(requests=requests, lora_request=self._lora_request),
+            cancel_token=None,
+        )
 
         rows_per_layer: dict[int, list[torch.Tensor]] = {layer: [] for layer in layer_ids}
         for index, request_output in enumerate(request_outputs):
@@ -441,7 +454,7 @@ class VLLMOfflineSession(_RequestSessionBase):
             sampling.append(SamplingParams(**args))
         self._generate_count += 1
 
-        handles = self._submit_all(zip(prompts, sampling), lora_request=self._backend._lora_request)
+        handles = self._submit_all(requests=zip(prompts, sampling), lora_request=self._lora_request)
         request_outputs = self._await_handles(handles, cancel_token)
 
         results: list[ItemResult] = []
@@ -527,7 +540,7 @@ class VLLMOfflineSession(_RequestSessionBase):
             prompts.append(prompt)
             sampling.append(SamplingParams(**args))
 
-        handles = self._submit_all(zip(prompts, sampling), lora_request=self._backend._lora_request)
+        handles = self._submit_all(requests=zip(prompts, sampling), lora_request=self._lora_request)
         request_outputs = self._await_handles(handles, cancel_token)
         rows = [
             extract_ref_logprobs(request_output.prompt_logprobs, ref_ids)
@@ -545,8 +558,25 @@ class VLLMServeSession(_RequestSessionBase):
     failures retry with exponential backoff (`max_retries` applies to transport errors only), and
     a batch whose items partially fail raises `PartialBatchError` containing the successes and the
     re-issuable failures. The backend's `request_timeout` bounds each HTTP request and must
-    cover one full generation.
+    cover one full generation. The session's requests name its adapter as their model when it has
+    one, and the backend loads the adapter onto the server at the session's first request
+    (`VLLMServeBackend.model_for`).
+
+    Args:
+        backend: The serve backend.
+        adapter: The LoRA adapter the session's requests are served under, or None.
     """
+
+    def __init__(self, backend, *, adapter: LoRAArtifact | None = None) -> None:
+        super().__init__(backend=backend)
+        self._adapter = adapter
+        self._model: str | None = None
+
+    def _model_name(self) -> str:
+        """The model name of the session's requests, resolved on first use."""
+        if self._model is None:
+            self._model = self._backend.model_for(adapter=self._adapter)
+        return self._model
 
     def generate(
         self,
@@ -582,6 +612,7 @@ class VLLMServeSession(_RequestSessionBase):
         item_specs, item_constraints, item_salts = self._prepare_spec_submission(items, "vllm-serve")
         base_args = render_vllm_sampling_args(params)
         backend = self._backend
+        model = self._model_name()
 
         item_ids = [self._resolve_item_ids(item) for item in items]
         seeds = [self._item_seed(item, params, index) for index, item in enumerate(items)]
@@ -592,7 +623,7 @@ class VLLMServeSession(_RequestSessionBase):
                 if cancel_token is not None:
                     cancel_token.raise_if_cancelled()
                 body: dict[str, Any] = {
-                    "model": backend._served_model,
+                    "model": model,
                     "prompt": item_ids[index],
                     "return_token_ids": True,
                     **base_args,
@@ -687,6 +718,7 @@ class VLLMServeSession(_RequestSessionBase):
         if ref_len == 0:
             return torch.zeros((len(items), 0), dtype=torch.float32)
         backend = self._backend
+        model = self._model_name()
 
         prompt_ids = [self._resolve_item_ids(item) for item in items]
         ref_ids = [item.ref_output_ids.reshape(-1).tolist() for item in items]
@@ -696,7 +728,7 @@ class VLLMServeSession(_RequestSessionBase):
                 if cancel_token is not None:
                     cancel_token.raise_if_cancelled()
                 body = {
-                    "model": backend._served_model,
+                    "model": model,
                     "prompt": [*prompt_ids[index], *ref_ids[index]],
                     "max_tokens": 1,
                     "temperature": 0.0,

@@ -65,6 +65,7 @@ def run_study(
     max_generations: int | None = None,
     max_seconds: float | None = None,
     max_structural_fits: int | None = None,
+    max_fit_seconds: float | None = None,
     allow_infeasible: bool = False,
 ) -> Archive:
     """Run a study: evaluate the initial candidates, then run each phase's engine in order on one session.
@@ -98,6 +99,7 @@ def run_study(
         max_generations: The number of rows the run may generate, or None.
         max_seconds: The wall time the run may take from the session's start, or None.
         max_structural_fits: The number of distinct structural fits (trainings and merges) the run may run, or None.
+        max_fit_seconds: The time each structural fit may take in a child process (`StudySession`), or None.
         allow_infeasible: Whether to run a study that fails the feasibility check.
 
     Returns:
@@ -129,6 +131,7 @@ def run_study(
         max_generations=max_generations,
         max_seconds=max_seconds,
         max_structural_fits=max_structural_fits,
+        max_fit_seconds=max_fit_seconds,
         allow_infeasible=allow_infeasible,
     )
     try:

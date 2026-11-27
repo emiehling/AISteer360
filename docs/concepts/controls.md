@@ -100,13 +100,13 @@ around existing libraries. The toolkit implements:
     - *Backends*: HF, vLLM (the checkpoint is served).
 - `LoadLoRA` ([API reference](../reference/algorithms/structural_control/load_lora.md))
     - *Description*: attaches a saved LoRA adapter to the pipeline model (optionally merging it into the base weights), verifying the adapter's recorded base model. This is the frozen form of adapter-producing structural controls in a [`.spipe`](spipe.md) bundle.
-    - *Backends*: HF, vLLM (the adapter is served).
+    - *Backends*: HF, vLLM (the adapter is served per request, on an offline engine in float16 or bfloat16 whose `engine_kwargs` set `enable_lora` and a `lora_target_modules` list that covers the adapter's modules and leaves out `lm_head`).
 - `MergeKit` ([API reference](../reference/algorithms/structural_control/mergekit_wrapper.md), [notebook](../examples/notebooks/algorithms/wrappers/mergekit.ipynb))
     - *Description*: model merging via MergeKit[@goddard-etal-2024-arcees], combining multiple checkpoints with strategies such as linear interpolation, SLERP, and TIES from a YAML/dict config.
     - *Backends*: HF, vLLM (the merged checkpoint is served).
 - `TRL` ([API reference](../reference/algorithms/structural_control/trl_wrapper.md), [notebook](../examples/notebooks/algorithms/wrappers/trl.ipynb))
     - *Description*: weight-level training via Hugging Face TRL[@vonwerra2022trl], exposing SFT, DPO, APO, and GRPO trainers, with optional LoRA/PEFT and a post-training merge. Since `training_args` is forwarded verbatim to the installed TRL config, a key the config does not declare raises an error at control construction. A `target_modules` list of module-name suffixes is scoped at steer time to the decoder stack of the resolved model layout, so a multimodal wrapper's vision and audio towers are not adapted; a regex targets other modules.
-    - *Backends*: HF, vLLM (serves the steer-time artifact, a checkpoint or LoRA adapter; a merged LoRA run needs `merged_output_dir`).
+    - *Backends*: HF, vLLM (serves the steer-time artifact, a checkpoint or LoRA adapter; a merged LoRA run needs `merged_output_dir`, and an adapter needs an offline engine in float16 or bfloat16 whose `engine_kwargs` set `enable_lora`, a `max_lora_rank` of at least `r`, and a `lora_target_modules` list that covers `target_modules` and leaves out `lm_head`).
 
 
 ## State control

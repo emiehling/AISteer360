@@ -42,7 +42,7 @@ PRODUCTION_CLASSES = {
     "Artifact", "ArtifactProvenance", "ModelArtifact", "CheckpointArtifact", "LoRAArtifact",
     "Study", "StudySession", "Archive", "ArchiveView", "EvaluationService", "Candidate", "Constraint", "PoolSplit",
     "Paired", "EvaluationPlan", "OperatingPoint", "LadderPoint", "Certification", "BaseProposer", "GridProposer",
-    "RandomProposer", "SearchEngine", "SearchPhase", "OpenEvolveEngine", "Slot",
+    "RandomProposer", "SearchEngine", "SearchPhase", "OpenEvolveEngine", "Slot", "ProductFitTimeout",
 }
 
 PRODUCTION_FUNCTIONS = {
@@ -55,7 +55,8 @@ PRODUCTION_FUNCTIONS = {
     "steerability_provider", "run_study", "certify", "split_items", "make_plan", "ensure_baseline",
     "design_variance", "feasibility", "initial_population", "structures", "optional", "one_of", "select_structures",
     "candidate_document", "parse_document", "describe_task", "describe_structure", "describe_axes", "check_limit",
-    "check_space",
+    "check_space", "fit_in_child", "transport_problems", "lora_capacity", "adapter_identity", "adapter_rank",
+    "materialized_dataset",
 }
 
 

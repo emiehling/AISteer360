@@ -1,6 +1,6 @@
 """Frozen backend identity, expressed as `BackendSpec` with canonicalized options."""
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -8,6 +8,10 @@ from typing import Any
 import torch
 
 KNOWN_BACKEND_KINDS: tuple[str, ...] = ("huggingface", "vllm", "vllm-serve")
+VLLM_DEFAULT_MAX_LORA_RANK = 16  # the max_lora_rank of a vLLM engine whose engine_kwargs give none
+VLLM_FLOAT32_DTYPES = ("float32", "float")  # the spellings of float32 in a vLLM engine's dtype option
+# the packed modules of vLLM's decoder models and the adapter modules each one contains
+VLLM_PACKED_LORA_MODULES = {"qkv_proj": ("q_proj", "k_proj", "v_proj"), "gate_up_proj": ("gate_proj", "up_proj")}
 
 _MAPPING_TAG = "__mapping__"
 _SEQUENCE_TAG = "__sequence__"
@@ -212,6 +216,60 @@ class BackendSpec:
         """Return the options as a plain nested dict (empty when no options were provided)."""
         rebuilt = _decanonicalize(self.options)
         return rebuilt if isinstance(rebuilt, dict) else {}
+
+    def lora_rank_limit(self) -> int | None:
+        """The largest LoRA adapter rank that the offline vLLM engine of this spec serves, or None when it serves none.
+
+        An offline engine serves adapters, selected per request, only when its `engine_kwargs` set `enable_lora`, and
+        only adapters whose rank is at most `max_lora_rank` (`VLLM_DEFAULT_MAX_LORA_RANK`, vLLM's default, when unset).
+        Its `max_loras` option bounds the distinct adapters in one running batch and not what it serves. An engine
+        whose `dtype` option is float32 serves none, since vLLM applies adapters in float16 or bfloat16 only.
+
+        Returns:
+            The rank limit, or None.
+
+        Raises:
+            ValueError: If the spec's kind is not `"vllm"`.
+        """
+        if self.kind != "vllm":
+            raise ValueError(f"Only an offline vLLM engine ('vllm') has a LoRA capacity; got kind {self.kind!r}.")
+        if not self.get_option("engine_kwargs", "enable_lora"):
+            return None
+        if str(self.get_option("engine_kwargs", "dtype", default="auto")) in VLLM_FLOAT32_DTYPES:
+            return None
+        return int(self.get_option("engine_kwargs", "max_lora_rank", default=VLLM_DEFAULT_MAX_LORA_RANK))
+
+    def lora_modules_left_out(self, *, modules: Iterable[str]) -> list[str]:
+        """The adapter modules that the offline vLLM engine of this spec gives no LoRA layer.
+
+        An engine whose `engine_kwargs` set `lora_target_modules` gives LoRA layers only to the modules it lists, and
+        vLLM applies an adapter's weights only on those layers. A module is covered when it is listed, or when it
+        belongs to a packed module (`VLLM_PACKED_LORA_MODULES`) that is listed or that has a listed member, since vLLM
+        then gives the whole packed module a LoRA layer.
+
+        Args:
+            modules: The names of the modules an adapter changes, e.g., `["q_proj", "v_proj"]`.
+
+        Returns:
+            The modules that are not covered, sorted (empty when `lora_target_modules` is unset).
+
+        Raises:
+            ValueError: If the spec's kind is not `"vllm"`.
+        """
+        if self.kind != "vllm":
+            raise ValueError(f"Only an offline vLLM engine ('vllm') has LoRA layers to check; got kind {self.kind!r}.")
+        targets = self.get_option("engine_kwargs", "lora_target_modules")
+        if not targets:
+            return []
+        listed = set(targets)
+
+        def covered(name: str) -> bool:
+            return name in listed or any(
+                name in members and (packed in listed or listed.intersection(members))
+                for packed, members in VLLM_PACKED_LORA_MODULES.items()
+            )
+
+        return sorted({name for name in modules if not covered(name)})
 
     @property
     def spec_hash(self) -> str:

@@ -218,11 +218,11 @@ class ReplayFactory:
     def pending_structural_fits(self, *, recipes) -> frozenset[str]:
         return frozenset()
 
-    def prepare(self, recipes) -> None:
+    def prepare(self, recipes, *, fit_seconds=None) -> None:
         pass
 
     @contextmanager
-    def steered(self, recipe):
+    def steered(self, recipe, *, fit_seconds=None):
         yield Steered(_Pipeline(), recipe, f"resolved-{recipe.id}", self.protocol)
 
     def release(self) -> None:

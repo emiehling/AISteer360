@@ -3,7 +3,11 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from trl import DPOConfig, DPOTrainer
 
 from steerability.algorithms.structural_control.base import StructuralControl
-from steerability.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin, resolve_config_kwargs
+from steerability.algorithms.structural_control.wrappers.trl.base_mixin import (
+    TRLMixin,
+    materialized_dataset,
+    resolve_config_kwargs,
+)
 from steerability.algorithms.structural_control.wrappers.trl.utils.preference_schema import (
     standardize_preference_dataset,
 )
@@ -54,11 +58,15 @@ class DPOTrainerMixin(TRLMixin, StructuralControl):
         train_dataset = eval_dataset = None
         if self.train_dataset is not None:
             train_dataset = standardize_preference_dataset(
-                self.train_dataset, prompt_format=self.prompt_format, tokenizer=self.tokenizer,
+                dataset=materialized_dataset(dataset=self.train_dataset),
+                prompt_format=self.prompt_format,
+                tokenizer=self.tokenizer,
             )
         if self.eval_dataset is not None:
             eval_dataset = standardize_preference_dataset(
-                self.eval_dataset, prompt_format=self.prompt_format, tokenizer=self.tokenizer,
+                dataset=materialized_dataset(dataset=self.eval_dataset),
+                prompt_format=self.prompt_format,
+                tokenizer=self.tokenizer,
             )
 
         # compose config kwargs (optional DPO fields); an explicit training_args entry wins

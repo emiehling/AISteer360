@@ -5,6 +5,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
 from steerability.algorithms.core.execution.backend import Backend
 from steerability.algorithms.core.execution.contracts import BackendCapabilities, Capability, CaptureKinds
+from steerability.algorithms.core.execution.payloads import LoRAArtifact
 from steerability.algorithms.core.execution.spec import BackendSpec
 from steerability.backends.huggingface.session import ExclusiveSession
 from steerability.utils.tokenization import ensure_pad_token
@@ -122,8 +123,14 @@ class HFBackend(Backend):
         """The static Hugging Face capability advertisement (spec-independent)."""
         return HF_CAPABILITIES
 
-    def open_session(self) -> "ExclusiveSession":
+    def open_session(self, *, adapter: LoRAArtifact | None = None) -> "ExclusiveSession":
         """Open the backend's one exclusive session.
+
+        The in-process model contains any adapter that a structural control attached in `steer()`, and `adapter` is
+        not read.
+
+        Args:
+            adapter: The pipeline's LoRA adapter, or None.
 
         Returns:
             The session, usable as a context manager.

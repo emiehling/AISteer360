@@ -5,7 +5,11 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from trl import GRPOConfig, GRPOTrainer
 
 from steerability.algorithms.structural_control.base import StructuralControl
-from steerability.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin, resolve_config_kwargs
+from steerability.algorithms.structural_control.wrappers.trl.base_mixin import (
+    TRLMixin,
+    materialized_dataset,
+    resolve_config_kwargs,
+)
 from steerability.algorithms.structural_control.wrappers.trl.utils.prompt_schema import standardize_prompt_dataset
 from steerability.utils.tokenization import ensure_pad_token
 
@@ -42,8 +46,10 @@ class GRPOTrainerMixin(TRLMixin, StructuralControl):
         reward_funcs = self.reward_funcs if isinstance(self.reward_funcs, list) else [self.reward_funcs]
 
         # GRPO reads the text "prompt" column directly; standardize but do NOT tokenize to input_ids
-        train_dataset = standardize_prompt_dataset(self.train_dataset) if self.train_dataset is not None else None
-        eval_dataset = standardize_prompt_dataset(self.eval_dataset) if self.eval_dataset is not None else None
+        train_dataset = materialized_dataset(dataset=self.train_dataset)
+        eval_dataset = materialized_dataset(dataset=self.eval_dataset)
+        train_dataset = standardize_prompt_dataset(dataset=train_dataset) if train_dataset is not None else None
+        eval_dataset = standardize_prompt_dataset(dataset=eval_dataset) if eval_dataset is not None else None
 
         config_kwargs = resolve_config_kwargs(GRPOConfig, self._config_kwargs(self.training_args))
         training_config = GRPOConfig(**config_kwargs)

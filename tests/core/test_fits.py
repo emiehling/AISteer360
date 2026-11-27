@@ -27,6 +27,7 @@ from steerability.algorithms.core.fits import (
     stores_a_fit,
     weights_context,
 )
+from steerability.algorithms.core.product_fit import transport_problems
 from steerability.algorithms.core.protocol import Protocol
 from steerability.algorithms.core.recipe import Recipe, RecipeError, entry
 from steerability.algorithms.core.registry import REGISTRY, register_method
@@ -40,6 +41,7 @@ from steerability.algorithms.state_control.common import sources
 from steerability.algorithms.state_control.common.fit_specs import ConditionSearchSpec, VectorTrainSpec
 from steerability.algorithms.structural_control.base import StructuralControl
 from steerability.algorithms.structural_control.load_lora.control import LoadLoRA
+from steerability.spipe import DataRef
 
 MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 PAIRS = {"positives": ["yes indeed", "sure thing", "of course"], "negatives": ["no way", "never", "not at all"]}
@@ -709,3 +711,93 @@ def test_sasa_served_from_the_cache_constructs_with_a_real_path(tmp_path):
         factory.release()
     assert isinstance(control.args.wv_path, str) and Path(control.args.wv_path).is_dir()
     assert control.args.gen_wv_data is None
+
+
+def _sft_recipe(train_dataset) -> Recipe:
+    """An SFT LoRA training of the tiny model that takes seconds on a CPU."""
+    from steerability.algorithms.structural_control.wrappers.trl.sfttrainer.control import SFT
+
+    return Recipe(
+        entries=(
+            entry(
+                SFT,
+                train_dataset=train_dataset,
+                use_peft=True,
+                num_train_epochs=1,
+                per_device_train_batch_size=2,
+                logging_steps=100,
+                load_best_model_at_end=False,
+                max_length=32,
+            ),
+        ),
+    )
+
+
+def _text_file(path: Path) -> DataRef:
+    """A JSON Lines file of four texts, given as a digest-pinned `DataRef`."""
+    import hashlib
+
+    path.write_text("".join(json.dumps({"text": f"hello world {index}"}) + "\n" for index in range(4)))
+    return DataRef(kind="path", path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+class TestProductsInAChildProcess:
+    def test_a_recipe_is_transportable_unless_it_holds_a_dataset_or_a_callable_a_new_interpreter_lacks(self, tmp_path):
+        from datasets import Dataset
+
+        from steerability.algorithms.output_control.best_of_n.control import BestOfN
+
+        assert transport_problems(recipe=_sft_recipe(train_dataset=_text_file(tmp_path / "train.jsonl"))) == []
+        (problem,) = transport_problems(recipe=_sft_recipe(train_dataset=Dataset.from_dict({"text": ["a", "b"]})))
+        assert problem.startswith("sft: a dataset held in memory")
+
+        def scorer(prompt, continuations, params):
+            return [0.0 for _ in continuations]
+
+        # a function defined in a notebook has a module-level name in `__main__`
+        scorer.__module__, scorer.__qualname__ = "__main__", "scorer"
+        (problem,) = transport_problems(recipe=Recipe(entries=(entry(BestOfN, scorer=scorer, n=2),)))
+        assert "cannot be imported by a new interpreter" in problem
+
+    def test_a_training_runs_in_a_child_process_under_its_time_limit_and_is_installed_from_the_store(self, tmp_path):
+        recipe = _sft_recipe(train_dataset=_text_file(tmp_path / "train.jsonl"))
+        factory, store = _factory(tmp_path)
+        (key,) = factory.pending_structural_fits(recipes=[recipe])
+        try:
+            with factory.steered(recipe=recipe, fit_seconds=600.0) as steered:
+                text = steered.pipeline.generate(text="hello", max_new_tokens=4, do_sample=False)
+                product = steered.pipeline.structural_controls[0].export_artifact()
+        finally:
+            factory.release()
+        assert store.get_fit(fit_key=key) is not None and factory.stats.structural_fits == 1
+        assert Path(product.path).is_relative_to(store.artifacts.root) and isinstance(text, str)
+
+    def test_a_training_past_its_time_limit_is_stopped_and_stores_nothing(self, tmp_path):
+        from steerability.algorithms.core.product_fit import ProductFitTimeout
+
+        recipe = _sft_recipe(train_dataset=_text_file(tmp_path / "train.jsonl"))
+        factory, store = _factory(tmp_path)
+        (key,) = factory.pending_structural_fits(recipes=[recipe])
+        try:
+            with pytest.raises(ProductFitTimeout) as raised:
+                factory.prepare(recipes=[recipe], fit_seconds=1.0)
+        finally:
+            factory.release()
+        assert raised.value.fit_key == key and store.get_fit(fit_key=key) is None
+        assert factory.stats.structural_fits == 0
+
+    def test_a_training_a_child_cannot_rebuild_runs_in_process_with_a_notice(self, tmp_path, caplog):
+        import logging
+
+        from datasets import Dataset
+
+        recipe = _sft_recipe(train_dataset=Dataset.from_dict({"text": [f"hello world {index}" for index in range(4)]}))
+        factory, store = _factory(tmp_path)
+        (key,) = factory.pending_structural_fits(recipes=[recipe])
+        try:
+            with caplog.at_level(logging.WARNING, logger="steerability.algorithms.core.sweeps"):
+                factory.prepare(recipes=[recipe], fit_seconds=600.0)
+        finally:
+            factory.release()
+        assert store.get_fit(fit_key=key) is not None and factory.stats.structural_fits == 1
+        assert "runs in this process without a time limit (sft: a dataset held in memory" in caplog.text

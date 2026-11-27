@@ -78,6 +78,19 @@ class TestBackendPool:
         second = pool.get(SERVE, (CheckpointArtifact(path=str(tmp_path)),), _Backend)
         assert first.released and second is not first
 
+    def test_backends_with_other_adapters_share_one_engine(self, tmp_path):
+        from steerability.algorithms.core.execution.payloads import CheckpointArtifact, LoRAArtifact
+
+        stats = FactoryStats()
+        pool = BackendPool(stats=stats)
+        adapters = [LoRAArtifact(path=str(tmp_path / name), base_model="m") for name in ("first", "second")]
+        first = pool.get(spec=SERVE, artifacts=(adapters[0],), build=_Backend)
+        assert pool.get(spec=SERVE, artifacts=(adapters[1],), build=_Backend) is first
+        assert pool.get(spec=SERVE, artifacts=(), build=_Backend) is first
+        checkpoint = CheckpointArtifact(path=str(tmp_path / "checkpoint"))
+        assert pool.get(spec=SERVE, artifacts=(checkpoint, adapters[0]), build=_Backend) is not first
+        assert stats.engine_boots == 2
+
     def test_release_all_counts_fit_releases(self):
         stats = FactoryStats()
         pool = BackendPool(stats)

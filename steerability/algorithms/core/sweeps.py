@@ -24,6 +24,7 @@ from steerability.algorithms.core.execution.access import ModelAccess
 from steerability.algorithms.core.execution.contracts import Capability
 from steerability.algorithms.core.execution.payloads import Artifact
 from steerability.algorithms.core.execution.spec import BackendSpec
+from steerability.algorithms.core.execution.staging import split_artifacts
 from steerability.algorithms.core.fits import (
     FitCache,
     apply_control_hits,
@@ -37,6 +38,7 @@ from steerability.algorithms.core.fits import (
     weights_context,
 )
 from steerability.algorithms.core.internals.fingerprint import model_fingerprint
+from steerability.algorithms.core.product_fit import fit_in_child, transport_problems
 from steerability.algorithms.core.protocol import Protocol, ProtocolFacts
 from steerability.algorithms.core.recipe import Point, Recipe, Template, expand
 from steerability.algorithms.core.steering_pipeline import SteeringPipeline
@@ -140,16 +142,17 @@ class FactoryStats:
 
 
 def _artifact_key(artifacts: Sequence[Artifact]) -> tuple:
-    return tuple((type(artifact).__name__, str(artifact.path), getattr(artifact, "base_model", None))
-                 for artifact in artifacts)
+    checkpoint, _ = split_artifacts(artifacts=artifacts)
+    return () if checkpoint is None else (str(checkpoint.path),)
 
 
 class BackendPool:
     """Engine backends shared across the pipelines of one factory.
 
-    One backend is kept per spec, keyed by the spec and the structural artifacts it serves; a
-    request for the same spec with other artifacts releases the kept backend first, so two
-    engines of one spec are never up at once.
+    One backend is kept per spec, keyed by the spec and the checkpoint it serves. A LoRA adapter is
+    not part of the key, since a backend serves the adapter of each session it opens, and pipelines
+    with different adapters therefore share one engine. A request for the same spec with another
+    checkpoint releases the kept backend first, so two engines of one spec are never up at once.
 
     Args:
         stats: The factory counters the pool updates (`engine_boots`,
@@ -406,80 +409,145 @@ class PipelineFactory:
                     pending.add(key)
         return frozenset(pending)
 
-    def _fit_products(self, *, recipe: Recipe, cache: FitCache) -> None:
+    def _fit_products(self, *, recipe: Recipe, cache: FitCache, fit_seconds: float | None) -> None:
         """Fit the products of a recipe's structural controls that the cache does not contain, alone.
 
-        The structural controls are fitted one at a time in entry order. Each is steered in a pipeline of the
-        structural controls up to and including it, under the recipe's fit cache and on a model of its own (never
-        the shared base model). The controls before it are cache hits because they were fitted first. A plan that
-        stages runs `fit_staged` after the pool's engines are released, and any other plan runs `steer`. The
-        pipeline is released afterwards.
+        The structural controls are fitted one at a time in entry order (`fit_product`), each in a pipeline of the
+        structural controls up to and including it, so the controls before it are cache hits. With `fit_seconds`, a
+        product whose structural entries up to it a new interpreter can rebuild (`transport_problems`) is fitted in a
+        child process under that time limit (`fit_in_child`), after the pool's engines and the shared base model are
+        released. Any other product is fitted in this process, without a time limit, which is logged.
 
         Args:
             recipe: The recipe.
             cache: The recipe's fit cache.
+            fit_seconds: The time limit of a product fitted in a child process, or None to fit every product in this
+                process.
 
         Raises:
+            ProductFitTimeout: If a product fitted in a child process runs past `fit_seconds`.
             RuntimeError: If a structural control declares a fit and its product is not stored afterwards.
         """
         controls = [control for control in recipe.instantiate() if isinstance(control, StructuralControl)]
+        entries = [item for item in recipe.entries if item.enabled and item.category == "structural_control"]
         for index, control in enumerate(controls):
             digests = control_fit_digests(control=control)
             if all(cache.has(digest=digest) for digest in digests):
                 continue
-            prefix = [item for item in recipe.instantiate() if isinstance(item, StructuralControl)][:index + 1]
-            fitted = cache.product_count
-            pipeline, _ = self._pipeline(controls=prefix, own_model=True)
-            try:
-                with fit_cache_scope(cache=cache):
-                    if pipeline.check().plan.stages:
-                        self.pool.release_all(for_fits=self.pool.has_engine())
-                        pipeline.fit_staged()
-                    else:
-                        pipeline.steer()
-            finally:
-                for item in prefix:
-                    try:
-                        item.cleanup()
-                    except Exception:
-                        logger.warning("Control cleanup failed", exc_info=True)
-                pipeline.release_backends()
-                del pipeline
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+            prefix = Recipe(entries=tuple(entries[:index + 1]))
+            problems = transport_problems(recipe=prefix) if fit_seconds is not None else []
+            if fit_seconds is not None and self.store is None:
+                problems.append("the factory has no store that a child process could write the product to")
+            if fit_seconds is not None and not problems:
+                self.pool.release_all(for_fits=self.pool.has_engine())
+                self._drop_shared_base()
+                self.stats.structural_fits += fit_in_child(
+                    factory=self,
+                    recipe=prefix,
+                    index=index,
+                    fit_key=cache.key(digest=digests[0]),
+                    seconds=fit_seconds,
+                )
+            else:
+                if fit_seconds is not None:
+                    logger.warning(
+                        "The structural fit of %s runs in this process without a time limit (%s).",
+                        type(control).__name__,
+                        "; ".join(problems),
+                    )
+                self.stats.structural_fits += self._fit_product_in_process(recipe=recipe, index=index, cache=cache)
             if not all(cache.has(digest=digest) for digest in digests):
                 raise RuntimeError(
                     f"{type(control).__name__} declares a fit, and its product was not stored; a structural "
                     "control that trains or merges resolves its product through resolve_product, and a merged "
                     "LoRA run writes a product only to merged_output_dir."
                 )
-            self.stats.structural_fits += cache.product_count - fitted
 
-    @contextmanager
-    def steered(self, recipe: Recipe) -> Iterator[Steered]:
-        """Build and steer the pipeline of one recipe, releasing it on exit.
-
-        The products of the recipe's structural controls that the store does not contain are fitted
-        first, each in a pipeline of its own. The recipe's pipeline then installs every product
-        from the store. The yielded pipeline trains nothing, and its other controls fit on the
-        stored products. On exit (also on error) every control's `cleanup()` runs, the pipeline's
-        own backends are released, and the shared-base fingerprint check runs. Pooled backends
-        stay up until `release()`.
+    def fit_product(self, *, recipe: Recipe, index: int, fit_key: str) -> int:
+        """Fit the product of a recipe's structural control in this process, as the child of `fit_in_child` does.
 
         Args:
             recipe: The recipe.
+            index: The index of the control among the recipe's enabled structural controls.
+            fit_key: The fit key the product must have, i.e., the one the parent process expects.
+
+        Returns:
+            The number of products fitted and stored (0 when the product was stored by another writer first).
+
+        Raises:
+            RuntimeError: If the product's fit key in this process is not `fit_key`.
+        """
+        cache = self._cache(recipe=recipe)
+        control = [item for item in recipe.instantiate() if isinstance(item, StructuralControl)][index]
+        keys = [cache.key(digest=digest) for digest in control_fit_digests(control=control)]
+        if keys != [fit_key]:
+            raise RuntimeError(
+                f"The structural product of {type(control).__name__} has the fit keys {keys} in this process, not "
+                f"{fit_key}; its entries do not rebuild to the same fit.",
+            )
+        return self._fit_product_in_process(recipe=recipe, index=index, cache=cache)
+
+    def _fit_product_in_process(self, *, recipe: Recipe, index: int, cache: FitCache) -> int:
+        """Fit the product of a recipe's structural control in this process, on a model of its own.
+
+        The control is steered in a pipeline of the recipe's structural controls up to and including it, under the
+        recipe's fit cache, and never on the shared base model. A plan that stages runs `fit_staged` after the pool's
+        engines are released, and any other plan runs `steer`. The pipeline is released afterwards.
+
+        Returns:
+            The number of products fitted and stored (0 when the product was stored by another writer first).
+        """
+        prefix = [item for item in recipe.instantiate() if isinstance(item, StructuralControl)][:index + 1]
+        fitted = cache.product_count
+        pipeline, _ = self._pipeline(controls=prefix, own_model=True)
+        try:
+            with fit_cache_scope(cache=cache):
+                if pipeline.check().plan.stages:
+                    self.pool.release_all(for_fits=self.pool.has_engine())
+                    pipeline.fit_staged()
+                else:
+                    pipeline.steer()
+        finally:
+            for item in prefix:
+                try:
+                    item.cleanup()
+                except Exception:
+                    logger.warning("Control cleanup failed", exc_info=True)
+            pipeline.release_backends()
+            del pipeline
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        return cache.product_count - fitted
+
+    @contextmanager
+    def steered(self, recipe: Recipe, *, fit_seconds: float | None = None) -> Iterator[Steered]:
+        """Build and steer the pipeline of one recipe, releasing it on exit.
+
+        The products of the recipe's structural controls that the store does not contain are fitted
+        first, each in a pipeline of its own (in a child process under `fit_seconds`, when one can
+        rebuild its entries). The recipe's pipeline then installs every product from the store.
+        The yielded pipeline trains nothing, and its other controls fit on the stored products. On
+        exit (also on error) every control's `cleanup()` runs, the pipeline's own backends are
+        released, and the shared-base fingerprint check runs. Pooled backends stay up until
+        `release()`.
+
+        Args:
+            recipe: The recipe.
+            fit_seconds: The time limit of a product fitted in a child process, or None to fit
+                every product in this process.
 
         Yields:
             The `Steered` pipeline.
 
         Raises:
+            ProductFitTimeout: If a product fitted in a child process runs past `fit_seconds`.
             RuntimeError: If a structural control's product is not stored after its fit, or a
                 product is fitted while the recipe's own pipeline steers.
         """
         started = time.monotonic()
         cache = self._cache(recipe)
-        self._fit_products(recipe=recipe, cache=cache)
+        self._fit_products(recipe=recipe, cache=cache, fit_seconds=fit_seconds)
         controls, pending = apply_control_hits(recipe.instantiate(), cache)
         pipeline: SteeringPipeline | None = None
         shared = False
@@ -552,28 +620,31 @@ class PipelineFactory:
                 return False
         return model is self._base_model
 
-    def prepare(self, recipes: Iterable[Recipe]) -> None:
+    def prepare(self, recipes: Iterable[Recipe], *, fit_seconds: float | None = None) -> None:
         """Run the fits a batch of recipes needs, so that later `steered` calls only bind.
 
-        The products of structural controls (trainings and merges) are fitted first, each once
-        and alone (as in `steered`). Recipes whose steer plan has no fit left under the cache are
-        then skipped, as are recipes whose fits are not stored (a control without a fit identity),
-        since their fits run again at every steer. When a plan has a step on a staged in-process
-        model, the pool's engines are released once and every such recipe fits its staged steps
-        (`SteeringPipeline.fit_staged`). Every planned recipe that still has a fit when its turn
-        comes is then steered once through `steered`, with its staged fits served from the cache,
-        so an engine boots once and stays up and recipes that share a fit are steered once
-        between them. Call this once per batch, before generation.
+        The products of structural controls (trainings and merges) are fitted first, each once and
+        alone (as in `steered`, with the time limit `fit_seconds`). Recipes whose steer plan has no
+        fit left under the cache are then skipped, as are recipes whose fits are not stored (a
+        control without a fit identity), since their fits run again at every steer. When a plan has
+        a step on a staged in-process model, the pool's engines are released once and every such
+        recipe fits its staged steps (`SteeringPipeline.fit_staged`). Every planned recipe that
+        still has a fit when its turn comes is then steered once through `steered`, with its staged
+        fits served from the cache, so an engine boots once and stays up and recipes that share a
+        fit are steered once between them. Call this once per batch, before generation.
 
         Args:
             recipes: The recipes.
+            fit_seconds: The time limit of a product fitted in a child process, or None to fit
+                every product in this process.
 
         Raises:
+            ProductFitTimeout: If a product fitted in a child process runs past `fit_seconds`.
             RuntimeError: If a structural control's product is not stored after its fit.
         """
         recipes = list(dict.fromkeys(recipes))
         for recipe in recipes:
-            self._fit_products(recipe=recipe, cache=self._cache(recipe=recipe))
+            self._fit_products(recipe=recipe, cache=self._cache(recipe=recipe), fit_seconds=fit_seconds)
         planned = [(recipe, plan) for recipe in recipes if (plan := self._fit_plan(recipe=recipe)) is not None]
         staged = [recipe for recipe, plan in planned if plan.stages]
         if staged:
@@ -592,7 +663,7 @@ class PipelineFactory:
         for recipe, _ in planned:
             if self._fit_plan(recipe=recipe) is None:
                 continue
-            with self.steered(recipe):
+            with self.steered(recipe=recipe, fit_seconds=fit_seconds):
                 pass
 
     def _fit_plan(self, *, recipe: Recipe) -> Any:

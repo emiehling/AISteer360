@@ -604,6 +604,18 @@ class SteeringPipeline:
             self._backends[spec] = backend
         return backend
 
+    def _open_session(self, *, backend):
+        """Open a session on `backend` whose requests are served under this pipeline's LoRA adapter, if it has one.
+
+        An engine backend selects an adapter per session, and the pipeline's adapter is the `LoRAArtifact` of its
+        structural artifacts. The in-process backend's model contains any attached adapter, and its sessions are
+        opened without one.
+        """
+        if backend.spec.kind == "huggingface":
+            return backend.open_session()
+        _, adapter = split_artifacts(artifacts=self._structural_artifacts)
+        return backend.open_session(adapter=adapter)
+
     def release_backends(self) -> None:
         """Release every backend this pipeline constructed and empty the cache.
 
@@ -647,8 +659,9 @@ class SteeringPipeline:
         exports either form requires `Capability.IN_PROCESS_TORCH` at generate. When the backend
         lacks it, the report contains a failure that identifies the control and the driver. On
         engine backends, a structural control whose LoRA adapter follows another control's
-        adapter fails at generate, since an engine serves one adapter. On `"vllm-serve"`, a
-        structural control whose checkpoint path is not the spec's `model` fails at generate.
+        adapter fails at generate, since a pipeline's requests are served under one adapter. On
+        `"vllm-serve"`, a structural control whose checkpoint path is not the spec's `model` fails
+        at generate.
 
         Args:
             backend: Backend to check against. Defaults to the pipeline's `backend`, then to the
@@ -675,8 +688,8 @@ class SteeringPipeline:
     def _structural_artifact_failures(self, spec: BackendSpec) -> tuple[SupportFailure, ...]:
         """Return a generate-phase failure for each structural artifact that an engine backend cannot serve.
 
-        An engine serves the last checkpoint and one LoRA adapter, so each enabled structural control after the first
-        whose artifact is a LoRA adapter fails. A `"vllm-serve"` backend serves the model its server was started on,
+        An engine serves the last checkpoint, and the requests of one pipeline are served under one LoRA adapter, so
+        each enabled structural control after the first whose artifact is a LoRA adapter fails. A `"vllm-serve"` backend serves the model its server was started on,
         so a checkpoint artifact fails unless its path is the spec's `model`. The artifacts are read from the
         controls' configuration (`artifact_capability()` and `export_artifact()`).
 
@@ -1110,7 +1123,7 @@ class SteeringPipeline:
             if type(c).__name__ in session_fitters and steps[id(c)].access == ModelAccess.CAPTURE
         ]
 
-        session = backend.open_session()
+        session = self._open_session(backend=backend)
         try:
             if fit_controls:
                 if Capability.HIDDEN_CAPTURE not in backend.negotiated_capabilities().atoms:
@@ -1134,7 +1147,7 @@ class SteeringPipeline:
                     )
                     session_controls = [c for c in session_controls if c not in fit_controls]
                     backend = self._backend_for(spec)
-                    session = backend.open_session()
+                    session = self._open_session(backend=backend)
             for control in session_controls:
                 self._run_control_steer(control, steps[id(control)].access, session, steer_kwargs)
         finally:
@@ -2187,7 +2200,7 @@ class SteeringPipeline:
         driver_decode = prepared.driver_decode
 
         driver_generated_tokens: int | None = None
-        with prepared.backend.open_session() as session:
+        with self._open_session(backend=prepared.backend) as session:
             if driver_decode is not None:
                 if driver_decode.state_entries and driver_decode.hooks_in_process:
                     applied = session.entries_applied(driver_decode.state_entries)
@@ -2426,7 +2439,7 @@ class SteeringPipeline:
                 )
                 for i in range(batch_size)
             ]
-            with backend.open_session() as session:
+            with self._open_session(backend=backend) as session:
                 return session.score(items, score_params)
 
         # sequential fallback (one or more controls do not support batching): per-item
@@ -2451,7 +2464,7 @@ class SteeringPipeline:
             return torch.zeros((num_inputs, 0), device=device, dtype=torch.float32)
 
         all_logprobs = []
-        with backend.open_session() as session:
+        with self._open_session(backend=backend) as session:
             for i in range(num_inputs):
                 single_attention_mask = attention_mask[i:i + 1] if attention_mask is not None else None
                 steered_input_ids, steered_attention_mask = prepare_inputs(

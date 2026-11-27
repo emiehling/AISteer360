@@ -872,7 +872,7 @@ class _FakeCaptureEngine:
         yield SimpleNamespace(captures=(json.dumps({"positions": {}}), safetensors.torch.save(tensors)))
 
 
-def _offline_backend(engine, tmp_path):
+def _offline_backend(engine, tmp_path, spec=None):
     """A `VLLMBackend` over a fake engine on a started engine thread, built without booting vLLM."""
     import itertools
 
@@ -882,13 +882,17 @@ def _offline_backend(engine, tmp_path):
     from steerability.backends.vllm.engine_thread import EngineThread
 
     backend = VLLMBackend.__new__(VLLMBackend)
-    backend.spec = BackendSpec(kind="vllm", model="m", options={"hook_plugin": True, "artifact_dir": str(tmp_path)})
+    backend.spec = spec or BackendSpec(
+        kind="vllm",
+        model="m",
+        options={"hook_plugin": True, "artifact_dir": str(tmp_path)},
+    )
     backend._released = False
     backend._engine = engine
     backend._engine_thread = EngineThread(name="fake-engine")
     backend._engine_thread.start()
     backend._request_counter = itertools.count()
-    backend._lora_request = None
+    backend._lora_requests = {}
     backend.tokenizer = wordlevel_tokenizer()
     backend._layout = ModelFacts(
         num_layers=2, hidden_size=4, num_attention_heads=2, head_dim=2, dtype="float32", model_fingerprint=None,
@@ -896,7 +900,7 @@ def _offline_backend(engine, tmp_path):
     )
     backend._plain_salt = "plain"
     backend._artifact_uploader = _ArtifactUploader(str(tmp_path))
-    backend._discovery = _discovery_payload()
+    backend._discovery = None if spec is not None else _discovery_payload()
     return backend
 
 
@@ -985,3 +989,161 @@ def test_choice_constraint_constrains_a_live_server():
         assert completion in ("cat", "dog")
     finally:
         backend.release()
+
+
+class _FakeGenerateEngine:
+    """An `AsyncLLM` double that records the LoRA request of each generation and returns one token."""
+
+    def __init__(self, dtype=torch.bfloat16):
+        from types import SimpleNamespace
+
+        self.lora_requests: list = []
+        self.model_config = SimpleNamespace(dtype=dtype)
+
+    async def generate(self, prompt, sampling_params, request_id, lora_request=None):
+        from types import SimpleNamespace
+
+        self.lora_requests.append(lora_request)
+        yield SimpleNamespace(outputs=[SimpleNamespace(token_ids=[9], finish_reason="stop", stop_reason=None)])
+
+
+def _adapter(directory, *, rank, target_modules=None):
+    """A LoRA artifact whose directory has an `adapter_config.json` of the given rank and target modules."""
+    import json
+
+    from steerability.algorithms.core.execution import LoRAArtifact
+
+    directory.mkdir(parents=True, exist_ok=True)
+    config = {"r": rank} if target_modules is None else {"r": rank, "target_modules": list(target_modules)}
+    (directory / "adapter_config.json").write_text(json.dumps(config), encoding="utf-8")
+    return LoRAArtifact(path=str(directory), base_model="m")
+
+
+class TestAdaptersPerSession:
+
+    def test_each_offline_session_serves_its_own_adapter_under_an_id_of_its_own(self, tmp_path):
+        pytest.importorskip("vllm")
+        from steerability.backends.vllm.backend import adapter_identity
+
+        engine = _FakeGenerateEngine()
+        spec = BackendSpec(kind="vllm", model="m", options={"engine_kwargs": {"enable_lora": True}})
+        backend = _offline_backend(engine, tmp_path, spec=spec)
+        first, second = _adapter(tmp_path / "first", rank=8), _adapter(tmp_path / "second", rank=16)
+        item = GenerationItem(prompt=PreparedPrompt.from_token_ids(token_ids=[0, 3]))
+        try:
+            for adapter in (first, second, None, first):
+                with backend.open_session(adapter=adapter) as session:
+                    session.generate(items=[item], params=GenerationParams(max_new_tokens=1))
+        finally:
+            backend._engine_thread.close()
+        one, two, base, again = engine.lora_requests
+        assert base is None and again is one
+        assert (one.lora_name, one.lora_int_id) == adapter_identity(adapter=first)
+        assert one.lora_int_id != two.lora_int_id and (one.lora_path, two.lora_path) == (first.path, second.path)
+
+    def test_an_offline_engine_refuses_an_adapter_it_cannot_serve(self, tmp_path):
+        pytest.importorskip("vllm")
+        adapter = _adapter(tmp_path / "wide", rank=32)
+        without = _offline_backend(_FakeGenerateEngine(), tmp_path, spec=BackendSpec(kind="vllm", model="m"))
+        narrow_spec = BackendSpec(kind="vllm", model="m", options={"engine_kwargs": {"enable_lora": True}})
+        narrow = _offline_backend(_FakeGenerateEngine(), tmp_path, spec=narrow_spec)
+        try:
+            with pytest.raises(ValueError, match="enable_lora"):
+                without.open_session(adapter=adapter)
+            with pytest.raises(ValueError, match="rank 32, above the engine's max_lora_rank of 16"):
+                narrow.open_session(adapter=adapter)
+            assert without.open_session().closed is False
+        finally:
+            without._engine_thread.close()
+            narrow._engine_thread.close()
+
+    def test_an_offline_engine_refuses_an_adapter_that_changes_a_module_outside_its_lora_layers(self, tmp_path):
+        pytest.importorskip("vllm")
+        adapter = _adapter(tmp_path / "adapter", rank=8, target_modules=["q_proj", "v_proj", "o_proj"])
+        filters = {"narrow": ["q_proj", "v_proj"], "packed": ["qkv_proj", "o_proj"], "member": ["q_proj", "o_proj"]}
+        engines = {}
+        for name, targets in filters.items():
+            spec = BackendSpec(
+                kind="vllm",
+                model="m",
+                options={"engine_kwargs": {"enable_lora": True, "lora_target_modules": targets}},
+            )
+            engines[name] = _offline_backend(_FakeGenerateEngine(), tmp_path, spec=spec)
+        try:
+            with pytest.raises(ValueError, match=r"changes the modules \['o_proj'\], which the engine's"):
+                engines["narrow"].open_session(adapter=adapter)
+            assert engines["packed"].open_session(adapter=adapter).closed is False
+            assert engines["member"].open_session(adapter=adapter).closed is False
+        finally:
+            for backend in engines.values():
+                backend._engine_thread.close()
+
+    def test_the_modules_of_an_adapter_are_read_from_its_weights(self, tmp_path):
+        from safetensors.torch import save_file
+
+        from steerability.backends.vllm.backend import adapter_modules
+
+        prefix = "base_model.model.model.layers.0"
+        weights = {
+            f"{prefix}.self_attn.q_proj.lora_A.weight": torch.zeros(2, 4),
+            f"{prefix}.self_attn.q_proj.lora_B.weight": torch.zeros(4, 2),
+            f"{prefix}.mlp.up_proj.lora_A.weight": torch.zeros(2, 4),
+            "base_model.model.model.embed_tokens.lora_embedding_A": torch.zeros(2, 4),
+        }
+        directory = tmp_path / "adapter"
+        directory.mkdir()
+        save_file(weights, str(directory / "adapter_model.safetensors"))
+        assert adapter_modules(path=str(directory)) == {"q_proj", "up_proj", "embed_tokens"}
+        assert adapter_modules(path=str(tmp_path / "missing")) is None
+
+    def test_an_engine_without_lora_target_modules_covers_every_module_and_one_with_them_covers_packed_members(self):
+        def left_out(modules, targets=None):
+            engine_kwargs = {"enable_lora": True} if targets is None else {"lora_target_modules": targets}
+            spec = BackendSpec(kind="vllm", model="m", options={"engine_kwargs": engine_kwargs})
+            return spec.lora_modules_left_out(modules=modules)
+
+        assert left_out(["q_proj", "lm_head"]) == []
+        assert left_out(["q_proj", "up_proj"], targets=["qkv_proj", "gate_proj"]) == []
+        assert left_out(["q_proj", "up_proj", "lm_head"], targets=["q_proj"]) == ["lm_head", "up_proj"]
+        with pytest.raises(ValueError, match="Only an offline vLLM engine"):
+            BackendSpec(kind="vllm-serve", model="m").lora_modules_left_out(modules=["q_proj"])
+
+    def test_an_offline_engine_in_float32_refuses_an_adapter_before_any_request(self, tmp_path):
+        pytest.importorskip("vllm")
+        engine = _FakeGenerateEngine(dtype=torch.float32)
+        spec = BackendSpec(kind="vllm", model="m", options={"engine_kwargs": {"enable_lora": True}})
+        backend = _offline_backend(engine, tmp_path, spec=spec)
+        item = GenerationItem(prompt=PreparedPrompt.from_token_ids(token_ids=[0, 3]))
+        try:
+            with pytest.raises(ValueError, match="runs in float32, and vLLM applies a LoRA adapter in float16"):
+                backend.open_session(adapter=_adapter(tmp_path / "adapter", rank=8))
+            with backend.open_session() as session:
+                session.generate(items=[item], params=GenerationParams(max_new_tokens=1))
+        finally:
+            backend._engine_thread.close()
+        assert engine.lora_requests == [None]
+
+    def test_a_serve_session_loads_its_adapter_once_and_names_it_as_the_model(self, fake_server, tmp_path):
+        from steerability.backends.vllm.backend import adapter_identity
+
+        loads = []
+        handle = fake_server.handle
+
+        def handle_with_adapters(path, payload):
+            if path == "/v1/load_lora_adapter":
+                loads.append(payload)
+                fake_server.requests.append((path, payload))
+                return {"text": ""}
+            return handle(path, payload)
+
+        fake_server.handle = handle_with_adapters
+        backend = VLLMServeBackend(spec=_serve_spec())
+        adapter = _adapter(tmp_path / "adapter", rank=8)
+        item = GenerationItem(prompt=PreparedPrompt.from_token_ids(token_ids=[0, 3]))
+        for session_adapter in (adapter, None, adapter):
+            with backend.open_session(adapter=session_adapter) as session:
+                session.generate(items=[item], params=GenerationParams(max_new_tokens=1))
+        name, _ = adapter_identity(adapter=adapter)
+        assert loads == [{"lora_name": name, "lora_path": adapter.path}]
+        models = [payload["model"] for path, payload in fake_server.requests if path == "/v1/completions"]
+        assert models == [name, "m", name]

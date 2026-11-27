@@ -24,6 +24,7 @@ from typing import Any
 
 from steerability.algorithms.core.fits import weights_context
 from steerability.algorithms.core.identity import content_id
+from steerability.algorithms.core.product_fit import ProductFitTimeout
 from steerability.algorithms.core.protocol import Protocol
 from steerability.algorithms.core.recipe import Choice, Interval, Recipe, Template, entry
 from steerability.algorithms.core.store import ItemRow, Store
@@ -209,7 +210,8 @@ class StubFactory:
     """A factory whose steered pipelines run nothing; each recipe resolves to `"resolved-<recipe id>"`.
 
     A recipe's structural fit is its weights context when that is not `"base"`, and the fit counts as stored once the
-    factory has prepared or steered a recipe with that context (`fitted_weights`).
+    factory has prepared or steered a recipe with that context (`fitted_weights`). A context in `slow_weights` runs
+    past any time limit (`fit_seconds`), which raises `ProductFitTimeout` and is recorded in `timeouts`.
     """
 
     def __init__(self, protocol: Protocol) -> None:
@@ -218,20 +220,30 @@ class StubFactory:
         self.steered_recipes: list[str] = []
         self.pipelines: list[StubPipeline] = []
         self.fitted_weights: set[str] = set()
+        self.slow_weights: set[str] = set()
+        self.timeouts: list[str] = []
         self.released = False
 
     def pending_structural_fits(self, *, recipes) -> frozenset[str]:
         return frozenset(weights_context(recipe=recipe) for recipe in recipes) - {"base"} - self.fitted_weights
 
-    def prepare(self, recipes) -> None:
+    def prepare(self, recipes, *, fit_seconds=None) -> None:
         recipes = list(recipes)
         self.prepared.append([recipe.id for recipe in recipes])
-        self.fitted_weights.update(weights_context(recipe=recipe) for recipe in recipes)
+        self._fit(recipes=recipes, fit_seconds=fit_seconds)
+
+    def _fit(self, *, recipes, fit_seconds) -> None:
+        for recipe in recipes:
+            weights = weights_context(recipe=recipe)
+            if weights in self.slow_weights and weights not in self.fitted_weights and fit_seconds is not None:
+                self.timeouts.append(weights)
+                raise ProductFitTimeout(fit_key=weights, seconds=fit_seconds)
+            self.fitted_weights.add(weights)
 
     @contextmanager
-    def steered(self, recipe: Recipe):
+    def steered(self, recipe: Recipe, *, fit_seconds=None):
+        self._fit(recipes=[recipe], fit_seconds=fit_seconds)
         self.steered_recipes.append(recipe.id)
-        self.fitted_weights.add(weights_context(recipe=recipe))
         pipeline = StubPipeline(recipe)
         self.pipelines.append(pipeline)
         yield Steered(pipeline, recipe, f"resolved-{recipe.id}", self.protocol)

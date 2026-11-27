@@ -22,6 +22,40 @@ if TYPE_CHECKING:
     from steerability.algorithms.core.execution.backend import SteeringSession
 
 
+def materialized_dataset(*, dataset: Any) -> Any:
+    """A dataset given as a `DataRef` loaded, or any other value unchanged.
+
+    A Hub reference loads with `DataRef.load`, and a reference to a local file loads with the `datasets` reader of
+    its suffix (`.json` and `.jsonl` as JSON, `.csv`, or `.parquet`) as one `train` split. A dataset given by reference
+    can be rebuilt in another process, e.g., the child process of a time-limited training.
+
+    Args:
+        dataset: A dataset, a `DataRef`, or None.
+
+    Returns:
+        The dataset.
+
+    Raises:
+        ValueError: If a local file has another suffix.
+    """
+    from steerability.spipe.codec import DataRef
+
+    if not isinstance(dataset, DataRef):
+        return dataset
+    loaded = dataset.load()
+    if dataset.kind != "path":
+        return loaded
+    readers = {".json": "json", ".jsonl": "json", ".csv": "csv", ".parquet": "parquet"}
+    reader = readers.get(Path(loaded).suffix.lower())
+    if reader is None:
+        raise ValueError(
+            f"A DataRef to a local file reads a JSON, JSON Lines, CSV, or Parquet file; got {loaded!r}.",
+        )
+    from datasets import load_dataset
+
+    return load_dataset(reader, data_files=str(loaded), split="train")
+
+
 def resolve_config_kwargs(config_cls: type, training_args: dict[str, Any]) -> dict[str, Any]:
     """The kwargs to construct `config_cls` from `training_args`.
 
@@ -319,6 +353,16 @@ class TRLMixin:
         if is_lora and self.merge_lora_after_train:
             return Capability.SERVE_CHECKPOINT if self.merged_output_dir else None
         return Capability.SERVE_CHECKPOINT
+
+    def adapter_rank(self) -> int | None:
+        """The LoRA rank `r` when this configuration's product is an adapter (`Capability.SERVE_LORA`), else None."""
+        return int(self.r) if self.artifact_capability() == Capability.SERVE_LORA else None
+
+    def adapter_target_modules(self) -> list[str] | None:
+        """The `target_modules` list when this configuration's product is an adapter, else None (also for a regex)."""
+        if self.artifact_capability() != Capability.SERVE_LORA or not isinstance(self.target_modules, list):
+            return None
+        return list(self.target_modules)
 
     def export_artifact(self) -> Artifact | None:
         """The on-disk product of this configuration's `steer()`, matching `artifact_capability()`.

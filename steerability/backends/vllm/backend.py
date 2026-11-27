@@ -14,11 +14,13 @@ import itertools
 import json
 import logging
 import os
+import threading
 import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -154,6 +156,78 @@ async def _construct_engine(model_ref: str, engine_kwargs: dict):
     )
 
 
+def adapter_identity(*, adapter: LoRAArtifact) -> tuple[str, int]:
+    """The name and the integer id under which a vLLM engine or server serves a LoRA adapter.
+
+    Both derive from the adapter's path and the model fingerprint of its provenance. A retrained adapter at the same
+    path is therefore served as a new adapter, and two adapters on one engine never share an id (vLLM keys its loaded
+    adapters and its cached prefixes by the id).
+
+    Args:
+        adapter: The adapter.
+
+    Returns:
+        The name (`"steered-"` and eight hex digits) and an integer id from 1 to 2**28.
+    """
+    identity = f"{adapter.path}:{adapter.provenance.model_fingerprint or ''}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return f"steered-{digest[:8]}", int(digest[:7], 16) + 1
+
+
+def adapter_rank(*, path: str) -> int | None:
+    """The largest rank of a PEFT LoRA adapter directory, from the `r` and `rank_pattern` of its `adapter_config.json`.
+
+    Args:
+        path: The adapter directory.
+
+    Returns:
+        The rank, or None when the file is missing or gives none.
+    """
+    config = Path(path) / "adapter_config.json"
+    try:
+        data = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    ranks = [data.get("r"), *(data.get("rank_pattern") or {}).values()]
+    ranks = [int(rank) for rank in ranks if isinstance(rank, int) and not isinstance(rank, bool)]
+    return max(ranks) if ranks else None
+
+
+_LORA_WEIGHT_MARKERS = ("lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B")
+
+
+def adapter_modules(*, path: str) -> frozenset[str] | None:
+    """The names of the modules that a PEFT LoRA adapter directory changes.
+
+    The names are read from the tensor names of `adapter_model.safetensors` (the name before `lora_A` or `lora_B`),
+    or from a `target_modules` list in `adapter_config.json` when the directory has no safetensors file.
+
+    Args:
+        path: The adapter directory.
+
+    Returns:
+        The module names, or None when neither file gives them.
+    """
+    weights = Path(path) / "adapter_model.safetensors"
+    if weights.is_file():
+        from safetensors import safe_open
+
+        with safe_open(str(weights), framework="pt") as file:
+            names = [key.split(".") for key in file.keys()]
+        return frozenset(
+            parts[parts.index(marker) - 1]
+            for parts in names
+            for marker in _LORA_WEIGHT_MARKERS
+            if marker in parts[1:]
+        )
+    try:
+        data = json.loads((Path(path) / "adapter_config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    targets = data.get("target_modules")
+    return frozenset(targets) if isinstance(targets, list) else None
+
+
 async def _final_output(engine, prompt, sampling_params, request_id: str, lora_request=None):
     """The finished `RequestOutput` of one `AsyncLLM.generate` call."""
     final = None
@@ -222,8 +296,11 @@ class VLLMBackend(_DiscoveryNegotiation, Backend):
     intervention and capture specs on the workers, attaches its capture payload, and clears its
     state when the request finishes or is aborted.
 
-    The last `CheckpointArtifact` overrides the served model reference, and the `LoRAArtifact`
-    attaches as a LoRA request on every generation. When the spec declares `hook_plugin`, the
+    The last `CheckpointArtifact` overrides the served model reference. A LoRA adapter is not a
+    property of the backend: each session serves the adapter it is opened with (`open_session`) as a
+    LoRA request on each of its requests, and one engine therefore serves the pipelines of several
+    adapters. The engine serves adapters only when the spec's `engine_kwargs` enable them
+    (`BackendSpec.lora_rank_limit`). When the spec declares `hook_plugin`, the
     unified worker is selected via `VLLM_HOOK_WORKER=unified`, and the discovery payload is
     fetched from the engine at construction and kept on the backend. `negotiated_capabilities()`
     narrows the spec's advertisement to it, while `capabilities_for_spec` gives the spec's
@@ -244,10 +321,10 @@ class VLLMBackend(_DiscoveryNegotiation, Backend):
         self._released = False
         self._engine = None
         self._engine_thread: EngineThread | None = None
-        self._lora_request = None
+        self._lora_requests: dict[str, Any] = {}
         require("vllm")
 
-        checkpoint, lora = split_artifacts(artifacts)
+        checkpoint, _ = split_artifacts(artifacts=artifacts)
         model_ref = checkpoint.path if checkpoint is not None else spec.model
         if model_ref is None:
             raise ValueError("VLLMBackend needs a model reference on the spec or a checkpoint artifact.")
@@ -258,8 +335,6 @@ class VLLMBackend(_DiscoveryNegotiation, Backend):
         # default to a compact grammar so json constraints match the in-process automaton
         # (disable_any_whitespace needs an explicit backend); caller kwargs win
         engine_kwargs.setdefault("structured_outputs_config", {"disable_any_whitespace": True, "backend": "xgrammar"})
-        if lora is not None:
-            engine_kwargs.setdefault("enable_lora", True)
         if trust_remote_code:
             engine_kwargs.setdefault("trust_remote_code", True)
         if spec.get_option("hook_plugin"):
@@ -280,11 +355,6 @@ class VLLMBackend(_DiscoveryNegotiation, Backend):
             forced, defaults = engine_boot_environment(bool(spec.get_option("hook_plugin")))
             with engine_environment(forced, defaults):
                 self._engine = self._engine_thread.run(_construct_engine(model_ref, engine_kwargs))
-
-            if lora is not None:
-                from vllm.lora.request import LoRARequest
-
-                self._lora_request = LoRARequest("steered", 1, lora.path)
 
             tokenizer_source = (
                 spec.get_option("tokenizer_name_or_path")
@@ -329,14 +399,76 @@ class VLLMBackend(_DiscoveryNegotiation, Backend):
         """The capability advertisement implied by `spec`."""
         return _vllm_capabilities(spec, offline=True)
 
-    def open_session(self) -> "VLLMOfflineSession":
+    def open_session(self, *, adapter: LoRAArtifact | None = None) -> "VLLMOfflineSession":
         """Open a request session over the shared engine.
+
+        Args:
+            adapter: The LoRA adapter that every request of the session is served under (`lora_request`), or None.
 
         Raises:
             RuntimeError: If the backend has been released.
+            ValueError: If the engine cannot serve the adapter (see `lora_request`).
         """
         self._require_engine()
-        return VLLMOfflineSession(self)
+        return VLLMOfflineSession(backend=self, lora_request=self.lora_request(adapter=adapter))
+
+    def lora_request(self, *, adapter: LoRAArtifact | None) -> Any:
+        """The vLLM `LoRARequest` that serves an adapter on this engine, or None without an adapter.
+
+        The request's name and id come from `adapter_identity`, and the request is built once per adapter.
+
+        Args:
+            adapter: The adapter, or None.
+
+        Returns:
+            The request, or None.
+
+        Raises:
+            RuntimeError: If the backend has been released.
+            ValueError: If the spec's `engine_kwargs` do not set `enable_lora`, the engine's dtype is not float16 or
+                bfloat16 (vLLM applies adapters in these only), the adapter's rank (from its `adapter_config.json`) is
+                above the engine's `max_lora_rank`, or the adapter changes a module that the engine's
+                `lora_target_modules` leave out (vLLM would apply the adapter in part). The message gives the option
+                to set.
+        """
+        if adapter is None:
+            return None
+        name, lora_id = adapter_identity(adapter=adapter)
+        if name in self._lora_requests:
+            return self._lora_requests[name]
+        dtype = self._require_engine().model_config.dtype
+        if not self.spec.get_option("engine_kwargs", "enable_lora"):
+            raise ValueError(
+                f"The engine serves no LoRA adapter, and a session asked for the one at {adapter.path!r}; set "
+                "engine_kwargs={'enable_lora': True} in the backend spec's options.",
+            )
+        if dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                f"The engine runs in {str(dtype).removeprefix('torch.')}, and vLLM applies a LoRA adapter in float16 "
+                f"or bfloat16 only; set engine_kwargs={{'dtype': 'bfloat16'}} in the backend spec's options to serve "
+                f"the adapter at {adapter.path!r}.",
+            )
+        limit = self.spec.lora_rank_limit()
+        rank = adapter_rank(path=str(adapter.path))
+        if rank is not None and rank > limit:
+            raise ValueError(
+                f"The LoRA adapter at {adapter.path!r} has rank {rank}, above the engine's max_lora_rank of {limit}; "
+                f"set a max_lora_rank of at least {rank} in the engine_kwargs of the backend spec's options.",
+            )
+        modules = adapter_modules(path=str(adapter.path))
+        outside = [] if modules is None else self.spec.lora_modules_left_out(modules=modules)
+        if outside:
+            targets = list(self.spec.get_option("engine_kwargs", "lora_target_modules"))
+            raise ValueError(
+                f"The LoRA adapter at {adapter.path!r} changes the modules {outside}, which the engine's "
+                f"lora_target_modules {targets} leave out, and vLLM would apply the adapter in part; add them to "
+                "lora_target_modules in the engine_kwargs of the backend spec's options.",
+            )
+        from vllm.lora.request import LoRARequest
+
+        request = LoRARequest(lora_name=name, lora_int_id=lora_id, lora_path=str(adapter.path))
+        self._lora_requests[name] = request
+        return request
 
     def _require_engine(self):
         """The loaded engine, or a `RuntimeError` when the backend has been released."""
@@ -390,7 +522,7 @@ class VLLMBackend(_DiscoveryNegotiation, Backend):
         self._released = True
         engine, self._engine = self._engine, None
         engine_thread = self._engine_thread
-        self._lora_request = None
+        self._lora_requests = {}
 
         if engine_thread is not None:
             engine_thread.cancel_pending()
@@ -426,6 +558,11 @@ class VLLMServeBackend(_DiscoveryNegotiation, Backend):
     model id against the spec (or serves the pipeline's structural artifacts). Prompts submit as
     token ids on the completions endpoint with the token-id return option; the chat endpoint is
     not used. Requires no local vLLM installation.
+
+    A LoRA adapter is selected per session (`open_session`). A session loads its adapter onto the
+    server on first use (`/v1/load_lora_adapter`, which needs `VLLM_ALLOW_RUNTIME_LORA_UPDATING` on
+    the server) under the name `adapter_identity` gives, and its requests name that adapter as their
+    model. An adapter is loaded once per backend.
 
     Spec options: `base_url` (required, the server root), `api_key`, `request_timeout`,
     `max_concurrency`, `max_retries`, `retry_backoff`, `tokenizer_name_or_path`,
@@ -465,31 +602,29 @@ class VLLMServeBackend(_DiscoveryNegotiation, Backend):
                 ) from error
             _reconcile_discovery(spec, self.capabilities_for_spec(spec), self._discovery)
 
-        checkpoint, lora = split_artifacts(artifacts)
+        checkpoint, _ = split_artifacts(artifacts=artifacts)
         expected_model = checkpoint.path if checkpoint is not None else spec.model
-        if lora is not None:
-            self._served_model = self._load_lora_adapter(lora)
-        else:
-            served = self._served_model_ids()
-            if expected_model is None:
-                if len(served) != 1:
-                    raise ValueError(
-                        f"The spec names no model and the server serves {served}; set the "
-                        "spec's model to disambiguate."
-                    )
-                self._served_model = served[0]
-            elif expected_model in served:
-                self._served_model = expected_model
-            else:
+        served = self._served_model_ids()
+        if expected_model is None:
+            if len(served) != 1:
                 raise ValueError(
-                    f"The server at {self._base_url} serves {served}, not the configured "
-                    f"model {expected_model!r}."
+                    f"The spec names no model and the server serves {served}; set the "
+                    "spec's model to disambiguate.",
                 )
+            self._served_model = served[0]
+        elif expected_model in served:
+            self._served_model = expected_model
+        else:
+            raise ValueError(
+                f"The server at {self._base_url} serves {served}, not the configured "
+                f"model {expected_model!r}.",
+            )
+        self._adapters: set[str] = set()
+        self._adapter_lock = threading.Lock()
 
         tokenizer_source = (
             spec.get_option("tokenizer_name_or_path")
             or (checkpoint.path if checkpoint is not None else None)
-            or (lora.base_model if lora is not None else None)
             or spec.model
         )
         if tokenizer_source is None:
@@ -598,6 +733,29 @@ class VLLMServeBackend(_DiscoveryNegotiation, Backend):
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise TransportError(f"artifact upload to {url} failed: {error}") from error
 
+    def model_for(self, *, adapter: LoRAArtifact | None) -> str:
+        """The model name that a request names to be served under an adapter (the served base model without one).
+
+        An adapter that the backend has not loaded yet is loaded onto the server first (`_load_lora_adapter`).
+
+        Args:
+            adapter: The adapter, or None.
+
+        Returns:
+            The model name.
+
+        Raises:
+            ValueError: If the server does not serve the adapter's base model or refuses the adapter.
+        """
+        if adapter is None:
+            return self._served_model
+        name, _ = adapter_identity(adapter=adapter)
+        with self._adapter_lock:
+            if name not in self._adapters:
+                self._load_lora_adapter(lora=adapter)
+                self._adapters.add(name)
+        return name
+
     def _load_lora_adapter(self, lora: LoRAArtifact) -> str:
         served = self._served_model_ids()
         base = lora.base_model or self.spec.model
@@ -606,10 +764,7 @@ class VLLMServeBackend(_DiscoveryNegotiation, Backend):
                 f"The server at {self._base_url} serves {served}, not the adapter's base "
                 f"model {base!r}."
             )
-        # the adapter name keys on path plus provenance, so a retrained adapter at the same
-        # path loads as a new server-side adapter rather than reusing stale weights
-        identity = f"{lora.path}:{lora.provenance.model_fingerprint or ''}"
-        adapter_name = f"steered-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:8]}"
+        adapter_name, _ = adapter_identity(adapter=lora)
         if adapter_name in served:
             return adapter_name
         try:
@@ -703,6 +858,10 @@ class VLLMServeBackend(_DiscoveryNegotiation, Backend):
         """The capability advertisement implied by `spec`."""
         return _vllm_capabilities(spec, offline=False)
 
-    def open_session(self) -> "VLLMServeSession":
-        """Open a request session over the shared connection."""
-        return VLLMServeSession(self)
+    def open_session(self, *, adapter: LoRAArtifact | None = None) -> "VLLMServeSession":
+        """Open a request session over the shared connection.
+
+        Args:
+            adapter: The LoRA adapter that the session's requests name as their model (`model_for`), or None.
+        """
+        return VLLMServeSession(backend=self, adapter=adapter)

@@ -423,15 +423,49 @@ and by the structural entries before it. The output locations of a training (`ou
 `resume_from_checkpoint`) and the structural entries after it are not part of this identity, and two recipes whose
 trainings differ only in these share one product.
 
+On the offline vLLM backend, a pipeline with an unmerged LoRA adapter runs on the engine of the base model, which
+applies the adapter only to the requests of that pipeline. Pipelines with different adapters therefore share one engine.
+The engine serves adapters only when the protocol's backend spec allows them:
+
+```python
+from steerability.algorithms.core.execution import BackendSpec
+
+engine_kwargs = {"enable_lora": True, "max_lora_rank": 32, "lora_target_modules": ["q_proj", "v_proj"]}
+vllm_protocol = Protocol.create(
+    model="Qwen/Qwen2.5-0.5B-Instruct",
+    backend=BackendSpec(kind="vllm", model="Qwen/Qwen2.5-0.5B-Instruct", options={"engine_kwargs": engine_kwargs}),
+    seed=0,
+)
+```
+
+The `max_lora_rank` option bounds the rank of the adapters (32 covers both values of `r`). The `lora_target_modules`
+option lists the modules that get LoRA layers. It must cover the modules that the adapters change (`["q_proj",
+"v_proj"]` is the default `target_modules` of the TRL wrappers) and leave out `lm_head`, since a batch of scoring
+requests under an adapter can otherwise stop the engine. A candidate whose adapter the engine cannot serve is rejected
+with the reason `unsupported`. The `check_space` function gives the structures whose default positions the engine cannot
+serve.
+
+Note that vLLM applies adapters in float16 or bfloat16 only, and an engine whose dtype option is float32 cannot serve
+them. A greedy study that searches adapters on this backend can therefore stop at the noise floor check of the
+baseline, and the in-process backend in float32 is then an alternative.
+
 Items of a study benchmark that are used as training data belong in the study's `fit_item_ids`, like the data of any
 other fit, since the study cannot see inside a dataset. A loader entry (`LoadLoRA`, `LoadCheckpoint`) is identified by
 its path. The study therefore assumes that an adapter or checkpoint directory given in a template does not change while
 its store is in use. A certificate records the content of the weights at certification, and the bundle of a loader
 refers to its path.
 
-A training runs inside an evaluation stage, and a deadline does not interrupt it. For an `OpenEvolveEngine` phase over a
-structure that trains, `stage_timeout_seconds` must therefore cover one training and the screening of the candidate.
-Alternatively, the phase runs with `structural_fits=0` on the products that an earlier phase trained.
+The `max_fit_seconds` argument of `run_study` limits the time of each training. A training whose entry a new
+interpreter can rebuild then runs in a child process, which is stopped at the limit. The candidate of a stopped training
+is recorded as `fit_failed`, and a later candidate that needs the same training fails at once. An entry can be rebuilt
+when its arguments contain no dataset held in memory and no callable defined in a notebook. We therefore give a
+training dataset as a `DataRef` to a file or a Hub dataset (`from steerability.spipe import DataRef`). Any other
+training runs in the session's process without a time limit, and a warning is logged.
+
+Note that a training runs inside an evaluation stage, and the deadline of an `OpenEvolveEngine` stage does not interrupt
+it. For an `OpenEvolveEngine` phase over a structure that trains, `stage_timeout_seconds` must therefore cover one
+training and the screening of the candidate. Alternatively, the phase runs with `structural_fits=0` on the products that
+an earlier phase trained.
 
 ## Certification
 

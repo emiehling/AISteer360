@@ -118,7 +118,7 @@ class FakeEngineBackend:
     def negotiated_capabilities(self):
         return self.capabilities_for_spec(self.spec)
 
-    def open_session(self):
+    def open_session(self, *, adapter=None):
         return FakeEngineSession(self)
 
     def stage_artifacts(self, payloads):
@@ -310,8 +310,9 @@ class _FailOnceSessionInput(_SessionInput):
             raise ValueError("session steer failed")
 
 
-def _engine_spec(model_dir) -> BackendSpec:
-    return BackendSpec(kind="vllm", model=model_dir, options={"hook_plugin": True})
+def _engine_spec(model_dir, **engine_kwargs) -> BackendSpec:
+    options = {"hook_plugin": True, **({"engine_kwargs": engine_kwargs} if engine_kwargs else {})}
+    return BackendSpec(kind="vllm", model=model_dir, options=options)
 
 
 class TestPhasePartition:
@@ -387,7 +388,7 @@ class TestArtifactLoaderHandoff:
         CALLS.clear()
         pipeline = SteeringPipeline(
             controls=[LoadLoRA(path=str(adapter_dir), base_model=model_dir), _ModuleOutput()],
-            backend=_engine_spec(model_dir),
+            backend=_engine_spec(model_dir, enable_lora=True),
         )
         plan = pipeline.check().plan
         assert [(step.control, step.access, step.venue) for step in plan.steps] == [
@@ -542,7 +543,7 @@ class TestSmokeTestDegradation:
         fitter = _CaptureFitter("fitter", location="layer_input")
         pipeline = SteeringPipeline(
             controls=[LoadLoRA(path=adapter_dir, base_model=model_dir), fitter],
-            backend=_engine_spec(model_dir),
+            backend=_engine_spec(model_dir, enable_lora=True),
         )
         with pytest.warns(UserWarning, match="degrades to a staged in-process model"):
             pipeline.steer()

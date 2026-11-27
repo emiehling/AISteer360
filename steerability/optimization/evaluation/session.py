@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from steerability.algorithms.core.identity import derive_seed
+from steerability.algorithms.core.product_fit import ProductFitTimeout
 from steerability.algorithms.core.recipe import Recipe, RecipeError
 from steerability.algorithms.core.sweeps import PipelineFactory
 from steerability.optimization.evaluation import evaluator
@@ -118,6 +119,11 @@ class StudySession:
     single candidates and does not exhaust the session. A candidate that needs another structural fit gets a `budget`
     result that is not recorded, and candidates whose products are stored are evaluated as usual.
 
+    `max_fit_seconds` limits the time of each structural fit. A training whose entries a new interpreter can rebuild
+    runs in a child process (`PipelineFactory.prepare` with `fit_seconds`), which is stopped at the limit. Its
+    candidate is recorded as `fit_failed`, and the session remembers the fit, so that a later candidate that needs the
+    same training fails at once. Any other training runs in this process without a time limit, which the factory logs.
+
     Args:
         study: The study.
         store: The store.
@@ -127,6 +133,7 @@ class StudySession:
         max_generations: The number of generations this session may run, or None.
         max_seconds: The wall time this session may run from `start`, or None.
         max_structural_fits: The number of distinct structural fits this session may let through, or None.
+        max_fit_seconds: The time each structural fit may take in a child process, or None to fit in this process.
         allow_infeasible: Whether to run a study that fails the feasibility check, i.e., one whose pools give it low
             power. It waives no check of the baseline.
 
@@ -151,12 +158,14 @@ class StudySession:
         max_generations: int | None = None,
         max_seconds: float | None = None,
         max_structural_fits: int | None = None,
+        max_fit_seconds: float | None = None,
         allow_infeasible: bool = False,
     ) -> None:
         check_limit(name="max_candidates", value=max_candidates, count=True)
         check_limit(name="max_generations", value=max_generations, count=True)
         check_limit(name="max_seconds", value=max_seconds, count=False)
         check_limit(name="max_structural_fits", value=max_structural_fits, count=True)
+        check_limit(name="max_fit_seconds", value=max_fit_seconds, count=False)
         self.study = study
         self.store = store
         self._owns_factory = factory is None
@@ -167,9 +176,11 @@ class StudySession:
         self.max_generations = max_generations
         self.max_seconds = max_seconds
         self.max_structural_fits = max_structural_fits
+        self.max_fit_seconds = max_fit_seconds
         self.allow_infeasible = allow_infeasible
         self._generations = 0
         self._structural_fits: set[str] = set()
+        self._failed_fits: set[str] = set()
         self._allowances: list[_Allowance] = []
         self._recorded = 0
         self._round_count = 0
@@ -417,9 +428,11 @@ class StudySession:
         self._close_steered()
         stack = ExitStack()
         try:
-            steered = stack.enter_context(self.factory.steered(recipe))
+            steered = stack.enter_context(self.factory.steered(recipe=recipe, fit_seconds=self.max_fit_seconds))
         except Exception as error:
             stack.close()
+            if isinstance(error, ProductFitTimeout):
+                self._failed_fits.add(error.fit_key)
             raise SteeringFailure(f"Steering recipe {recipe.id} failed ({type(error).__name__}: {error}).") from error
         self._open = (recipe.id, stack, steered)
         return steered
@@ -466,17 +479,36 @@ class StudySession:
         return steered.resolved_id, generated
 
     def fit(self, recipes: Sequence[Recipe]) -> None:
-        """Run the fits of recipes with `factory.prepare`, closing the open steered pipeline first."""
+        """Run the fits of recipes with `factory.prepare`, closing the open steered pipeline first.
+
+        Each structural fit is limited to `max_fit_seconds` in a child process when one can rebuild its entries. A
+        structural fit that ran past the limit earlier in this session is not run again.
+
+        Raises:
+            ProductFitTimeout: If a structural fit runs past `max_fit_seconds`; the session remembers its fit key.
+            RuntimeError: If a recipe needs a structural fit that ran past `max_fit_seconds` earlier in this session.
+        """
         self._close_steered()
-        self.factory.prepare(recipes)
+        failed = sorted(set(self.factory.pending_structural_fits(recipes=recipes)) & self._failed_fits)
+        if failed:
+            raise RuntimeError(
+                f"The structural fit {failed[0]} ran past max_fit_seconds ({self.max_fit_seconds:g}) earlier in this "
+                "session, and it is not run again.",
+            )
+        try:
+            self.factory.prepare(recipes=recipes, fit_seconds=self.max_fit_seconds)
+        except ProductFitTimeout as error:
+            self._failed_fits.add(error.fit_key)
+            raise
 
     def prepare(self, candidates: Sequence[Candidate]) -> None:
         """Run the fits of a batch of candidates before any of them generates.
 
         The plan of each candidate that binds and has no recorded result is made, and `factory.prepare` runs once on
         the recipes of those whose structural fits the limits let through (`admit_fits`). A candidate that needs a
-        structural fit beyond the limits is left out, and its evaluation returns `budget`. A failure is logged, and
-        each candidate then fits in its own stage 1.
+        structural fit beyond the limits is left out, and its evaluation returns `budget`. A candidate that needs a
+        structural fit that ran past `max_fit_seconds` earlier is left out too, and its stage 1 fails. A failure is
+        logged, and each candidate then fits in its own stage 1.
 
         Args:
             candidates: The candidates.
@@ -488,6 +520,8 @@ class StudySession:
             except RecipeError:
                 continue
             if self.archive.latest(candidate_id=plan.candidate_id) is not None:
+                continue
+            if set(self.factory.pending_structural_fits(recipes=plan.recipes)) & self._failed_fits:
                 continue
             try:
                 self.admit_fits(recipes=plan.recipes)

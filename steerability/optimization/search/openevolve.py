@@ -325,8 +325,9 @@ class OpenEvolveEngine(SearchEngine):
 
     Each evaluation operation has a deadline of 90% of `stage_timeout_seconds`, which stops a long evaluation before
     OpenEvolve's own timeout does. A training or merge of a structural control runs inside a stage and is not
-    interrupted by a deadline. For a phase over a structure that trains, `stage_timeout_seconds` must therefore cover
-    one training plus screening, or the phase runs with `structural_fits=0` on the products an earlier phase trained.
+    interrupted by a deadline (the `max_fit_seconds` of `run_study` stops a training in a child process). For a phase
+    over a structure that trains, `stage_timeout_seconds` must therefore cover one training plus screening, or the
+    phase runs with `structural_fits=0` on the products an earlier phase trained.
     When OpenEvolve gives up on a call first, the result is still recorded, and a later proposal of the candidate is
     a lookup. The numeric defaults follow OpenEvolve's own short-run examples and were not measured on a study.
 

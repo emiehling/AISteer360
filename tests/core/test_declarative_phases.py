@@ -178,13 +178,14 @@ class TestEagerLoweringFailure:
 
         class _NullStager:
             _discovery = None
+            spec = SERVE_SPEC
 
             def negotiated_capabilities(self):
                 from steerability.algorithms.core.execution import capabilities_for_spec
 
                 return capabilities_for_spec(SERVE_SPEC)
 
-            def open_session(self):
+            def open_session(self, *, adapter=None):
                 return _FakeServeSession()
 
             def stage_artifacts(self, payloads):

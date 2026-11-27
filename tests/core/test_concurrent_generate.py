@@ -110,7 +110,7 @@ class _RecordingBackend:
     def negotiated_capabilities(self):
         return self.capabilities_for_spec(self.spec)
 
-    def open_session(self):
+    def open_session(self, *, adapter=None):
         return _RecordingSession(self)
 
     def stage_artifacts(self, payloads):

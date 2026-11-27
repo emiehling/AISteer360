@@ -342,15 +342,88 @@ class TestStructuralArtifactVerdicts:
 
         controls = [LoadLoRA(path="/tmp/a", base_model="m"), LoadLoRA(path="/tmp/b", base_model="m")]
         pipeline = SteeringPipeline(model_name_or_path="m", controls=controls)
-        report = pipeline.check(backend=BackendSpec(kind="vllm", model="m"))
-        (failure,) = report.failures
-        assert failure.phase == "generate"
+        spec = BackendSpec(kind="vllm", model="m", options={"engine_kwargs": {"enable_lora": True}})
+        report = pipeline.check(backend=spec)
+        (failure,) = report.failures_for("generate")
         assert failure.message == (
             "LoadLoRA is unsupported at generate on backend kind 'vllm': LoadLoRA already serves a LoRA adapter, and "
             "the engine serves one adapter per pipeline; merge one of the adapters into the model weights, or run "
             "this pipeline on the huggingface backend."
         )
         assert pipeline.check().ok
+
+    def test_an_engine_serves_an_adapter_only_with_lora_enabled_a_rank_it_allows_and_not_in_float32(self):
+        from datasets import Dataset
+
+        from steerability.algorithms.structural_control.load_lora import LoadLoRA
+        from steerability.algorithms.structural_control.wrappers.trl.sfttrainer.control import SFT
+
+        def failures(control, *, phase="generate", **engine_kwargs):
+            options = {"engine_kwargs": engine_kwargs} if engine_kwargs else {}
+            pipeline = SteeringPipeline(model_name_or_path="m", controls=[control])
+            report = pipeline.check(backend=BackendSpec(kind="vllm", model="m", options=options))
+            return report.failures_for(phase)
+
+        loader = LoadLoRA(path="/tmp/a", base_model="m")
+        (failure,) = failures(loader)
+        assert failure.message == (
+            "LoadLoRA is unsupported at generate on backend kind 'vllm': an offline engine serves a LoRA adapter only "
+            "when the engine_kwargs of the backend spec's options set `enable_lora` and do not set `dtype` to float32 "
+            "(vLLM applies adapters in float16 or bfloat16)."
+        )
+        assert failures(loader, enable_lora=True) == ()
+        assert failures(loader, enable_lora=True, dtype="bfloat16") == ()
+        assert len(failures(loader, enable_lora=True, dtype="float32")) == 1
+        assert len(failures(loader, enable_lora=True, dtype=torch.float32)) == 1
+        dataset = Dataset.from_dict({"text": ["a formal reply"]})
+        trained = SFT(train_dataset=dataset, use_peft=True, r=32)
+        (failure,) = failures(trained, enable_lora=True)
+        assert "of rank 32" in failure.message and "a `max_lora_rank` of at least 32" in failure.message
+        assert failures(trained, enable_lora=True, max_lora_rank=32) == ()
+        merged = SFT(train_dataset=dataset, use_peft=True, r=32, merge_lora_after_train=True, merged_output_dir="/m")
+        assert failures(merged) == () and failures(merged, phase="score") == ()
+        assert SteeringPipeline(model_name_or_path="m", controls=[trained]).check().ok
+        serve = BackendSpec(kind="vllm-serve", model="m", options={"base_url": "http://server:8000"})
+        assert SteeringPipeline(model_name_or_path="m", controls=[loader]).check(backend=serve).ok
+        assert BackendSpec(kind="vllm", model="m").lora_rank_limit() is None
+        engine = BackendSpec(kind="vllm", model="m", options={"engine_kwargs": {"enable_lora": True}})
+        assert engine.lora_rank_limit() == 16
+
+    def test_an_engine_scores_under_an_adapter_only_when_its_lora_layers_leave_out_the_head(self):
+        from steerability.algorithms.structural_control.load_lora import LoadLoRA
+
+        def score_failures(**engine_kwargs):
+            pipeline = SteeringPipeline(model_name_or_path="m", controls=[LoadLoRA(path="/tmp/a", base_model="m")])
+            options = {"engine_kwargs": {"enable_lora": True, **engine_kwargs}}
+            return pipeline.check(backend=BackendSpec(kind="vllm", model="m", options=options)).failures_for("score")
+
+        (failure,) = score_failures()
+        assert failure.message == (
+            "LoadLoRA is unsupported at score on backend kind 'vllm': an offline engine scores under a LoRA adapter "
+            "only when its LoRA layers leave out lm_head; set `lora_target_modules` in the engine_kwargs of the "
+            "backend spec's options to the modules the adapter changes, e.g., [\"q_proj\", \"v_proj\"]."
+        )
+        assert len(score_failures(lora_target_modules=["q_proj", "lm_head"])) == 1
+        assert score_failures(lora_target_modules=["q_proj", "v_proj"]) == ()
+
+    def test_an_engine_whose_lora_layers_miss_a_module_a_training_changes_fails_before_the_training(self):
+        from datasets import Dataset
+
+        from steerability.algorithms.structural_control.wrappers.trl.sfttrainer.control import SFT
+
+        dataset = Dataset.from_dict({"text": ["a formal reply"]})
+        trained = SFT(train_dataset=dataset, use_peft=True, r=8, target_modules=["q_proj", "v_proj", "o_proj"])
+        pipeline = SteeringPipeline(model_name_or_path="m", controls=[trained])
+
+        def failures(targets):
+            options = {"engine_kwargs": {"enable_lora": True, "lora_target_modules": targets}}
+            return pipeline.check(backend=BackendSpec(kind="vllm", model="m", options=options)).failures_for("generate")
+
+        (failure,) = failures(["q_proj", "v_proj"])
+        assert "changes ['o_proj', 'q_proj', 'v_proj'] only when its `lora_target_modules` cover" in failure.message
+        assert failures(["qkv_proj", "o_proj"]) == ()
+        regex = SFT(train_dataset=dataset, use_peft=True, r=8, target_modules=r".*\.q_proj")
+        assert regex.adapter_target_modules() is None
 
     def test_chained_checkpoints_are_supported_and_the_last_is_served(self):
         from steerability.algorithms.core.execution import CheckpointArtifact, LoRAArtifact
@@ -501,7 +574,7 @@ class _MinimalBackend(Backend):
     def capabilities_for_spec(cls, spec: BackendSpec) -> BackendCapabilities:
         return BackendCapabilities(atoms=frozenset())
 
-    def open_session(self):
+    def open_session(self, *, adapter=None):
         raise NotImplementedError
 
 

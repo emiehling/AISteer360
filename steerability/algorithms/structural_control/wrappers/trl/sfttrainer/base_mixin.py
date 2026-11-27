@@ -4,7 +4,11 @@ from transformers import DataCollatorForLanguageModeling, PreTrainedModel, PreTr
 from trl import SFTConfig, SFTTrainer
 
 from steerability.algorithms.structural_control.base import StructuralControl
-from steerability.algorithms.structural_control.wrappers.trl.base_mixin import TRLMixin, resolve_config_kwargs
+from steerability.algorithms.structural_control.wrappers.trl.base_mixin import (
+    TRLMixin,
+    materialized_dataset,
+    resolve_config_kwargs,
+)
 
 
 class SFTTrainerMixin(TRLMixin, StructuralControl):
@@ -36,19 +40,23 @@ class SFTTrainerMixin(TRLMixin, StructuralControl):
         # build PEFT config
         peft_config = self._peft_config(model)
 
+        # a dataset given by reference loads here; the configured arguments stay as the caller gave them
+        train_dataset = materialized_dataset(dataset=self.train_dataset)
+        eval_dataset = materialized_dataset(dataset=self.eval_dataset)
+
         # default collator for tokenized datasets (labels from input_ids)
         data_collator = self.data_collator
-        if data_collator is None and self.train_dataset is not None and hasattr(self.train_dataset, "features"):
-            if "labels" not in self.train_dataset.features and "input_ids" in self.train_dataset.features:
+        if data_collator is None and train_dataset is not None and hasattr(train_dataset, "features"):
+            if "labels" not in train_dataset.features and "input_ids" in train_dataset.features:
                 data_collator = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm=False)
 
         # train if a dataset is provided
-        if self.train_dataset is not None:
+        if train_dataset is not None:
             trainer = SFTTrainer(
                 model=model,
                 args=training_config,
-                train_dataset=self.train_dataset,
-                eval_dataset=self.eval_dataset,
+                train_dataset=train_dataset,
+                eval_dataset=eval_dataset,
                 data_collator=data_collator,
                 processing_class=self.tokenizer,
                 peft_config=peft_config,

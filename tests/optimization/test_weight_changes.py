@@ -10,6 +10,7 @@ import pytest
 pytest.importorskip("inspect_ai")
 
 from steerability.algorithms.core.execution.payloads import LoRAArtifact
+from steerability.algorithms.core.fits import weights_context
 from steerability.algorithms.core.recipe import Choice, entry
 from steerability.algorithms.core.store import Store
 from steerability.algorithms.input_control.system_prompt.control import SystemPrompt
@@ -127,6 +128,23 @@ def test_the_service_lists_a_candidate_that_needs_a_structural_fit_beyond_the_li
         reply = service.handle(request={"op": "full", "program": program})
     assert reply["artifacts"]["reason"] == "budget" and reply["metrics"]["combined_score"] == 0.0
     assert "needs a training or merge" in reply["artifacts"]["recent_unevaluated"]
+
+
+def test_a_training_past_max_fit_seconds_is_recorded_as_failed_and_not_run_again(store):
+    study = build_study(store=store, truth=_gain, space=_space())
+    factory = StubFactory(protocol=study.protocol)
+    slow = weights_context(recipe=study.bind(candidate=_lora("adapter-b")).recipe())
+    factory.slow_weights.add(slow)
+    session = StudySession(study=study, store=store, factory=factory, max_fit_seconds=60.0)
+    session.start()
+    failed = session.evaluate(candidate=_lora("adapter-b"))
+    assert (failed.status, failed.stage, failed.reason) == ("rejected", 1, "fit_failed")
+    session.prepare(candidates=[_both("adapter-b", "be formal"), _lora("adapter-c")])
+    recipe_of = study.bind(candidate=_lora("adapter-c")).recipe().id
+    assert factory.prepared[-1] == [recipe_of]
+    again = session.evaluate(candidate=_both("adapter-b", "be formal"))
+    assert (again.stage, again.reason) == (1, "fit_failed") and factory.timeouts == [slow]
+    assert session.evaluate(candidate=_lora("adapter-a")).status == "accepted"
 
 
 def _by_weights(recipe, item_id):

@@ -48,7 +48,8 @@ steerability/
 │   │   │                        # (Recipe, Template, ranges, expand); identity.py (content_id, derive_seed);
 │   │   │                        # protocol.py (Protocol, ProviderOptions); store.py (Store); fits.py (fit cache,
 │   │   │                        # fit sources and the products of structural controls); sweeps.py (expansion,
-│   │   │                        # PipelineFactory, BackendPool); scoring.py (SampleScorer)
+│   │   │                        # PipelineFactory, BackendPool); product_fit.py (a product fitted in a child
+│   │   │                        # process under a time limit); scoring.py (SampleScorer)
 │   │   ├── execution/           # backend interface: spec, contracts, payloads, backend (sessions, Backend, backend
 │   │   │                        # registry), params, fanout; access (ModelAccess, SteerPlan); session_utils (scoped
 │   │   │                        # sessions, session_generate, session_generate_items); staging (stage freeing,
@@ -357,8 +358,20 @@ pipeline = SteeringPipeline(
   transport errors only, and `max_concurrency` bounds the fan-out inside one call rather than the number of
   concurrent calls. Launching and supervising the server stays with the caller.
 - Structural controls train on the staged model and serve their artifacts (checkpoint or LoRA) on vLLM backends. An
-  engine serves the last checkpoint and one LoRA adapter, and `check()` fails a second adapter; on `vllm-serve`, a
-  checkpoint is served only when its path is the spec's `model`.
+  engine serves the last checkpoint and selects a LoRA adapter per request. A session serves the adapter it is opened
+  with (`Backend.open_session(adapter=...)`), and a `BackendPool` therefore keys an engine by its checkpoint only. One
+  engine then serves the pipelines of several adapters. The offline engine serves adapters only when its spec's
+  `engine_kwargs` set `enable_lora`, with a `max_lora_rank` of at least the adapter's rank (16 by default,
+  `BackendSpec.lora_rank_limit`), and only in float16 or bfloat16 (vLLM's LoRA kernels do not run in float32). `check()`
+  verifies this for a control that serves an adapter (`lora_capacity`, with the rank its configuration gives), and the
+  engine checks its dtype and a loaded adapter's rank when a session opens with the adapter. Scoring under an adapter
+  also needs `lora_target_modules` without `lm_head` (`lora_scoring`, at the score phase), since a batch of scoring
+  requests under an adapter can stop an engine whose head has a LoRA layer. An engine with `lora_target_modules` applies
+  only the adapter weights of the modules they cover (`BackendSpec.lora_modules_left_out`). `check()` therefore fails a
+  training whose `target_modules` list is not covered (`lora_coverage`), and the engine refuses a loaded adapter whose
+  weights change a module outside them. Each adapter gets a name and an id of its own (`adapter_identity`). `check()`
+  fails a second adapter in one pipeline. On `vllm-serve`, a session loads its adapter onto the server on first use, and
+  a checkpoint is served only when its path is the spec's `model`.
 - Declarative constrained decoding lowers to vLLM's native structured outputs on the default decode path. Under an
   enabled `DecodingDriver` a constraint or processor spec does not lower (the driver receives the in-process
   processor), and `check()` fails that combination on the engine kinds. Hidden-state capture (probe fitting and
@@ -559,6 +572,12 @@ than trained again, and the control then declares `ModelAccess.FACTS`.
 `PipelineFactory(protocol, store=...)` steers recipes in their fit cache, shares the base model, pools engine backends,
 and runs a batch's fits up front (`prepare`). It fits each pending product alone, in a pipeline of its own, before
 anything else of the recipe. Every pipeline it yields and every other fit of the recipe then runs on stored products.
+With a time limit (`fit_seconds` of `prepare` and `steered`), a product whose structural entries a new interpreter can
+rebuild is fitted in a child process, which is stopped at the limit (`ProductFitTimeout`, in
+`algorithms/core/product_fit.py`). The child receives the store's root, the protocol's identity, and the entries as a
+recipe. A dataset held in memory and a callable defined in `__main__` cannot be passed (`transport_problems`), and such
+a product is fitted in process. A TRL wrapper therefore accepts a dataset given as a `DataRef`, which it loads when it
+trains.
 `check()` runs over every point before any model or engine work (`on_unsupported="raise"` or `"skip"`).
 `save_dir/protocol.json` records the protocol and observed facts (a directory written under another protocol
 is refused), and `save_dir/points.json` the points, selections, and trials; the module-level `samples_frame` and
@@ -696,8 +715,10 @@ chosen on. Results are memoized by candidate id, and a `budget` or `timeout` rej
 rows stay). A training or merge whose product the store does not contain is a structural fit, and `admit_fits` counts
 the distinct ones against `max_structural_fits` and an allowance's `structural_fits`. A candidate that needs a fit
 beyond them gets `budget` without exhausting the session. A phase with `structural_fits=0` therefore searches on stored
-products only. Once `settings.round_candidates` candidates are recorded in a round, `StudySession.advance` starts a new
-round with new batches and re-scores the best accepted results. The session calls it at the start of `screen` and
+products only. `max_fit_seconds` (of `StudySession` and `run_study`) limits each training in a child process, and a
+training stopped at the limit records its candidate as `fit_failed`. A later candidate with the same training then fails
+at once. Once `settings.round_candidates` candidates are recorded in a round, `StudySession.advance` starts a new round
+with new batches and re-scores the best accepted results. The session calls it at the start of `screen` and
 `plan_finalists`, `run_study` after the initial candidates and after each phase, and `EvaluationService` once it has
 sent the reply of an evaluation. The call whose result completed a round therefore returns before the re-scoring starts.
 `plan_finalists()` spreads the finalists over levels and selects previously unevaluated search items for each one, and
